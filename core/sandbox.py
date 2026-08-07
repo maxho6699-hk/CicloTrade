@@ -94,8 +94,17 @@ class SandboxClient:
             )
             raise RuntimeError("隔離沙箱暫時無法接收任務；代碼已保留在隔離佇列。") from exc
         remote_status = str(result.get("status", "queued")) if isinstance(result, dict) else "queued"
-        self.db.execute(
-            "UPDATE strategy_code_submissions SET sandbox_status=? WHERE job_id=?",
-            (remote_status[:40], job_id),
-        )
-        return {"job_id": job_id, "status": "quarantined", "sandbox": remote_status, "created": True}
+        remote_status = remote_status if remote_status in {"completed", "failed", "timeout", "queued"} else "failed"
+        job_status = "validated" if remote_status == "completed" else "failed" if remote_status in {"failed", "timeout"} else "quarantined"
+        error_message = str(result.get("error", ""))[:500] if isinstance(result, dict) else ""
+        completed_at = datetime.now(UTC).isoformat(timespec="seconds") if job_status != "quarantined" else None
+        with self.db.transaction() as conn:
+            conn.execute(
+                "UPDATE strategy_code_submissions SET sandbox_status=? WHERE job_id=?",
+                (remote_status, job_id),
+            )
+            conn.execute(
+                "UPDATE signal_import_jobs SET status=?,error_message=?,report_json=?,completed_at=? WHERE id=?",
+                (job_status, error_message or None, json.dumps(result, ensure_ascii=False), completed_at, job_id),
+            )
+        return {"job_id": job_id, "status": job_status, "sandbox": remote_status, "created": True}

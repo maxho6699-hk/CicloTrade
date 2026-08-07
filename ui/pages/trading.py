@@ -11,8 +11,9 @@ import streamlit as st
 from core.database import get_database
 from core.plans import can, effective_plan, trading_limits
 from core.strategy_registry import StrategyRegistry
-from core.user_settings import load_user_settings
+from core.user_settings import load_user_settings, merge_user_settings
 from notification.telegram_bot import send_telegram, telegram_configured, verified_user_target
+from notification.templates import telegram_order_message
 from trading.order_manager import OrderManager
 from trading.tiger_api import TigerAPI
 from ui.components import page_heading, section_label
@@ -52,7 +53,7 @@ def _execute_order(
         if telegram_target and telegram_configured(telegram_target):
             try:
                 send_telegram(
-                    f"CicloTrade 订单\n{mode.upper()} {side} {quantity} {symbol} @ {price:.2f}\n状态：{order['status']}",
+                    telegram_order_message(mode, side, quantity, symbol, price, order["status"]),
                     chat_id=telegram_target,
                 )
             except RuntimeError:
@@ -64,6 +65,31 @@ def _execute_order(
         db.log_system_event("ERROR", "TRADING", "订单通道异常", str(exc)[:1000])
         st.error("订单通道暂时不可用，订单未提交。", icon=":material/gpp_bad:")
     return False
+
+
+def _set_live_auto(enabled: bool) -> None:
+    user_id = int(st.session_state.user["id"])
+    db = get_database()
+    merge_user_settings(user_id, {"live_auto_enabled": enabled}, db)
+    db.execute(
+        "INSERT INTO user_action_logs (user_id,action_type,details,created_at) VALUES (?,?,?,datetime('now'))",
+        (user_id, "LIVE_AUTO_ENABLE" if enabled else "LIVE_AUTO_DISABLE", f"enabled={enabled}"),
+    )
+
+
+@st.dialog("确认开启实盘自动交易")
+def _confirm_live_auto_enable() -> None:
+    st.warning("开启后仍受平台总开关、会员权限、白名单、风险限制和逐单确认保护；但满足全部条件时会产生真实资金风险。")
+    confirmed = st.checkbox("我确认只连接自己的券商账户，并理解自动交易可能造成真实亏损")
+    if st.button(
+        "开启我的实盘自动交易",
+        type="primary",
+        icon=":material/lock_open:",
+        disabled=not confirmed,
+        width="stretch",
+    ):
+        _set_live_auto(True)
+        st.rerun()
 
 
 @st.dialog("确认实盘限价订单")
@@ -117,9 +143,13 @@ def render() -> None:
     )
     market = st.segmented_control("市场", ["美股", "A股"], default="美股", key="trading_market")
     mode = st.segmented_control("账户模式", ["paper", "live"], default="paper", format_func=lambda value: "模拟盘" if value == "paper" else "实盘")
+    user_settings = load_user_settings(int(user["id"]), db)
+    user_live_enabled = user_settings.get("live_auto_enabled") is True
     contract_users = {value.strip() for value in os.getenv("TRADEAI_STOCK_AUTO_CONTRACT_USER_IDS", "").split(",") if value.strip()}
     operator_id = os.getenv("TRADEAI_LIVE_OPERATOR_USER_ID", "").strip()
     live_entitled = (
+        bool(user.get("is_admin"))
+        and
         can(plan, "real_trade")
         and str(user["id"]) in contract_users
         and str(user["id"]) == operator_id
@@ -129,10 +159,28 @@ def render() -> None:
         and tiger.environment == "live"
         and os.getenv("TIGER_REAL_TRADING_ENABLED", "false").lower() == "true"
         and live_entitled
+        and user_live_enabled
     )
+    with st.container(border=True):
+        st.metric("我的实盘自动交易", "已开启" if user_live_enabled else "默认关闭")
+        st.caption("此开关只控制当前登录用户；关闭后不会发送新的实盘订单，模拟盘不受影响。")
+        if user_live_enabled:
+            if st.button("立即关闭实盘自动交易", icon=":material/pause_circle:", width="stretch"):
+                _set_live_auto(False)
+                st.rerun()
+        elif bool(user.get("is_admin")) and can(plan, "real_trade"):
+            if st.button("申请开启我的实盘自动交易", icon=":material/verified_user:", width="stretch"):
+                _confirm_live_auto_enable()
+        elif can(plan, "real_trade"):
+            st.info(
+                "Tiger 实盘目前仅供平台管理员联调。高阶会员请联系 Telegram @Maxooo8 了解开放条件。",
+                icon=":material/support_agent:",
+            )
+        else:
+            st.info("当前会员等级不包含实盘自动交易；模拟盘可继续使用。", icon=":material/lock:")
     if mode == "live" and not live_enabled:
         st.error(
-            "实盘不可用：高级版需额外签约；专业版及以上仍需后台白名单、独立操作员配置、券商凭证与模拟盘联调。",
+            "实盘暂未对用户开放；当前仅平台管理员可联调。高阶会员请联系客服了解开放条件。",
             icon=":material/lock:",
         )
     if mode == "live" and market == "A股":

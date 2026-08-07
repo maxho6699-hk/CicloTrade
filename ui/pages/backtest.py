@@ -18,7 +18,7 @@ from core.plans import (
     backtest_years, can, effective_plan, strategy_condition_limit,
     strategy_generation_limit,
 )
-from core.strategy_evaluation import evaluate_rule_strategy
+from core.strategy_evaluation import chronological_validation_start, evaluate_rule_strategy
 from core.strategy_generator import StrategyGenerationService
 from core.strategy_parser import parse_strategy
 from core.strategy_registry import StrategyRegistry
@@ -77,9 +77,13 @@ def _natural_language_builder(user: dict, plan: str) -> None:
             with st.spinner("正在讀取真實歷史 K 線並逐根回測…", show_time=True):
                 closes, _ = get_data_source().history((parsed["symbol"],), period=f"{years}y")
                 series = closes[parsed["symbol"]].dropna()
+                validation_start = chronological_validation_start(series)
+                configured = {"parameters": {}, "rules": {"entry": parsed["entry"], "exit": parsed["exit"]}}
+                training = evaluate_rule_strategy(series[series.index < validation_start], configured)
                 result = evaluate_rule_strategy(
                     series,
-                    {"parameters": {}, "rules": {"entry": parsed["entry"], "exit": parsed["exit"]}},
+                    configured,
+                    evaluation_start=validation_start,
                 )
             now = datetime.now(UTC).isoformat(timespec="seconds")
             database = get_database()
@@ -93,15 +97,26 @@ def _natural_language_builder(user: dict, plan: str) -> None:
                        (user_id,strategy_name,symbol,start_date,end_date,return_rate,max_drawdown,
                         win_rate,total_trades,params,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                     (
-                        user["id"], "一句話策略", parsed["symbol"], str(series.index[0].date()),
-                        str(series.index[-1].date()), result["total_return"], result["max_drawdown"],
-                        result["win_rate"], 0,
-                        json.dumps({"generation_id": generation["id"], "parsed": parsed}, ensure_ascii=False), now,
+                        user["id"], "一句話策略", parsed["symbol"], result["evaluation_start"],
+                        result["evaluation_end"], result["total_return"], result["max_drawdown"],
+                        result["win_rate"], result["total_trades"],
+                        json.dumps({
+                            "generation_id": generation["id"], "parsed": parsed,
+                            "validation": "70/30 chronological holdout",
+                            "validation_start": result["evaluation_start"],
+                            "execution_model": result["execution_model"],
+                            "training_metrics": {
+                                "return_rate": training["total_return"],
+                                "max_drawdown": training["max_drawdown"],
+                                "sharpe": training["sharpe_ratio"],
+                                "total_trades": training["total_trades"],
+                            },
+                        }, ensure_ascii=False), now,
                     ),
                 )
             st.session_state.generated_strategy_result = {
-                "generation": generation, "result": result,
-                "dates": [str(value.date()) for value in series.index],
+                "generation": generation, "result": result, "training": training,
+                "dates": [str(value.date()) for value in series.index if value >= validation_start],
             }
         except (PermissionError, RuntimeError, ValueError) as exc:
             st.error(f"策略生成失敗：{exc}", icon=":material/error:")
@@ -112,16 +127,18 @@ def _natural_language_builder(user: dict, plan: str) -> None:
     result = generated["result"]
     st.success(
         f"解析完成：{parsed['symbol']} · 買入 {len(parsed['entry'])} 個條件 · "
-        f"賣出 {len(parsed['exit'])} 個條件 · 下一根 K 線執行"
+        f"賣出 {len(parsed['exit'])} 個條件 · 前 70% 建模 / 後 30% 樣本外驗證"
     )
     metric_grid(
         (
-            ("總回報", f"{result['total_return']:+.2%}", "歷史區間", "positive" if result["total_return"] >= 0 else "negative"),
-            ("最大回撤", f"{result['max_drawdown']:.2%}", "歷史峰谷", "negative"),
-            ("夏普比率", f"{result['sharpe_ratio']:.2f}", "日收益年化", ""),
-            ("勝率", f"{result['win_rate']:.1%}", "已完成交易", ""),
+            ("樣本外回報", f"{result['total_return']:+.2%}", "後 30% 時間區間", "positive" if result["total_return"] >= 0 else "negative"),
+            ("樣本外回撤", f"{result['max_drawdown']:.2%}", "峰值至谷底", "negative"),
+            ("樣本外 Sharpe", f"{result['sharpe_ratio']:.2f}", "日收益年化", ""),
+            ("樣本外勝率", f"{result['win_rate']:.1%}", f"{result['total_trades']} 筆完成交易", ""),
         )
     )
+    if result["total_trades"] < 30:
+        st.warning("樣本外完成交易少於 30 筆，只能視為樣本不足，不能判定策略通過。", icon=":material/warning:")
     with st.expander("查看解析規則與生成代碼", icon=":material/code:"):
         st.json({key: parsed[key] for key in ("symbol", "market", "entry", "exit", "execution_timing")})
         st.code(generated["generation"]["code"], language="python")
@@ -228,25 +245,39 @@ def render() -> None:
                 st.session_state.backtest_symbol = symbol
         except Exception as exc:
             st.error(f"回测失败：{exc}", icon=":material/error:")
-    if can(plan, "backtest_10y") and st.button("自动遍历 9 组参数", icon=":material/auto_graph:"):
+    if can(plan, "backtest_10y") and st.button("运行 70/30 Walk-Forward 严谨验证", icon=":material/auto_graph:"):
         try:
-            with st.spinner("正在比较 DTE 与行权价偏移组合…", show_time=True):
+            with st.spinner("正在训练窗选参、逐窗样本外验证并执行双倍成本压力测试…", show_time=True):
                 best, frame = engine.optimize(user["id"], strategy, symbol, int(years))
                 st.session_state.optimization_result = (best, frame)
         except Exception as exc:
             st.error(f"参数优化失败：{exc}", icon=":material/error:")
     if optimization := st.session_state.get("optimization_result"):
         best, frame = optimization
-        st.success(f"当前样本最优组合：DTE {int(best['DTE'])}，行权价偏移 {int(best['行权价偏移']):+d}% 。")
+        representative = f"训练窗最常入选：DTE {int(best['DTE'])}，行权价偏移 {int(best['行权价偏移']):+d}%"
+        if best["sample_quality"] == "insufficient":
+            st.warning(f"{representative}。样本外交易少于 30 笔，结论为样本不足。", icon=":material/warning:")
+        elif float(best["oos_return_rate"]) > 0 and float(best["stress_return_rate"]) > 0:
+            st.success(f"{representative}。基础与双倍成本样本外结果均为正。")
+        else:
+            st.warning(f"{representative}。样本外或双倍成本压力结果未通过。", icon=":material/warning:")
+        metric_grid(
+            (
+                ("样本外回报", f"{float(best['oos_return_rate']):+.2%}", f"{int(best['folds'])} 个验证窗", "positive" if float(best["oos_return_rate"]) > 0 else "negative"),
+                ("样本外回撤", f"{float(best['oos_max_drawdown']):.2%}", "仅后 30% 时间区间", "negative"),
+                ("双倍成本回报", f"{float(best['stress_return_rate']):+.2%}", "佣金与滑点 × 2", "positive" if float(best["stress_return_rate"]) > 0 else "negative"),
+                ("样本外交易", str(int(best["oos_total_trades"])), f"入选稳定度 {float(best['selection_rate']):.0%}", ""),
+            )
+        )
         st.dataframe(
-            frame[["DTE", "行权价偏移", "return_rate", "max_drawdown", "win_rate", "sharpe"]],
+            frame[["DTE", "行权价偏移", "训练评分", "训练回报", "训练回撤", "训练Sharpe", "入选窗口"]],
             hide_index=True,
             width="stretch",
             column_config={
-                "return_rate": st.column_config.NumberColumn("回报", format="percent"),
-                "max_drawdown": st.column_config.NumberColumn("最大回撤", format="percent"),
-                "win_rate": st.column_config.NumberColumn("胜率", format="percent"),
-                "sharpe": st.column_config.NumberColumn("Sharpe", format="%.2f"),
+                "训练评分": st.column_config.NumberColumn(format="%.3f"),
+                "训练回报": st.column_config.NumberColumn(format="percent"),
+                "训练回撤": st.column_config.NumberColumn(format="percent"),
+                "训练Sharpe": st.column_config.NumberColumn(format="%.2f"),
             },
         )
 
@@ -267,7 +298,9 @@ def render() -> None:
         return_rate = float(metrics["return_rate"])
         drawdown = float(metrics["max_drawdown"])
         win_rate = float(metrics["win_rate"])
-        if return_rate > 0 and drawdown > -.25 and win_rate >= .5:
+        if int(metrics["total_trades"]) < 30:
+            verdict, tone, next_step = "样本不足", "neutral", "完成周期少于 30 个，不能判定策略通过；请扩大历史区间。"
+        elif return_rate > 0 and drawdown > -.25 and win_rate >= .5:
             verdict, tone, next_step = "历史验证通过", "positive", "可加入观察清单，并先用小仓位模拟验证。"
         elif return_rate > 0:
             verdict, tone, next_step = "结果可观察", "neutral", "有正回报，但回撤或胜率不理想，先降低仓位。"

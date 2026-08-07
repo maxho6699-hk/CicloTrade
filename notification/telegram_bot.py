@@ -13,6 +13,7 @@ from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from core.config_loader import get_config
 from core.plans import can, effective_plan
 
 
@@ -20,10 +21,30 @@ class TelegramDeliveryUncertain(RuntimeError):
     """The request may have reached Telegram, so automatic retry is unsafe."""
 
 
+def _telegram_setting(key: str, default=None):
+    return get_config().get(f"telegram.{key}", default)
+
+
+def telegram_token() -> str:
+    return os.getenv(str(_telegram_setting("token_env", "TELEGRAM_BOT_TOKEN")), "").strip()
+
+
+def telegram_group(group: str) -> str | None:
+    value = _telegram_setting(f"groups.{group}")
+    target = str(value).strip() if value is not None else ""
+    return target if target.startswith("-") and target[1:].isdigit() else None
+
+
+def telegram_community_url() -> str | None:
+    value = str(_telegram_setting("community_url", "")).strip()
+    return value or None
+
+
 def telegram_configured(chat_id: str | None = None) -> bool:
+    enabled_env = str(_telegram_setting("enabled_env", "EXTERNAL_ALERTS_ENABLED"))
     return bool(
-        os.getenv("EXTERNAL_ALERTS_ENABLED", "false").strip().lower() == "true"
-        and os.getenv("TELEGRAM_BOT_TOKEN")
+        os.getenv(enabled_env, "false").strip().lower() == "true"
+        and telegram_token()
         and (chat_id or os.getenv("TELEGRAM_CHAT_ID"))
     )
 
@@ -111,9 +132,10 @@ def confirm_verification(database, user_id: int, token: str) -> str:
 
 
 def send_telegram(message: str, chat_id: str | None = None) -> None:
-    if os.getenv("EXTERNAL_ALERTS_ENABLED", "false").strip().lower() != "true":
+    enabled_env = str(_telegram_setting("enabled_env", "EXTERNAL_ALERTS_ENABLED"))
+    if os.getenv(enabled_env, "false").strip().lower() != "true":
         raise RuntimeError("Telegram 外部通知已由平台停用。")
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    token = telegram_token()
     target = chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
     if not token or not target:
         raise RuntimeError("Telegram Bot 尚未配置。")
@@ -134,3 +156,35 @@ def send_telegram(message: str, chat_id: str | None = None) -> None:
         raise
     except Exception as exc:
         raise TelegramDeliveryUncertain(f"Telegram delivery uncertain: {type(exc).__name__}") from exc
+
+
+def remove_group_member(chat_id: str, user_id: str) -> None:
+    """Remove an expired member while allowing a later paid rejoin."""
+    if not telegram_configured(chat_id):
+        raise RuntimeError("Telegram 外部通知已由平台停用。")
+    token = telegram_token()
+    target_user = str(user_id).strip()
+    if not target_user.isdigit():
+        raise RuntimeError("Telegram 用户 ID 无效。")
+    for method, payload in (
+        ("banChatMember", {"chat_id": chat_id, "user_id": target_user}),
+        ("unbanChatMember", {"chat_id": chat_id, "user_id": target_user, "only_if_banned": True}),
+    ):
+        request = Request(
+            f"https://api.telegram.org/bot{token}/{method}",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=15) as response:
+                if response.status != 200:
+                    raise RuntimeError(f"Telegram HTTP {response.status}")
+        except HTTPError as exc:
+            raise RuntimeError(f"Telegram HTTP {exc.code}") from exc
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise TelegramDeliveryUncertain(
+                f"Telegram membership update uncertain: {type(exc).__name__}"
+            ) from exc

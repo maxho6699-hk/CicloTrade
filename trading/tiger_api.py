@@ -8,6 +8,7 @@ import os
 
 class TigerAPI:
     def __init__(self) -> None:
+        self.properties_path = os.getenv("TIGER_PROPERTIES_PATH", "").strip()
         self.tiger_id = os.getenv("TIGER_ID", "")
         self.account = os.getenv("TIGER_ACCOUNT", "")
         self.private_key = os.getenv("TIGER_PRIVATE_KEY", "")
@@ -16,7 +17,10 @@ class TigerAPI:
 
     @property
     def configured(self) -> bool:
-        return bool(self.tiger_id and self.account and self.private_key)
+        return bool(
+            (self.properties_path and os.path.isfile(self.properties_path))
+            or (self.tiger_id and self.account and self.private_key)
+        )
 
     def connect(self):
         if not self.configured:
@@ -26,10 +30,20 @@ class TigerAPI:
             from tigeropen.trade.trade_client import TradeClient
         except ImportError as exc:
             raise RuntimeError("尚未安装老虎证券官方 tigeropen SDK。") from exc
-        config = TigerOpenClientConfig(sandbox_debug=self.environment != "live")
-        config.tiger_id = self.tiger_id
-        config.account = self.account
-        config.private_key = self.private_key
+        if self.properties_path:
+            if not os.path.isfile(self.properties_path):
+                raise RuntimeError("Tiger properties 文件不存在。")
+            config = TigerOpenClientConfig(props_path=self.properties_path)
+        else:
+            config = TigerOpenClientConfig(sandbox_debug=self.environment != "live")
+            config.tiger_id = self.tiger_id
+            config.account = self.account
+            config.private_key = self.private_key
+        if not config.tiger_id or not config.account or not config.private_key:
+            raise RuntimeError("Tiger properties 缺少 tiger_id、account 或 private_key。")
+        self.tiger_id = config.tiger_id
+        self.account = config.account
+        self.private_key = config.private_key
         self._client = TradeClient(config)
         return self._client
 

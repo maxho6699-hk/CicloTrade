@@ -2,17 +2,19 @@ from __future__ import annotations
 
 from datetime import datetime
 from core.compat import UTC
+import json
 
 import pandas as pd
 import pytest
 
+from backtest.engine import BacktestEngine
 from core.database import DatabaseManager
 from core.plans import (
     can, csv_import_limit, strategy_condition_limit, strategy_generation_limit,
 )
 from core.sandbox import SandboxClient, validate_user_code
 from core.signal_imports import DISCLAIMER, SignalImportService, parse_csv
-from core.strategy_evaluation import _option_metrics, evaluate_rule_strategy
+from core.strategy_evaluation import _option_metrics, chronological_validation_start, evaluate_rule_strategy
 from core.strategy_generator import generate_backtrader, validate_generated_code
 from core.strategy_parser import parse_strategy
 from core.user_profiles import UserProfileService, profile_tags
@@ -111,6 +113,16 @@ def test_rule_backtest_executes_after_signal_bar():
     result = evaluate_rule_strategy(close, definition)
     assert result["total_return"] <= 0
     assert max(result["equity_curve"]) <= 100_000
+    assert result["execution_model"] == "next_bar_close_proxy"
+
+
+def test_chronological_validation_uses_last_thirty_percent_only():
+    index = pd.date_range("2024-01-01", periods=120, freq="D")
+    close = pd.Series([100.0 + value * 0.1 for value in range(120)], index=index)
+
+    validation_start = chronological_validation_start(close)
+
+    assert validation_start == index[84]
 
 
 def test_mean_reversion_negates_threshold_without_negating_period():
@@ -146,6 +158,77 @@ def test_option_catalog_metrics_accept_internal_trade_column_locale():
     assert set(metrics) >= {"total_return", "max_drawdown", "sharpe_ratio", "profit_loss_ratio"}
 
 
+def test_option_proxy_locks_opening_premium_before_future_prices():
+    index = pd.date_range("2024-01-01", periods=120, freq="D")
+    base = pd.Series([100.0 + value * 0.08 + (value % 5) * 0.12 for value in range(120)], index=index)
+    changed = base.copy()
+    changed.iloc[21:] = [140.0 + value * 0.5 for value in range(len(changed) - 21)]
+
+    original = BacktestEngine._simulate(base, "买入 Call", 30, 0, 1, 100_000)
+    future_changed = BacktestEngine._simulate(changed, "买入 Call", 30, 0, 1, 100_000)
+
+    assert original.trades.iloc[0]["代理权利金"] == pytest.approx(future_changed.trades.iloc[0]["代理权利金"])
+
+
+def test_double_friction_never_improves_option_result():
+    index = pd.date_range("2022-01-01", periods=360, freq="D")
+    close = pd.Series([100.0 + value * 0.04 + (value % 11) * 0.15 for value in range(360)], index=index)
+
+    base = BacktestEngine._simulate(close, "牛市价差", 45, 0, 1, 100_000)
+    stressed = BacktestEngine._simulate(close, "牛市价差", 45, 0, 1, 100_000, friction_multiplier=2.0)
+
+    assert stressed.metrics["total_costs"] > base.metrics["total_costs"]
+    assert stressed.metrics["ending_equity"] <= base.metrics["ending_equity"]
+
+
+def test_walk_forward_first_selection_ignores_oos_price_changes():
+    index = pd.date_range("2020-01-01", periods=420, freq="D")
+    close = pd.Series([100.0 + value * 0.03 + (value % 13) * 0.1 for value in range(420)], index=index)
+    changed = close.copy()
+    split = int(len(close) * 0.70)
+    changed.iloc[split:] = [80.0 + (value % 17) * 2.0 for value in range(len(changed) - split)]
+
+    _, _, _, _, original_windows = BacktestEngine._walk_forward(close, "买入 Call")
+    _, _, _, _, changed_windows = BacktestEngine._walk_forward(changed, "买入 Call")
+
+    assert original_windows[0]["selected"] == changed_windows[0]["selected"]
+
+
+def test_backtest_provenance_hashes_are_reproducible():
+    index = pd.date_range("2024-01-01", periods=100, freq="D")
+    close = pd.Series([100.0 + value for value in range(100)], index=index)
+
+    first = BacktestEngine._provenance(close, "test", {"dte": 30})
+    second = BacktestEngine._provenance(close.copy(), "test", {"dte": 30})
+
+    assert first["data_sha256"] == second["data_sha256"]
+    assert first["params_sha256"] == second["params_sha256"]
+
+
+def test_walk_forward_optimize_persists_oos_provenance(db, monkeypatch):
+    index = pd.date_range("2020-01-01", periods=500, freq="D")
+    close = pd.Series([100.0 + value * 0.04 + (value % 19) * 0.08 for value in range(500)], index=index)
+
+    class Source:
+        name = "test-history"
+
+        def history(self, symbols, period="3y", interval="1d"):
+            return pd.DataFrame({symbols[0]: close}), pd.DataFrame()
+
+    monkeypatch.setattr("backtest.engine.get_data_source", lambda: Source())
+    user_id = _user(db, "专业版")
+
+    best, frame = BacktestEngine(db).optimize(user_id, "买入 Call", "AAPL", 3)
+    record = db.fetch_one("SELECT * FROM backtest_records WHERE user_id=?", (user_id,))
+    params = json.loads(record["params"])
+
+    assert len(frame) == 9 and best["folds"] >= 1
+    assert record["start_date"] == str(index[int(len(index) * 0.70)].date())
+    assert params["validation"] == "70/30 expanding walk-forward"
+    assert params["provenance"]["source"] == "test-history"
+    assert len(params["provenance"]["data_sha256"]) == 64
+
+
 def test_sandbox_rejects_file_network_and_system_access_and_never_executes_locally(db, monkeypatch):
     for source in ("import os\n", "open('secret.txt').read()", "import socket\n", "import builtins\nbuiltins.open('x')"):
         with pytest.raises(ValueError):
@@ -157,6 +240,31 @@ def test_sandbox_rejects_file_network_and_system_access_and_never_executes_local
     )
     assert result["status"] == "quarantined"
     assert result["sandbox"] == "not_configured"
+
+
+def test_sandbox_completed_result_is_persisted(db, monkeypatch):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self, _limit):
+            return b'{"status":"completed","strategy_classes":["S"]}'
+
+    user_id = _user(db)
+    monkeypatch.setenv("TRADEAI_SANDBOX_URL", "http://127.0.0.1:8088/run")
+    monkeypatch.setenv("TRADEAI_SANDBOX_TOKEN", "x" * 48)
+    monkeypatch.setattr("core.sandbox.request.urlopen", lambda *_args, **_kwargs: Response())
+
+    result = SandboxClient(db).submit(
+        user_id, "专业版", "import backtrader as bt\nclass S(bt.Strategy):\n    pass\n"
+    )
+    job = db.fetch_one("SELECT status,report_json FROM signal_import_jobs WHERE id=?", (result["job_id"],))
+
+    assert result["status"] == "validated" and result["sandbox"] == "completed"
+    assert json.loads(job["report_json"])["strategy_classes"] == ["S"]
 
 
 def test_user_profile_tags_and_aggregation_are_internal_and_stable(db):

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""五档订阅、支付订单与退款入口。"""
+"""五档订阅与支付订单入口。"""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def render() -> None:
     page_heading(
         "BILLING / MEMBERSHIP",
         "订阅与账单",
-        "按研究深度选择方案。付款状态、使用记录与退款资格全部留痕。",
+        "按研究深度选择方案。付款状态、条款同意与权益变更全部留痕。",
         f"CURRENT · {plan}",
     )
     st.html(_plan_cards(plan))
@@ -61,7 +61,7 @@ def render() -> None:
         "限时年付含 15 个月使用期" if annual_bonus else "年付为 12 个月使用期",
     )
     st.warning(
-        "退款政策：购买后 24 小时内，且未使用回测、预警、策略详情、复制信号或券商连接，方可申请退款。",
+        "不退款政策：数字服务一经付款即开通，除支付平台强制逆转或适用法律另有要求外，不接受主动退款。",
         icon=":material/policy:",
     )
     with st.form("purchase_plan"):
@@ -100,7 +100,7 @@ def render() -> None:
             st.metric("使用权益", entitlement, border=True)
             st.metric("付款通道", {"paddle": "Paddle", "paypal": "PayPal", "fps": "FPS 转数快"}[method], border=True)
         st.caption(f"订单摘要：{selected_plan} · {CYCLE_LABELS[cycle].split('（')[0]} · {entitlement} · 一次支付 HKD {amount:,.0f}")
-        acknowledged = st.checkbox("我已阅读并同意退款政策、用户协议、隐私政策与风险披露")
+        acknowledged = st.checkbox("我已阅读并同意用户协议、隐私政策、风险披露与付款后不退款政策")
         submitted = st.form_submit_button(
             f"建立 HKD {amount:,.0f} 付款订单",
             type="primary",
@@ -126,7 +126,9 @@ def render() -> None:
                         raise RuntimeError("PayPal 尚未配置完成，请改用 FPS。")
                 elif not os.getenv("FPS_PAYMENT_INSTRUCTIONS", "").strip():
                     raise RuntimeError("FPS 收款资料尚未配置，当前不能建立人工付款订单。")
-                order = service.create_order(user["id"], selected_plan, cycle, method)
+                order = service.create_order(
+                    user["id"], selected_plan, cycle, method, terms_accepted=acknowledged
+                )
                 if method == "fps":
                     st.success(f"FPS 待付款订单已建立。付款备注必须填写 {order['order_no']}。", icon=":material/check_circle:")
                     st.info(os.environ["FPS_PAYMENT_INSTRUCTIONS"], icon=":material/account_balance:")
@@ -162,11 +164,4 @@ def render() -> None:
     frame = pd.DataFrame(orders)[["order_no", "plan_type", "billing_cycle", "amount", "currency", "pay_method", "status", "created_at"]]
     frame.columns = ["订单号", "方案", "周期", "金额", "币种", "方式", "状态", "建立时间"]
     st.dataframe(frame, hide_index=True, width="stretch")
-    paid = [order for order in orders if order["status"] == "paid"]
-    if paid:
-        selected = st.selectbox("检查退款资格", [order["order_no"] for order in paid])
-        allowed, reason = service.refund_eligibility(selected)
-        (st.success if allowed else st.warning)(reason, icon=":material/check_circle:" if allowed else ":material/info:")
-        if allowed and st.button("提交退款申请", icon=":material/replay:"):
-            service.log_action(user["id"], "REFUND_REQUEST", {"order_no": selected})
-            st.success("退款申请已记录，请等待管理员核对支付通道。")
+    st.caption("数字服务付款后不支持主动退款；支付平台争议或强制逆转将按已验证回调同步权益。")

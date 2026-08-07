@@ -362,30 +362,10 @@ def _render_billing(service: AdminService, actor_id: int) -> None:
     else:
         st.success("没有等待人工确认的 FPS 订单。", icon=":material/check_circle:")
 
-    paid_orders = service.list_orders(actor_id, "paid", "全部")
-    if paid_orders:
-        section_label("退款登记", "先在原支付通道完成退款，再在此同步账户权益")
-        refund_no = st.selectbox("选择已支付订单", [row["order_no"] for row in paid_orders], key="refund_order")
-        allowed, reason = OrderService(service.db).refund_eligibility(refund_no)
-        (st.success if allowed else st.warning)(reason)
-        st.warning(
-            "此按钮不会向 Paddle 或 PayPal 发起资金退款。必须先在原支付通道完成退款或 FPS 冲正。",
-            icon=":material/warning:",
-        )
-        refund_confirmed = st.checkbox(
-            "我已在原支付通道完成退款，并核对订单号与金额",
-            key="refund_confirmed",
-        )
-        if st.button(
-            "登记退款并降级账户",
-            icon=":material/replay:",
-            disabled=not (allowed and refund_confirmed),
-            key="admin_refund",
-        ):
-            _run_action(
-                lambda: service.record_external_refund(actor_id, refund_no),
-                "外部退款结果已登记，账户已降级。",
-            )
+    st.info(
+        "平台不接受主动退款。支付平台确认的退款、争议或拒付会由签名 Webhook 自动撤销权益。",
+        icon=":material/policy:",
+    )
 
     callbacks = service.reconciliation_rows(actor_id)
     with st.expander(f"支付回调对账 · {len(callbacks)} 条"):

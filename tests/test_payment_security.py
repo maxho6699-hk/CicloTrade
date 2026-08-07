@@ -45,7 +45,7 @@ def _paypal_headers() -> dict[str, str]:
     }
 
 
-def test_terminal_callbacks_and_latest_refund_restore_entitlement(db):
+def test_terminal_callbacks_and_provider_reversal_restore_entitlement(db):
     user = _user(db)
     original_expiry = (datetime.now(UTC) + timedelta(days=12)).isoformat(timespec="seconds")
     db.execute(
@@ -54,11 +54,11 @@ def test_terminal_callbacks_and_latest_refund_restore_entitlement(db):
     )
     service = OrderService(db)
 
-    first = service.create_order(user["id"], "高级版", "monthly", "fps")
+    first = service.create_order(user["id"], "高级版", "monthly", "fps", terms_accepted=True)
     assert service.process_callback("paid-1", first["order_no"], "paid", {})
     first_expiry = db.fetch_one("SELECT subscription_expire FROM users WHERE id=?", (user["id"],))["subscription_expire"]
 
-    second = service.create_order(user["id"], "专业版", "monthly", "fps")
+    second = service.create_order(user["id"], "专业版", "monthly", "fps", terms_accepted=True)
     assert service.process_callback(
         "paid-2", second["order_no"], "paid", {},
         audit_user_id=user["id"], audit_action="ADMIN_CONFIRM_FPS",
@@ -67,18 +67,18 @@ def test_terminal_callbacks_and_latest_refund_restore_entitlement(db):
     assert service.get_order(second["order_no"])["previous_plan_type"] == "高级版"
     assert service.get_order(second["order_no"])["previous_subscription_expire"] == first_expiry
 
-    service.mark_refunded(user["id"], second["order_no"])
+    service.process_reversal("provider-reversal-2", second["order_no"], {}, "provider_refund")
     restored = db.fetch_one("SELECT plan_type,subscription_expire FROM users WHERE id=?", (user["id"],))
     assert restored == {"plan_type": "高级版", "subscription_expire": first_expiry}
     assert service.process_callback("late-paid", second["order_no"], "paid", {}) is False
     assert service.get_order(second["order_no"])["status"] == "refunded"
 
-    failed = service.create_order(user["id"], "标准版", "monthly", "fps")
+    failed = service.create_order(user["id"], "标准版", "monthly", "fps", terms_accepted=True)
     assert service.process_callback("failed-1", failed["order_no"], "failed", {})
     assert service.process_callback("late-paid-2", failed["order_no"], "paid", {}) is False
     assert service.get_order(failed["order_no"])["status"] == "failed"
     actions = {row["action_type"] for row in db.fetch_all("SELECT action_type FROM user_action_logs")}
-    assert {"ADMIN_CONFIRM_FPS", "ADMIN_REFUND"} <= actions
+    assert {"ADMIN_CONFIRM_FPS", "PAYMENT_EXTERNAL_REVERSAL"} <= actions
 
 
 def test_paid_referral_grants_thirty_percent_once(db):
@@ -93,7 +93,7 @@ def test_paid_referral_grants_thirty_percent_once(db):
     )
     service = OrderService(db)
 
-    first = service.create_order(referee["id"], "标准版", "monthly", "fps")
+    first = service.create_order(referee["id"], "标准版", "monthly", "fps", terms_accepted=True)
     assert service.process_callback("referral-paid-1", first["order_no"], "paid", {})
 
     reward = db.fetch_one(
@@ -114,7 +114,7 @@ def test_paid_referral_grants_thirty_percent_once(db):
     assert rewarded_user["plan_type"] == "标准版"
     first_expiry = rewarded_user["subscription_expire"]
 
-    second = service.create_order(referee["id"], "高级版", "quarterly", "fps")
+    second = service.create_order(referee["id"], "高级版", "quarterly", "fps", terms_accepted=True)
     assert service.process_callback("referral-paid-2", second["order_no"], "paid", {})
 
     assert db.fetch_one("SELECT COUNT(*) count FROM rewards WHERE user_id=?", (referrer["id"],))["count"] == 1
@@ -139,11 +139,11 @@ def test_refund_revokes_source_referral_reward_and_allows_future_qualification(d
         referral_code(referrer["id"]),
     )
     service = OrderService(db)
-    order = service.create_order(referee["id"], "标准版", "monthly", "fps")
+    order = service.create_order(referee["id"], "标准版", "monthly", "fps", terms_accepted=True)
     assert service.process_callback("refund-referral-paid", order["order_no"], "paid", {})
     assert db.fetch_one("SELECT COUNT(*) count FROM rewards")["count"] == 1
 
-    service.mark_refunded(referrer["id"], order["order_no"])
+    service.process_reversal("referral-provider-reversal", order["order_no"], {}, "provider_refund")
 
     assert db.fetch_one("SELECT COUNT(*) count FROM rewards")["count"] == 0
     assert db.fetch_one("SELECT status FROM referrals WHERE referee_id=?", (referee["id"],))["status"] == "registered"
@@ -151,7 +151,7 @@ def test_refund_revokes_source_referral_reward_and_allows_future_qualification(d
         "SELECT plan_type,subscription_expire FROM users WHERE id=?", (referrer["id"],)
     ) == {"plan_type": "免费版", "subscription_expire": None}
 
-    replacement = service.create_order(referee["id"], "标准版", "monthly", "fps")
+    replacement = service.create_order(referee["id"], "标准版", "monthly", "fps", terms_accepted=True)
     assert service.process_callback("refund-referral-repaid", replacement["order_no"], "paid", {})
     assert db.fetch_one("SELECT COUNT(*) count FROM rewards")["count"] == 1
 
@@ -159,7 +159,7 @@ def test_refund_revokes_source_referral_reward_and_allows_future_qualification(d
 def test_refund_preserves_rewards_granted_after_payment(db):
     user = _user(db, "later-reward")
     service = OrderService(db)
-    order = service.create_order(user["id"], "标准版", "monthly", "fps")
+    order = service.create_order(user["id"], "标准版", "monthly", "fps", terms_accepted=True)
     assert service.process_callback("later-reward-paid", order["order_no"], "paid", {})
     paid_at = (datetime.now(UTC) - timedelta(minutes=1)).isoformat(timespec="seconds")
     db.execute("UPDATE subscription_orders SET paid_at=? WHERE order_no=?", (paid_at, order["order_no"]))
@@ -170,7 +170,7 @@ def test_refund_preserves_rewards_granted_after_payment(db):
         )
         grant_subscription_days(conn, user["id"], 7, "标准版")
 
-    service.mark_refunded(user["id"], order["order_no"])
+    service.process_reversal("later-reward-provider-reversal", order["order_no"], {}, "provider_refund")
 
     restored = db.fetch_one("SELECT plan_type,subscription_expire FROM users WHERE id=?", (user["id"],))
     assert restored["plan_type"] == "标准版"
@@ -180,7 +180,7 @@ def test_refund_preserves_rewards_granted_after_payment(db):
 def test_verified_provider_reversal_bypasses_voluntary_window_and_is_idempotent(db):
     user = _user(db, "provider-reversal")
     service = OrderService(db)
-    order = service.create_order(user["id"], "标准版", "monthly", "paypal")
+    order = service.create_order(user["id"], "标准版", "monthly", "paypal", terms_accepted=True)
     service.attach_external_id(order["order_no"], "PAYPAL-REVERSAL")
     assert service.process_callback(
         "provider-paid",
@@ -215,10 +215,10 @@ def test_verified_provider_reversal_bypasses_voluntary_window_and_is_idempotent(
 def test_reversing_older_order_preserves_later_subscription(db):
     user = _user(db, "older-reversal")
     service = OrderService(db)
-    first = service.create_order(user["id"], "标准版", "monthly", "paypal")
+    first = service.create_order(user["id"], "标准版", "monthly", "paypal", terms_accepted=True)
     service.attach_external_id(first["order_no"], "PAYPAL-FIRST")
     assert service.process_callback("older-first-paid", first["order_no"], "paid", {})
-    second = service.create_order(user["id"], "专业版", "monthly", "paypal")
+    second = service.create_order(user["id"], "专业版", "monthly", "paypal", terms_accepted=True)
     service.attach_external_id(second["order_no"], "PAYPAL-SECOND")
     before_second = datetime.now(UTC)
     assert service.process_callback("older-second-paid", second["order_no"], "paid", {})
@@ -242,7 +242,7 @@ def test_reversing_older_order_only_removes_unused_overlap_and_keeps_manual_exte
     user = _user(db, "overlap-reversal")
     service = OrderService(db)
     anchor = datetime.now(UTC).replace(microsecond=0)
-    first = service.create_order(user["id"], "标准版", "monthly", "paypal")
+    first = service.create_order(user["id"], "标准版", "monthly", "paypal", terms_accepted=True)
     assert service.process_callback("overlap-first-paid", first["order_no"], "paid", {})
     db.execute(
         "UPDATE subscription_orders SET paid_at=? WHERE order_no=?",
@@ -252,7 +252,7 @@ def test_reversing_older_order_only_removes_unused_overlap_and_keeps_manual_exte
         "UPDATE users SET subscription_expire=? WHERE id=?",
         ((anchor + timedelta(days=10)).isoformat(timespec="seconds"), user["id"]),
     )
-    second = service.create_order(user["id"], "专业版", "monthly", "paypal")
+    second = service.create_order(user["id"], "专业版", "monthly", "paypal", terms_accepted=True)
     assert service.process_callback("overlap-second-paid", second["order_no"], "paid", {})
     db.execute(
         "UPDATE users SET subscription_expire=datetime(subscription_expire, '+7 days') WHERE id=?",
@@ -275,7 +275,7 @@ def test_reversing_expired_older_order_does_not_touch_later_purchase(db):
     user = _user(db, "expired-older-reversal")
     service = OrderService(db)
     anchor = datetime.now(UTC).replace(microsecond=0)
-    first = service.create_order(user["id"], "标准版", "monthly", "paypal")
+    first = service.create_order(user["id"], "标准版", "monthly", "paypal", terms_accepted=True)
     assert service.process_callback("expired-old-first-paid", first["order_no"], "paid", {})
     db.execute(
         "UPDATE subscription_orders SET paid_at=? WHERE order_no=?",
@@ -285,7 +285,7 @@ def test_reversing_expired_older_order_does_not_touch_later_purchase(db):
         "UPDATE users SET subscription_expire=? WHERE id=?",
         ((anchor - timedelta(days=10)).isoformat(timespec="seconds"), user["id"]),
     )
-    second = service.create_order(user["id"], "专业版", "monthly", "paypal")
+    second = service.create_order(user["id"], "专业版", "monthly", "paypal", terms_accepted=True)
     assert service.process_callback("expired-old-second-paid", second["order_no"], "paid", {})
     before = db.fetch_one("SELECT subscription_expire FROM users WHERE id=?", (user["id"],))["subscription_expire"]
 
@@ -302,7 +302,7 @@ def test_reversing_expired_older_order_does_not_touch_later_purchase(db):
 def test_reversal_preserves_later_manual_subscription_adjustment(db):
     user = _user(db, "manual-after-payment")
     service = OrderService(db)
-    order = service.create_order(user["id"], "标准版", "monthly", "paypal")
+    order = service.create_order(user["id"], "标准版", "monthly", "paypal", terms_accepted=True)
     assert service.process_callback("manual-base-paid", order["order_no"], "paid", {})
     db.execute(
         "UPDATE users SET plan_type='高级版',subscription_expire=datetime(subscription_expire, '+10 days') WHERE id=?",
@@ -323,7 +323,7 @@ def test_reversal_preserves_later_manual_subscription_adjustment(db):
 def test_reversal_does_not_reactivate_a_manually_downgraded_account(db):
     user = _user(db, "manual-free-after-payment")
     service = OrderService(db)
-    order = service.create_order(user["id"], "标准版", "monthly", "paypal")
+    order = service.create_order(user["id"], "标准版", "monthly", "paypal", terms_accepted=True)
     assert service.process_callback("manual-free-paid", order["order_no"], "paid", {})
     db.execute(
         "UPDATE users SET plan_type='免费版',subscription_expire=NULL WHERE id=?", (user["id"],)
@@ -349,10 +349,10 @@ def test_reversing_referral_source_moves_reward_to_next_paid_order(db):
         referral_code(referrer["id"]),
     )
     service = OrderService(db)
-    first = service.create_order(referee["id"], "标准版", "monthly", "paypal")
+    first = service.create_order(referee["id"], "标准版", "monthly", "paypal", terms_accepted=True)
     service.attach_external_id(first["order_no"], "REF-FIRST")
     service.process_callback("ref-source-first", first["order_no"], "paid", {})
-    second = service.create_order(referee["id"], "高级版", "quarterly", "paypal")
+    second = service.create_order(referee["id"], "高级版", "quarterly", "paypal", terms_accepted=True)
     service.attach_external_id(second["order_no"], "REF-SECOND")
     service.process_callback("ref-source-second", second["order_no"], "paid", {})
 
@@ -388,7 +388,7 @@ def test_expired_plan_reward_uses_fallback_and_yearly_is_fifteen_months(db):
         referral_code(referrer["id"]),
     )
     service = OrderService(db)
-    order = service.create_order(referee["id"], "高级版", "yearly", "fps")
+    order = service.create_order(referee["id"], "高级版", "yearly", "fps", terms_accepted=True)
     before = datetime.now(UTC)
     assert service.process_callback("yearly-paid", order["order_no"], "paid", {})
     buyer_expiry = datetime.fromisoformat(
@@ -403,7 +403,7 @@ def test_expired_plan_reward_uses_fallback_and_yearly_is_fifteen_months(db):
 def test_annual_bonus_switch_only_changes_new_orders(db):
     user = _user(db, "annual-switch")
     service = OrderService(db)
-    promotional = service.create_order(user["id"], "标准版", "yearly", "fps")
+    promotional = service.create_order(user["id"], "标准版", "yearly", "fps", terms_accepted=True)
     assert promotional["entitlement_days"] == 455
 
     db.execute(
@@ -412,7 +412,7 @@ def test_annual_bonus_switch_only_changes_new_orders(db):
            ON CONFLICT(control_key) DO UPDATE SET control_value='0'""",
         (datetime.now(UTC).isoformat(timespec="seconds"),),
     )
-    regular = service.create_order(user["id"], "标准版", "yearly", "fps")
+    regular = service.create_order(user["id"], "标准版", "yearly", "fps", terms_accepted=True)
 
     assert service.get_order(promotional["order_no"])["entitlement_days"] == 455
     assert regular["entitlement_days"] == 365
@@ -421,7 +421,7 @@ def test_annual_bonus_switch_only_changes_new_orders(db):
 def test_payment_and_refund_roll_back_when_atomic_audit_fails(db):
     user = _user(db, "atomic")
     service = OrderService(db)
-    order = service.create_order(user["id"], "标准版", "monthly", "fps")
+    order = service.create_order(user["id"], "标准版", "monthly", "fps", terms_accepted=True)
     with pytest.raises(sqlite3.IntegrityError):
         service.process_callback(
             "atomic-paid", order["order_no"], "paid", {},
@@ -435,11 +435,11 @@ def test_payment_and_refund_roll_back_when_atomic_audit_fails(db):
     with db.transaction() as conn:
         conn.executescript(
             """CREATE TRIGGER reject_refund_audit BEFORE INSERT ON user_action_logs
-               WHEN NEW.action_type='ADMIN_REFUND'
+               WHEN NEW.action_type='PAYMENT_EXTERNAL_REVERSAL'
                BEGIN SELECT RAISE(ABORT, 'audit failed'); END;"""
         )
     with pytest.raises(sqlite3.IntegrityError):
-        service.mark_refunded(user["id"], order["order_no"])
+        service.process_reversal("atomic-provider-reversal", order["order_no"], {}, "provider_refund")
     assert service.get_order(order["order_no"])["status"] == "paid"
     assert db.fetch_one("SELECT plan_type,subscription_expire FROM users WHERE id=?", (user["id"],)) == paid_user
 
@@ -520,7 +520,7 @@ def test_paddle_environment_and_completed_transaction_are_fail_closed(monkeypatc
 def test_paddle_zero_total_cannot_activate_subscription(monkeypatch, db, discount, credit):
     user = _user(db, f"paddle-zero-{discount}-{credit}")
     service = OrderService(db)
-    order = service.create_order(user["id"], "标准版", "monthly", "paddle")
+    order = service.create_order(user["id"], "标准版", "monthly", "paddle", terms_accepted=True)
     service.attach_external_id(order["order_no"], "txn_zero", "pri_standard")
     event = {
         "event_id": f"evt-zero-{discount}-{credit}",
@@ -718,7 +718,7 @@ def test_health_and_external_script_alert_do_not_expose_diagnostics(monkeypatch)
     asgi_app.on_script_error(RuntimeError("secret user input"))
 
     assert sent and "secret user input" not in sent[0]
-    assert "RuntimeError" in sent[0] and "事件编号" in sent[0]
+    assert "RuntimeError" in sent[0] and "事件編號" in sent[0]
     assert logged and "secret user input" in logged[0][-1]
 
 
@@ -852,7 +852,7 @@ def test_paypal_return_captures_pending_order_and_redirects(monkeypatch):
 def test_paypal_refund_webhook_forces_reversal(monkeypatch, db):
     user = _user(db, "paypal-refund")
     service = OrderService(db)
-    order = service.create_order(user["id"], "标准版", "monthly", "paypal")
+    order = service.create_order(user["id"], "标准版", "monthly", "paypal", terms_accepted=True)
     service.attach_external_id(order["order_no"], "PAYPAL-ORDER")
     service.process_callback(
         "paypal-refund-paid",

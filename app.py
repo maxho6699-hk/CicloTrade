@@ -19,6 +19,7 @@ from core.auth import AuthError, AuthService, email_verification_required
 from core.database import get_database
 from core.plans import effective_plan
 from notification.email_sender import send_email, smtp_configured
+from notification.templates import auth_email, email_message
 from ui.components import brand_bar, disclaimer, load_styles
 from ui.pages import (
     account,
@@ -195,9 +196,18 @@ def _auth_screen(auth: AuthService) -> None:
                         try:
                             send_email(
                                 result.user["email"],
-                                "CicloTrade 新 IP 登录提醒",
-                                f"您的账户刚从新的 IP 登录。\n\n时间：{datetime.now(UTC).isoformat(timespec='seconds')}"
-                                f"\nIP：{ip_address}\n设备：{user_agent[:160]}\n\n如非本人操作，请立即重设密码。",
+                                *email_message(
+                                    "CicloTrade 新 IP 登入提醒",
+                                    "偵測到新的登入來源",
+                                    "你的帳戶剛從新的 IP 位址登入。",
+                                    (
+                                        f"時間：{datetime.now(UTC).isoformat(timespec='seconds')}",
+                                        f"IP：{ip_address}",
+                                        f"裝置：{user_agent[:160]}",
+                                        "如非本人操作，請立即重設密碼。",
+                                    ),
+                                    action_url=os.getenv("APP_BASE_URL", "http://localhost:8501"),
+                                ),
                             )
                         except RuntimeError:
                             pass
@@ -217,7 +227,7 @@ def _auth_screen(auth: AuthService) -> None:
                     if token and smtp_configured():
                         base_url = os.getenv("APP_BASE_URL", "http://localhost:8501")
                         try:
-                            send_email(reset_email, "CicloTrade 密码重设", f"请在 30 分钟内打开 CicloTrade，并在重设密码页输入此验证码：\n\n{token}\n\n{base_url}")
+                            send_email(reset_email, *auth_email("reset", token, base_url))
                         except RuntimeError:
                             pass
                     st.success("如账户存在且 SMTP 已配置，重设验证码已经发送。")
@@ -243,8 +253,9 @@ def _auth_screen(auth: AuthService) -> None:
                         try:
                             send_email(
                                 verify_email,
-                                "CicloTrade 注册邮箱验证",
-                                f"请在 30 分钟内输入以下验证码：\n\n{token}\n\n如非本人操作，请忽略此邮件。",
+                                *auth_email(
+                                    "verify", token, os.getenv("APP_BASE_URL", "http://localhost:8501")
+                                ),
                             )
                         except RuntimeError:
                             pass
@@ -267,7 +278,7 @@ def _auth_screen(auth: AuthService) -> None:
                 email = st.text_input("邮箱", autocomplete="email", icon=":material/mail:")
                 password = st.text_input("密码", type="password", autocomplete="new-password", help="至少 12 个字符，并包含字母和数字。")
                 referral = st.text_input("推荐码（可选）", value=referral, autocomplete="off", max_chars=20)
-                agreed = st.checkbox("我同意用户协议、隐私政策、退款政策与风险披露")
+                agreed = st.checkbox("我同意用户协议、隐私政策、风险披露与数码服务不退款政策")
                 submitted = st.form_submit_button("建立免费账户", type="primary", icon=":material/person_add:", width="stretch")
             if st.button("查看政策与协议", type="tertiary", icon=":material/gavel:", key="open_public_legal", width="stretch"):
                 _public_legal()
@@ -290,8 +301,9 @@ def _auth_screen(auth: AuthService) -> None:
                             if token:
                                 send_email(
                                     email,
-                                    "CicloTrade 注册邮箱验证",
-                                    f"请在 30 分钟内输入以下验证码：\n\n{token}\n\n如非本人操作，请忽略此邮件。",
+                                    *auth_email(
+                                        "verify", token, os.getenv("APP_BASE_URL", "http://localhost:8501")
+                                    ),
                                 )
                             st.session_state.auth_verify_open = True
                             st.success(

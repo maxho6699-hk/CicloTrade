@@ -27,6 +27,9 @@ class DataSource(ABC):
     def option_chain(self, symbol: str, expiry: str | None = None) -> tuple[str, pd.DataFrame, pd.DataFrame]:
         raise DataSourceError(f"{self.name} 当前不支持期权链。")
 
+    def search(self, query: str, market: str = "美股", max_results: int = 8) -> list[dict[str, str]]:
+        raise DataSourceError(f"{self.name} 当前不支持证券搜索。")
+
     def bars(self, symbol: str, period: str, interval: str) -> pd.DataFrame:
         raise DataSourceError(f"{self.name} 当前不支持 {interval} K 线。")
 
@@ -87,6 +90,10 @@ def get_data_source(name: str | None = None) -> DataSource:
         from data.polygon_adapter import PolygonAdapter
 
         return PolygonAdapter()
+    if selected in {"opend", "futu"}:
+        from data.opend_adapter import OpenDAdapter
+
+        return OpenDAdapter()
     if selected == "wrdata":
         from data.wrdata_adapter import WrdataAdapter
 

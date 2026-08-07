@@ -10,7 +10,13 @@ from core.database import DatabaseManager
 from core.quant_journal import QuantJournal
 from core.user_settings import merge_user_settings
 from notification.telegram_bot import TelegramDeliveryUncertain
-from scheduler.jobs import dispatch_quant_signal_deliveries, enqueue_quant_signal_deliveries
+from scheduler.jobs import (
+    dispatch_quant_group_deliveries,
+    dispatch_quant_signal_deliveries,
+    enqueue_quant_group_deliveries,
+    enqueue_quant_signal_deliveries,
+    publish_daily_group_summary,
+)
 
 
 def _paid_user(db: DatabaseManager, suffix: str, plan: str, chat_id: str) -> dict:
@@ -167,8 +173,8 @@ def test_correction_notifies_adjustment_and_removed_symbol(tmp_path, monkeypatch
 
     assert enqueue_quant_signal_deliveries(db) == 2
     assert dispatch_quant_signal_deliveries(db) == 2
-    assert any("US:STOCK:AAPL -10" in message and "目标仓位 0" in message for message in sent)
-    assert any("US:STOCK:MSFT +5" in message and "目标仓位 5" in message for message in sent)
+    assert any("US:STOCK:AAPL" in message and "變化　-10" in message and "目標持倉 0" in message for message in sent)
+    assert any("US:STOCK:MSFT" in message and "變化　+5" in message and "目標持倉 5" in message for message in sent)
     assert enqueue_quant_signal_deliveries(db) == 0
 
 
@@ -254,3 +260,43 @@ def test_ambiguous_delivery_requires_manual_retry(tmp_path, monkeypatch):
     assert row["status"] == "skipped" and row["attempts"] == 1
     assert row["last_error"] == "delivery_uncertain_manual_retry: timeout"
     assert len(calls) == 1
+
+
+def test_group_signal_routes_follow_membership_superset(tmp_path, monkeypatch):
+    db = DatabaseManager(str(tmp_path / "quant-group-delivery.db"))
+    _event(db)
+    monkeypatch.setenv("TELEGRAM_GROUP_SIGNALS_ENABLED", "true")
+    assert enqueue_quant_group_deliveries(db) == 3
+    assert enqueue_quant_group_deliveries(db) == 0
+    sent = []
+    monkeypatch.setattr("scheduler.jobs.telegram_configured", lambda *_: True)
+    monkeypatch.setattr("scheduler.jobs.send_telegram", lambda message, chat_id=None: sent.append((message, chat_id)))
+    assert dispatch_quant_group_deliveries(db) == 3
+    assert {target for _, target in sent} == {"-1004460522940", "-5344553813"}
+    professional = [message for message, target in sent if target == "-5344553813"]
+    assert any("正股新操作" in message for message in professional)
+    assert any("期權新操作" in message for message in professional)
+
+
+def test_daily_group_summary_requires_new_persisted_snapshot(tmp_path, monkeypatch):
+    db = DatabaseManager(str(tmp_path / "quant-daily-summary.db"))
+    journal = QuantJournal(db)
+    journal.append_equity_snapshot(
+        ledger_key="tradeai-system", source="pytest", external_snapshot_id="usd-1",
+        currency="USD", initial_cash=100_000, cash=90_000, market_value=12_000,
+        realized_pnl=1_000, unrealized_pnl=1_000, captured_at="2026-08-07T12:00:00+00:00",
+    )
+    journal.append_equity_snapshot(
+        ledger_key="tradeai-system", source="pytest", external_snapshot_id="cny-1",
+        currency="CNY", initial_cash=500_000, cash=450_000, market_value=49_000,
+        realized_pnl=-500, unrealized_pnl=-500, captured_at="2026-08-07T12:00:00+00:00",
+    )
+    monkeypatch.setenv("TELEGRAM_DAILY_SUMMARY_ENABLED", "true")
+    monkeypatch.setattr("scheduler.jobs.telegram_configured", lambda *_: True)
+    sent = []
+    monkeypatch.setattr("scheduler.jobs.send_telegram", lambda message, chat_id=None: sent.append((message, chat_id)))
+
+    assert publish_daily_group_summary(db) == 1
+    assert publish_daily_group_summary(db) == 0
+    assert sent[0][1] == "-5237516323"
+    assert "每日量化總結" in sent[0][0] and "USD 總資產" in sent[0][0] and "CNY 總資產" in sent[0][0]

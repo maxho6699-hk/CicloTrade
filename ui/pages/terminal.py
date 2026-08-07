@@ -20,7 +20,6 @@ from core.plans import can, effective_plan
 from core.quant_journal import QuantJournal
 from core.user_settings import load_user_settings, merge_user_settings
 from data.datasource import get_data_source, market_data_status
-from data.yfinance_adapter import YFinanceAdapter
 from ui.components import market_tape, metric_grid, page_heading, section_label
 from ui.data import market_summary
 from ui.recommendations import A_SHARE_UNIVERSE, US_UNIVERSE, load_recommendations, render_recommendations
@@ -103,8 +102,10 @@ def _watchlist(symbols: tuple[str, ...] = WATCHLIST, market: str = "美股", sou
 
 
 @st.cache_data(ttl=600, max_entries=64, show_spinner=False)
-def _symbol_search(query: str, market: str) -> list[dict[str, str]]:
-    return YFinanceAdapter.search(query, market)
+def _symbol_search(query: str, market: str, source_name: str) -> list[dict[str, str]]:
+    source = get_data_source("yfinance" if market == "A股" else source_name)
+    results = source.search(query, market)
+    return results or (get_data_source("yfinance").search(query, market) if source_name != "yfinance" else [])
 
 
 def _canonical_symbol(symbol: str, market: str) -> str:
@@ -159,7 +160,7 @@ def _remove_symbol(user_id: int, market: str, symbol: str) -> None:
     st.session_state.terminal_notice = f"{symbol} 已从个人自选移除。"
 
 
-def _render_symbol_search(user_id: int, market: str, selector_key: str, active_key: str) -> None:
+def _render_symbol_search(user_id: int, market: str, selector_key: str, active_key: str, source_name: str) -> None:
     results_key = f"terminal_search_results_{market}"
     query_key = f"terminal_search_query_{market}"
     with st.container(border=True, key="terminal_symbol_finder"):
@@ -177,8 +178,8 @@ def _render_symbol_search(user_id: int, market: str, selector_key: str, active_k
                 st.warning("请输入股票代码或公司名称。", icon=":material/info:")
             else:
                 try:
-                    with st.spinner("正在查询 Yahoo Finance 证券目录…"):
-                        st.session_state[results_key] = _symbol_search(query, market)
+                    with st.spinner(f"正在查询 {'Yahoo Finance' if market == 'A股' else get_data_source(source_name).name} 证券目录…"):
+                        st.session_state[results_key] = _symbol_search(query, market, source_name)
                 except Exception as exc:
                     st.session_state[results_key] = []
                     st.error(str(exc), icon=":material/cloud_off:")
@@ -557,7 +558,7 @@ def render() -> None:
         st.warning("市场摘要暂时不可用，K 线仍会独立重试。", icon=":material/warning:")
 
     section_label("选股与实时 K 线", "搜索美股全市场或 A 股代码 · 个人自选会保存到账户")
-    _render_symbol_search(user_id, market, selector_key, active_key)
+    _render_symbol_search(user_id, market, selector_key, active_key, source_name)
     if notice := st.session_state.pop("terminal_notice", None):
         st.success(notice, icon=":material/check_circle:")
     if st.session_state.get(selector_key) not in watchlist:

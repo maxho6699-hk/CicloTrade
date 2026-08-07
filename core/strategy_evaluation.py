@@ -88,10 +88,35 @@ def _loss_streak(values: list[float]) -> int:
     return longest
 
 
-def evaluate_rule_strategy(close: pd.Series, definition: dict, initial_cash: float = 100_000) -> dict[str, Any]:
+def chronological_validation_start(
+    close: pd.Series,
+    train_ratio: float = 0.70,
+    min_train: int = 80,
+    min_test: int = 20,
+) -> pd.Timestamp:
+    prepared = close.astype(float).replace([np.inf, -np.inf], np.nan).dropna().sort_index()
+    split = int(len(prepared) * train_ratio)
+    if split < min_train or len(prepared) - split < min_test:
+        raise ValueError("歷史資料不足以進行 70/30 樣本外驗證。")
+    return pd.Timestamp(prepared.index[split])
+
+
+def evaluate_rule_strategy(
+    close: pd.Series,
+    definition: dict,
+    initial_cash: float = 100_000,
+    *,
+    evaluation_start: pd.Timestamp | str | None = None,
+) -> dict[str, Any]:
     close = close.astype(float).replace([np.inf, -np.inf], np.nan).dropna()
     if len(close) < 80:
         raise ValueError("歷史資料不足以評估策略。")
+    close = close[~close.index.duplicated(keep="last")].sort_index()
+    start_index = 1
+    if evaluation_start is not None:
+        start_index = int(close.index.searchsorted(pd.Timestamp(evaluation_start), side="left"))
+        if start_index < 1 or len(close) - start_index < 20:
+            raise ValueError("樣本外區間不足以評估策略。")
     parameters = definition.get("parameters") or {}
     rules = definition.get("rules") or {}
     entry = _combined(rules.get("entry") or [], parameters, close)
@@ -104,16 +129,17 @@ def evaluate_rule_strategy(close: pd.Series, definition: dict, initial_cash: flo
     daily_returns: list[float] = []
     trade_returns: list[float] = []
     values = [equity]
-    for index in range(1, len(close)):
+    for index in range(start_index, len(close)):
         market_return = float(close.iloc[index] / close.iloc[index - 1] - 1)
         strategy_return = market_return if position else 0.0
         equity *= 1 + strategy_return
         daily_returns.append(strategy_return)
-        if not position and bool(entry.iloc[index]):
+        signal_index = index - 1
+        if not position and bool(entry.iloc[signal_index]):
             equity *= 0.999
             position = True
             entry_price = float(close.iloc[index])
-        elif position and bool(exit_trade.iloc[index]):
+        elif position and bool(exit_trade.iloc[signal_index]):
             equity *= 0.999
             if entry_price:
                 trade_returns.append(float(close.iloc[index]) / entry_price - 1 - 0.002)
@@ -137,6 +163,10 @@ def evaluate_rule_strategy(close: pd.Series, definition: dict, initial_cash: flo
         "consecutive_losses": _loss_streak(trade_returns),
         "equity_curve": values,
         "win_rate": len(wins) / len(trade_returns) if trade_returns else 0.0,
+        "total_trades": len(trade_returns),
+        "execution_model": "next_bar_close_proxy",
+        "evaluation_start": str(close.index[start_index].date()),
+        "evaluation_end": str(close.index[-1].date()),
     }
 
 

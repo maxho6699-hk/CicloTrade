@@ -11,6 +11,7 @@ from core.database import get_database
 from core.plans import effective_plan
 from core.user_settings import load_user_settings, merge_user_settings
 from notification.telegram_bot import confirm_verification, issue_verification_token, send_telegram, telegram_configured
+from notification.templates import telegram_binding
 from ui.components import metric_grid, page_heading, section_label
 
 
@@ -86,7 +87,7 @@ def render() -> None:
                     token = issue_verification_token(db, user["id"], chat_id, consent)
                     merge_user_settings(user["id"], {"telegram": {"consent": True, "verified": False, "chat_id": str(chat_id).strip()}}, db)
                     if telegram_configured(chat_id):
-                        send_telegram(f"CicloTrade 绑定验证码：{token}\n15 分钟内回到网页完成确认。", chat_id=str(chat_id).strip())
+                        send_telegram(telegram_binding(token), chat_id=str(chat_id).strip())
                         st.success("验证码已发送到你的 Telegram，请粘贴回来确认。", icon=":material/mark_email_read:")
                     else:
                         st.warning("Telegram Bot 尚未配置，无法完成真实验证；当前只保存申请，不会发送任何通知。", icon=":material/cloud_off:")

@@ -390,10 +390,11 @@ class AdminService:
         try:
             from core.user_settings import load_user_settings
             from notification.telegram_bot import entitled_user_target, send_telegram, telegram_configured
+            from notification.templates import telegram_membership
             user = self.db.fetch_one("SELECT id,plan_type,subscription_expire FROM users WHERE id=?", (user_id,)) or {}
             target = entitled_user_target(user, load_user_settings(user_id, self.db), "membership_update")
             if target and telegram_configured(target):
-                send_telegram(f"CicloTrade 体验权益已开通\n方案：{plan}\n有效期至：{expiry}\n原因：{reason}", chat_id=target)
+                send_telegram(telegram_membership(plan, expiry, reason), chat_id=target)
         except Exception:
             self.db.log_system_event("WARN", "NOTIFICATION", "赠送体验 Telegram 通知未送达", f"user={user_id}")
         return expiry

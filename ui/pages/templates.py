@@ -13,7 +13,7 @@ import streamlit as st
 
 from core.database import get_database
 from core.plans import backtest_years, can, effective_plan
-from core.strategy_evaluation import evaluate_rule_strategy
+from core.strategy_evaluation import chronological_validation_start, evaluate_rule_strategy
 from core.strategy_registry import StrategyRegistry
 from core.strategy_tracking import StrategyPerformanceTracker
 from data.datasource import get_data_source
@@ -45,8 +45,13 @@ def _save_backtest(user_id: int, definition: dict, symbol: str, years: int, para
            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (
             user_id, definition["name"], symbol, start, end, result["total_return"],
-            result["max_drawdown"], result["win_rate"], 0,
-            json.dumps({"years": years, "parameters": parameters, "execution": "next_bar_open"}, ensure_ascii=False), now,
+            result["max_drawdown"], result["win_rate"], result["total_trades"],
+            json.dumps({
+                "years": years, "parameters": parameters,
+                "execution": result["execution_model"],
+                "validation": "70/30 chronological holdout",
+                "validation_start": result["evaluation_start"],
+            }, ensure_ascii=False), now,
         ),
     )
 
@@ -100,29 +105,34 @@ def render() -> None:
                     closes, _ = get_data_source().history((symbol,), period=f"{years}y")
                     series = closes[symbol].dropna()
                     configured = {**definition, "parameters": parameters}
-                    result = evaluate_rule_strategy(series, configured)
+                    validation_start = chronological_validation_start(series)
+                    training = evaluate_rule_strategy(series[series.index < validation_start], configured)
+                    result = evaluate_rule_strategy(series, configured, evaluation_start=validation_start)
                     _save_backtest(
                         int(user["id"]), definition, symbol, years, parameters, result,
-                        str(series.index[0].date()), str(series.index[-1].date()),
+                        result["evaluation_start"], result["evaluation_end"],
                     )
                     st.session_state.template_result = {
                         "strategy": definition, "symbol": symbol, "parameters": parameters,
-                        "result": result, "dates": [str(value.date()) for value in series.index],
+                        "result": result, "training": training,
+                        "dates": [str(value.date()) for value in series.index],
                     }
             except Exception as exc:
                 st.error(f"模板回測失敗：{exc}", icon=":material/error:")
     current = st.session_state.get("template_result")
     if current and current["strategy"]["key"] == definition["key"]:
         result = current["result"]
-        section_label("回測結論", f"{current['symbol']} · 下一根 K 線執行 · 已計 0.1% 單邊成本")
+        section_label("樣本外回測結論", f"{current['symbol']} · 前 70% / 後 30% · 下一根收盤代理成交 · 已計 0.1% 單邊成本")
         metric_grid(
             (
-                ("總回報", f"{result['total_return']:+.2%}", "歷史區間", "positive" if result["total_return"] >= 0 else "negative"),
-                ("最大回撤", f"{result['max_drawdown']:.2%}", "峰值至谷底", "negative"),
-                ("夏普比率", f"{result['sharpe_ratio']:.2f}", "日收益年化", ""),
-                ("勝率", f"{result['win_rate']:.1%}", "已完成交易", ""),
+                ("樣本外回報", f"{result['total_return']:+.2%}", "後 30% 時間區間", "positive" if result["total_return"] >= 0 else "negative"),
+                ("樣本外回撤", f"{result['max_drawdown']:.2%}", "峰值至谷底", "negative"),
+                ("樣本外 Sharpe", f"{result['sharpe_ratio']:.2f}", "日收益年化", ""),
+                ("樣本外勝率", f"{result['win_rate']:.1%}", f"{result['total_trades']} 筆完成交易", ""),
             )
         )
+        if result["total_trades"] < 30:
+            st.warning("樣本外完成交易少於 30 筆，只能視為樣本不足。", icon=":material/warning:")
         dates = current["dates"][-len(result["equity_curve"]):]
         figure = go.Figure(go.Scatter(x=dates, y=result["equity_curve"], mode="lines", line={"color": "#37d996", "width": 2.5}))
         figure.update_layout(

@@ -33,6 +33,7 @@ from core.quant_journal import QuantJournal
 from core.signal_imports import SignalImportService
 from core.user_settings import load_user_settings
 from notification.telegram_bot import entitled_user_target, send_telegram, telegram_configured
+from notification.templates import telegram_incident, telegram_order_message
 from payment.order_service import OrderService
 from payment.paypal_client import PayPalClient
 from scheduler.tasks import build_scheduler
@@ -368,7 +369,9 @@ async def api_orders(request):
     if target_chat and telegram_configured(target_chat):
         try:
             send_telegram(
-                f"CicloTrade 订单\n{mode.upper()} {side} {quantity} {symbol.strip().upper()} @ {price:.2f}\n状态：{order.get('status')}\n不构成投资建议。",
+                telegram_order_message(
+                    mode, side, quantity, symbol.strip().upper(), price, order.get("status")
+                ),
                 chat_id=target_chat,
             )
         except RuntimeError:
@@ -814,7 +817,7 @@ def on_script_error(exc: Exception):
     )
     if os.getenv("EXTERNAL_ALERTS_ENABLED", "false").lower() == "true" and telegram_configured():
         try:
-            send_telegram(f"CicloTrade 系统异常\n事件编号：{incident_id}\n类型：{type(exc).__name__}")
+            send_telegram(telegram_incident(incident_id, type(exc).__name__))
         except RuntimeError:
             pass
     return False

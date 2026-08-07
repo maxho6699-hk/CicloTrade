@@ -14,6 +14,7 @@ from typing import Any
 from core.database import DatabaseManager, get_database
 from core.plans import can, effective_plan, trading_limits
 from core.strategy_registry import StrategyRegistry
+from core.user_settings import load_user_settings
 from trading.risk_filter import validate_order
 from trading.tiger_api import TigerAPI
 
@@ -115,7 +116,7 @@ class OrderManager:
         if not valid_symbol or quantity <= 0 or price <= 0 or not math.isfinite(price):
             raise ValueError("标的、数量和价格必须有效。")
         user = self.db.fetch_one(
-            "SELECT plan_type,subscription_expire FROM users WHERE id=? AND is_active=1", (user_id,)
+            "SELECT plan_type,subscription_expire,is_admin FROM users WHERE id=? AND is_active=1", (user_id,)
         )
         plan = effective_plan(user or {})
         strategy_access = StrategyRegistry(self.db).check_plan_access(plan, strategy)
@@ -133,11 +134,15 @@ class OrderManager:
             operator_id = os.getenv("TRADEAI_LIVE_OPERATOR_USER_ID", "").strip()
             if not user or not can(plan, "real_trade"):
                 raise ValueError("当前订阅方案不具备正股实盘权限。")
+            if not user["is_admin"]:
+                raise ValueError("Tiger 实盘现阶段仅允许平台管理员联调；高阶会员请联系客服。")
             limits = trading_limits(plan)
             if plan == "高级版" and str(user_id) not in allowed_users:
                 raise ValueError("此账户尚未完成实盘额外签约或未进入白名单。")
             if str(user_id) != operator_id:
                 raise ValueError("当前共享券商账户只允许已配置的实盘操作员；多用户实盘尚未绑定独立券商账户。")
+            if load_user_settings(user_id, self.db).get("live_auto_enabled") is not True:
+                raise ValueError("用户实盘自动交易开关未开启。")
             if not live_confirmed:
                 raise ValueError("实盘订单必须明确确认。")
             if symbol.isdigit() and len(symbol) == 6:

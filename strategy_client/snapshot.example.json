@@ -1,0 +1,11 @@
+{
+  "source": "mac-strategy-worker",
+  "external_snapshot_id": "portfolio-20260807-001",
+  "currency": "USD",
+  "initial_cash": 100000,
+  "cash": 95570,
+  "market_value": 4430,
+  "realized_pnl": 0,
+  "unrealized_pnl": 0,
+  "captured_at": "2026-08-07T13:36:00+00:00"
+}

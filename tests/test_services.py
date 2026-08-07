@@ -14,8 +14,9 @@ from core.alerts import AlertService
 from core.auth import AuthError, AuthService
 from core.database import DatabaseManager
 from core.user_settings import merge_user_settings
+from notification.email_sender import send_email
 from payment.order_service import OrderService
-from scheduler.jobs import notify_expiring_subscriptions, scan_price_alerts
+from scheduler.jobs import downgrade_expired_subscriptions, notify_expiring_subscriptions, scan_price_alerts
 from trading.order_manager import OrderManager, trade_ledger_state
 from trading.risk_filter import validate_order
 from trading.tiger_api import TigerAPI
@@ -217,14 +218,17 @@ def test_production_requires_one_time_email_verification(db, monkeypatch):
     ]
 
 
-def test_payment_callback_is_idempotent_and_core_use_blocks_refund(db):
+def test_payment_requires_terms_and_never_allows_voluntary_refund(db):
     auth = AuthService(db)
     user = _user(auth, "billing")
     service = OrderService(db)
-    order = service.create_order(user["id"], "标准版", "monthly", "fps")
+    with pytest.raises(ValueError, match="不退款政策"):
+        service.create_order(user["id"], "标准版", "monthly", "fps")
+    order = service.create_order(user["id"], "标准版", "monthly", "fps", terms_accepted=True)
     assert service.process_callback("event-1", order["order_no"], "paid", {"event": "paid"}) is True
     assert service.process_callback("event-1", order["order_no"], "paid", {"event": "paid"}) is False
-    assert service.refund_eligibility(order["order_no"])[0] is True
+    assert service.refund_eligibility(order["order_no"])[0] is False
+    assert service.get_order(order["order_no"])["terms_version"]
     service.log_core_action(user["id"], "买入 Call", "BACKTEST", {})
     assert service.refund_eligibility(order["order_no"])[0] is False
 
@@ -239,9 +243,9 @@ def test_broker_connection_enforces_plan_and_blocks_refund(db):
 
     paid_user = _user(auth, "paid-broker")
     service = OrderService(db)
-    order = service.create_order(paid_user["id"], "专业版", "monthly", "fps")
+    order = service.create_order(paid_user["id"], "专业版", "monthly", "fps", terms_accepted=True)
     assert service.process_callback("broker-plan-paid", order["order_no"], "paid", {})
-    assert service.refund_eligibility(order["order_no"])[0] is True
+    assert service.refund_eligibility(order["order_no"])[0] is False
     OrderManager(db).add_broker_account(
         paid_user["id"], "Tiger", "模拟账户", "PAPER-2", "paper"
     )
@@ -373,7 +377,7 @@ def test_order_manager_rejects_invalid_modes_and_sides(db):
 def test_advanced_live_trade_requires_extra_contract(db, monkeypatch):
     user = _user(AuthService(db), "advanced-live")
     db.execute(
-        "UPDATE users SET plan_type='高级版',subscription_expire=? WHERE id=?",
+        "UPDATE users SET plan_type='高级版',subscription_expire=?,is_admin=1 WHERE id=?",
         ((datetime.now(UTC) + timedelta(days=30)).isoformat(timespec="seconds"), user["id"]),
     )
     monkeypatch.setenv("TRADEAI_LIVE_OPERATOR_USER_ID", str(user["id"]))
@@ -387,6 +391,7 @@ def test_advanced_live_trade_requires_extra_contract(db, monkeypatch):
             paused=False, live_confirmed=True,
         )
     monkeypatch.setenv("TRADEAI_STOCK_AUTO_CONTRACT_USER_IDS", str(user["id"]))
+    merge_user_settings(user["id"], {"live_auto_enabled": True}, db)
     with pytest.raises(ValueError, match="不是 live"):
         OrderManager(db).submit(
             user_id=user["id"], symbol="AAPL", side="BUY", quantity=1, price=100,
@@ -399,12 +404,13 @@ def test_advanced_live_trade_requires_extra_contract(db, monkeypatch):
 def test_professional_live_trade_does_not_require_extra_contract(db, monkeypatch):
     user = _user(AuthService(db), "professional-live")
     db.execute(
-        "UPDATE users SET plan_type='专业版',subscription_expire=? WHERE id=?",
+        "UPDATE users SET plan_type='专业版',subscription_expire=?,is_admin=1 WHERE id=?",
         ((datetime.now(UTC) + timedelta(days=30)).isoformat(timespec="seconds"), user["id"]),
     )
     monkeypatch.setenv("TRADEAI_LIVE_OPERATOR_USER_ID", str(user["id"]))
     monkeypatch.setenv("TIGER_ENV", "paper")
     monkeypatch.delenv("TRADEAI_STOCK_AUTO_CONTRACT_USER_IDS", raising=False)
+    merge_user_settings(user["id"], {"live_auto_enabled": True}, db)
 
     with pytest.raises(ValueError, match="不是 live"):
         OrderManager(db).submit(
@@ -413,6 +419,58 @@ def test_professional_live_trade_does_not_require_extra_contract(db, monkeypatch
             risk_config={"max_position_per_symbol": 5_000, "max_total_position": 50_000, "max_daily_loss": 2_000},
             paused=False, live_confirmed=True,
         )
+
+
+def test_live_trade_requires_user_level_auto_switch(db, monkeypatch):
+    user = _user(AuthService(db), "live-switch")
+    db.execute(
+        "UPDATE users SET plan_type='专业版',subscription_expire=?,is_admin=1 WHERE id=?",
+        ((datetime.now(UTC) + timedelta(days=30)).isoformat(timespec="seconds"), user["id"]),
+    )
+    monkeypatch.setenv("TRADEAI_LIVE_OPERATOR_USER_ID", str(user["id"]))
+    monkeypatch.setenv("TIGER_ENV", "live")
+    monkeypatch.setenv("TIGER_REAL_TRADING_ENABLED", "true")
+
+    with pytest.raises(ValueError, match="用户实盘自动交易开关未开启"):
+        OrderManager(db).submit(
+            user_id=user["id"], symbol="AAPL", side="BUY", quantity=1, price=100,
+            strategy="测试", mode="live",
+            risk_config={"max_position_per_symbol": 5_000, "max_total_position": 50_000, "max_daily_loss": 2_000},
+            paused=False, live_confirmed=True,
+        )
+
+
+def test_smtp_sender_can_differ_from_login_user(monkeypatch):
+    sent = []
+
+    class SMTP:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def starttls(self, **_kwargs):
+            pass
+
+        def login(self, *_args):
+            pass
+
+        def send_message(self, message):
+            sent.append(message)
+
+    monkeypatch.setattr("notification.email_sender.smtplib.SMTP", SMTP)
+    monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+    monkeypatch.setenv("SMTP_USER", "smtp-login")
+    monkeypatch.setenv("SMTP_PASSWORD", "secret")
+    monkeypatch.setenv("SMTP_FROM", "CicloTrade <support@ciclotrade.com>")
+
+    send_email("user@example.com", "subject", "body")
+
+    assert sent[0]["From"] == "CicloTrade <support@ciclotrade.com>"
 
 
 def test_background_alert_scan_triggers_without_open_page(db, monkeypatch):
@@ -489,6 +547,34 @@ def test_renewal_reminder_is_sent_once_per_expiry(db, monkeypatch):
     assert notify_expiring_subscriptions(db) == 1
     assert notify_expiring_subscriptions(db) == 0
     assert sent[0][0] == user["email"]
+
+
+def test_expired_membership_notifies_support_and_removes_paid_groups(db, monkeypatch):
+    user = _user(AuthService(db), "expired-membership")
+    expiry = (datetime.now(UTC) - timedelta(minutes=1)).isoformat(timespec="seconds")
+    db.execute(
+        "UPDATE users SET plan_type='专业版',subscription_expire=? WHERE id=?",
+        (expiry, user["id"]),
+    )
+    merge_user_settings(
+        user["id"],
+        {"telegram": {"consent": True, "verified": True, "chat_id": "778899"}},
+        db,
+    )
+    removed = []
+    emails = []
+    monkeypatch.setenv("TELEGRAM_MEMBERSHIP_SYNC_ENABLED", "true")
+    monkeypatch.setattr("scheduler.jobs.remove_group_member", lambda group, member: removed.append((group, member)))
+    monkeypatch.setattr("scheduler.jobs.smtp_configured", lambda: True)
+    monkeypatch.setattr("scheduler.jobs.send_email", lambda *args: emails.append(args))
+
+    assert downgrade_expired_subscriptions(db) == 1
+    assert downgrade_expired_subscriptions(db) == 0
+    assert db.fetch_one("SELECT plan_type,subscription_expire FROM users WHERE id=?", (user["id"],)) == {
+        "plan_type": "免费版", "subscription_expire": None,
+    }
+    assert removed == [("-1004460522940", "778899"), ("-5344553813", "778899")]
+    assert {message[0] for message in emails} == {user["email"], "support@ciclotrade.com"}
 
 
 def test_all_eight_option_payoffs_return_finite_values():

@@ -8,8 +8,8 @@ app:
 sandbox: false
 plans:
   annual_bonus_months: 3
-  refund_window_hours: 24
-  refund_core_actions: [回测, 预警, 策略详情查看, 复制信号, 券商连接]
+  no_refund: true
+  terms_version: 2026-08-07-no-refund-v1
 web:
   auth: email-bcrypt-jwt
   access_token_minutes: 120
@@ -40,6 +40,13 @@ strategy_weights:
   ratio: 0.25
   loss: 0.15
 telegram:
+  token_env: TELEGRAM_BOT_TOKEN
+  enabled_env: EXTERNAL_ALERTS_ENABLED
+  community_url: "https://t.me/+iHJKJePgc8hiZjFl"
+  groups:
+    daily: "-5237516323"
+    advanced: "-1004460522940"
+    professional: "-5344553813"
   events:
     order_submitted: true
     order_filled: true
@@ -47,21 +54,16 @@ telegram:
     force_liquidation: true
     system_exception: true
 refund:
-  window_hours: 24
-  core_actions:
-    - 回测
-    - 预警
-    - 策略详情查看
-    - 复制信号
-    - 券商连接
+  policy: no_voluntary_refunds
+  provider_reversals: true
 support:
   telegram: '@Maxooo8'
   telegram_url: https://t.me/Maxooo8
   email: support@ciclotrade.com
 data:
   mode: live
-  primary: yfinance
-  fallback: polygon
+  primary: opend
+  fallback: [polygon, yfinance]
   cache_seconds: 60
 trading:
   mode: paper

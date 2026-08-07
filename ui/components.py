@@ -12,12 +12,14 @@ from urllib.parse import urlsplit
 
 import streamlit as st
 
+from notification.telegram_bot import telegram_community_url
+
 
 STYLE_PATH = Path(__file__).with_name("styles.css")
 
 
 def _telegram_community_url() -> str | None:
-    value = os.getenv("TRADEAI_TELEGRAM_COMMUNITY_URL", "https://t.me/Maxooo8").strip()
+    value = os.getenv("TRADEAI_TELEGRAM_COMMUNITY_URL", "").strip() or telegram_community_url() or ""
     if not value:
         return None
     try:

@@ -1,0 +1,28 @@
+[Unit]
+Description=CicloTrade isolated strategy runner gateway
+After=docker.service network.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=ciclotrade-sandbox
+Group=docker
+WorkingDirectory=/opt/CicloTrade
+EnvironmentFile=/etc/ciclotrade/sandbox.env
+Environment=TMPDIR=/var/lib/ciclotrade-sandbox
+ExecStart=/usr/bin/python3 /opt/CicloTrade/sandbox_runner/runner_service.py
+Restart=on-failure
+RestartSec=5
+StateDirectory=ciclotrade-sandbox
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

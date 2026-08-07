@@ -3,8 +3,8 @@
 ============================================================================
 量化交易系统 V5.1 - 配置加载器
 ----------------------------------------------------------------------------
-安全规则：敏感信息（券商密钥、TG Token、网页密码）统一存放 config.yaml，
-禁止代码硬编码。日志禁止打印密钥、账号凭证、Token等敏感数据。
+安全规则：敏感信息只通过环境变量或未纳入版本控制的本机配置提供，
+禁止代码硬编码。日志禁止打印密钥、账号凭证、Token 等敏感数据。
 ============================================================================
 """
 
@@ -52,9 +52,9 @@ class ConfigLoader:
 
     def __init__(self, config_path: str = None):
         if config_path is None:
-            # 默认从项目根目录的 config/config.yaml 加载
+            # 项目只有一个受版本控制的非敏感配置入口。
             project_root = Path(__file__).parent.parent
-            config_path = str(project_root / "config" / "config.yaml")
+            config_path = str(project_root / "config.yaml")
 
         self._config_path = config_path
         self._config: Dict = {}

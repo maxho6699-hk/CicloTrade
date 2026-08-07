@@ -19,11 +19,20 @@ from core.strategy_evaluation import score_daily_catalog, update_saved_strategy_
 from core.user_profiles import UserProfileService
 from data.datasource import get_data_source
 from notification.email_sender import send_email, smtp_configured
+from notification.templates import (
+    email_message,
+    telegram_daily_summary,
+    telegram_price_alert,
+    telegram_quant_message,
+)
 from notification.telegram_bot import (
     TelegramDeliveryUncertain,
     entitled_user_target,
+    remove_group_member,
     send_telegram,
     telegram_configured,
+    telegram_group,
+    telegram_token,
     verified_user_target,
 )
 
@@ -144,34 +153,8 @@ def _quant_message(database, delivery: dict) -> str:
     ]
     if not legs:
         raise RuntimeError("量化事件没有匹配的交易腿")
-    kind = "正股" if delivery["instrument_type"] == "stock" else "期权"
-    event_label = {"signal": "操作", "correction": "更正", "reversal": "撤销"}[event["event_type"]]
-    lines = [
-        f"CicloTrade 量化{kind}{event_label} #{event['id']}",
-        f"策略：{event['strategy_name']} · {event['strategy_version']}",
-        f"时间：{event['occurred_at']}",
-    ]
-    if event["event_type"] == "reversal":
-        lines.append(f"前序事件 #{event['corrects_event_id']} 已撤销，请以网页连续账本为准。")
-    for leg in legs:
-        delta = float(leg["quantity_delta"])
-        if abs(delta) < 1e-12:
-            lines.append(f"仓位不变 {leg['instrument_key']}；目标仓位 {float(leg['target_quantity']):g}")
-            continue
-        action = "买入 / 增持" if delta > 0 else "卖出 / 减持"
-        price = (
-            f" @ {leg['currency']} {float(leg['price']):,.2f}"
-            if event["event_type"] == "signal" and leg.get("price") is not None
-            else ""
-        )
-        lines.append(
-            f"{action} {leg['instrument_key']} {delta:+g}{price}；目标仓位 {float(leg['target_quantity']):g}"
-        )
     metadata = _settings_json(event["metadata_json"])
-    if reason := metadata.get("reason") or metadata.get("rationale"):
-        lines.append(f"原因：{str(reason)[:500]}")
-    lines.append("研究信号通知，不代表券商已自动下单；不构成投资建议或收益承诺。")
-    return "\n".join(lines)
+    return telegram_quant_message(event, legs, metadata)
 
 
 def dispatch_quant_signal_deliveries(database=None, limit: int = 100) -> int:
@@ -230,7 +213,7 @@ def dispatch_quant_signal_deliveries(database=None, limit: int = 100) -> int:
         except RuntimeError as exc:
             attempts = int(delivery["attempts"]) + 1
             retry_at = (now + timedelta(minutes=min(2 ** min(attempts, 6), 60))).isoformat(timespec="seconds")
-            token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+            token = telegram_token()
             error = str(exc).replace(token, "[redacted]") if token else str(exc)
             db.execute(
                 """UPDATE quant_event_deliveries SET status='failed',next_attempt_at=?,last_error=?,
@@ -252,7 +235,103 @@ def process_quant_signal_notifications(database=None) -> dict[str, int]:
     return {
         "queued": enqueue_quant_signal_deliveries(db),
         "sent": dispatch_quant_signal_deliveries(db),
+        "group_queued": enqueue_quant_group_deliveries(db),
+        "group_sent": dispatch_quant_group_deliveries(db),
     }
+
+
+def enqueue_quant_group_deliveries(database=None) -> int:
+    if os.getenv("TELEGRAM_GROUP_SIGNALS_ENABLED", "false").strip().lower() != "true":
+        return 0
+    db = database or get_database()
+    ledger_key = os.getenv("TRADEAI_SYSTEM_LEDGER_KEY", "tradeai-system")
+    targets = db.fetch_all(
+        """SELECT DISTINCT e.id event_id,l.instrument_type,l.symbol
+           FROM quant_events e JOIN quant_event_legs l ON l.event_id=e.id
+           WHERE e.ledger_key=?
+             AND NOT EXISTS (SELECT 1 FROM quant_events newer WHERE newer.corrects_event_id=e.id)
+           UNION
+           SELECT DISTINCT e.id event_id,l.instrument_type,l.symbol
+           FROM quant_events e JOIN quant_event_legs l ON l.event_id=e.corrects_event_id
+           WHERE e.ledger_key=? AND e.event_type IN ('correction','reversal')
+             AND NOT EXISTS (SELECT 1 FROM quant_events newer WHERE newer.corrects_event_id=e.id)""",
+        (ledger_key, ledger_key),
+    )
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    queued = 0
+    with db.transaction() as conn:
+        for target in targets:
+            groups = ("advanced", "professional") if target["instrument_type"] == "stock" else ("professional",)
+            for group in groups:
+                chat_id = telegram_group(group)
+                if not chat_id:
+                    continue
+                cursor = conn.execute(
+                    """INSERT OR IGNORE INTO telegram_group_deliveries
+                       (event_id,group_name,chat_id,instrument_type,symbol,status,attempts,
+                        next_attempt_at,last_error,created_at,updated_at,sent_at)
+                       VALUES (?,?,?,?,?,'pending',0,?,NULL,?,?,NULL)""",
+                    (target["event_id"], group, chat_id, target["instrument_type"], target["symbol"], now, now, now),
+                )
+                queued += cursor.rowcount
+    return queued
+
+
+def dispatch_quant_group_deliveries(database=None, limit: int = 100) -> int:
+    if os.getenv("TELEGRAM_GROUP_SIGNALS_ENABLED", "false").strip().lower() != "true":
+        return 0
+    db = database or get_database()
+    now = datetime.now(UTC)
+    due = now.isoformat(timespec="seconds")
+    rows = db.fetch_all(
+        """SELECT * FROM telegram_group_deliveries
+           WHERE status IN ('pending','failed','sending') AND next_attempt_at<=?
+           ORDER BY id LIMIT ?""",
+        (due, max(1, min(int(limit), 500))),
+    )
+    sent = 0
+    for delivery in rows:
+        lease_until = (now + timedelta(minutes=10)).isoformat(timespec="seconds")
+        if not db.execute(
+            """UPDATE telegram_group_deliveries
+               SET status='sending',attempts=attempts+1,next_attempt_at=?,updated_at=?
+               WHERE id=? AND status IN ('pending','failed','sending') AND next_attempt_at<=?""",
+            (lease_until, due, delivery["id"], due),
+        ):
+            continue
+        target = telegram_group(delivery["group_name"])
+        if not target:
+            db.execute(
+                "UPDATE telegram_group_deliveries SET status='skipped',last_error='group_not_configured',updated_at=? WHERE id=?",
+                (due, delivery["id"]),
+            )
+            continue
+        try:
+            if not telegram_configured(target):
+                raise RuntimeError("Telegram 群组通知尚未启用")
+            send_telegram(_quant_message(db, delivery), chat_id=target)
+        except TelegramDeliveryUncertain as exc:
+            db.execute(
+                "UPDATE telegram_group_deliveries SET status='skipped',last_error=?,updated_at=? WHERE id=?",
+                (f"delivery_uncertain_manual_retry: {exc}"[:300], due, delivery["id"]),
+            )
+            continue
+        except RuntimeError as exc:
+            retry_at = (now + timedelta(minutes=min(2 ** min(int(delivery["attempts"]) + 1, 6), 60))).isoformat(timespec="seconds")
+            token = telegram_token()
+            error = str(exc).replace(token, "[redacted]") if token else str(exc)
+            db.execute(
+                """UPDATE telegram_group_deliveries SET status='failed',next_attempt_at=?,last_error=?,updated_at=?
+                   WHERE id=?""",
+                (retry_at, error[:300], due, delivery["id"]),
+            )
+            continue
+        db.execute(
+            "UPDATE telegram_group_deliveries SET status='sent',sent_at=?,updated_at=?,last_error=NULL WHERE id=?",
+            (due, due, delivery["id"]),
+        )
+        sent += 1
+    return sent
 
 
 def dispatch_price_alert_deliveries(database=None, limit: int = 100) -> int:
@@ -294,7 +373,7 @@ def dispatch_price_alert_deliveries(database=None, limit: int = 100) -> int:
         try:
             if not telegram_configured(target):
                 raise RuntimeError("Telegram Bot 尚未配置")
-            send_telegram(f"CicloTrade 价格预警\n{delivery['content']}", chat_id=target)
+            send_telegram(telegram_price_alert(delivery["content"]), chat_id=target)
         except TelegramDeliveryUncertain as exc:
             db.execute(
                 "UPDATE price_alert_deliveries SET status='skipped',last_error=?,updated_at=? WHERE id=? AND status='sending'",
@@ -305,7 +384,7 @@ def dispatch_price_alert_deliveries(database=None, limit: int = 100) -> int:
         except RuntimeError as exc:
             attempts = int(delivery["attempts"]) + 1
             retry_at = (now + timedelta(minutes=min(2 ** min(attempts, 6), 60))).isoformat(timespec="seconds")
-            token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+            token = telegram_token()
             error = str(exc).replace(token, "[redacted]") if token else str(exc)
             db.execute(
                 """UPDATE price_alert_deliveries SET status='failed',next_attempt_at=?,last_error=?,updated_at=?
@@ -409,13 +488,68 @@ def scan_price_alerts(database=None, data_source=None) -> int:
     return triggered_count
 
 
-def downgrade_expired_subscriptions() -> int:
+def downgrade_expired_subscriptions(database=None) -> int:
+    db = database or get_database()
     now = datetime.now(UTC).isoformat(timespec="seconds")
-    return get_database().execute(
-        """UPDATE users SET plan_type='免费版',subscription_expire=NULL
+    users = db.fetch_all(
+        """SELECT id,email,display_name,plan_type,subscription_expire FROM users
            WHERE plan_type!='免费版' AND subscription_expire IS NOT NULL AND subscription_expire<=?""",
         (now,),
     )
+    if not users:
+        return 0
+    with db.transaction() as conn:
+        for user in users:
+            conn.execute(
+                "UPDATE users SET plan_type='免费版',subscription_expire=NULL WHERE id=?",
+                (user["id"],),
+            )
+            conn.execute(
+                "INSERT INTO user_action_logs(user_id,action_type,details,created_at) VALUES (?,?,?,?)",
+                (user["id"], "SUBSCRIPTION_EXPIRED", f"plan={user['plan_type']};expiry={user['subscription_expire']}", now),
+            )
+    membership_sync = os.getenv("TELEGRAM_MEMBERSHIP_SYNC_ENABLED", "false").strip().lower() == "true"
+    for user in users:
+        settings = load_user_settings(user["id"], db)
+        telegram_user = verified_user_target(settings)
+        if membership_sync and telegram_user:
+            groups = (
+                ("advanced", "professional")
+                if user["plan_type"] in {"专业版", "定制版"}
+                else ("advanced",) if user["plan_type"] == "高级版" else ()
+            )
+            for group in groups:
+                if target := telegram_group(group):
+                    try:
+                        remove_group_member(target, telegram_user)
+                    except RuntimeError as exc:
+                        db.log_system_event("WARN", "TELEGRAM", "会员到期群组移除失败", f"user={user['id']};group={group};{str(exc)[:180]}")
+        if smtp_configured():
+            subject, text, html = email_message(
+                "CicloTrade 會員已到期",
+                "會員權益已到期",
+                f"{user.get('display_name') or '您好'}，你的 {user['plan_type']} 已到期并自动降级为免费版。",
+                (f"到期时间：{user['subscription_expire']}", "已保存的研究记录不会删除。"),
+                action_url=os.getenv("APP_BASE_URL", "https://ciclotrade.com"),
+            )
+            notices = (
+                (user["email"], (subject, text, html)),
+                (
+                    os.getenv("SUPPORT_EMAIL", "support@ciclotrade.com"),
+                    email_message(
+                        f"CicloTrade 会员到期 · 用户 #{user['id']}",
+                        "会员到期处理完成",
+                        "系统已自动降级用户权益；请核对付费群成员状态。",
+                        (f"用户 ID：{user['id']}", f"原方案：{user['plan_type']}", f"到期时间：{user['subscription_expire']}"),
+                    ),
+                ),
+            )
+            for recipient, message in notices:
+                try:
+                    send_email(recipient, *message)
+                except RuntimeError:
+                    db.log_system_event("WARN", "EMAIL", "会员到期邮件发送失败", f"user={user['id']};recipient={recipient}")
+    return len(users)
 
 
 def notify_expiring_subscriptions(database=None) -> int:
@@ -439,9 +573,16 @@ def notify_expiring_subscriptions(database=None) -> int:
         try:
             send_email(
                 user["email"],
-                "CicloTrade 订阅即将到期",
-                f"{user.get('display_name') or '您好'}：\n\n您的 {user['plan_type']} 将于 {user['subscription_expire']} 到期。"
-                "请登录 CicloTrade 查看续费选项；到期后系统会自动降级为免费版。",
+                *email_message(
+                    "CicloTrade 會員即將到期",
+                    "你的會員權益即將到期",
+                    f"{user.get('display_name') or '您好'}，你的 {user['plan_type']} 將於指定時間到期。",
+                    (
+                        f"到期時間：{user['subscription_expire']}",
+                        "到期後系統會自動降級為免費版，已保存的研究記錄不會被刪除。",
+                    ),
+                    action_url=os.getenv("APP_BASE_URL", "https://ciclotrade.com"),
+                ),
             )
         except RuntimeError:
             continue
@@ -465,13 +606,64 @@ def notify_inactive_users() -> int:
         try:
             send_email(
                 user["email"],
-                "CicloTrade 账户提醒",
-                f"{user.get('display_name') or '您好'}：\n\n您的 CicloTrade 账户已连续 7 天未登录。请登录检查预警、订阅和账户安全状态。",
+                *email_message(
+                    "CicloTrade 帳戶提醒",
+                    "你的研究工作區正在等待",
+                    f"{user.get('display_name') or '您好'}，你的 CicloTrade 帳戶已連續 7 天未登入。",
+                    ("請登入檢查預警、量化日誌、會員狀態與帳戶安全。",),
+                    action_url=os.getenv("APP_BASE_URL", "https://ciclotrade.com"),
+                ),
             )
             sent += 1
         except RuntimeError:
             continue
     return sent
+
+
+def publish_daily_group_summary(database=None) -> int:
+    """Publish one public summary for each new auditable equity snapshot."""
+    if os.getenv("TELEGRAM_DAILY_SUMMARY_ENABLED", "false").strip().lower() != "true":
+        return 0
+    target = telegram_group("daily")
+    if not target or not telegram_configured(target):
+        return 0
+    db = database or get_database()
+    ledger_key = os.getenv("TRADEAI_SYSTEM_LEDGER_KEY", "tradeai-system")
+    snapshots = db.fetch_all(
+        """SELECT s.* FROM quant_equity_snapshots s
+           JOIN (SELECT currency,MAX(id) id FROM quant_equity_snapshots
+                 WHERE ledger_key=? GROUP BY currency) latest ON latest.id=s.id
+           ORDER BY s.currency""",
+        (ledger_key,),
+    )
+    if not snapshots:
+        return 0
+    marker = ",".join(str(row["id"]) for row in snapshots)
+    saved = db.fetch_one(
+        "SELECT control_value FROM platform_controls WHERE control_key='telegram_daily_summary_snapshot'"
+    )
+    if saved and saved["control_value"] == marker:
+        return 0
+    earliest = min(datetime.fromisoformat(row["captured_at"]) for row in snapshots) - timedelta(days=1)
+    action_count = db.fetch_one(
+        "SELECT COUNT(*) count FROM quant_events WHERE ledger_key=? AND occurred_at>=?",
+        (ledger_key, earliest.isoformat()),
+    )["count"]
+    journal = QuantJournal(db)
+    items = [
+        (snapshot, (journal.performance_windows(ledger_key, snapshot["currency"]) or {}).get("windows", {}))
+        for snapshot in snapshots
+    ]
+    send_telegram(telegram_daily_summary(items, int(action_count)), chat_id=target)
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    db.execute(
+        """INSERT INTO platform_controls(control_key,control_value,updated_by,updated_at)
+           VALUES ('telegram_daily_summary_snapshot',?,NULL,?)
+           ON CONFLICT(control_key) DO UPDATE SET control_value=excluded.control_value,
+           updated_by=NULL,updated_at=excluded.updated_at""",
+        (marker, now),
+    )
+    return 1
 
 
 def evaluate_strategy_catalog() -> int:

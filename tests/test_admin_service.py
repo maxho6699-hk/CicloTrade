@@ -146,7 +146,7 @@ def test_finance_can_reconcile_fps_but_support_cannot(services):
     customer = _register(auth, "buyer")
     service.set_role(admin["id"], finance["id"], "finance")
     service.set_role(admin["id"], support["id"], "support")
-    order = OrderService(db).create_order(customer["id"], "标准版", "monthly", "fps")
+    order = OrderService(db).create_order(customer["id"], "标准版", "monthly", "fps", terms_accepted=True)
 
     with pytest.raises(PermissionError):
         service.confirm_fps(support["id"], order["order_no"])

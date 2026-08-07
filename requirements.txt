@@ -13,4 +13,5 @@ backtrader>=1.9.78
 APScheduler>=3.10
 openpyxl>=3.1
 tigeropen>=3.3
+futu-api>=10.9
 cryptography>=50.0.0

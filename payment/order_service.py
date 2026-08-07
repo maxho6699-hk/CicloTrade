@@ -13,11 +13,11 @@ from core.database import DatabaseManager, get_database
 from core.plans import PLANS
 
 
-CORE_ACTIONS = {"BACKTEST", "ALERT_CREATE", "STRATEGY_DETAIL", "SIGNAL_COPY", "BROKER_CONNECT"}
 CYCLE_DAYS = {"monthly": 30, "quarterly": 90, "yearly": 365}
 YEARLY_PROMO_DAYS = 90
 TERMINAL_STATUSES = {"paid", "failed", "cancelled", "refunded"}
 REFERRAL_REWARD_PERCENT = 30
+TERMS_VERSION = "2026-08-07-no-refund-v1"
 
 
 def _iso(value: datetime | None = None) -> str:
@@ -75,7 +75,17 @@ class OrderService:
         )
         return not row or str(row["control_value"]).lower() in {"1", "true", "yes", "on"}
 
-    def create_order(self, user_id: int, plan: str, cycle: str, method: str) -> dict[str, Any]:
+    def create_order(
+        self,
+        user_id: int,
+        plan: str,
+        cycle: str,
+        method: str,
+        *,
+        terms_accepted: bool = False,
+    ) -> dict[str, Any]:
+        if terms_accepted is not True:
+            raise ValueError("建立訂單前必須同意用戶協議、風險披露與不退款政策。")
         if plan not in PLANS or plan == "免费版":
             raise ValueError("请选择可购买的订阅方案。")
         prices = PLANS[plan]["prices"]
@@ -91,8 +101,9 @@ class OrderService:
         order_no = f"TA{datetime.now(UTC):%Y%m%d%H%M%S}{secrets.token_hex(3).upper()}"
         self.db.execute(
             """INSERT INTO subscription_orders
-               (order_no,user_id,plan_type,billing_cycle,amount,currency,pay_method,status,entitlement_days,created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+               (order_no,user_id,plan_type,billing_cycle,amount,currency,pay_method,status,
+                entitlement_days,created_at,terms_version,terms_accepted_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 order_no,
                 user_id,
@@ -104,9 +115,15 @@ class OrderService:
                 "pending",
                 entitlement_days,
                 _iso(),
+                TERMS_VERSION,
+                _iso(),
             ),
         )
-        self.log_action(user_id, "ORDER_CREATE", {"order_no": order_no, "plan": plan, "method": method})
+        self.log_action(
+            user_id,
+            "ORDER_CREATE",
+            {"order_no": order_no, "plan": plan, "method": method, "terms_version": TERMS_VERSION},
+        )
         return self.get_order(order_no)
 
     def get_order(self, order_no: str) -> dict[str, Any]:
@@ -534,33 +551,8 @@ class OrderService:
 
     @staticmethod
     def _refund_eligibility(conn: Any, order: dict[str, Any], now: datetime) -> tuple[bool, str]:
-        if order["status"] != "paid" or not order["paid_at"]:
-            return False, "只有已支付订单可申请退款。"
-        if order.get("previous_plan_type") is None:
-            return False, "订单缺少付款前订阅快照，需由客服人工核对。"
-        try:
-            paid_at = datetime.fromisoformat(order["paid_at"])
-            if paid_at.tzinfo is None:
-                paid_at = paid_at.replace(tzinfo=UTC)
-        except (TypeError, ValueError):
-            return False, "订单付款时间无效，需由客服人工核对。"
-        if now - paid_at > timedelta(hours=24):
-            return False, "已超过购买后 24 小时退款窗口。"
-        latest = conn.execute(
-            """SELECT order_no FROM subscription_orders
-               WHERE user_id=? AND status='paid' ORDER BY paid_at DESC,id DESC LIMIT 1""",
-            (order["user_id"],),
-        ).fetchone()
-        if not latest or latest["order_no"] != order["order_no"]:
-            return False, "只能退款该用户最近一笔已支付订阅订单。"
-        placeholders = ",".join("?" for _ in CORE_ACTIONS)
-        used = conn.execute(
-            f"SELECT 1 FROM strategy_action_logs WHERE user_id=? AND created_at>=? AND action IN ({placeholders}) LIMIT 1",
-            (order["user_id"], order["paid_at"], *CORE_ACTIONS),
-        ).fetchone()
-        if used:
-            return False, "账户已使用回测、预警、策略详情、复制信号或券商连接等核心功能。"
-        return True, "符合 24 小时且未使用核心功能的退款条件。"
+        del conn, order, now
+        return False, "CicloTrade 數碼服務一經付款概不接受主動退款；支付平台強制逆轉或法定權利另行處理。"
 
     def mark_refunded(self, admin_id: int, order_no: str) -> None:
         now = datetime.now(UTC)
