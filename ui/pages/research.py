@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
+from core.compat import UTC
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path

@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import html
-from datetime import UTC, datetime
+from datetime import datetime
+from core.compat import UTC
 
 import plotly.graph_objects as go
 import pandas as pd

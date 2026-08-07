@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import csv
-from datetime import UTC, datetime
+from datetime import datetime
+from core.compat import UTC
 import hashlib
 from io import StringIO
 import json

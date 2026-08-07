@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import UTC, date, datetime
+from datetime import date, datetime
+from core.compat import UTC
 from typing import Any, Mapping
 
 from core.database import DatabaseManager, get_database

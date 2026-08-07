@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
+from core.compat import UTC
 
 from core.auth import AuthService
 from core.database import DatabaseManager

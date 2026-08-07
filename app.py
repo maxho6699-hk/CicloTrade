@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import datetime
+from core.compat import UTC
 import html
 import json
 import os

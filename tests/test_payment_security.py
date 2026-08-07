@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
+from core.compat import UTC
 import json
 import sqlite3
 import threading

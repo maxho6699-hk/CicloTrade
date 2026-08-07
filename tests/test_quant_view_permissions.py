@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC
+from core.compat import UTC
 
 import pandas as pd
 

@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import date, datetime
+from core.compat import UTC
 import json
 import math
 from typing import Any

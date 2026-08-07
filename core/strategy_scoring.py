@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import math
-from datetime import UTC, date, datetime
+from datetime import date, datetime
+from core.compat import UTC
 from numbers import Integral
 from typing import Any, Iterable, Mapping
 

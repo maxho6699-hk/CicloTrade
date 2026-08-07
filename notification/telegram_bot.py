@@ -6,7 +6,8 @@ from __future__ import annotations
 import json
 import os
 import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
+from core.compat import UTC
 import hashlib
 from typing import Any
 from urllib.error import HTTPError

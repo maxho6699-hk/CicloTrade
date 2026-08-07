@@ -6,7 +6,8 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from decimal import Decimal, InvalidOperation
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
+from core.compat import UTC
 import hashlib
 import hmac
 import json

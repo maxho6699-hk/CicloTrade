@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
+from core.compat import UTC
 import hashlib
 import json
 import math
