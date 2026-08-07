@@ -16,6 +16,7 @@ from notification.telegram_bot import (
 
 
 def test_user_telegram_requires_consent_verification_and_enabled_event(monkeypatch):
+    monkeypatch.setenv("EXTERNAL_ALERTS_ENABLED", "true")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "999999")
     settings = {
@@ -45,6 +46,7 @@ def test_global_destination_is_never_used_as_a_user_destination(monkeypatch):
 
 
 def test_telegram_timeout_is_not_retried_automatically(monkeypatch):
+    monkeypatch.setenv("EXTERNAL_ALERTS_ENABLED", "true")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-token")
     calls = []
 
@@ -56,6 +58,20 @@ def test_telegram_timeout_is_not_retried_automatically(monkeypatch):
     with pytest.raises(TelegramDeliveryUncertain, match="TimeoutError"):
         send_telegram("trade action", chat_id="123456789")
     assert len(calls) == 1
+
+
+def test_telegram_global_switch_fails_closed_before_network(monkeypatch):
+    monkeypatch.setenv("EXTERNAL_ALERTS_ENABLED", "false")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "999999")
+    monkeypatch.setattr(
+        "notification.telegram_bot.urlopen",
+        lambda *args, **kwargs: pytest.fail("Telegram network called"),
+    )
+
+    assert telegram_configured("123456789") is False
+    with pytest.raises(RuntimeError, match="平台停用"):
+        send_telegram("trade action", chat_id="123456789")
 
 
 def test_private_telegram_target_rechecks_plan_entitlement():

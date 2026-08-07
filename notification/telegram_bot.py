@@ -21,7 +21,11 @@ class TelegramDeliveryUncertain(RuntimeError):
 
 
 def telegram_configured(chat_id: str | None = None) -> bool:
-    return bool(os.getenv("TELEGRAM_BOT_TOKEN") and (chat_id or os.getenv("TELEGRAM_CHAT_ID")))
+    return bool(
+        os.getenv("EXTERNAL_ALERTS_ENABLED", "false").strip().lower() == "true"
+        and os.getenv("TELEGRAM_BOT_TOKEN")
+        and (chat_id or os.getenv("TELEGRAM_CHAT_ID"))
+    )
 
 
 def verified_user_target(settings: dict[str, Any], event: str | None = None) -> str | None:
@@ -107,6 +111,8 @@ def confirm_verification(database, user_id: int, token: str) -> str:
 
 
 def send_telegram(message: str, chat_id: str | None = None) -> None:
+    if os.getenv("EXTERNAL_ALERTS_ENABLED", "false").strip().lower() != "true":
+        raise RuntimeError("Telegram 外部通知已由平台停用。")
     token = os.getenv("TELEGRAM_BOT_TOKEN", "")
     target = chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
     if not token or not target:

@@ -213,6 +213,12 @@ def _render_symbol_control(market: str) -> tuple[str, ...]:
 
 
 def _render_access_status(plan: str) -> None:
+    telegram_ready = bool(
+        os.getenv("EXTERNAL_ALERTS_ENABLED", "false").strip().lower() == "true"
+        and os.getenv("TELEGRAM_BOT_TOKEN")
+    )
+    stock_tg = can(plan, "tg_stock_signal")
+    option_tg = can(plan, "tg_option_signal")
     with st.container(horizontal=True, gap="small", vertical_alignment="center"):
         st.badge(plan, icon=":material/workspace_premium:", color="primary")
         st.badge(
@@ -221,14 +227,14 @@ def _render_access_status(plan: str) -> None:
             color="green" if can(plan, "signal_web") else "gray",
         )
         st.badge(
-            "正股 Telegram 已开启" if can(plan, "tg_stock_signal") else "正股 Telegram 未开启",
-            icon=":material/notifications_active:" if can(plan, "tg_stock_signal") else ":material/notifications_off:",
-            color="blue" if can(plan, "tg_stock_signal") else "gray",
+            "正股 Telegram 已開啟" if stock_tg and telegram_ready else "正股 Telegram 平台暫停" if stock_tg else "正股 Telegram 未包含",
+            icon=":material/notifications_active:" if stock_tg and telegram_ready else ":material/notifications_off:",
+            color="blue" if stock_tg and telegram_ready else "gray",
         )
         st.badge(
-            "期权 Telegram 已开启" if can(plan, "tg_option_signal") else "期权 Telegram 未开启",
-            icon=":material/notifications_active:" if can(plan, "tg_option_signal") else ":material/notifications_off:",
-            color="violet" if can(plan, "tg_option_signal") else "gray",
+            "期權 Telegram 已開啟" if option_tg and telegram_ready else "期權 Telegram 平台暫停" if option_tg else "期權 Telegram 未包含",
+            icon=":material/notifications_active:" if option_tg and telegram_ready else ":material/notifications_off:",
+            color="violet" if option_tg and telegram_ready else "gray",
         )
 
 
@@ -528,7 +534,7 @@ def render() -> None:
     except Exception as exc:
         section_label("量价研究候选", "真实数据读取失败")
         st.error(
-            f"研究候选暂时不可用：{exc}。系统没有使用演示数据填补结果。",
+            f"研究候选暂时不可用：{str(exc).rstrip('。.!！')}。系统没有使用演示数据填补结果。",
             icon=":material/cloud_off:",
         )
         selected = None

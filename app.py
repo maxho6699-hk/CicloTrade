@@ -333,6 +333,8 @@ def _first_run_onboarding(user_id: int, backtest_page: object) -> None:
 
 
 _init_state()
+if os.getenv("MARKET_DATA_ENABLED", "false").strip().lower() != "true":
+    st.session_state.market_live = False
 auth_service = AuthService()
 try:
     auth_service.bootstrap_admin()
