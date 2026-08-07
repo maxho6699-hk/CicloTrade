@@ -685,6 +685,7 @@ def test_production_callbacks_hosts_headers_and_body_limits_fail_closed(monkeypa
     assert response.status_code == 413 and not called
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert response.headers["Content-Security-Policy"].startswith("default-src 'self'")
+    assert "https://static.cloudflareinsights.com" in response.headers["Content-Security-Policy"]
     assert response.headers["Strict-Transport-Security"].startswith("max-age=31536000")
 
     class ChunkedRequest:

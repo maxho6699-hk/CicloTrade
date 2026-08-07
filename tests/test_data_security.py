@@ -5,9 +5,11 @@ from datetime import date
 from urllib.parse import parse_qs, urlparse
 
 import pandas as pd
+import pytest
 
 from data.polygon_adapter import PolygonAdapter
-from data.datasource import market_data_status
+from data.datasource import DataSourceError, market_data_status
+from data.yfinance_adapter import YFinanceAdapter
 from ui.data import load_market_history
 
 
@@ -29,6 +31,7 @@ def test_polygon_api_key_uses_authorization_header(monkeypatch):
         return Response()
 
     monkeypatch.setenv("POLYGON_API_KEY", "sensitive-key")
+    monkeypatch.setenv("MARKET_DATA_ENABLED", "true")
     monkeypatch.setattr("data.polygon_adapter.urlopen", fake_urlopen)
     PolygonAdapter().history(("AAPL",))
 
@@ -57,6 +60,7 @@ def test_polygon_history_uses_requested_backtest_period(monkeypatch):
         return Response()
 
     monkeypatch.setenv("POLYGON_API_KEY", "sensitive-key")
+    monkeypatch.setenv("MARKET_DATA_ENABLED", "true")
     monkeypatch.setattr("data.polygon_adapter.urlopen", fake_urlopen)
     PolygonAdapter().history(("AAPL",), period="3y")
 
@@ -72,6 +76,7 @@ def test_market_status_requires_adapter_and_deployment_realtime_opt_in(monkeypat
         delay_minutes = None
 
     monkeypatch.setattr("data.datasource.get_data_source", lambda _=None: PremiumFeed())
+    monkeypatch.setenv("MARKET_DATA_ENABLED", "true")
     monkeypatch.delenv("MARKET_DATA_REALTIME", raising=False)
     assert market_data_status()["is_realtime"] is False
 
@@ -79,6 +84,28 @@ def test_market_status_requires_adapter_and_deployment_realtime_opt_in(monkeypat
     status = market_data_status()
     assert status["is_realtime"] is True
     assert status["freshness"] == "实时"
+
+
+def test_market_data_is_frozen_by_default_before_any_vendor_call(monkeypatch):
+    monkeypatch.delenv("MARKET_DATA_ENABLED", raising=False)
+    monkeypatch.setenv("POLYGON_API_KEY", "sensitive-key")
+    monkeypatch.setattr("data.yfinance_adapter.yf.Search", lambda *args, **kwargs: pytest.fail("Yahoo search called"))
+    monkeypatch.setattr("data.yfinance_adapter.yf.Ticker", lambda *args, **kwargs: pytest.fail("Yahoo ticker called"))
+    monkeypatch.setattr("data.polygon_adapter.urlopen", lambda *args, **kwargs: pytest.fail("Polygon called"))
+
+    yahoo = YFinanceAdapter()
+    for call in (
+        lambda: yahoo.search("AAPL"),
+        lambda: yahoo.history(("AAPL",)),
+        lambda: yahoo.bars("AAPL", "1mo", "1d"),
+        lambda: yahoo.option_chain("AAPL"),
+        lambda: PolygonAdapter().history(("AAPL",)),
+    ):
+        with pytest.raises(DataSourceError, match="行情資料模組已停用"):
+            call()
+
+    assert YFinanceAdapter.normalize_symbol("600519") == "600519.SS"
+    assert market_data_status()["freshness"] == "已停用"
 
 
 def test_market_history_uses_adapter_and_reports_last_bar_time(monkeypatch):

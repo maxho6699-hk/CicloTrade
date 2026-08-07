@@ -55,6 +55,7 @@ def test_symbol_search_keeps_only_requested_market(monkeypatch):
             self.quotes = quotes
 
     monkeypatch.setattr(yf, "Search", SearchResult)
+    monkeypatch.setenv("MARKET_DATA_ENABLED", "true")
 
     assert [item["symbol"] for item in YFinanceAdapter.search("Microsoft", "美股")] == ["MSFT"]
     assert [item["symbol"] for item in YFinanceAdapter.search("600519", "A股")] == ["600519.SS"]

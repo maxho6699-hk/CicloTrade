@@ -13,7 +13,7 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 
-from data.datasource import DataSource, DataSourceError
+from data.datasource import DataSource, DataSourceError, require_market_data_enabled
 
 
 class PolygonAdapter(DataSource):
@@ -35,6 +35,7 @@ class PolygonAdapter(DataSource):
         return amount * {"d": 1, "m": 31, "y": 366}[unit]
 
     def history(self, symbols: tuple[str, ...], period: str = "3mo", interval: str = "1d") -> tuple[pd.DataFrame, pd.DataFrame]:
+        require_market_data_enabled()
         if interval not in {"1d", "1day"}:
             raise DataSourceError("Polygon 历史适配器目前只支持日线数据。")
         if not self.api_key:

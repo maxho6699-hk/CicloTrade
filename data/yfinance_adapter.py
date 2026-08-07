@@ -8,7 +8,7 @@ import time
 import pandas as pd
 import yfinance as yf
 
-from data.datasource import DataSource, DataSourceError
+from data.datasource import DataSource, DataSourceError, require_market_data_enabled
 
 
 class YFinanceAdapter(DataSource):
@@ -21,6 +21,7 @@ class YFinanceAdapter(DataSource):
         value = query.strip()
         if not value:
             return []
+        require_market_data_enabled()
         try:
             quotes = yf.Search(value, max_results=max(max_results * 3, 12), news_count=0, timeout=10).quotes
         except Exception as exc:
@@ -58,6 +59,7 @@ class YFinanceAdapter(DataSource):
         return value
 
     def history(self, symbols: tuple[str, ...], period: str = "3mo", interval: str = "1d") -> tuple[pd.DataFrame, pd.DataFrame]:
+        require_market_data_enabled()
         closes: dict[str, pd.Series] = {}
         volumes: dict[str, pd.Series] = {}
         for raw_symbol in symbols:
@@ -83,6 +85,7 @@ class YFinanceAdapter(DataSource):
         return close_frame, volume_frame
 
     def bars(self, symbol: str, period: str, interval: str) -> pd.DataFrame:
+        require_market_data_enabled()
         frame = yf.Ticker(self.normalize_symbol(symbol)).history(
             period=period, interval=interval, auto_adjust=False, prepost=False
         )
@@ -92,6 +95,7 @@ class YFinanceAdapter(DataSource):
         return frame.dropna(subset=["Open", "High", "Low", "Close"])
 
     def option_chain(self, symbol: str, expiry: str | None = None) -> tuple[str, pd.DataFrame, pd.DataFrame]:
+        require_market_data_enabled()
         ticker = yf.Ticker(self.normalize_symbol(symbol))
         expiries = tuple(ticker.options)
         if not expiries:

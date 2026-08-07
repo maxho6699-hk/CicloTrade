@@ -35,6 +35,11 @@ def _env_flag(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def require_market_data_enabled() -> None:
+    if not _env_flag("MARKET_DATA_ENABLED"):
+        raise DataSourceError("行情資料模組已停用；僅能由平台管理員啟用外部行情。")
+
+
 def market_data_status(name: str | None = None) -> dict[str, object]:
     """Describe freshness from the selected adapter without making a request.
 
@@ -43,6 +48,13 @@ def market_data_status(name: str | None = None) -> dict[str, object]:
     being wired in and avoids treating a fast page refresh as live data.
     """
     source = get_data_source(name)
+    if not _env_flag("MARKET_DATA_ENABLED"):
+        return {
+            "source": source.name,
+            "is_realtime": False,
+            "freshness": "已停用",
+            "detail": "外部行情访问已由平台关闭",
+        }
     realtime = bool(source.supports_realtime and _env_flag("MARKET_DATA_REALTIME"))
     if realtime:
         return {
