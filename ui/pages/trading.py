@@ -14,7 +14,7 @@ from core.strategy_registry import StrategyRegistry
 from core.user_settings import load_user_settings, merge_user_settings
 from notification.telegram_bot import send_telegram, telegram_configured, verified_user_target
 from notification.templates import telegram_order_message
-from trading.order_manager import OrderManager
+from trading.order_manager import OrderManager, user_auto_trading_open
 from trading.tiger_api import TigerAPI
 from ui.components import page_heading, section_label
 
@@ -70,6 +70,8 @@ def _execute_order(
 def _set_live_auto(enabled: bool) -> None:
     user_id = int(st.session_state.user["id"])
     db = get_database()
+    if enabled and not user_auto_trading_open(db):
+        raise ValueError("用户自动交易总开关当前关闭，请联系管理员申请开通。")
     merge_user_settings(user_id, {"live_auto_enabled": enabled}, db)
     db.execute(
         "INSERT INTO user_action_logs (user_id,action_type,details,created_at) VALUES (?,?,?,datetime('now'))",
@@ -88,8 +90,12 @@ def _confirm_live_auto_enable() -> None:
         disabled=not confirmed,
         width="stretch",
     ):
-        _set_live_auto(True)
-        st.rerun()
+        try:
+            _set_live_auto(True)
+        except ValueError as exc:
+            st.error(str(exc), icon=":material/lock:")
+        else:
+            st.rerun()
 
 
 @st.dialog("确认实盘限价订单")
@@ -145,6 +151,7 @@ def render() -> None:
     mode = st.segmented_control("账户模式", ["paper", "live"], default="paper", format_func=lambda value: "模拟盘" if value == "paper" else "实盘")
     user_settings = load_user_settings(int(user["id"]), db)
     user_live_enabled = user_settings.get("live_auto_enabled") is True
+    platform_auto_trading_open = user_auto_trading_open(db)
     contract_users = {value.strip() for value in os.getenv("TRADEAI_STOCK_AUTO_CONTRACT_USER_IDS", "").split(",") if value.strip()}
     operator_id = os.getenv("TRADEAI_LIVE_OPERATOR_USER_ID", "").strip()
     live_entitled = (
@@ -155,6 +162,8 @@ def render() -> None:
         and str(user["id"]) == operator_id
     )
     live_enabled = (
+        platform_auto_trading_open
+        and
         tiger.configured
         and tiger.environment == "live"
         and os.getenv("TIGER_REAL_TRADING_ENABLED", "false").lower() == "true"
@@ -162,9 +171,24 @@ def render() -> None:
         and user_live_enabled
     )
     with st.container(border=True):
-        st.metric("我的实盘自动交易", "已开启" if user_live_enabled else "默认关闭")
-        st.caption("此开关只控制当前登录用户；关闭后不会发送新的实盘订单，模拟盘不受影响。")
-        if user_live_enabled:
+        with st.container(horizontal=True):
+            st.metric("平台自动交易服务", "已开放" if platform_auto_trading_open else "申请制")
+            st.metric("我的实盘自动交易", "已开启" if user_live_enabled else "默认关闭")
+        st.caption("完整交易功能会持续展示；平台关闭时只锁定券商资料登记、个人开关和实盘提交，模拟盘不受影响。")
+        if not platform_auto_trading_open:
+            st.info(
+                "自动交易目前由管理员统一关闭。需要评估券商账户隔离、会员资格和风控配置后开通，"
+                "请联系专属顾问。",
+                icon=":material/support_agent:",
+            )
+            st.link_button(
+                "联系管理员申请开通",
+                "https://t.me/Maxooo8",
+                icon=":material/support_agent:",
+                type="primary",
+                width="stretch",
+            )
+        elif user_live_enabled:
             if st.button("立即关闭实盘自动交易", icon=":material/pause_circle:", width="stretch"):
                 _set_live_auto(False)
                 st.rerun()
@@ -178,7 +202,12 @@ def render() -> None:
             )
         else:
             st.info("当前会员等级不包含实盘自动交易；模拟盘可继续使用。", icon=":material/lock:")
-    if mode == "live" and not live_enabled:
+    if mode == "live" and not platform_auto_trading_open:
+        st.info(
+            "实盘界面保留供你查看流程；平台自动交易总开关当前关闭，提交和券商资料登记均不会执行。",
+            icon=":material/visibility:",
+        )
+    elif mode == "live" and not live_enabled:
         st.error(
             "实盘暂未对用户开放；当前仅平台管理员可联调。高阶会员请联系客服了解开放条件。",
             icon=":material/lock:",
@@ -237,40 +266,70 @@ def render() -> None:
     else:
         st.info("尚无订单。建议先用模拟盘验证订单与风控。", icon=":material/receipt_long:")
     limits = trading_limits(plan)
-    if limits["brokers"]:
-        account_limit = limits["brokers"]
-        allowed_providers = {"标准版": ["Tiger"], "高级版": ["Tiger", "Alpaca"], "专业版": ["Tiger", "Alpaca", "IBKR"], "定制版": ["Tiger", "Alpaca", "IBKR", "Futu", "QMT", "PTrade"]}[plan]
-        section_label(
-            "券商账户",
-            "定制版不限数量；这里只保存非敏感账户标识"
-            if account_limit is None
-            else f"当前方案最多 {account_limit} 家；这里只保存非敏感账户标识",
+    account_limit = limits["brokers"]
+    allowed_providers = {
+        "免费版": [],
+        "标准版": ["Tiger"],
+        "高级版": ["Tiger", "Alpaca"],
+        "专业版": ["Tiger", "Alpaca", "IBKR"],
+        "定制版": ["Tiger", "Alpaca", "IBKR", "Futu", "QMT", "PTrade"],
+    }[plan]
+    section_label(
+        "券商账户",
+        "完整接入能力保留；账户资料不会在服务关闭时从浏览器提交",
+    )
+    accounts = db.fetch_all("SELECT * FROM broker_accounts WHERE user_id=? ORDER BY created_at DESC", (user["id"],))
+    with st.container(border=True):
+        providers = "、".join(allowed_providers) if allowed_providers else "升级后开放"
+        st.caption(
+            f"当前方案：{plan} · 支持券商：{providers} · "
+            + ("账户数量不限" if account_limit is None else f"最多 {account_limit or 0} 家券商")
         )
-        accounts = db.fetch_all("SELECT * FROM broker_accounts WHERE user_id=? ORDER BY created_at DESC", (user["id"],))
-        with st.form("broker_account"):
-            columns = st.columns(3, gap="small")
-            with columns[0]:
-                provider = st.selectbox("券商", allowed_providers)
-            with columns[1]:
-                alias = st.text_input("账户别名", max_chars=50)
-            with columns[2]:
-                external_id = st.text_input("券商账户 ID", max_chars=80, autocomplete="off")
-            account_mode = st.segmented_control("环境", ["paper", "live"], default="paper")
-            add_account = st.form_submit_button("添加券商账户", icon=":material/add:")
-        if add_account:
-            if account_limit is not None and len(accounts) >= account_limit:
-                st.error(f"当前方案最多登记 {account_limit} 个账户。")
-            elif not alias.strip() or not external_id.strip():
-                st.error("账户别名和券商账户 ID 不能为空。")
-            else:
-                try:
-                    OrderManager(db).add_broker_account(
-                        int(user["id"]), provider, alias, external_id, account_mode
-                    )
-                    st.rerun()
-                except Exception as exc:
-                    db.log_system_event("ERROR", "TRADING", "券商账户登记失败", str(exc)[:1000])
-                    st.error("账户未添加；请检查是否已经登记过相同的券商账户。")
+        if not platform_auto_trading_open:
+            st.info(
+                "券商账户与 API 资料的自助输入当前由后台关闭。管理员会先说明账户隔离、"
+                "授权范围和风险限制；请勿通过聊天发送密码、私钥或 Token。",
+                icon=":material/admin_panel_settings:",
+            )
+            st.link_button(
+                "联系管理员申请券商接入",
+                "https://t.me/Maxooo8",
+                icon=":material/support_agent:",
+                type="primary",
+                width="stretch",
+            )
+        elif account_limit == 0:
+            st.info("当前会员等级不包含券商连接；可先使用模拟盘，升级后再申请接入。", icon=":material/lock:")
+        else:
+            st.caption("这里只登记非敏感账户标识；不要输入券商密码、API Key、Token 或私钥。")
+            with st.form("broker_account"):
+                columns = st.columns(3, gap="small")
+                with columns[0]:
+                    provider = st.selectbox("券商", allowed_providers)
+                with columns[1]:
+                    alias = st.text_input("账户别名", max_chars=50)
+                with columns[2]:
+                    external_id = st.text_input("券商账户 ID", max_chars=80, autocomplete="off")
+                account_mode = st.segmented_control("环境", ["paper", "live"], default="paper")
+                add_account = st.form_submit_button("添加券商账户", icon=":material/add:")
+            if add_account:
+                if account_limit is not None and len(accounts) >= limits["broker_accounts"]:
+                    st.error(f"当前方案最多登记 {limits['broker_accounts']} 个账户。")
+                elif not alias.strip() or not external_id.strip():
+                    st.error("账户别名和券商账户 ID 不能为空。")
+                else:
+                    try:
+                        OrderManager(db).add_broker_account(
+                            int(user["id"]), provider, alias, external_id, account_mode
+                        )
+                        st.rerun()
+                    except Exception as exc:
+                        db.log_system_event("ERROR", "TRADING", "券商账户登记失败", str(exc)[:1000])
+                        st.error("账户未添加；请检查方案权限、账户数量或重复登记。")
         if accounts:
-            st.dataframe(pd.DataFrame(accounts)[["provider", "account_alias", "external_account_id", "mode", "is_active", "created_at"]], hide_index=True, width="stretch")
+            st.dataframe(
+                pd.DataFrame(accounts)[["provider", "account_alias", "external_account_id", "mode", "is_active", "created_at"]],
+                hide_index=True,
+                width="stretch",
+            )
     st.caption("期权自动交易只对定制版开放；当前页面仅提供正股限价单入口。")

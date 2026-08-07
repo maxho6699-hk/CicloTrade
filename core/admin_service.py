@@ -83,6 +83,7 @@ class AdminService:
                     ("recommendations_published", "1", now),
                     ("opening_paused", "0", now),
                     ("annual_bonus_enabled", "1", now),
+                    ("user_auto_trading_enabled", "0", now),
                 ),
             )
 
@@ -519,6 +520,16 @@ class AdminService:
             enabled,
             "ADMIN_ANNUAL_BONUS_STATUS",
             "BILLING",
+        )
+
+    def set_user_auto_trading_enabled(self, actor_id: int, enabled: bool) -> None:
+        self._require(actor_id, "system")
+        self._set_control(
+            actor_id,
+            "user_auto_trading_enabled",
+            enabled,
+            "ADMIN_USER_AUTO_TRADING_STATUS",
+            "TRADING",
         )
 
     def set_global_opening_paused(self, actor_id: int, paused: bool) -> None:

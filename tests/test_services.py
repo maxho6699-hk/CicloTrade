@@ -36,6 +36,16 @@ def _user(auth: AuthService, suffix: str = "one"):
     return auth.register(f"{suffix}@example.com", "CorrectHorse123", "Test User", True)
 
 
+def _set_user_auto_trading(db: DatabaseManager, enabled: bool = True) -> None:
+    db.execute(
+        """INSERT INTO platform_controls (control_key,control_value,updated_at)
+           VALUES ('user_auto_trading_enabled',?,datetime('now'))
+           ON CONFLICT(control_key) DO UPDATE SET control_value=excluded.control_value,
+           updated_at=excluded.updated_at""",
+        (str(int(enabled)),),
+    )
+
+
 def test_auth_single_session_and_three_ip_limit(db):
     auth = AuthService(db)
     user = _user(auth)
@@ -233,9 +243,14 @@ def test_payment_requires_terms_and_never_allows_voluntary_refund(db):
     assert service.refund_eligibility(order["order_no"])[0] is False
 
 
-def test_broker_connection_enforces_plan_and_blocks_refund(db):
+def test_broker_connection_enforces_platform_switch_plan_and_blocks_refund(db):
     auth = AuthService(db)
     free_user = _user(auth, "free-broker")
+    with pytest.raises(ValueError, match="自助连接当前关闭"):
+        OrderManager(db).add_broker_account(
+            free_user["id"], "Tiger", "模拟账户", "PAPER-1", "paper"
+        )
+    _set_user_auto_trading(db)
     with pytest.raises(ValueError, match="暂不支持连接券商"):
         OrderManager(db).add_broker_account(
             free_user["id"], "Tiger", "模拟账户", "PAPER-1", "paper"
@@ -383,6 +398,7 @@ def test_advanced_live_trade_requires_extra_contract(db, monkeypatch):
     monkeypatch.setenv("TRADEAI_LIVE_OPERATOR_USER_ID", str(user["id"]))
     monkeypatch.setenv("TIGER_ENV", "paper")
     monkeypatch.delenv("TRADEAI_STOCK_AUTO_CONTRACT_USER_IDS", raising=False)
+    _set_user_auto_trading(db)
     with pytest.raises(ValueError, match="额外签约"):
         OrderManager(db).submit(
             user_id=user["id"], symbol="AAPL", side="BUY", quantity=1, price=100,
@@ -410,6 +426,7 @@ def test_professional_live_trade_does_not_require_extra_contract(db, monkeypatch
     monkeypatch.setenv("TRADEAI_LIVE_OPERATOR_USER_ID", str(user["id"]))
     monkeypatch.setenv("TIGER_ENV", "paper")
     monkeypatch.delenv("TRADEAI_STOCK_AUTO_CONTRACT_USER_IDS", raising=False)
+    _set_user_auto_trading(db)
     merge_user_settings(user["id"], {"live_auto_enabled": True}, db)
 
     with pytest.raises(ValueError, match="不是 live"):
@@ -431,6 +448,14 @@ def test_live_trade_requires_user_level_auto_switch(db, monkeypatch):
     monkeypatch.setenv("TIGER_ENV", "live")
     monkeypatch.setenv("TIGER_REAL_TRADING_ENABLED", "true")
 
+    with pytest.raises(ValueError, match="总开关当前关闭"):
+        OrderManager(db).submit(
+            user_id=user["id"], symbol="AAPL", side="BUY", quantity=1, price=100,
+            strategy="测试", mode="live",
+            risk_config={"max_position_per_symbol": 5_000, "max_total_position": 50_000, "max_daily_loss": 2_000},
+            paused=False, live_confirmed=True,
+        )
+    _set_user_auto_trading(db)
     with pytest.raises(ValueError, match="用户实盘自动交易开关未开启"):
         OrderManager(db).submit(
             user_id=user["id"], symbol="AAPL", side="BUY", quantity=1, price=100,
@@ -573,7 +598,7 @@ def test_expired_membership_notifies_support_and_removes_paid_groups(db, monkeyp
     assert db.fetch_one("SELECT plan_type,subscription_expire FROM users WHERE id=?", (user["id"],)) == {
         "plan_type": "免费版", "subscription_expire": None,
     }
-    assert removed == [("-1004460522940", "778899"), ("-5344553813", "778899")]
+    assert removed == [("-1004460522940", "778899"), ("-1003902118990", "778899")]
     assert {message[0] for message in emails} == {user["email"], "support@ciclotrade.com"}
 
 

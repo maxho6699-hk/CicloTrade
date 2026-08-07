@@ -30,7 +30,8 @@ def render() -> None:
     with st.container(border=True):
         status = market_data_status()
         st.caption(f"行情数据源：{status['source']} · {status['freshness']}。{status['detail']}。")
-        st.caption("Tiger / Alpaca / IBKR：连接入口只保存账户标识；API 密钥不会写入 CicloTrade 数据库。")
+        st.caption("Tiger / Alpaca / IBKR：完整接入流程会保留展示；管理员总开关关闭时，券商账户与 API 资料输入会锁定并引导联系客服。")
+        st.caption("任何状态下都不要通过网页聊天、Telegram 或邮件发送券商密码、私钥或 Token。")
         st.caption("Futu / QMT / PTrade：需要定制部署、券商授权和本机网关，当前不会伪造连接成功。")
         st.warning("外部服务尚未配置时，系统会保留研究与模拟盘功能，并明确显示不可用原因。", icon=":material/cloud_off:")
     section_label("Telegram 绑定", "必须由用户同意并验证 Chat ID")

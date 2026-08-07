@@ -19,6 +19,13 @@ from trading.risk_filter import validate_order
 from trading.tiger_api import TigerAPI
 
 
+def user_auto_trading_open(database: DatabaseManager) -> bool:
+    row = database.fetch_one(
+        "SELECT control_value FROM platform_controls WHERE control_key='user_auto_trading_enabled'"
+    )
+    return bool(row and str(row["control_value"]).lower() in {"1", "true", "yes", "on"})
+
+
 def trade_ledger_state(trades: list[dict[str, Any]], now: datetime | None = None) -> dict[str, Any]:
     """Calculate user-scoped open exposure, realized P/L, and loss streak."""
     current_time = now or datetime.now(UTC)
@@ -126,6 +133,8 @@ class OrderManager:
         limits: dict[str, Any] | None = None
         notional = float(quantity) * float(price)
         if mode == "live":
+            if not user_auto_trading_open(self.db):
+                raise ValueError("用户自动交易总开关当前关闭，请联系管理员申请开通。")
             allowed_users = {
                 value.strip()
                 for value in os.getenv("TRADEAI_STOCK_AUTO_CONTRACT_USER_IDS", "").split(",")
@@ -304,6 +313,11 @@ class OrderManager:
             ).fetchone()
             if not user:
                 raise ValueError("用户不存在或已停用。")
+            control = conn.execute(
+                "SELECT control_value FROM platform_controls WHERE control_key='user_auto_trading_enabled'"
+            ).fetchone()
+            if not control or str(control[0]).lower() not in {"1", "true", "yes", "on"}:
+                raise ValueError("券商账户自助连接当前关闭，请联系管理员申请开通。")
             plan = effective_plan(dict(user))
             limits = trading_limits(plan)
             if not limits["brokers"]:

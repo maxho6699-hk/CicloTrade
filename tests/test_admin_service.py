@@ -50,12 +50,16 @@ def test_rbac_user_subscription_and_global_controls(services):
     assert service.list_ips(admin["id"], customer["id"])[0]["ip_address"] == "203.0.113.10"
     service.set_recommendations_published(admin["id"], False)
     assert service.control_enabled("recommendations_published", True) is False
+    assert service.control_enabled("user_auto_trading_enabled", True) is False
+    service.set_user_auto_trading_enabled(admin["id"], True)
+    assert service.control_enabled("user_auto_trading_enabled", False) is True
     service.set_global_opening_paused(admin["id"], True)
     future = _register(auth, "future")
     assert db.fetch_one("SELECT opening_paused FROM user_controls WHERE user_id=?", (future["id"],))["opening_paused"] == 1
 
     service.set_user_active(admin["id"], customer["id"], False)
     assert db.fetch_one("SELECT is_active FROM users WHERE id=?", (customer["id"],))["is_active"] == 0
+    assert any(row["action_type"] == "ADMIN_USER_AUTO_TRADING_STATUS" for row in service.list_audit(admin["id"]))
     assert any(row["action_type"] == "ADMIN_USER_STATUS" for row in service.list_audit(admin["id"]))
 
 

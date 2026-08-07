@@ -602,6 +602,39 @@ def _render_system(service: AdminService, actor_id: int) -> None:
                     lambda: service.set_global_opening_paused(actor_id, True), "全局新开仓已暂停。"
                 )
 
+    auto_trading_open = service.control_enabled("user_auto_trading_enabled", False)
+    with st.container(border=True):
+        st.metric("用户自动交易服务", "已开放" if auto_trading_open else "已关闭")
+        st.caption(
+            "关闭时保留前台完整功能展示，但锁定券商资料登记、个人自动交易开关和实盘订单；"
+            "开启后仍受会员、签约白名单、独立账户配置、风险限制和逐单确认保护。"
+        )
+        if auto_trading_open:
+            if st.button(
+                "关闭用户自动交易",
+                icon=":material/lock:",
+                key="close_user_auto_trading",
+            ):
+                _confirm_action(
+                    "关闭后所有用户将无法新登记券商账户、开启个人自动交易或提交实盘订单。",
+                    lambda: service.set_user_auto_trading_enabled(actor_id, False),
+                    "用户自动交易服务已关闭。",
+                    "confirm_close_user_auto_trading",
+                )
+        elif st.button(
+            "开放用户自动交易",
+            type="primary",
+            icon=":material/lock_open:",
+            key="open_user_auto_trading",
+        ):
+            _confirm_action(
+                "开放后，已完成会员、签约白名单和独立券商配置的用户可启用自动交易。"
+                "当前共享 Tiger 通道仍只允许配置的操作员，不会自动开放给所有账户。",
+                lambda: service.set_user_auto_trading_enabled(actor_id, True),
+                "用户自动交易服务已开放。",
+                "confirm_open_user_auto_trading",
+            )
+
     section_label("服务与凭证", "仅显示配置状态，不读取或展示任何密钥")
     st.dataframe(pd.DataFrame(_service_status_rows()), hide_index=True)
     st.info(
