@@ -1,0 +1,146 @@
+strategies:
+  - key: option_long_call
+    name: 买入 Call
+    family: option
+    engine: option_expiry
+    scenario: 看涨且希望限定最大亏损
+    description: 买入看涨期权，最大亏损为权利金。
+    risk: high
+    core: true
+    parameters: {dte: 45, strike_shift: 0, quantity: 1}
+    rules: {option_strategy_name: 买入 Call}
+  - key: option_long_put
+    name: 买入 Put
+    family: option
+    engine: option_expiry
+    scenario: 看跌且希望限定最大亏损
+    description: 买入看跌期权，最大亏损为权利金。
+    risk: high
+    core: true
+    parameters: {dte: 45, strike_shift: 0, quantity: 1}
+    rules: {option_strategy_name: 买入 Put}
+  - key: option_bull_spread
+    name: 牛市价差
+    family: option
+    engine: option_expiry
+    scenario: 温和看涨并控制成本
+    description: 买入较低行权价 Call，同时卖出较高行权价 Call。
+    risk: medium
+    core: true
+    parameters: {dte: 45, strike_shift: 0, quantity: 1}
+    rules: {option_strategy_name: 牛市价差}
+  - key: option_bear_spread
+    name: 熊市价差
+    family: option
+    engine: option_expiry
+    scenario: 温和看跌并控制成本
+    description: 买入较高行权价 Put，同时卖出较低行权价 Put。
+    risk: medium
+    core: true
+    parameters: {dte: 45, strike_shift: 0, quantity: 1}
+    rules: {option_strategy_name: 熊市价差}
+  - key: option_long_straddle
+    name: 买入跨式
+    family: option
+    engine: option_expiry
+    scenario: 预期大幅波动但方向不明
+    description: 同时买入相同行权价的 Call 与 Put。
+    risk: high
+    core: true
+    parameters: {dte: 45, strike_shift: 0, quantity: 1}
+    rules: {option_strategy_name: 买入跨式}
+  - key: option_butterfly
+    name: 蝶式
+    family: option
+    engine: option_expiry
+    scenario: 预期价格在到期时靠近目标区间
+    description: 三个行权价构建的有限风险区间策略。
+    risk: medium
+    core: true
+    parameters: {dte: 45, strike_shift: 0, quantity: 1}
+    rules: {option_strategy_name: 蝶式}
+  - key: option_covered_call
+    name: 备兑看涨
+    family: option
+    engine: option_expiry
+    scenario: 持有正股并希望增加权利金收入
+    description: 持有正股并卖出看涨期权。
+    risk: medium
+    core: true
+    parameters: {dte: 45, strike_shift: 5, quantity: 1}
+    rules: {option_strategy_name: 备兑看涨}
+  - key: option_cash_secured_put
+    name: 现金担保看跌
+    family: option
+    engine: option_expiry
+    scenario: 愿意在较低价格承接正股
+    description: 预留现金并卖出看跌期权。
+    risk: medium
+    core: true
+    parameters: {dte: 45, strike_shift: -5, quantity: 1}
+    rules: {option_strategy_name: 现金担保看跌}
+  - key: template_dual_ma
+    name: 双均线策略
+    family: equity
+    engine: rules
+    scenario: 趋势形成后跟随中期方向
+    description: 短均线上穿长均线后买入，下穿后卖出。
+    risk: medium
+    core: true
+    parameters: {fast_period: 20, slow_period: 50}
+    rules:
+      entry: [{indicator: price, operator: cross_above_ma, period_param: fast_period, confirm_period_param: slow_period}]
+      exit: [{indicator: price, operator: cross_below_ma, period_param: fast_period, confirm_period_param: slow_period}]
+    example_metrics: {status: 运行后生成真实历史回测}
+  - key: template_rsi
+    name: RSI 超买超卖策略
+    family: equity
+    engine: rules
+    scenario: 震荡市场中的超跌反弹
+    description: RSI 低于阈值后买入，高于阈值后卖出。
+    risk: medium
+    core: true
+    parameters: {rsi_period: 14, buy_below: 30, sell_above: 70}
+    rules:
+      entry: [{indicator: rsi, operator: lt, period_param: rsi_period, value_param: buy_below}]
+      exit: [{indicator: rsi, operator: gt, period_param: rsi_period, value_param: sell_above}]
+    example_metrics: {status: 运行后生成真实历史回测}
+  - key: template_bollinger
+    name: 布林带突破策略
+    family: equity
+    engine: rules
+    scenario: 波动扩张后的趋势突破
+    description: 收盘价突破上轨后买入，跌破中轨后卖出。
+    risk: high
+    core: true
+    parameters: {period: 20, standard_deviations: 2.0}
+    rules:
+      entry: [{indicator: price, operator: cross_above_bollinger, period_param: period, deviation_param: standard_deviations}]
+      exit: [{indicator: price, operator: cross_below_ma, period_param: period}]
+    example_metrics: {status: 运行后生成真实历史回测}
+  - key: template_momentum
+    name: 动量策略
+    family: equity
+    engine: rules
+    scenario: 延续近期强势方向
+    description: 过去 N 日涨幅超过阈值后买入，动量转负后卖出。
+    risk: high
+    core: true
+    parameters: {lookback: 20, entry_return: 0.05, exit_return: 0.0}
+    rules:
+      entry: [{indicator: return, operator: gt, period_param: lookback, value_param: entry_return}]
+      exit: [{indicator: return, operator: lt, period_param: lookback, value_param: exit_return}]
+    example_metrics: {status: 运行后生成真实历史回测}
+  - key: template_mean_reversion
+    name: 均值回归策略
+    family: equity
+    engine: rules
+    scenario: 价格偏离均值后的回归
+    description: 价格低于均值若干标准差后买入，回到均值后卖出。
+    risk: medium
+    core: true
+    parameters: {period: 20, entry_deviations: 2.0}
+    rules:
+      entry: [{indicator: zscore, operator: lt, period_param: period, value_from_param: entry_deviations, negate: true}]
+      exit: [{indicator: zscore, operator: gt, period_param: period, value: 0.0}]
+    example_metrics: {status: 运行后生成真实历史回测}

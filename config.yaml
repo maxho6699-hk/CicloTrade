@@ -1,0 +1,70 @@
+# QUANT V5.1 CicloTrade 本地配置。真实凭证只允许通过 .env 注入。
+app:
+  name: CicloTrade
+  version: QUANT V5.1
+  timezone: Asia/Hong_Kong
+  language: zh-Hant
+  mode: production-research
+sandbox: false
+plans:
+  annual_bonus_months: 3
+  refund_window_hours: 24
+  refund_core_actions: [回测, 预警, 策略详情查看, 复制信号, 券商连接]
+web:
+  auth: email-bcrypt-jwt
+  access_token_minutes: 120
+  refresh_token_days: 7
+  max_ip_addresses: 3
+routing:
+  research: [账户总览, 行情与预警, 策略研究, 策略回测]
+  execution: [交易执行, 通道监控, 紧急控制]
+  account: [订阅与账单, 账户与安全, 推荐与奖励]
+strategies:
+  max_strike_shift_pct: 20
+  dte_range: [30, 75]
+  option_contract_multiplier: 100
+risk:
+  max_position_per_symbol: 5000
+  max_total_position: 50000
+  max_daily_loss: 2000
+  max_position_per_symbol_cny: 35000
+  max_total_position_cny: 350000
+  max_daily_loss_cny: 14000
+  cooldown_minutes: 30
+  consecutive_loss_limit: 3
+  max_retries: 2
+  market_timezone: America/New_York
+strategy_weights:
+  return: 0.35
+  drawdown: 0.25
+  ratio: 0.25
+  loss: 0.15
+telegram:
+  events:
+    order_submitted: true
+    order_filled: true
+    risk_rejected: true
+    force_liquidation: true
+    system_exception: true
+refund:
+  window_hours: 24
+  core_actions:
+    - 回测
+    - 预警
+    - 策略详情查看
+    - 复制信号
+    - 券商连接
+support:
+  telegram: '@Maxooo8'
+  telegram_url: https://t.me/Maxooo8
+  email: support@ciclotrade.com
+data:
+  mode: live
+  primary: yfinance
+  fallback: polygon
+  cache_seconds: 60
+trading:
+  mode: paper
+  provider: tiger
+  connected: false
+  live_requires_confirmation: true

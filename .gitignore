@@ -1,0 +1,12 @@
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pytest-temp-*/
+.streamlit/secrets.toml
+.playwright-cli/
+.exe/
+data/*.db
+data/*.db-*
+logs/*.log
+output/

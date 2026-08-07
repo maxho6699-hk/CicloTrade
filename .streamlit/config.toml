@@ -1,0 +1,74 @@
+[server]
+enableStaticServing = true
+headless = true
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "dark"
+primaryColor = "#13795B"
+backgroundColor = "#101214"
+secondaryBackgroundColor = "#191D20"
+textColor = "#F4F5F6"
+linkColor = "#7EE1B5"
+codeTextColor = "#DDE4EA"
+codeBackgroundColor = "#0F141A"
+borderColor = "#343B41"
+showWidgetBorder = true
+showSidebarBorder = true
+baseRadius = "8px"
+buttonRadius = "8px"
+font = "sans-serif"
+headingFont = "sans-serif"
+codeFont = "IBM Plex Mono"
+baseFontSize = 15
+baseFontWeight = 400
+codeFontSize = "13px"
+codeFontWeight = 400
+headingFontSizes = ["30px", "24px", "20px", "17px", "15px", "13px"]
+headingFontWeights = [600, 600, 600, 600, 600, 600]
+linkUnderline = false
+
+greenColor = "#7EE1B5"
+greenBackgroundColor = "#1B2E27"
+greenTextColor = "#91E8C1"
+redColor = "#F47A85"
+redBackgroundColor = "#2B191E"
+redTextColor = "#FF9DA6"
+orangeColor = "#E7B96A"
+orangeBackgroundColor = "#2B241A"
+orangeTextColor = "#F0CA87"
+blueColor = "#63BDF5"
+blueBackgroundColor = "#172733"
+blueTextColor = "#89CEF8"
+violetColor = "#AA9CF0"
+grayColor = "#B5BBC1"
+
+dataframeBorderColor = "#343B41"
+dataframeHeaderBackgroundColor = "#20262B"
+chartCategoricalColors = ["#63BDF5", "#7EE1B5", "#E7B96A", "#F47A85", "#AA9CF0", "#D2D878", "#858E97"]
+chartSequentialColors = ["#10202A", "#15303D", "#1A4050", "#205164", "#286379", "#32758C", "#3F88A0", "#50A0B4", "#61B8C2", "#7CD0C8"]
+
+[theme.sidebar]
+primaryColor = "#67D9AD"
+backgroundColor = "#15181B"
+secondaryBackgroundColor = "#20262B"
+codeBackgroundColor = "#0F141A"
+textColor = "#F4F5F6"
+borderColor = "#343B41"
+
+[[theme.fontFaces]]
+family = "IBM Plex Mono"
+url = "app/static/fonts/IBMPlexMono-Regular.ttf"
+weight = 400
+
+[[theme.fontFaces]]
+family = "IBM Plex Mono"
+url = "app/static/fonts/IBMPlexMono-Medium.ttf"
+weight = 500
+
+[[theme.fontFaces]]
+family = "IBM Plex Mono"
+url = "app/static/fonts/IBMPlexMono-SemiBold.ttf"
+weight = 600
