@@ -44,9 +44,9 @@ telegram:
   enabled_env: EXTERNAL_ALERTS_ENABLED
   community_url: "https://t.me/+iHJKJePgc8hiZjFl"
   groups:
-    daily: "-5237516323"
+    daily: "-1003794694425"
     advanced: "-1004460522940"
-    professional: "-5344553813"
+    professional: "-1003902118990"
   events:
     order_submitted: true
     order_filled: true

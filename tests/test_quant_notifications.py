@@ -272,8 +272,8 @@ def test_group_signal_routes_follow_membership_superset(tmp_path, monkeypatch):
     monkeypatch.setattr("scheduler.jobs.telegram_configured", lambda *_: True)
     monkeypatch.setattr("scheduler.jobs.send_telegram", lambda message, chat_id=None: sent.append((message, chat_id)))
     assert dispatch_quant_group_deliveries(db) == 3
-    assert {target for _, target in sent} == {"-1004460522940", "-5344553813"}
-    professional = [message for message, target in sent if target == "-5344553813"]
+    assert {target for _, target in sent} == {"-1004460522940", "-1003902118990"}
+    professional = [message for message, target in sent if target == "-1003902118990"]
     assert any("正股新操作" in message for message in professional)
     assert any("期權新操作" in message for message in professional)
 
@@ -298,5 +298,5 @@ def test_daily_group_summary_requires_new_persisted_snapshot(tmp_path, monkeypat
 
     assert publish_daily_group_summary(db) == 1
     assert publish_daily_group_summary(db) == 0
-    assert sent[0][1] == "-5237516323"
+    assert sent[0][1] == "-1003794694425"
     assert "每日量化總結" in sent[0][0] and "USD 總資產" in sent[0][0] and "CNY 總資產" in sent[0][0]
