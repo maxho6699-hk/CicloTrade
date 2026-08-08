@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<futu_opend>
+  <!-- CicloTrade production OpenD: loopback only, never expose 11111 publicly. -->
+  <ip>127.0.0.1</ip>
+  <api_port>11111</api_port>
+  <login_region>hk</login_region>
+  <!-- Fill these two values on the server; do not commit real credentials. -->
+  <login_account>REPLACE_WITH_FUTU_ACCOUNT</login_account>
+  <login_pwd>REPLACE_WITH_FUTU_PASSWORD</login_pwd>
+  <lang>chs</lang>
+  <log_level>info</log_level>
+  <log_path>/var/log/futu-opend</log_path>
+  <push_proto_type>0</push_proto_type>
+  <price_reminder_push>0</price_reminder_push>
+  <auto_hold_quote_right>0</auto_hold_quote_right>
+  <pdt_protection>1</pdt_protection>
+  <dtcall_confirmation>1</dtcall_confirmation>
+</futu_opend>
