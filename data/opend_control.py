@@ -35,6 +35,7 @@ _PNG_HEADER = b"\x89PNG\r\n\x1a\n"
 _JPEG_HEADER = b"\xff\xd8\xff"
 _MAX_CAPTCHA_BYTES = 512 * 1024
 _PROBE_CACHE_SECONDS = 5.0
+_PROBE_PROCESS_TIMEOUT_SECONDS = 4.0
 _probe_cache: dict[tuple[str, int], tuple[float, "OpenDStatus"]] = {}
 _probe_lock = threading.Lock()
 
@@ -77,7 +78,7 @@ def probe_opend_status(
             [sys.executable, "-m", "data.opend_probe", host, str(port)],
             capture_output=True,
             text=True,
-            timeout=2.0,
+            timeout=_PROBE_PROCESS_TIMEOUT_SECONDS,
             check=False,
             env=environment,
         )

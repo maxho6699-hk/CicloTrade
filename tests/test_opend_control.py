@@ -116,7 +116,7 @@ def test_phone_verification_failure_response_is_not_reported_as_success(monkeypa
     assert "123456" not in str(exc_info.value)
 
 
-def test_probe_uses_a_two_second_child_process_timeout_and_short_cache(monkeypatch):
+def test_probe_uses_a_bounded_child_process_timeout_and_short_cache(monkeypatch):
     calls: list[dict] = []
 
     def run(command, **kwargs):
@@ -131,7 +131,7 @@ def test_probe_uses_a_two_second_child_process_timeout_and_short_cache(monkeypat
     assert first.state == "verification_required"
     assert second == first
     assert len(calls) == 1
-    assert calls[0]["timeout"] == 2.0
+    assert calls[0]["timeout"] == 4.0
     assert calls[0]["command"][1:3] == ["-m", "data.opend_probe"]
 
 
