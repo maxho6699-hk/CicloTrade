@@ -88,11 +88,12 @@ def probe_opend_status(
         status = OpenDStatus("unavailable", "OpenD 状态检测暂不可用。")
     else:
         probe_output = f"{result.stdout}\n{result.stderr}".casefold()
-        if result.returncode == 0 and result.stdout.strip() == "READY":
+        probe_lines = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+        if result.returncode == 0 and "READY" in probe_lines:
             status = OpenDStatus("ready", "OpenD 已连接，实时行情可用。")
         elif (
             result.returncode == 4
-            or result.stdout.strip() == "PHONE_VERIFICATION_REQUIRED"
+            or "PHONE_VERIFICATION_REQUIRED" in probe_lines
             or any(marker in probe_output for marker in _PHONE_VERIFICATION_MARKERS)
         ):
             status = OpenDStatus("phone_verification_required", "OpenD 正在等待手机验证码。")

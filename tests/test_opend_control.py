@@ -149,6 +149,22 @@ def test_probe_reports_phone_verification_requirement(monkeypatch):
     assert status.message == "OpenD 正在等待手机验证码。"
 
 
+def test_probe_accepts_ready_after_futu_sdk_log_output(monkeypatch):
+    def run(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="SDK: New connect ready\nREADY\n",
+            stderr="",
+        )
+
+    opend_control.clear_opend_probe_cache()
+    monkeypatch.setattr(opend_control.subprocess, "run", run)
+    status = opend_control.probe_opend_status(force=True)
+
+    assert status.ready is True
+
+
 def test_probe_detects_phone_verification_from_futu_sdk_output(monkeypatch):
     def run(command, **_kwargs):
         return subprocess.CompletedProcess(
