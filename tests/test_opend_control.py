@@ -6,6 +6,7 @@ import pytest
 
 import data.opend_control as opend_control
 from data.opend_control import OpenDControlError, OpenDVerificationController
+from ui.pages.admin import _captcha_is_expired
 
 
 PNG = b"\x89PNG\r\n\x1a\n"
@@ -81,3 +82,10 @@ def test_probe_timeout_returns_a_safe_fallback_state(monkeypatch):
     status = opend_control.probe_opend_status(force=True)
     assert status.state == "unavailable"
     assert "备用行情" in status.message
+
+
+def test_admin_rejects_expired_or_invalid_captcha_timestamps():
+    assert _captcha_is_expired(100.0, now=219.9) is False
+    assert _captcha_is_expired(100.0, now=220.0) is True
+    assert _captcha_is_expired(221.0, now=220.0) is True
+    assert _captcha_is_expired(None, now=220.0) is True

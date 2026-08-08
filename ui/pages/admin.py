@@ -6,6 +6,7 @@ from __future__ import annotations
 from importlib.util import find_spec
 import json
 import os
+from time import time
 from typing import Callable
 
 import pandas as pd
@@ -29,6 +30,9 @@ from payment.paddle_client import PaddleClient
 from payment.paypal_client import PayPalClient
 from trading.tiger_api import TigerAPI
 from ui.components import page_heading, section_label
+
+
+_OPEND_CAPTCHA_TTL_SECONDS = 120.0
 
 
 def _run_action(action: Callable[[], object], success: str) -> None:
@@ -625,6 +629,14 @@ def _record_provider_verification(
         )
 
 
+def _captcha_is_expired(generated_at: object, *, now: float | None = None) -> bool:
+    try:
+        age = (time() if now is None else now) - float(generated_at)
+    except (TypeError, ValueError):
+        return True
+    return age < 0 or age >= _OPEND_CAPTCHA_TTL_SECONDS
+
+
 def _render_data_source_verification(service: AdminService, actor_id: int) -> None:
     section_label("数据源验证", "永久保留 · 当前已接入 OpenD 验证器")
     try:
@@ -671,11 +683,23 @@ def _render_data_source_verification(service: AdminService, actor_id: int) -> No
             else:
                 _record_provider_verification(service, actor_id, "request_captcha", True)
                 st.session_state.admin_opend_captcha = image
+                st.session_state.admin_opend_captcha_generated_at = time()
                 st.success("新验证码已生成，请直接在下方输入。", icon=":material/check_circle:")
 
         captcha_image = st.session_state.get("admin_opend_captcha")
+        if captcha_image and _captcha_is_expired(
+            st.session_state.get("admin_opend_captcha_generated_at")
+        ):
+            st.session_state.pop("admin_opend_captcha", None)
+            st.session_state.pop("admin_opend_captcha_generated_at", None)
+            captcha_image = None
+            st.warning(
+                "验证码已超过 2 分钟并自动作废，请点击“刷新验证码”重新获取。",
+                icon=":material/timer_off:",
+            )
         if captcha_image:
             st.image(captcha_image, caption="OpenD 图形验证码", width=320)
+            st.caption("请在 2 分钟内提交；超时后系统会阻止提交，避免消耗验证次数。")
             with st.form("admin_opend_captcha_form", clear_on_submit=True):
                 captcha_code = st.text_input(
                     "输入图片中的 4 位验证码",
@@ -692,12 +716,17 @@ def _render_data_source_verification(service: AdminService, actor_id: int) -> No
             if submit_captcha:
                 try:
                     message = OpenDVerificationController().submit_captcha(captcha_code)
-                except (OpenDControlError, ValueError) as exc:
+                except ValueError as exc:
+                    st.error(str(exc), icon=":material/error:")
+                except OpenDControlError as exc:
                     _record_provider_verification(service, actor_id, "submit_captcha", False)
+                    st.session_state.pop("admin_opend_captcha", None)
+                    st.session_state.pop("admin_opend_captcha_generated_at", None)
                     st.error(str(exc), icon=":material/error:")
                 else:
                     _record_provider_verification(service, actor_id, "submit_captcha", True)
                     st.session_state.pop("admin_opend_captcha", None)
+                    st.session_state.pop("admin_opend_captcha_generated_at", None)
                     st.session_state.admin_flash = message
                     st.rerun()
         elif status.state == "verification_required":
