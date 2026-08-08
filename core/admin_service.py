@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from core.compat import UTC
 import ipaddress
 import json
+import sqlite3
 from typing import Any
 
 from core.auth import AuthService
@@ -107,6 +108,19 @@ class AdminService:
     def _require(self, actor_id: int, permission: str) -> str:
         role = self._role_for_id(actor_id)
         if not self.has_permission(role, permission):
+            raise PermissionError("当前后台角色无权执行此操作。")
+        return role
+
+    @staticmethod
+    def _require_billing_in_transaction(conn: Any, actor_id: int) -> str:
+        """Re-check a reviewer's role after acquiring the SQLite write lock."""
+        row = conn.execute(
+            """SELECT u.is_admin,u.is_active,r.role FROM users u
+               LEFT JOIN admin_roles r ON r.user_id=u.id WHERE u.id=?""",
+            (actor_id,),
+        ).fetchone()
+        role = str(row["role"]) if row and row["role"] else ""
+        if not row or not row["is_admin"] or not row["is_active"] or not AdminService.has_permission(role, "billing"):
             raise PermissionError("当前后台角色无权执行此操作。")
         return role
 
@@ -458,22 +472,116 @@ class AdminService:
                ORDER BY c.created_at DESC LIMIT 500"""
         )
 
-    def confirm_fps(self, actor_id: int, order_no: str) -> None:
+    def list_manual_payment_claims(
+        self, actor_id: int, status: str = "submitted", limit: int = 500
+    ) -> list[dict[str, Any]]:
         self._require(actor_id, "billing")
-        order = self.db.fetch_one(
-            "SELECT pay_method,status FROM subscription_orders WHERE order_no=?", (order_no,)
+        if status not in {"submitted", "approved", "rejected", "all"}:
+            raise ValueError("付款凭证状态无效。")
+        params: list[Any] = []
+        where = ""
+        if status != "all":
+            where = "WHERE c.status=?"
+            params.append(status)
+        params.append(max(1, min(int(limit), 1000)))
+        return self.db.fetch_all(
+            f"""SELECT c.*,o.plan_type,o.billing_cycle,o.amount,o.currency,o.pay_method,
+                       u.email user_email,r.email reviewer_email
+                FROM manual_payment_claims c
+                JOIN subscription_orders o ON o.order_no=c.order_no
+                JOIN users u ON u.id=c.user_id
+                LEFT JOIN users r ON r.id=c.reviewed_by
+                {where} ORDER BY c.created_at DESC,c.id DESC LIMIT ?""",
+            tuple(params),
         )
-        if not order or order["pay_method"] != "fps" or order["status"] != "pending":
-            raise ValueError("该订单不是等待确认的 FPS 订单。")
-        OrderService(self.db).process_callback(
-            f"fps-admin-{order_no}",
-            order_no,
-            "paid",
-            {"source": "admin", "admin_id": actor_id},
-            audit_user_id=actor_id,
-            audit_action="ADMIN_CONFIRM_FPS",
-            audit_details={"order_no": order_no},
-        )
+
+    def review_manual_payment_claim(
+        self,
+        actor_id: int,
+        claim_id: int,
+        approved: bool | str,
+        settlement_reference: str | None = None,
+        rejection_reason: str | None = None,
+    ) -> dict[str, Any]:
+        """Approve or reject a submitted Telegram payment proof exactly once."""
+        self._require(actor_id, "billing")
+        if isinstance(approved, str):
+            value = approved.strip().lower()
+            if value not in {"approve", "approved", "reject", "rejected"}:
+                raise ValueError("付款凭证审核决定无效。")
+            approved = value in {"approve", "approved"}
+        if not isinstance(approved, bool):
+            raise ValueError("付款凭证审核决定无效。")
+        reference = str(settlement_reference or "").strip()
+        reason = str(rejection_reason or "").strip()
+        now = datetime.now(UTC)
+        with self.db.transaction() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._require_billing_in_transaction(conn, actor_id)
+            claim_row = conn.execute(
+                "SELECT * FROM manual_payment_claims WHERE id=?", (claim_id,)
+            ).fetchone()
+            if not claim_row:
+                raise ValueError("付款凭证不存在。")
+            claim = dict(claim_row)
+            if claim["user_id"] == actor_id:
+                raise PermissionError("审核人不能审核自己的付款凭证。")
+            if claim["status"] == "approved":
+                if approved and (not reference or claim["settlement_reference"] == reference):
+                    return claim
+                raise ValueError("付款凭证已经审核通过。")
+            if claim["status"] == "rejected":
+                if not approved:
+                    return claim
+                raise ValueError("已拒绝的付款凭证必须由用户重新提交。")
+            if approved:
+                if not 6 <= len(reference) <= 64:
+                    raise ValueError("结算参考编号必须为 6 到 64 个字符。")
+                order_row = conn.execute(
+                    "SELECT * FROM subscription_orders WHERE order_no=? AND user_id=?",
+                    (claim["order_no"], claim["user_id"]),
+                ).fetchone()
+                if not order_row or order_row["status"] != "pending":
+                    raise ValueError("关联订单已不是待付款状态。")
+                try:
+                    changed = OrderService._activate_paid_order(conn, dict(order_row), now)
+                    if not changed:
+                        raise ValueError("关联订单状态已变更，请刷新后重试。")
+                    conn.execute(
+                        """UPDATE manual_payment_claims
+                           SET status='approved',settlement_reference=?,reviewed_by=?,reviewed_at=?
+                           WHERE id=? AND status='submitted'""",
+                        (reference, actor_id, _iso(now), claim_id),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    raise ValueError("结算参考编号已经使用。") from exc
+                self._audit(
+                    conn, actor_id, "ADMIN_MANUAL_PAYMENT_CLAIM_APPROVED",
+                    {"claim_id": claim_id, "order_no": claim["order_no"], "settlement_reference": reference},
+                )
+            else:
+                if not 1 <= len(reason) <= 500:
+                    raise ValueError("拒绝付款凭证必须填写原因。")
+                conn.execute(
+                    """UPDATE manual_payment_claims
+                       SET status='rejected',rejection_reason=?,reviewed_by=?,reviewed_at=?
+                       WHERE id=? AND status='submitted'""",
+                    (reason, actor_id, _iso(now), claim_id),
+                )
+                self._audit(
+                    conn, actor_id, "ADMIN_MANUAL_PAYMENT_CLAIM_REJECTED",
+                    {"claim_id": claim_id, "order_no": claim["order_no"], "reason": reason},
+                )
+            return dict(conn.execute("SELECT * FROM manual_payment_claims WHERE id=?", (claim_id,)).fetchone())
+
+    def review_manual_claim(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Backward-compatible concise alias for Telegram payment claim review."""
+        return self.review_manual_payment_claim(*args, **kwargs)
+
+    def confirm_fps(self, actor_id: int, order_no: str) -> None:
+        del order_no
+        self._require(actor_id, "billing")
+        raise PermissionError("FPS 订单必须先由用户提交付款申报，再通过财务审核队列处理。")
 
     def record_external_refund(self, actor_id: int, order_no: str) -> None:
         """Record a refund already completed in the original payment channel."""

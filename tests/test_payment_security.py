@@ -14,6 +14,7 @@ import pytest
 
 import asgi_app
 from core.auth import AuthService
+from core.admin_service import AdminService
 from core.database import DatabaseManager
 from core.plans import referral_code
 from payment.order_service import OrderService, grant_subscription_days
@@ -43,6 +44,116 @@ def _paypal_headers() -> dict[str, str]:
         "paypal-transmission-sig": "c2lnbmF0dXJl",
         "paypal-transmission-time": "2026-08-06T00:00:00Z",
     }
+
+
+def _billing_admin(db: DatabaseManager, name: str = "billing-admin") -> tuple[dict, AdminService]:
+    admin = _user(db, name)
+    db.execute("UPDATE users SET is_admin=1 WHERE id=?", (admin["id"],))
+    return admin, AdminService(db)
+
+
+def test_telegram_order_idempotency_and_owner_boundary(db):
+    owner = _user(db, "telegram-owner")
+    other = _user(db, "telegram-other")
+    orders = OrderService(db)
+
+    order = orders.create_order(
+        owner["id"], "标准版", "monthly", "fps", terms_accepted=True,
+        source="telegram", idempotency_key="tg-order-1",
+    )
+    repeated = orders.create_order(
+        owner["id"], "标准版", "monthly", "fps", terms_accepted=True,
+        source="telegram", idempotency_key="tg-order-1",
+    )
+    assert repeated["order_no"] == order["order_no"]
+    assert order["amount_minor"] == int(round(order["amount"] * 100))
+    assert order["expires_at"]
+    with pytest.raises(ValueError, match="幂等键"):
+        orders.create_order(
+            owner["id"], "高级版", "monthly", "fps", terms_accepted=True,
+            source="telegram", idempotency_key="tg-order-1",
+        )
+    with pytest.raises(PermissionError):
+        orders.get_order_for_user(other["id"], order["order_no"])
+
+
+def test_manual_claim_evidence_duplicate_and_resubmission(db):
+    user = _user(db, "manual-claim")
+    orders = OrderService(db)
+    order = orders.create_order(
+        user["id"], "标准版", "monthly", "fps", terms_accepted=True, source="telegram"
+    )
+    with pytest.raises(ValueError, match="凭证"):
+        orders.submit_manual_payment_claim(user["id"], order["order_no"])
+    claim = orders.submit_manual_payment_claim(
+        user["id"], order["order_no"], evidence_file_id="file-1",
+        evidence_file_unique_id="unique-1", source_update_id="9001",
+    )
+    duplicate = orders.submit_manual_payment_claim(
+        user["id"], order["order_no"], evidence_file_id="file-1",
+        evidence_file_unique_id="unique-1", source_update_id="9001",
+    )
+    assert duplicate["id"] == claim["id"]
+
+    admin, admin_service = _billing_admin(db)
+    rejected = admin_service.review_manual_payment_claim(admin["id"], claim["id"], False, rejection_reason="Amount not matched")
+    assert rejected["status"] == "rejected"
+    retry = orders.submit_manual_payment_claim(
+        user["id"], order["order_no"], evidence_message_id=12345, source_update_id="9002"
+    )
+    assert retry["attempt"] == 2 and retry["status"] == "submitted"
+
+
+def test_manual_claim_review_is_idempotent_and_prevents_self_review(db):
+    user = _user(db, "self-review")
+    orders = OrderService(db)
+    order = orders.create_order(
+        user["id"], "高级版", "monthly", "fps", terms_accepted=True, source="telegram"
+    )
+    claim = orders.submit_manual_payment_claim(user["id"], order["order_no"], evidence_message_id=123)
+    db.execute("UPDATE users SET is_admin=1 WHERE id=?", (user["id"],))
+    service = AdminService(db)
+    with pytest.raises(PermissionError, match="自己"):
+        service.review_manual_payment_claim(user["id"], claim["id"], True, "SELF-123")
+
+    admin, service = _billing_admin(db, "separate-reviewer")
+    approved = service.review_manual_payment_claim(admin["id"], claim["id"], True, "SETTLE-123")
+    expiry = db.fetch_one("SELECT subscription_expire FROM users WHERE id=?", (user["id"],))["subscription_expire"]
+    again = service.review_manual_payment_claim(admin["id"], claim["id"], True, "SETTLE-123")
+    retry_without_reference = service.review_manual_payment_claim(admin["id"], claim["id"], True)
+    assert approved["status"] == again["status"] == retry_without_reference["status"] == "approved"
+    assert db.fetch_one("SELECT subscription_expire FROM users WHERE id=?", (user["id"],))["subscription_expire"] == expiry
+    assert db.fetch_one(
+        "SELECT COUNT(*) count FROM user_action_logs WHERE action_type='ADMIN_MANUAL_PAYMENT_CLAIM_APPROVED'"
+    )["count"] == 1
+
+
+def test_manual_claim_recheck_blocks_revoked_reviewer_and_duplicate_settlement(db, monkeypatch):
+    first_user = _user(db, "settlement-first")
+    second_user = _user(db, "settlement-second")
+    orders = OrderService(db)
+    first_order = orders.create_order(first_user["id"], "标准版", "monthly", "fps", terms_accepted=True, source="telegram")
+    second_order = orders.create_order(second_user["id"], "标准版", "monthly", "fps", terms_accepted=True, source="telegram")
+    first = orders.submit_manual_payment_claim(first_user["id"], first_order["order_no"], evidence_message_id=11)
+    second = orders.submit_manual_payment_claim(second_user["id"], second_order["order_no"], evidence_message_id=12)
+    admin, service = _billing_admin(db, "revoked-reviewer")
+    initial_require = service._require
+
+    def revoke_after_initial_check(actor_id, permission):
+        role = initial_require(actor_id, permission)
+        db.execute("UPDATE users SET is_admin=0 WHERE id=?", (actor_id,))
+        return role
+
+    monkeypatch.setattr(service, "_require", revoke_after_initial_check)
+    with pytest.raises(PermissionError):
+        service.review_manual_payment_claim(admin["id"], first["id"], True, "TOCTOU-123")
+    assert db.fetch_one("SELECT status FROM manual_payment_claims WHERE id=?", (first["id"],))["status"] == "submitted"
+
+    monkeypatch.setattr(service, "_require", initial_require)
+    db.execute("UPDATE users SET is_admin=1 WHERE id=?", (admin["id"],))
+    service.review_manual_payment_claim(admin["id"], first["id"], True, "SETTLEMENT-123")
+    with pytest.raises(ValueError, match="参考编号"):
+        service.review_manual_payment_claim(admin["id"], second["id"], True, "SETTLEMENT-123")
 
 
 def test_terminal_callbacks_and_provider_reversal_restore_entitlement(db):

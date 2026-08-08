@@ -7,6 +7,7 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 from datetime import datetime, timedelta
 from core.compat import UTC
 import hashlib
@@ -99,6 +100,20 @@ _MAX_TELEGRAM_CALLBACK_LENGTH = 64
 _CALLBACK_DATA = {"menu:home", "menu:settings"} | {
     f"notify:{name}:toggle" for name in _NOTIFY_COMMANDS
 }
+_CALLBACK_PATTERNS = (
+    re.compile(r"^desk:(?:home|actions|portfolio|market|plans|orders|settings|help|account)$"),
+    re.compile(r"^buy:plan:(?:standard|advanced|professional|custom)$"),
+    re.compile(
+        r"^buy:cycle:(?:standard|advanced|professional|custom):"
+        r"(?:monthly|quarterly|yearly|project)$"
+    ),
+    re.compile(
+        r"^buy:(?:method|create):(?:standard|advanced|professional|custom):"
+        r"(?:monthly|quarterly|yearly|project):(?:fps|paypal|paddle)$"
+    ),
+    re.compile(r"^pay:claimed:TA[0-9A-F]{12,40}$"),
+    re.compile(r"^admin:(?:approve|reject):[1-9][0-9]{0,9}:[1-9][0-9]{0,3}$"),
+)
 
 
 def _telegram_chat_id(value: object, *, private: bool = False) -> str:
@@ -141,13 +156,21 @@ def _telegram_https_url(value: object) -> str:
 
 
 def _telegram_callback_data(value: object) -> str:
-    if not isinstance(value, str) or len(value) > _MAX_TELEGRAM_CALLBACK_LENGTH or value not in _CALLBACK_DATA:
+    if (
+        not isinstance(value, str)
+        or not value.isascii()
+        or not 1 <= len(value) <= _MAX_TELEGRAM_CALLBACK_LENGTH
+        or (
+            value not in _CALLBACK_DATA
+            and not any(pattern.fullmatch(value) for pattern in _CALLBACK_PATTERNS)
+        )
+    ):
         raise ValueError("Telegram callback_data 无效。")
     return value
 
 
 def telegram_callback_allowed(value: object) -> bool:
-    """Return whether callback data belongs to the Bot's fixed command set."""
+    """Accept only the Bot's fixed actions and tightly validated identifiers."""
     try:
         _telegram_callback_data(value)
     except ValueError:
@@ -197,29 +220,69 @@ def _app_url(path: str) -> str:
 def telegram_main_keyboard() -> TelegramKeyboard:
     return [
         [
-            {"text": "📈 今日行動", "url": _app_url("recommendations")},
-            {"text": "💼 目前持倉", "url": _app_url("dashboard")},
+            {"text": "📈 今日行動", "callback_data": "desk:actions"},
+            {"text": "💼 模擬持倉", "callback_data": "desk:portfolio"},
         ],
         [
-            {"text": "📊 市場行情", "url": _app_url("terminal")},
-            {"text": "🔔 通知設定", "callback_data": "menu:settings"},
+            {"text": "📊 市場行情", "callback_data": "desk:market"},
+            {"text": "🔔 通知設定", "callback_data": "desk:settings"},
         ],
         [
-            {"text": "🔗 綁定帳戶", "url": _app_url("account")},
-            {"text": "💎 會員方案", "url": _app_url("subscription")},
+            {"text": "💎 開通會員", "callback_data": "desk:plans"},
+            {"text": "🧾 我的訂單", "callback_data": "desk:orders"},
         ],
-        [{"text": "❓ 幫助中心", "url": _app_url("help")}],
+        [
+            {"text": "🔗 帳戶綁定", "callback_data": "desk:account"},
+            {"text": "❓ 使用幫助", "callback_data": "desk:help"},
+        ],
     ]
 
 
-def _notification_account(database, target: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+def verified_account_for_chat(database, chat_id: str) -> dict[str, Any] | None:
+    """Resolve an authoritative binding and lazily migrate one legacy JSON binding."""
+    target = str(chat_id).strip()
     row = database.fetch_one(
-        """SELECT u.id,u.plan_type,u.subscription_expire,s.settings_json
+        """SELECT u.id,u.email,u.display_name,u.plan_type,u.subscription_expire,u.is_admin
+           FROM telegram_accounts t
+           JOIN users u ON u.id=t.user_id
+           WHERE u.is_active=1 AND t.is_active=1 AND t.revoked_at IS NULL
+             AND t.chat_id=?""",
+        (target,),
+    )
+    if row:
+        return row
+    legacy = database.fetch_all(
+        """SELECT u.id,u.email,u.display_name,u.plan_type,u.subscription_expire,u.is_admin
            FROM users u JOIN user_settings s ON s.user_id=u.id
            WHERE u.is_active=1
+             AND json_extract(s.settings_json,'$.telegram.verified')=1
+             AND json_extract(s.settings_json,'$.telegram.consent')=1
              AND CAST(json_extract(s.settings_json,'$.telegram.chat_id') AS TEXT)=?""",
         (target,),
     )
+    if len(legacy) != 1:
+        return None
+    existing = database.fetch_one(
+        "SELECT 1 FROM telegram_accounts WHERE chat_id=? OR user_id=?",
+        (target, int(legacy[0]["id"])),
+    )
+    if existing:
+        return None
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    try:
+        database.execute(
+            """INSERT INTO telegram_accounts
+               (user_id,chat_id,is_active,revoked_at,created_at,updated_at)
+               VALUES (?,?,1,NULL,?,?)""",
+            (int(legacy[0]["id"]), target, now, now),
+        )
+    except Exception:
+        return None
+    return legacy[0]
+
+
+def _notification_account(database, target: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    row = verified_account_for_chat(database, target)
     if not row:
         return None, {}
     settings = load_user_settings(int(row["id"]), database)
@@ -362,6 +425,13 @@ def issue_verification_token(database, user_id: int, chat_id: str, consent: bool
         user = conn.execute("SELECT 1 FROM users WHERE id=? AND is_active=1", (int(user_id),)).fetchone()
         if not user:
             raise ValueError("用户不存在或已停用。")
+        claimed = conn.execute(
+            """SELECT user_id FROM telegram_accounts
+               WHERE chat_id=? AND is_active=1 AND revoked_at IS NULL AND user_id<>?""",
+            (chat_id, int(user_id)),
+        ).fetchone()
+        if claimed:
+            raise ValueError("此 Telegram 已绑定其他 CicloTrade 账户。")
         conn.execute(
             "UPDATE telegram_verifications SET verified_at=? WHERE user_id=? AND verified_at IS NULL",
             (now.isoformat(timespec="seconds"), int(user_id)),
@@ -398,7 +468,39 @@ def confirm_verification(database, user_id: int, token: str) -> str:
         )
         if claimed.rowcount != 1:
             raise ValueError("验证码无效或已使用。")
+        now = datetime.now(UTC).isoformat(timespec="seconds")
+        occupied = conn.execute(
+            """SELECT user_id FROM telegram_accounts
+               WHERE chat_id=? AND is_active=1 AND revoked_at IS NULL AND user_id<>?""",
+            (str(row["chat_id"]), int(user_id)),
+        ).fetchone()
+        if occupied:
+            raise ValueError("此 Telegram 已绑定其他 CicloTrade 账户。")
+        conn.execute(
+            "DELETE FROM telegram_accounts WHERE chat_id=? AND user_id<>? AND (is_active=0 OR revoked_at IS NOT NULL)",
+            (str(row["chat_id"]), int(user_id)),
+        )
+        try:
+            conn.execute(
+                """INSERT INTO telegram_accounts
+                   (user_id,chat_id,is_active,revoked_at,created_at,updated_at)
+                   VALUES (?,?,1,NULL,?,?) ON CONFLICT(user_id) DO UPDATE SET
+                   chat_id=excluded.chat_id,is_active=1,revoked_at=NULL,updated_at=excluded.updated_at""",
+                (int(user_id), str(row["chat_id"]), now, now),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("此 Telegram 已绑定其他 CicloTrade 账户。") from exc
         return str(row["chat_id"])
+
+
+def revoke_telegram_account(database, user_id: int) -> None:
+    """Revoke the authoritative Telegram binding when a user unlinks it."""
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    database.execute(
+        """UPDATE telegram_accounts SET is_active=0,revoked_at=?,updated_at=?
+           WHERE user_id=? AND is_active=1""",
+        (now, now, int(user_id)),
+    )
 
 
 def send_telegram(
@@ -442,6 +544,7 @@ def _telegram_request(method: str, payload: dict[str, Any], *, token: str | None
         raise RuntimeError("Telegram Bot 尚未配置。")
     if method not in {
         "sendMessage",
+        "copyMessage",
         "editMessageText",
         "answerCallbackQuery",
         "setMyCommands",
@@ -497,6 +600,29 @@ def edit_telegram_message(
     _telegram_request("editMessageText", payload)
 
 
+def copy_telegram_message(
+    chat_id: str,
+    from_chat_id: str,
+    message_id: int,
+) -> None:
+    """Copy payment evidence inside Telegram without downloading the file."""
+    try:
+        target = _telegram_chat_id(chat_id, private=True)
+        source = _telegram_chat_id(from_chat_id, private=True)
+        if (
+            isinstance(message_id, bool)
+            or not isinstance(message_id, int)
+            or not 1 <= message_id <= 2_147_483_647
+        ):
+            raise ValueError("Telegram message ID 无效。")
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    _telegram_request(
+        "copyMessage",
+        {"chat_id": target, "from_chat_id": source, "message_id": message_id},
+    )
+
+
 def answer_telegram_callback(callback_query_id: str, text: str | None = None) -> None:
     """Acknowledge an inline callback promptly, without exposing account data."""
     if not isinstance(callback_query_id, str) or not callback_query_id or len(callback_query_id) > 128:
@@ -514,6 +640,8 @@ def configure_telegram_bot() -> None:
     """Install commands, the native menu button, and the authenticated webhook."""
     commands = [
         {"command": "start", "description": "主選單與 Chat ID"},
+        {"command": "plans", "description": "會員方案與開通"},
+        {"command": "orders", "description": "我的訂閱訂單"},
         {"command": "id", "description": "顯示綁定 Chat ID"},
         {"command": "settings", "description": "私人通知設定"},
         {"command": "help", "description": "使用說明"},

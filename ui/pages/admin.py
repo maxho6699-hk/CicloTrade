@@ -24,6 +24,7 @@ from data.opend_control import (
     probe_opend_status,
 )
 from notification.email_sender import smtp_configured
+from notification.telegram_billing import queue_manual_payment_review_notice
 from notification.telegram_bot import telegram_configured
 from payment.order_service import OrderService
 from payment.paddle_client import PaddleClient
@@ -359,18 +360,55 @@ def _render_billing(service: AdminService, actor_id: int) -> None:
     else:
         st.info("没有符合条件的订单。", icon=":material/inbox:")
 
-    pending_fps = service.list_orders(actor_id, "pending", "fps")
-    if pending_fps:
-        with st.form("confirm_fps"):
-            fps_no = st.selectbox("等待确认的 FPS 订单", [row["order_no"] for row in pending_fps])
-            fps_confirmed = st.checkbox("我已在银行记录中核对订单号、币种和金额")
-            confirm_fps = st.form_submit_button(
-                "确认 FPS 已入账", type="primary", icon=":material/paid:", disabled=not fps_confirmed
+    claims = service.list_manual_payment_claims(actor_id, "submitted")
+    if claims:
+        section_label("FPS 付款审核", f"{len(claims)} 笔等待核对")
+        claim_frame = pd.DataFrame(claims)[
+            ["id", "created_at", "user_email", "order_no", "plan_type", "billing_cycle", "amount", "currency", "attempt"]
+        ]
+        claim_frame.columns = ["申报号", "申报时间", "用户", "订单号", "方案", "周期", "金额", "币种", "提交次数"]
+        st.dataframe(claim_frame, hide_index=True, width="stretch")
+        claim_id = st.selectbox(
+            "选择付款申报",
+            [int(row["id"]) for row in claims],
+            format_func=lambda value: next(
+                f"#{row['id']} · {row['order_no']} · {row['user_email']}"
+                for row in claims if int(row["id"]) == value
+            ),
+            key="manual_payment_claim",
+        )
+        selected_claim = next(row for row in claims if int(row["id"]) == claim_id)
+        approve_col, reject_col = st.columns(2)
+        with approve_col, st.form("approve_manual_payment"):
+            settlement = st.text_input("银行 / FPS 流水号", max_chars=64)
+            verified = st.checkbox("已核对到账金额、币种、订单备注与流水号")
+            approve_claim = st.form_submit_button(
+                "核对到账并开通",
+                type="primary",
+                icon=":material/paid:",
+                disabled=not verified,
             )
-        if confirm_fps:
-            _run_action(lambda: service.confirm_fps(actor_id, fps_no), "FPS 订单已入账并更新订阅。")
+        if approve_claim:
+            def approve_action() -> None:
+                reviewed = service.review_manual_payment_claim(
+                    actor_id, claim_id, True, settlement_reference=settlement
+                )
+                queue_manual_payment_review_notice(get_database(), reviewed, True)
+
+            _run_action(approve_action, "FPS 付款已核对，会员权益已开通。")
+        with reject_col, st.form("reject_manual_payment"):
+            rejection_reason = st.text_area("驳回原因", max_chars=500)
+            reject_claim = st.form_submit_button("未到账 / 驳回", icon=":material/cancel:")
+        if reject_claim:
+            def reject_action() -> None:
+                reviewed = service.review_manual_payment_claim(
+                    actor_id, claim_id, False, rejection_reason=rejection_reason
+                )
+                queue_manual_payment_review_notice(get_database(), reviewed, False)
+
+            _run_action(reject_action, "付款申报已驳回，订单未开通。")
     else:
-        st.success("没有等待人工确认的 FPS 订单。", icon=":material/check_circle:")
+        st.success("没有等待人工审核的 FPS 付款申报。", icon=":material/check_circle:")
 
     st.info(
         "平台不接受主动退款。支付平台确认的退款、争议或拒付会由签名 Webhook 自动撤销权益。",

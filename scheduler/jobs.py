@@ -35,6 +35,7 @@ from notification.telegram_bot import (
     telegram_token,
     verified_user_target,
 )
+from notification.telegram_outbox import dispatch_telegram_service_outbox
 
 
 def _settings_json(value) -> dict:

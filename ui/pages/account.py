@@ -10,7 +10,13 @@ from core.auth import AuthService
 from core.database import get_database
 from core.plans import effective_plan
 from core.user_settings import load_user_settings, merge_user_settings
-from notification.telegram_bot import confirm_verification, issue_verification_token, send_telegram, telegram_configured
+from notification.telegram_bot import (
+    confirm_verification,
+    issue_verification_token,
+    revoke_telegram_account,
+    send_telegram,
+    telegram_configured,
+)
 from notification.templates import telegram_binding
 from ui.components import metric_grid, page_heading, section_label
 
@@ -73,6 +79,7 @@ def render() -> None:
         if channel.get("verified"):
             st.success(f"已验证 Chat ID：{str(channel.get('chat_id'))[:4]}…", icon=":material/verified:")
             if st.button("解除 Telegram 绑定", icon=":material/link_off:"):
+                revoke_telegram_account(db, user["id"])
                 merge_user_settings(user["id"], {"telegram": {"consent": False, "verified": False, "chat_id": ""}}, db)
                 st.rerun()
         else:

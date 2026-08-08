@@ -251,7 +251,7 @@ def test_super_admin_and_support_can_grant_trial_but_finance_cannot(services):
     assert db.fetch_one("SELECT plan_type FROM users WHERE id=?", (customer["id"],))["plan_type"] == "标准版"
 
 
-def test_finance_can_reconcile_fps_but_support_cannot(services):
+def test_legacy_fps_confirmation_is_fail_closed_for_every_role(services):
     db, auth, admin, service = services
     finance = _register(auth, "finance")
     support = _register(auth, "helper")
@@ -262,9 +262,9 @@ def test_finance_can_reconcile_fps_but_support_cannot(services):
 
     with pytest.raises(PermissionError):
         service.confirm_fps(support["id"], order["order_no"])
-    service.confirm_fps(finance["id"], order["order_no"])
-    assert OrderService(db).get_order(order["order_no"])["status"] == "paid"
-    assert service.reconciliation_rows(finance["id"])[0]["matched"] == 1
+    with pytest.raises(PermissionError, match="付款申报"):
+        service.confirm_fps(finance["id"], order["order_no"])
+    assert OrderService(db).get_order(order["order_no"])["status"] == "pending"
 
 
 def test_social_share_review_is_idempotent_audited_and_atomic(services):

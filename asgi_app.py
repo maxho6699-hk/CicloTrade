@@ -34,13 +34,21 @@ from core.signal_imports import SignalImportService
 from core.user_settings import load_user_settings
 from notification.telegram_bot import (
     answer_telegram_callback,
+    copy_telegram_message,
     edit_telegram_message,
     entitled_user_target,
     send_telegram,
-    telegram_bot_response,
     telegram_callback_allowed,
     telegram_configured,
 )
+from notification.telegram_desk import (
+    TelegramDeskResponse,
+    claim_telegram_callback,
+    claim_telegram_update,
+    consume_telegram_quota,
+    telegram_desk_response,
+)
+from notification.telegram_outbox import dispatch_telegram_service_outbox
 from notification.templates import telegram_incident, telegram_order_message
 from payment.order_service import OrderService
 from payment.paypal_client import PayPalClient
@@ -836,16 +844,81 @@ async def telegram_webhook(request):
             return None
         return str(chat["id"]), message_id
 
-    message = payload.get("message")
-    if isinstance(message, dict) and isinstance(message.get("text"), str):
-        destination = private_message(message)
-        text = message["text"]
-        if destination is None or not text.strip() or len(text) > 512:
-            return JSONResponse({"ok": True})
-        chat_id, _ = destination
-        reply, keyboard = telegram_bot_response(database, chat_id, text)
+    async def deliver_followups(result: TelegramDeskResponse) -> None:
+        for item in result.followups:
+            if item.copy_from_chat_id and item.copy_message_id:
+                await asyncio.to_thread(
+                    copy_telegram_message,
+                    item.chat_id,
+                    item.copy_from_chat_id,
+                    item.copy_message_id,
+                )
+            await asyncio.to_thread(
+                send_telegram,
+                item.message,
+                item.chat_id,
+                parse_mode="HTML",
+                buttons=item.buttons,
+            )
+
+    async def deliver_service_outbox() -> None:
         try:
-            await asyncio.to_thread(send_telegram, reply, chat_id, parse_mode="HTML", buttons=keyboard)
+            await asyncio.to_thread(dispatch_telegram_service_outbox, database, 20)
+        except Exception as exc:
+            database.log_system_event(
+                "WARN", "TELEGRAM", "Telegram 服务通知队列暂时失败", type(exc).__name__
+            )
+
+    update_id = payload.get("update_id")
+    if isinstance(update_id, bool) or not isinstance(update_id, int) or update_id < 0:
+        update_id = None
+    message = payload.get("message")
+    if isinstance(message, dict):
+        destination = private_message(message)
+        text = message.get("text") if isinstance(message.get("text"), str) else ""
+        caption = message.get("caption") if isinstance(message.get("caption"), str) else ""
+        photos = message.get("photo")
+        photo = None
+        if isinstance(photos, list) and photos:
+            candidate = photos[-1]
+            if (
+                isinstance(candidate, dict)
+                and isinstance(candidate.get("file_id"), str)
+                and isinstance(candidate.get("file_unique_id"), str)
+                and 1 <= len(candidate["file_id"]) <= 256
+                and 1 <= len(candidate["file_unique_id"]) <= 256
+            ):
+                photo = {
+                    "file_id": candidate["file_id"],
+                    "file_unique_id": candidate["file_unique_id"],
+                }
+        value = text.strip() or caption.strip() or ("photo" if photo else "")
+        if destination is None or not value or len(value) > 512:
+            return JSONResponse({"ok": True})
+        chat_id, message_id = destination
+        update_fingerprint = f"{value}:{photo.get('file_unique_id', '') if photo else ''}"
+        if update_id is not None and not claim_telegram_update(database, update_id, chat_id, update_fingerprint):
+            return JSONResponse({"ok": True})
+        if not consume_telegram_quota(database, chat_id, "photo" if photo else value):
+            return JSONResponse({"ok": True})
+        result = telegram_desk_response(
+            database,
+            chat_id,
+            value,
+            message_id=message_id,
+            update_id=update_id,
+            photo=photo,
+        )
+        try:
+            await asyncio.to_thread(
+                send_telegram,
+                result.message,
+                chat_id,
+                parse_mode="HTML",
+                buttons=result.keyboard,
+            )
+            await deliver_followups(result)
+            await deliver_service_outbox()
         except RuntimeError as exc:
             database.log_system_event("WARN", "TELEGRAM", "Telegram 设置回覆失败", str(exc)[:500])
         return JSONResponse({"ok": True})
@@ -871,16 +944,34 @@ async def telegram_webhook(request):
         return JSONResponse({"ok": True})
     chat_id, message_id = destination
     try:
+        if not consume_telegram_quota(database, chat_id, data):
+            await asyncio.to_thread(answer_telegram_callback, callback_id, "操作太频繁，请稍后再试。")
+            return JSONResponse({"ok": True})
+        if update_id is not None and not claim_telegram_update(database, update_id, chat_id, data):
+            await asyncio.to_thread(answer_telegram_callback, callback_id, "此操作已经处理。")
+            return JSONResponse({"ok": True})
+        if not claim_telegram_callback(database, callback_id, chat_id):
+            await asyncio.to_thread(answer_telegram_callback, callback_id, "此操作已经处理。")
+            return JSONResponse({"ok": True})
         await asyncio.to_thread(answer_telegram_callback, callback_id)
-        reply, keyboard = telegram_bot_response(database, chat_id, data, callback=True)
+        result = telegram_desk_response(
+            database,
+            chat_id,
+            data,
+            callback=True,
+            message_id=message_id,
+            update_id=update_id,
+        )
         await asyncio.to_thread(
             edit_telegram_message,
             chat_id,
             message_id,
-            reply,
-            buttons=keyboard,
+            result.message,
+            buttons=result.keyboard,
             parse_mode="HTML",
         )
+        await deliver_followups(result)
+        await deliver_service_outbox()
     except RuntimeError as exc:
         database.log_system_event("WARN", "TELEGRAM", "Telegram callback 回覆失败", str(exc)[:500])
     return JSONResponse({"ok": True})

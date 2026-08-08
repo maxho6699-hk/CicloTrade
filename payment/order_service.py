@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from core.compat import UTC
+import hashlib
 import json
 import secrets
 from typing import Any
@@ -18,6 +19,7 @@ YEARLY_PROMO_DAYS = 90
 TERMINAL_STATUSES = {"paid", "failed", "cancelled", "refunded"}
 REFERRAL_REWARD_PERCENT = 30
 TERMS_VERSION = "2026-08-07-no-refund-v1"
+ORDER_EXPIRY_HOURS = {"telegram": 1, "web": 24}
 
 
 def _iso(value: datetime | None = None) -> str:
@@ -83,6 +85,8 @@ class OrderService:
         method: str,
         *,
         terms_accepted: bool = False,
+        idempotency_key: str | None = None,
+        source: str = "web",
     ) -> dict[str, Any]:
         if terms_accepted is not True:
             raise ValueError("建立訂單前必須同意用戶協議、風險披露與不退款政策。")
@@ -95,36 +99,84 @@ class OrderService:
             raise ValueError("该方案不支持所选付款周期。")
         if method not in {"paddle", "paypal", "fps"}:
             raise ValueError("不支持的支付方式。")
+        source = str(source or "web").strip().lower()
+        if source not in ORDER_EXPIRY_HOURS:
+            raise ValueError("订单来源无效。")
+        if idempotency_key is not None:
+            idempotency_key = str(idempotency_key).strip()
+            if not 1 <= len(idempotency_key) <= 128:
+                raise ValueError("幂等键无效。")
         entitlement_days = CYCLE_DAYS.get(cycle, 3650)
         if cycle == "yearly" and self.annual_bonus_enabled():
             entitlement_days += YEARLY_PROMO_DAYS
-        order_no = f"TA{datetime.now(UTC):%Y%m%d%H%M%S}{secrets.token_hex(3).upper()}"
-        self.db.execute(
-            """INSERT INTO subscription_orders
-               (order_no,user_id,plan_type,billing_cycle,amount,currency,pay_method,status,
-                entitlement_days,created_at,terms_version,terms_accepted_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                order_no,
-                user_id,
-                plan,
-                cycle,
-                float(prices[cycle]),
-                "HKD",
-                method,
-                "pending",
-                entitlement_days,
-                _iso(),
-                TERMS_VERSION,
-                _iso(),
-            ),
-        )
-        self.log_action(
-            user_id,
-            "ORDER_CREATE",
-            {"order_no": order_no, "plan": plan, "method": method, "terms_version": TERMS_VERSION},
-        )
-        return self.get_order(order_no)
+        amount = float(prices[cycle])
+        amount_minor = int(round(amount * 100))
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "plan": plan,
+                    "cycle": cycle,
+                    "method": method,
+                    "source": source,
+                    "amount_minor": amount_minor,
+                    "terms_version": TERMS_VERSION,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        now = datetime.now(UTC)
+        with self.db.transaction() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            user = conn.execute("SELECT is_active FROM users WHERE id=?", (user_id,)).fetchone()
+            if not user or not user["is_active"]:
+                raise PermissionError("账户不存在或已停用。")
+            if idempotency_key:
+                existing = conn.execute(
+                    "SELECT * FROM subscription_orders WHERE user_id=? AND idempotency_key=?",
+                    (user_id, idempotency_key),
+                ).fetchone()
+                if existing:
+                    if existing["request_fingerprint"] != fingerprint:
+                        raise ValueError("幂等键已用于不同的订单请求。")
+                    return dict(existing)
+            if source == "telegram":
+                pending = conn.execute(
+                    """SELECT COUNT(*) FROM subscription_orders
+                       WHERE user_id=? AND source='telegram' AND status='pending'
+                         AND datetime(created_at)>=datetime(?)""",
+                    (user_id, _iso(now - timedelta(hours=1))),
+                ).fetchone()[0]
+                if pending >= 3:
+                    raise ValueError("Telegram 建立订单过于频繁，请稍后再试。")
+            order_no = f"TA{now:%Y%m%d%H%M%S}{secrets.token_hex(3).upper()}"
+            expires_at = _iso(now + timedelta(hours=ORDER_EXPIRY_HOURS[source]))
+            conn.execute(
+                """INSERT INTO subscription_orders
+                   (order_no,user_id,plan_type,billing_cycle,amount,currency,pay_method,status,
+                    entitlement_days,created_at,terms_version,terms_accepted_at,source,idempotency_key,
+                    request_fingerprint,amount_minor,expires_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    order_no, user_id, plan, cycle, amount, "HKD", method, "pending",
+                    entitlement_days, _iso(now), TERMS_VERSION, _iso(now), source, idempotency_key,
+                    fingerprint, amount_minor, expires_at,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO user_action_logs (user_id,action_type,details,created_at) VALUES (?,?,?,?)",
+                (
+                    user_id,
+                    "ORDER_CREATE",
+                    json.dumps(
+                        {"order_no": order_no, "plan": plan, "method": method,
+                         "source": source, "terms_version": TERMS_VERSION},
+                        ensure_ascii=False,
+                    ),
+                    _iso(now),
+                ),
+            )
+            return dict(conn.execute("SELECT * FROM subscription_orders WHERE order_no=?", (order_no,)).fetchone())
 
     def get_order(self, order_no: str) -> dict[str, Any]:
         order = self.db.fetch_one("SELECT * FROM subscription_orders WHERE order_no=?", (order_no,))
@@ -132,10 +184,141 @@ class OrderService:
             raise ValueError("订单不存在。")
         return order
 
+    def get_order_for_user(self, user_id: int, order_no: str) -> dict[str, Any]:
+        order = self.db.fetch_one(
+            "SELECT * FROM subscription_orders WHERE order_no=? AND user_id=?", (order_no, user_id)
+        )
+        if not order:
+            raise PermissionError("订单不存在或不属于当前用户。")
+        return order
+
     def list_orders(self, user_id: int) -> list[dict[str, Any]]:
         return self.db.fetch_all(
             "SELECT * FROM subscription_orders WHERE user_id=? ORDER BY created_at DESC", (user_id,)
         )
+
+    def list_pending_orders(self, user_id: int, source: str | None = None) -> list[dict[str, Any]]:
+        params: tuple[Any, ...] = (user_id,)
+        clause = ""
+        if source is not None:
+            clause = " AND source=?"
+            params = (user_id, source)
+        return self.db.fetch_all(
+            """SELECT * FROM subscription_orders WHERE user_id=? AND status='pending'""" + clause
+            + " ORDER BY created_at DESC", params
+        )
+
+    @staticmethod
+    def _validated_claim_evidence(
+        evidence_file_id: str | None,
+        evidence_file_unique_id: str | None,
+        evidence_message_id: str | int | None,
+    ) -> tuple[str | None, str | None, str | None]:
+        file_id = str(evidence_file_id).strip() if evidence_file_id is not None else None
+        unique_id = str(evidence_file_unique_id).strip() if evidence_file_unique_id is not None else None
+        message_id = str(evidence_message_id).strip() if evidence_message_id is not None else None
+        if (file_id is None) != (unique_id is None):
+            raise ValueError("Telegram 文件凭证必须同时包含 file_id 和 file_unique_id。")
+        for value in (file_id, unique_id):
+            if value is not None and not 1 <= len(value) <= 256:
+                raise ValueError("Telegram 文件凭证无效。")
+        if message_id is not None and (not message_id.isdigit() or not 1 <= len(message_id) <= 64):
+            raise ValueError("Telegram 消息凭证无效。")
+        if file_id is None and message_id is None:
+            raise ValueError("必须提供 Telegram 付款凭证。")
+        return file_id, unique_id, message_id
+
+    def submit_manual_payment_claim(
+        self,
+        user_id: int,
+        order_no: str,
+        *,
+        evidence_file_id: str | None = None,
+        evidence_file_unique_id: str | None = None,
+        evidence_message_id: str | int | None = None,
+        file_id: str | None = None,
+        file_unique_id: str | None = None,
+        message_id: str | int | None = None,
+        source_update_id: str | int | None = None,
+    ) -> dict[str, Any]:
+        """Submit a Telegram payment proof without granting entitlement."""
+        evidence_file_id = evidence_file_id if evidence_file_id is not None else file_id
+        evidence_file_unique_id = evidence_file_unique_id if evidence_file_unique_id is not None else file_unique_id
+        evidence_message_id = evidence_message_id if evidence_message_id is not None else message_id
+        file_id, unique_id, message_id = self._validated_claim_evidence(
+            evidence_file_id, evidence_file_unique_id, evidence_message_id
+        )
+        update_id = str(source_update_id).strip() if source_update_id is not None else None
+        if update_id is not None and (not update_id or len(update_id) > 64):
+            raise ValueError("Telegram 更新编号无效。")
+        now = datetime.now(UTC)
+        with self.db.transaction() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            user = conn.execute("SELECT is_active FROM users WHERE id=?", (user_id,)).fetchone()
+            if not user or not user["is_active"]:
+                raise PermissionError("账户不存在或已停用。")
+            if update_id:
+                receipt = conn.execute(
+                    "SELECT claim_id FROM telegram_callback_receipts WHERE update_id=?", (update_id,)
+                ).fetchone()
+                if receipt and receipt["claim_id"]:
+                    claim = conn.execute("SELECT * FROM manual_payment_claims WHERE id=?", (receipt["claim_id"],)).fetchone()
+                    if claim:
+                        return dict(claim)
+            order = conn.execute(
+                "SELECT * FROM subscription_orders WHERE order_no=? AND user_id=?", (order_no, user_id)
+            ).fetchone()
+            if not order:
+                raise PermissionError("订单不存在或不属于当前用户。")
+            if order["status"] != "pending":
+                raise ValueError("只有待付款订单可以提交付款凭证。")
+            if order["expires_at"]:
+                try:
+                    expires_at = datetime.fromisoformat(order["expires_at"])
+                    expires_at = expires_at.replace(tzinfo=UTC) if expires_at.tzinfo is None else expires_at
+                    if expires_at <= now:
+                        raise ValueError("订单已过期，请重新建立订单。")
+                except (TypeError, ValueError) as exc:
+                    if str(exc) == "订单已过期，请重新建立订单。":
+                        raise
+                    raise ValueError("订单过期时间无效。") from exc
+            existing = conn.execute(
+                "SELECT * FROM manual_payment_claims WHERE order_no=? AND status='submitted'", (order_no,)
+            ).fetchone()
+            if existing:
+                return dict(existing)
+            recent = conn.execute(
+                "SELECT COUNT(*) FROM manual_payment_claims WHERE user_id=? AND datetime(created_at)>=datetime(?)",
+                (user_id, _iso(now - timedelta(hours=1))),
+            ).fetchone()[0]
+            if recent >= 3:
+                raise ValueError("付款凭证提交过于频繁，请稍后再试。")
+            attempt = conn.execute(
+                "SELECT COALESCE(MAX(attempt),0)+1 FROM manual_payment_claims WHERE order_no=?", (order_no,)
+            ).fetchone()[0]
+            inserted = conn.execute(
+                """INSERT INTO manual_payment_claims
+                   (order_no,user_id,attempt,status,evidence_file_id,evidence_file_unique_id,
+                    evidence_message_id,source_update_id,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (order_no, user_id, attempt, "submitted", file_id, unique_id, message_id, update_id, _iso(now)),
+            )
+            claim_id = inserted.lastrowid
+            if update_id:
+                conn.execute(
+                    """INSERT INTO telegram_callback_receipts
+                       (update_id,user_id,claim_id,payload_fingerprint,received_at) VALUES (?,?,?,?,?)""",
+                    (
+                        update_id, user_id, claim_id,
+                        hashlib.sha256(json.dumps([order_no, file_id, unique_id, message_id]).encode("utf-8")).hexdigest(),
+                        _iso(now),
+                    ),
+                )
+            conn.execute(
+                "INSERT INTO user_action_logs (user_id,action_type,details,created_at) VALUES (?,?,?,?)",
+                (user_id, "MANUAL_PAYMENT_CLAIM_SUBMITTED", json.dumps({"order_no": order_no, "claim_id": claim_id}, ensure_ascii=False), _iso(now)),
+            )
+            return dict(conn.execute("SELECT * FROM manual_payment_claims WHERE id=?", (claim_id,)).fetchone())
 
     def attach_external_id(self, order_no: str, external_id: str, price_id: str | None = None) -> None:
         if not external_id or len(external_id) > 128 or (price_id is not None and len(price_id) > 128):
@@ -145,6 +328,74 @@ class OrderService:
                WHERE order_no=? AND status='pending' AND external_id IS NULL""",
             (external_id, price_id, order_no),
         )
+
+    @staticmethod
+    def _activate_paid_order(
+        conn: Any, order: dict[str, Any], now: datetime, capture_id: str | None = None
+    ) -> bool:
+        """Mark one pending order paid and apply its entitlement in this transaction."""
+        current = conn.execute(
+            "SELECT plan_type,subscription_expire FROM users WHERE id=?", (order["user_id"],)
+        ).fetchone()
+        if not current:
+            raise ValueError("支付订单关联用户不存在。")
+        changed = conn.execute(
+            """UPDATE subscription_orders
+               SET status='paid',paid_at=?,previous_plan_type=?,previous_subscription_expire=?,
+                   external_capture_id=COALESCE(external_capture_id,?)
+               WHERE order_no=? AND status='pending'""",
+            (_iso(now), current["plan_type"], current["subscription_expire"], capture_id, order["order_no"]),
+        )
+        if changed.rowcount != 1:
+            return False
+        base = now
+        if current["subscription_expire"]:
+            try:
+                expiry = datetime.fromisoformat(current["subscription_expire"])
+                if expiry.tzinfo is None:
+                    expiry = expiry.replace(tzinfo=UTC)
+                base = max(now, expiry)
+            except ValueError:
+                base = now
+        days = int(order.get("entitlement_days") or CYCLE_DAYS.get(order["billing_cycle"], 3650))
+        conn.execute(
+            "UPDATE users SET plan_type=?,subscription_expire=? WHERE id=?",
+            (order["plan_type"], _iso(base + timedelta(days=days)), order["user_id"]),
+        )
+        referral = conn.execute(
+            "SELECT * FROM referrals WHERE referee_id=? AND status='registered'", (order["user_id"],)
+        ).fetchone()
+        if referral:
+            qualified = conn.execute(
+                "UPDATE referrals SET status='qualified' WHERE id=? AND status='registered'", (referral["id"],)
+            )
+            if qualified.rowcount:
+                reward_days = max(1, days * REFERRAL_REWARD_PERCENT // 100)
+                inserted_reward = conn.execute(
+                    """INSERT OR IGNORE INTO rewards
+                       (user_id,reward_type,days,reference,source_order_no,created_at)
+                       VALUES (?,?,?,?,?,?)""",
+                    (
+                        referral["referrer_id"], "REFERRAL_30", reward_days, f"referral:{referral['id']}",
+                        order["order_no"], _iso(now),
+                    ),
+                )
+                if inserted_reward.rowcount:
+                    reward_expiry = grant_subscription_days(
+                        conn, referral["referrer_id"], reward_days, order["plan_type"], now
+                    )
+                    conn.execute(
+                        "INSERT INTO user_action_logs (user_id,action_type,details,created_at) VALUES (?,?,?,?)",
+                        (
+                            referral["referrer_id"], "REFERRAL_REWARD_GRANTED",
+                            json.dumps(
+                                {"order_no": order["order_no"], "referee_id": order["user_id"],
+                                 "days": reward_days, "expiry": reward_expiry}, ensure_ascii=False,
+                            ),
+                            _iso(now),
+                        ),
+                    )
+        return True
 
     def process_callback(
         self,
@@ -185,88 +436,9 @@ class OrderService:
                     not isinstance(capture_id, str) or not capture_id or len(capture_id) > 128
                 ):
                     raise ValueError("外部支付捕获编号无效。")
-                current = conn.execute(
-                    "SELECT plan_type,subscription_expire FROM users WHERE id=?", (order["user_id"],)
-                ).fetchone()
-                if not current:
-                    raise ValueError("支付订单关联用户不存在。")
-                conn.execute(
-                    """UPDATE subscription_orders
-                       SET status='paid',paid_at=?,previous_plan_type=?,previous_subscription_expire=?,
-                           external_capture_id=COALESCE(external_capture_id,?)
-                       WHERE order_no=? AND status='pending'""",
-                    (
-                        _iso(now),
-                        current["plan_type"],
-                        current["subscription_expire"],
-                        capture_id,
-                        order_no,
-                    ),
-                )
-                base = now
-                if current["subscription_expire"]:
-                    try:
-                        expiry = datetime.fromisoformat(current["subscription_expire"])
-                        if expiry.tzinfo is None:
-                            expiry = expiry.replace(tzinfo=UTC)
-                        base = max(now, expiry)
-                    except ValueError:
-                        base = now
-                days = int(order.get("entitlement_days") or CYCLE_DAYS.get(order["billing_cycle"], 3650))
-                conn.execute(
-                    "UPDATE users SET plan_type=?,subscription_expire=? WHERE id=?",
-                    (order["plan_type"], _iso(base + timedelta(days=days)), order["user_id"]),
-                )
-                referral = conn.execute(
-                    "SELECT * FROM referrals WHERE referee_id=? AND status='registered'", (order["user_id"],)
-                ).fetchone()
-                if referral:
-                    qualified = conn.execute(
-                        "UPDATE referrals SET status='qualified' WHERE id=? AND status='registered'",
-                        (referral["id"],),
-                    )
-                    if qualified.rowcount:
-                        reward_days = max(1, days * REFERRAL_REWARD_PERCENT // 100)
-                        reference = f"referral:{referral['id']}"
-                        inserted_reward = conn.execute(
-                            """INSERT OR IGNORE INTO rewards
-                               (user_id,reward_type,days,reference,source_order_no,created_at)
-                               VALUES (?,?,?,?,?,?)""",
-                            (
-                                referral["referrer_id"],
-                                "REFERRAL_30",
-                                reward_days,
-                                reference,
-                                order_no,
-                                _iso(now),
-                            ),
-                        )
-                        if inserted_reward.rowcount:
-                            reward_expiry = grant_subscription_days(
-                                conn,
-                                referral["referrer_id"],
-                                reward_days,
-                                order["plan_type"],
-                                now,
-                            )
-                            conn.execute(
-                                """INSERT INTO user_action_logs
-                                   (user_id,action_type,details,created_at) VALUES (?,?,?,?)""",
-                                (
-                                    referral["referrer_id"],
-                                    "REFERRAL_REWARD_GRANTED",
-                                    json.dumps(
-                                        {
-                                            "order_no": order_no,
-                                            "referee_id": order["user_id"],
-                                            "days": reward_days,
-                                            "expiry": reward_expiry,
-                                        },
-                                        ensure_ascii=False,
-                                    ),
-                                    _iso(now),
-                                ),
-                            )
+                if not self._activate_paid_order(conn, order, now, capture_id):
+                    conn.execute("UPDATE payment_callbacks SET processed=1 WHERE event_id=?", (event_id,))
+                    return False
             else:
                 conn.execute(
                     "UPDATE subscription_orders SET status=?,paid_at=NULL WHERE order_no=? AND status='pending'",

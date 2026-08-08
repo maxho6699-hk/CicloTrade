@@ -94,7 +94,9 @@ def test_configure_telegram_bot_installs_commands_and_menu(monkeypatch):
     configure_telegram_bot()
 
     assert captured[0][0].endswith("/setMyCommands")
-    assert [item["command"] for item in captured[0][1]["commands"]] == ["start", "id", "settings", "help"]
+    assert [item["command"] for item in captured[0][1]["commands"]] == [
+        "start", "plans", "orders", "id", "settings", "help",
+    ]
     assert captured[1] == (captured[1][0], {"menu_button": {"type": "commands"}})
     assert captured[1][0].endswith("/setChatMenuButton")
     assert captured[2][0].endswith("/setWebhook")
@@ -111,7 +113,7 @@ def test_start_returns_chat_id_and_main_menu_without_binding(tmp_path):
     reply, keyboard = telegram_bot_response(db, "123456789", "/start")
 
     assert "Chat ID" in reply and "123456789" in reply
-    assert any(button.get("callback_data") == "menu:settings" for row in keyboard for button in row)
+    assert any(button.get("callback_data") == "desk:settings" for row in keyboard for button in row)
     assert telegram_callback_allowed("notify:stock:toggle")
     assert not telegram_callback_allowed("notify:stock:on")
 
