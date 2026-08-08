@@ -10,7 +10,7 @@ import os
 from typing import Any
 
 from core.admin_service import AdminService
-from core.plans import PLANS, effective_plan
+from core.plans import PLANS, plan_display_name
 from notification.telegram_models import TelegramDeskResponse, TelegramOutbound
 from notification.telegram_outbox import enqueue_telegram_outbound
 from notification.templates import telegram_membership
@@ -114,7 +114,7 @@ def _create_order(
         message = (
             "🏦 <b>CicloTrade · FPS 待付款</b>\n\n"
             f"<blockquote>订单：<code>{escape(order_no)}</code>\n"
-            f"方案：{escape(plan)} · {_CYCLE_LABELS[cycle]}\n"
+            f"方案：{escape(plan_display_name(plan))} · {_CYCLE_LABELS[cycle]}\n"
             f"金额：HKD {amount:,.0f}</blockquote>\n"
             f"{escape(fps_instructions)}\n\n"
             f"转账备注必须填写 <code>{escape(order_no)}</code>。付款后可直接点击“已付款”，"
@@ -156,7 +156,7 @@ def _create_order(
         raise RuntimeError("付款平台未返回安全付款网址。")
     return TelegramDeskResponse(
         "🔐 <b>安全付款订单已建立</b>\n\n"
-        f"<blockquote><code>{escape(order_no)}</code>\n{escape(plan)} · HKD {amount:,.0f}</blockquote>\n"
+        f"<blockquote><code>{escape(order_no)}</code>\n{escape(plan_display_name(plan))} · HKD {amount:,.0f}</blockquote>\n"
         "付款完成后，支付平台会自动回传并开通会员。",
         [
             [{"text": "前往安全付款", "url": checkout_url}],
@@ -180,7 +180,7 @@ def _claim_followups(
         f"<blockquote>申报 #{int(claim['id'])}\n"
         f"订单：<code>{escape(str(order['order_no']))}</code>\n"
         f"账户：{escape(str(account['email']))}\n"
-        f"{escape(str(order['plan_type']))} · {escape(str(order['currency']))} {float(order['amount']):,.0f}</blockquote>\n"
+        f"{escape(plan_display_name(str(order['plan_type'])))} · {escape(str(order['currency']))} {float(order['amount']):,.0f}</blockquote>\n"
         "请先核对银行到账、金额与订单备注，再批准。"
     )
     buttons = [

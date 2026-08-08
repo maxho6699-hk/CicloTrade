@@ -182,8 +182,8 @@ def test_correction_notifies_adjustment_and_removed_symbol(tmp_path, monkeypatch
 
     assert enqueue_quant_signal_deliveries(db) == 2
     assert dispatch_quant_signal_deliveries(db) == 2
-    assert any("賣出" in message and "美股 AAPL" in message and "現持 0" in message for message in sent)
-    assert any("買入" in message and "美股 MSFT" in message and "現持 5" in message for message in sent)
+    assert any("平倉" in message and "美股 AAPL" in message and "現持　0 股" in message for message in sent)
+    assert any("開倉" in message and "美股 MSFT" in message and "現持　5 股" in message for message in sent)
     assert all("US:STOCK" not in message and "catalog" not in message.lower() for message in sent)
     assert enqueue_quant_signal_deliveries(db) == 0
 
@@ -320,8 +320,10 @@ def test_free_group_signals_are_queued_with_stock_and_option_delays(tmp_path, mo
     monkeypatch.setattr("scheduler.jobs.send_telegram", lambda message, chat_id=None, **kwargs: sent.append((message, chat_id, kwargs)))
     assert dispatch_delayed_free_group_deliveries(db) == 2
     assert {target for _, target, _ in sent} == {"-1003794694425"}
-    assert any("期權延遲 15 分鐘" in message and "🟢 AAPL" in message for message, _, _ in sent)
-    assert any("正股延遲 1 小時" in message and "美股 AAPL" in message for message, _, _ in sent)
+    assert any("期權建議延遲 15 分鐘" in message and "🟢 AAPL" in message for message, _, _ in sent)
+    assert any("正股建議延遲 1 小時" in message and "美股 AAPL" in message for message, _, _ in sent)
+    assert all("建議" in message for message, _, _ in sent)
+    assert all(kwargs["protect_content"] is True for _, _, kwargs in sent)
     assert all(
         len(kwargs["buttons"]) == 2
         and all(len(row) == 2 for row in kwargs["buttons"])
@@ -359,9 +361,10 @@ def test_daily_group_summary_requires_new_persisted_snapshot(tmp_path, monkeypat
     advanced = next(message for message, target, _ in sent if target == "-1004460522940")
     professional = next(message for message, target, _ in sent if target == "-1003902118990")
     free = next(message for message, target, _ in sent if target == "-1003794694425")
-    assert "每日總結" in advanced and "美元資產" in advanced and "人民幣資產" in advanced
+    assert "每日建議總結" in advanced and "美元資產" in advanced and "人民幣資產" in advanced
     assert "美股 AAPL" in advanced and "Call" not in advanced
     assert "美股 AAPL" in professional and "🟢 AAPL" in professional
     assert "止損 $180.00" in advanced and "目標 $240.00" in professional
-    assert "正股延遲 1 小時" in free and "期權延遲 15 分鐘" in free and "升級會員" in free
+    assert "正股建議延遲 1 小時" in free and "期權建議延遲 15 分鐘" in free and "升級會員" in free
+    assert all(kwargs["protect_content"] is True for _, _, kwargs in sent)
     assert all(kwargs["parse_mode"] == "HTML" for _, _, kwargs in sent)

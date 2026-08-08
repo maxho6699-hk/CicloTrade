@@ -55,6 +55,7 @@ def _execute_order(
                 send_telegram(
                     telegram_order_message(mode, side, quantity, symbol, price, order["status"]),
                     chat_id=telegram_target,
+                    protect_content=True,
                 )
             except RuntimeError:
                 st.warning("订单已记录，但 Telegram 推送失败。")

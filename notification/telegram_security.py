@@ -19,6 +19,8 @@ def _action_bucket(value: str) -> tuple[str, int, int]:
         return "photo", 6, 60
     if value.startswith("notify:"):
         return "settings", 12, 60
+    if value == "desk:timeline" or value.startswith(("timeline:", "/timeline")):
+        return "timeline", 12, 60
     if value.startswith(("desk:", "buy:", "menu:")):
         return "navigation", 30, 60
     if value.startswith("/"):
@@ -26,16 +28,11 @@ def _action_bucket(value: str) -> tuple[str, int, int]:
     return "text", 12, 60
 
 
-def consume_telegram_quota(database, chat_id: str, action: str) -> bool:
-    """Apply one global and one fixed action bucket for a private chat."""
-    bucket, limit, window_seconds = _action_bucket(action)
+def _consume_limits(database, limits: tuple[tuple[str, int, int], ...]) -> bool:
     now = datetime.now(UTC)
-    subject = hashlib.sha256(str(chat_id).encode("utf-8")).hexdigest()[:20]
-    limits = (("all", 60, 60), (bucket, limit, window_seconds))
     with database.transaction() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        for name, bucket_limit, bucket_window in limits:
-            key = f"telegram-chat:{subject}:{name}"
+        for key, bucket_limit, bucket_window in limits:
             row = conn.execute(
                 "SELECT attempts,window_started,blocked_until FROM auth_rate_limits WHERE rate_key=?",
                 (key,),
@@ -73,6 +70,40 @@ def consume_telegram_quota(database, chat_id: str, action: str) -> bool:
                 (key, attempts + 1, started.isoformat()),
             )
     return True
+
+
+def consume_telegram_quota(database, chat_id: str, action: str) -> bool:
+    """Apply one global and one fixed action bucket for a private chat."""
+    bucket, limit, window_seconds = _action_bucket(action)
+    subject = hashlib.sha256(str(chat_id).encode("utf-8")).hexdigest()[:20]
+    return _consume_limits(
+        database,
+        (
+            (f"telegram-chat:{subject}:all", 60, 60),
+            (f"telegram-chat:{subject}:{bucket}", limit, window_seconds),
+        ),
+    )
+
+
+def consume_telegram_timeline_quota(
+    database,
+    chat_id: str,
+    *,
+    per_minute: int,
+    per_day: int,
+    count_daily: bool,
+) -> bool:
+    """Bound expensive timeline projections across chats and membership levels."""
+    if not 1 <= int(per_minute) <= 100 or not 1 <= int(per_day) <= 10_000:
+        raise ValueError("timeline quota is invalid")
+    subject = hashlib.sha256(str(chat_id).encode("utf-8")).hexdigest()[:20]
+    limits = [
+        ("telegram-global:timeline:minute", 120, 60),
+        (f"telegram-chat:{subject}:timeline-render", int(per_minute), 60),
+    ]
+    if count_daily:
+        limits.append((f"telegram-chat:{subject}:timeline-day", int(per_day), 86_400))
+    return _consume_limits(database, tuple(limits))
 
 
 def _claim_receipt(database, receipt_id: str, chat_id: str, payload: str) -> bool:

@@ -409,7 +409,7 @@ class AdminService:
             user = self.db.fetch_one("SELECT id,plan_type,subscription_expire FROM users WHERE id=?", (user_id,)) or {}
             target = entitled_user_target(user, load_user_settings(user_id, self.db), "membership_update")
             if target and telegram_configured(target):
-                send_telegram(telegram_membership(plan, expiry, reason), chat_id=target)
+                send_telegram(telegram_membership(plan, expiry, reason), chat_id=target, protect_content=True)
         except Exception:
             self.db.log_system_event("WARN", "NOTIFICATION", "赠送体验 Telegram 通知未送达", f"user={user_id}")
         return expiry
@@ -708,7 +708,7 @@ class AdminService:
             try:
                 if not telegram_configured(target):
                     raise RuntimeError("Telegram 外部通知当前不可用。")
-                send_telegram(message, target)
+                send_telegram(message, target, protect_content=True)
                 notified += 1
             except RuntimeError as exc:
                 self.db.log_system_event("WARN", "TELEGRAM", "实盘服务状态通知失败", str(exc)[:500])

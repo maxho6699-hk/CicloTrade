@@ -9,6 +9,22 @@ from typing import Any
 
 
 PLAN_ORDER = ("免费版", "标准版", "高级版", "专业版", "定制版")
+PLAN_DISPLAY_NAMES = {
+    "免费版": "免費會員",
+    "标准版": "標準會員",
+    "高级版": "高級會員",
+    "专业版": "專業會員",
+    "定制版": "定制會員",
+}
+TELEGRAM_CHANNEL_NAMES = {
+    "daily": "免費頻道",
+    "advanced": "高級頻道",
+    "professional": "專業頻道",
+}
+TELEGRAM_SUGGESTION_NAMES = {
+    "stock": "正股建議",
+    "option": "期權建議",
+}
 
 PLANS: dict[str, dict[str, Any]] = {
     "免费版": {
@@ -24,12 +40,12 @@ PLANS: dict[str, dict[str, Any]] = {
     "高级版": {
         "prices": {"monthly": 698, "quarterly": 1_980, "yearly": 6_980},
         "summary": "深度回测、期权链与自动化研究",
-        "features": ("包含标准版全部权益", "不限预警（最多 5 个组合条件）", "一句话策略每日 10 次", "近 10 年回测与参数优化", "期权链研究", "CSV 导入与策略绩效追踪", "正股操作 Telegram 推送", "玄学娱乐参考", "正股实盘（需另行签约）"),
+        "features": ("包含标准版全部权益", "不限预警（最多 5 个组合条件）", "一句话策略每日 10 次", "近 10 年回测与参数优化", "期权链研究", "CSV 导入与策略绩效追踪", "Telegram 即時正股建議", "玄学娱乐参考", "正股实盘（需另行签约）"),
     },
     "专业版": {
         "prices": {"monthly": 2_980, "quarterly": 8_500, "yearly": 29_800},
         "summary": "多账户、API 与受控交易",
-        "features": ("包含高级版全部权益", "不限次一句话策略与复杂条件", "代码与 API 信号导入", "正股与期权 Telegram 推送", "专业 API", "正股实盘（套餐内含，仍需券商与风控配置）", "最多 50 个券商账户", "团队协作", "99.9% SLA 与专业报告"),
+        "features": ("包含高级版全部权益", "不限次一句话策略与复杂条件", "代码与 API 信号导入", "Telegram 即時正股與期權建議", "专业 API", "正股实盘（套餐内含，仍需券商与风控配置）", "最多 50 个券商账户", "团队协作", "99.9% SLA 与专业报告"),
     },
     "定制版": {
         "prices": {"project": 30_000},
@@ -80,6 +96,30 @@ def can(plan: str, capability: str) -> bool:
     except ValueError:
         plan_index = 0
     return any(canonical in CAPABILITIES[level] for level in PLAN_ORDER[: plan_index + 1])
+
+
+def plan_display_name(plan: str) -> str:
+    """Return the single customer-facing membership name."""
+    return PLAN_DISPLAY_NAMES.get(str(plan), PLAN_DISPLAY_NAMES["免费版"])
+
+
+def telegram_suggestion_name(instrument_type: str) -> str:
+    """Return the canonical customer-facing Telegram suggestion label."""
+    return TELEGRAM_SUGGESTION_NAMES.get(str(instrument_type), "交易建議")
+
+
+def telegram_timeline_limits(plan: str) -> dict[str, int]:
+    """Bound private Bot timeline access by the effective membership."""
+    return {
+        "免费版": {"stock": 10, "option": 0, "stock_delay_minutes": 60, "option_delay_minutes": 15, "per_minute": 2, "per_day": 5},
+        "标准版": {"stock": 30, "option": 0, "stock_delay_minutes": 60, "option_delay_minutes": 15, "per_minute": 6, "per_day": 30},
+        "高级版": {"stock": 100, "option": 0, "stock_delay_minutes": 0, "option_delay_minutes": 0, "per_minute": 10, "per_day": 100},
+        "专业版": {"stock": 100, "option": 100, "stock_delay_minutes": 0, "option_delay_minutes": 0, "per_minute": 12, "per_day": 200},
+        "定制版": {"stock": 100, "option": 100, "stock_delay_minutes": 0, "option_delay_minutes": 0, "per_minute": 12, "per_day": 200},
+    }.get(
+        str(plan),
+        {"stock": 10, "option": 0, "stock_delay_minutes": 60, "option_delay_minutes": 15, "per_minute": 2, "per_day": 5},
+    )
 
 
 def trading_limits(plan: str) -> dict[str, Any]:

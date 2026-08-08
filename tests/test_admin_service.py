@@ -116,7 +116,10 @@ def test_live_platform_pause_requires_manual_user_resume(services, monkeypatch):
     )
     sent = []
     monkeypatch.setattr("notification.telegram_bot.telegram_configured", lambda _target: True)
-    monkeypatch.setattr("notification.telegram_bot.send_telegram", lambda message, target: sent.append((message, target)))
+    monkeypatch.setattr(
+        "notification.telegram_bot.send_telegram",
+        lambda message, target, **kwargs: sent.append((message, target, kwargs)),
+    )
 
     paused = service.set_user_auto_trading_enabled(admin["id"], False)
     settings = load_user_settings(customer["id"], db)
@@ -130,6 +133,7 @@ def test_live_platform_pause_requires_manual_user_resume(services, monkeypatch):
     assert settings["live_auto_enabled"] is False
     assert settings["live_auto_platform_suspended"] is True
     assert len(sent) == 2
+    assert all(item[2]["protect_content"] is True for item in sent)
 
 
 def test_admin_ip_removal_revokes_only_matching_sessions(services):

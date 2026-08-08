@@ -12,7 +12,7 @@ import pandas as pd
 
 from core.alerts import AlertService
 from core.database import get_database
-from core.plans import can, effective_plan
+from core.plans import TELEGRAM_CHANNEL_NAMES, can, effective_plan, plan_display_name
 from core.quant_journal import QuantJournal
 from core.user_settings import load_user_settings
 from core.strategy_evaluation import run_system_quant_cycle, update_saved_strategy_performance
@@ -193,7 +193,7 @@ def _quant_message(
     source_label = "Tiger 券商模擬帳戶" if str(event["source"]).startswith("tiger") else "CicloTrade 系統模擬帳戶"
     delay_note = None
     if delay_minutes:
-        delay_note = "期權延遲 15 分鐘" if int(delay_minutes) == 15 else "正股延遲 1 小時"
+        delay_note = "期權建議延遲 15 分鐘" if delivery["instrument_type"] == "option" else "正股建議延遲 1 小時"
     return telegram_quant_message(
         event,
         legs,
@@ -209,7 +209,7 @@ def _send_quant_card(message: str, target: str, *, upgrade: bool = False) -> Non
     buttons = (
         [
             [
-                {"text": "📈 今日行動", "url": f"{base}/recommendations"},
+                {"text": "📈 今日建議", "url": f"{base}/recommendations"},
                 {"text": "💼 目前持倉", "url": f"{base}/dashboard"},
             ],
             [
@@ -220,7 +220,7 @@ def _send_quant_card(message: str, target: str, *, upgrade: bool = False) -> Non
         if not upgrade
         else [
             [
-                {"text": "📈 延遲行情", "url": f"{base}/recommendations"},
+                {"text": "📈 延遲建議", "url": f"{base}/recommendations"},
                 {"text": "💎 升級會員", "url": f"{base}/subscription"},
             ],
             [
@@ -234,6 +234,7 @@ def _send_quant_card(message: str, target: str, *, upgrade: bool = False) -> Non
         chat_id=target,
         parse_mode="HTML",
         buttons=buttons,
+        protect_content=True,
     )
 
 
@@ -495,7 +496,7 @@ def dispatch_delayed_free_group_deliveries(database=None, limit: int = 100) -> i
             continue
         try:
             if not telegram_configured(delivery["chat_id"]):
-                raise RuntimeError("Telegram 普通群尚未启用")
+                raise RuntimeError("Telegram 免費頻道尚未啟用")
             message = _quant_message(
                 db,
                 delivery,
@@ -566,7 +567,12 @@ def dispatch_price_alert_deliveries(database=None, limit: int = 100) -> int:
         try:
             if not telegram_configured(target):
                 raise RuntimeError("Telegram Bot 尚未配置")
-            send_telegram(telegram_price_alert(delivery["content"]), chat_id=target, parse_mode="HTML")
+            send_telegram(
+                telegram_price_alert(delivery["content"]),
+                chat_id=target,
+                parse_mode="HTML",
+                protect_content=True,
+            )
         except TelegramDeliveryUncertain as exc:
             db.execute(
                 "UPDATE price_alert_deliveries SET status='skipped',last_error=?,updated_at=? WHERE id=? AND status='sending'",
@@ -721,7 +727,7 @@ def downgrade_expired_subscriptions(database=None) -> int:
             subject, text, html = email_message(
                 "CicloTrade 會員已到期",
                 "會員權益已到期",
-                f"{user.get('display_name') or '您好'}，你的 {user['plan_type']} 已到期并自动降级为免费版。",
+                f"{user.get('display_name') or '您好'}，你的 {plan_display_name(user['plan_type'])} 已到期並自動降級為免費會員。",
                 (f"到期时间：{user['subscription_expire']}", "已保存的研究记录不会删除。"),
                 action_url=os.getenv("APP_BASE_URL", "https://ciclotrade.com"),
             )
@@ -769,7 +775,7 @@ def notify_expiring_subscriptions(database=None) -> int:
                 *email_message(
                     "CicloTrade 會員即將到期",
                     "你的會員權益即將到期",
-                    f"{user.get('display_name') or '您好'}，你的 {user['plan_type']} 將於指定時間到期。",
+                        f"{user.get('display_name') or '您好'}，你的 {plan_display_name(user['plan_type'])} 將於指定時間到期。",
                     (
                         f"到期時間：{user['subscription_expire']}",
                         "到期後系統會自動降級為免費版，已保存的研究記錄不會被刪除。",
@@ -861,9 +867,9 @@ def publish_daily_group_summary(database=None, *, free_group: bool = False) -> i
         return 0
     snapshot_marker = ",".join(str(row["id"]) for row in snapshots)
     payload = _daily_summary_payload(db, ledger_key, snapshots)
-    routes = (("daily", "普通群", {"stock", "option"}, "正股延遲 1 小時 · 期權延遲 15 分鐘", True),) if free_group else (
-        ("advanced", "高級群", {"stock"}, None, False),
-        ("professional", "專業群", {"stock", "option"}, None, False),
+    routes = (("daily", TELEGRAM_CHANNEL_NAMES["daily"], {"stock", "option"}, "正股建議延遲 1 小時 · 期權建議延遲 15 分鐘", True),) if free_group else (
+        ("advanced", TELEGRAM_CHANNEL_NAMES["advanced"], {"stock"}, None, False),
+        ("professional", TELEGRAM_CHANNEL_NAMES["professional"], {"stock", "option"}, None, False),
     )
     now = datetime.now(UTC).isoformat(timespec="seconds")
     sent = 0

@@ -77,8 +77,9 @@ def render() -> None:
         if telegram_target and telegram_configured(telegram_target):
             try:
                 send_telegram(
-                    f"CicloTrade 价格预警\n{alert['symbol']} {alert['operator']} {alert['target_price']:.2f}\n当前价格 {alert['current_price']:.2f}",
+                    f"CicloTrade 價格預警建議\n{alert['symbol']} {alert['operator']} {alert['target_price']:.2f}\n目前價格 {alert['current_price']:.2f}",
                     chat_id=telegram_target,
+                    protect_content=True,
                 )
             except RuntimeError:
                 st.warning("预警已触发，但 Telegram 推送失败。")

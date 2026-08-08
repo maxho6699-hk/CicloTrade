@@ -96,6 +96,7 @@ def dispatch_telegram_service_outbox(database=None, limit: int = 50) -> int:
                     chat_id=current["chat_id"],
                     parse_mode="HTML",
                     buttons=buttons,
+                    protect_content=True,
                 )
                 db.execute(
                     "UPDATE telegram_service_outbox SET message_sent_at=?,updated_at=? WHERE id=?",

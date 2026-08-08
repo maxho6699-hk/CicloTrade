@@ -8,6 +8,8 @@ from html import escape
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
+from core.plans import plan_display_name
+
 
 def email_message(
     subject: str,
@@ -104,6 +106,70 @@ def _telegram_contract(row: dict) -> str:
     return f"{market} {icon} {symbol} {expiry} {strike:g} {label}"
 
 
+def _telegram_contract_lines(row: dict) -> list[str]:
+    """Keep each instrument readable without forcing a long single line."""
+    symbol = escape(str(row.get("symbol") or "--"))
+    market = "大A" if str(row.get("market") or "").upper() == "CN" or symbol.isdigit() else "美股"
+    if row.get("instrument_type") != "option":
+        return [f"{market} {symbol}"]
+    right = str(row.get("option_right") or row.get("right") or "").upper()
+    icon = "🟢" if right == "CALL" else "🔴"
+    label = "Call" if right == "CALL" else "Put"
+    expiry = escape(str(row.get("option_expiry") or row.get("expiry") or "--"))
+    strike = float(row.get("option_strike") or row.get("strike") or 0)
+    return [f"{market} {icon} {symbol} {label}", f"到期 {expiry} · 行權 {strike:g}"]
+
+
+def _telegram_unit(row: dict) -> str:
+    return "張" if row.get("instrument_type") == "option" else "股"
+
+
+def _telegram_quantity(row: dict, value: object) -> str:
+    return f"{float(value or 0):g} {_telegram_unit(row)}"
+
+
+def _telegram_trade_action(row: dict, delta: float) -> tuple[str, str]:
+    target = float(row.get("target_quantity") or 0)
+    previous = target - delta
+    if delta > 0:
+        return ("補倉", "➕") if previous > 0 else ("開倉", "📥")
+    return ("平倉", "📤") if target == 0 else ("減倉", "📉")
+
+
+def _telegram_asset_block(
+    row: dict,
+    *,
+    action: str | None = None,
+    action_icon: str | None = None,
+    quantity: object | None = None,
+    price: object | None = None,
+    current_quantity: object | None = None,
+    occurred_at: object | None = None,
+    risk_levels: dict | None = None,
+    metadata: dict | None = None,
+) -> list[str]:
+    """Render one instrument as a separated, narrow Telegram block."""
+    risk_levels = risk_levels if isinstance(risk_levels, dict) else {}
+    metadata = metadata if isinstance(metadata, dict) else {}
+    title = _telegram_contract_lines(row)
+    heading = f"{action_icon} <b>{escape(action)}</b> " if action and action_icon else ""
+    lines = ["<blockquote>", f"{heading}{title[0]}"]
+    lines.extend(f"　{line}" for line in title[1:])
+    if occurred_at is not None:
+        lines.append(f"🕒 {_telegram_time(occurred_at)}")
+    if quantity is not None:
+        lines.append(f"📦 數量　{_telegram_quantity(row, quantity)}")
+    if price is not None:
+        lines.append(f"💵 成交　{_money(row.get('currency'), price)}")
+    if current_quantity is not None:
+        lines.append(f"💼 現持　{_telegram_quantity(row, current_quantity)}")
+    if float(current_quantity or row.get("target_quantity") or 0) != 0:
+        if risk_line := _risk_line(row, risk_levels, metadata):
+            lines.append(risk_line)
+    lines.append("</blockquote>")
+    return lines
+
+
 def _telegram_time(value: object) -> str:
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
@@ -154,44 +220,52 @@ def telegram_quant_message(
     source_label: str = "CicloTrade 系統模擬帳戶",
 ) -> str:
     label = {"signal": "已執行", "correction": "已更正", "reversal": "已撤銷"}[event["event_type"]]
-    lines = [
-        f"📊 <b>CicloTrade · 模擬帳戶{label}</b>",
-    ]
+    lines = [f"📊 <b>CicloTrade · 模擬帳戶{label}的交易建議</b>"]
     if delay_note:
         lines.append(f"⏱ <b>{escape(delay_note)}</b>")
-    lines.extend((f"🕒 {_telegram_time(event['occurred_at'])}", "<b>本次成交</b>"))
+    lines.extend((f"🕒 {_telegram_time(event['occurred_at'])}", "<b>本次建議成交</b>"))
     risk_levels = metadata.get("risk_levels") if isinstance(metadata.get("risk_levels"), dict) else {}
     for leg in legs:
         delta = float(leg["quantity_delta"])
-        action_icon = "📈" if delta > 0 else "📉"
-        action = "買入" if delta > 0 else "賣出"
-        price = _money(leg.get("currency"), leg["price"]) if leg.get("price") is not None else "--"
-        lines.append(
-            f"{action_icon} <b>{action}</b> {_telegram_contract(leg)} · {abs(delta):g} · {price} · 現持 {float(leg['target_quantity']):g}"
+        action, action_icon = _telegram_trade_action(leg, delta)
+        lines.append("")
+        lines.extend(
+            _telegram_asset_block(
+                leg,
+                action=action,
+                action_icon=action_icon,
+                quantity=abs(delta),
+                price=leg.get("price"),
+                current_quantity=leg.get("target_quantity"),
+                risk_levels=risk_levels,
+                metadata=metadata,
+            )
         )
-        if float(leg["target_quantity"]) != 0:
-            if risk_line := _risk_line(leg, risk_levels, metadata):
-                lines.append(f"　{risk_line}")
     lines.append("<b>最新持倉</b>")
     if positions:
         for position in positions[:8]:
-            lines.append(
-                f"• {_telegram_contract(position)} · {float(position.get('quantity') or 0):g} · "
-                f"成本 {_money(position.get('currency'), position.get('average_cost') or 0)}"
+            lines.append("")
+            lines.extend(
+                _telegram_asset_block(
+                    position,
+                    quantity=position.get("quantity") or 0,
+                    price=position.get("average_cost") or 0,
+                    current_quantity=position.get("quantity") or 0,
+                    risk_levels=risk_levels,
+                    metadata=metadata,
+                )
             )
-            if risk_line := _risk_line(position, risk_levels, metadata):
-                lines.append(f"　{risk_line}")
     else:
         lines.append("• 暫無持倉")
     lines.extend(
         (
             "⚡ 經量化系統數據分析建議",
-            "⚠️ 可能提前止盈或止損，請留意最新推送。",
+            "⚠️ 可能提前止盈或止損，請留意最新建議推送。",
             f"<i>{escape(source_label)} · 事件 #{int(event['id'])}</i>",
         )
     )
     if delay_note:
-        lines.append("💎 升級會員可取得即時操作資料。")
+        lines.append("💎 升級會員可取得即時建議資料。")
     return _telegram_text(lines)
 
 
@@ -202,37 +276,49 @@ def telegram_daily_summary(
     trades: list[dict] = (),
     positions: list[dict] = (),
     risk_levels: dict | None = None,
-    audience: str = "普通群",
+    audience: str = "免費頻道",
     delay_note: str | None = None,
 ) -> str:
     total_pnl = sum(float(snapshot["total_pnl"]) for snapshot, _ in items)
     icon = "🟢" if total_pnl >= 0 else "🔴"
-    lines = [f"{icon} <b>CicloTrade · 每日總結</b>"]
+    lines = [f"{icon} <b>CicloTrade · 每日建議總結</b>"]
     if delay_note:
         lines.append(f"⏱ <b>{escape(delay_note)}</b>")
     risks = risk_levels if isinstance(risk_levels, dict) else {}
-    lines.append(f"{escape(audience)} · 今日成交 {int(action_count)} 筆")
+    lines.append(f"{escape(audience)} · 今日建議成交 {int(action_count)} 筆")
     if trades:
-        lines.append("<b>今日買賣</b>")
+        lines.append("<b>今日建議記錄</b>")
         for trade in trades[:8]:
-            icon = "📈" if float(trade["quantity_delta"]) > 0 else "📉"
-            action = "買入" if float(trade["quantity_delta"]) > 0 else "賣出"
-            lines.append(
-                f"{icon} {_telegram_time(trade['time'])} · {action} {_telegram_contract(trade)} · "
-                f"{abs(float(trade['quantity_delta'])):g} · {_money(trade.get('currency'), trade['price'])}"
+            delta = float(trade["quantity_delta"])
+            action, action_icon = _telegram_trade_action(trade, delta)
+            lines.append("")
+            lines.extend(
+                _telegram_asset_block(
+                    trade,
+                    action=action,
+                    action_icon=action_icon,
+                    quantity=abs(delta),
+                    price=trade.get("price"),
+                    current_quantity=trade.get("target_quantity"),
+                    occurred_at=trade.get("time"),
+                    risk_levels=risks,
+                    metadata={},
+                )
             )
-            if float(trade.get("target_quantity") or 0) != 0:
-                if risk_line := _risk_line(trade, risks, {}):
-                    lines.append(f"　{risk_line}")
     lines.append("<b>收盤持倉</b>")
     if positions:
         for position in positions[:8]:
-            lines.append(
-                f"• {_telegram_contract(position)} · {float(position.get('quantity') or 0):g} · "
-                f"成本 {_money(position.get('currency'), position.get('average_cost') or 0)}"
+            lines.append("")
+            lines.extend(
+                _telegram_asset_block(
+                    position,
+                    quantity=position.get("quantity") or 0,
+                    price=position.get("average_cost") or 0,
+                    current_quantity=position.get("quantity") or 0,
+                    risk_levels=risks,
+                    metadata={},
+                )
             )
-            if risk_line := _risk_line(position, risks, {}):
-                lines.append(f"　{risk_line}")
     else:
         lines.append("• 暫無持倉")
     for snapshot, windows in items:
@@ -254,14 +340,14 @@ def telegram_daily_summary(
                     f"({float(value['return']):+.2%})"
                 )
     latest_at = max(str(snapshot["captured_at"]) for snapshot, _ in items)
-    lines.extend((f"🕒 {_telegram_time(latest_at)}", "⚡ 經量化系統數據分析建議", "⚠️ 可能提前止盈或止損，請留意最新推送。"))
+    lines.extend((f"🕒 {_telegram_time(latest_at)}", "⚡ 經量化系統數據分析建議", "⚠️ 可能提前止盈或止損，請留意最新建議推送。"))
     if delay_note:
-        lines.append("💎 升級會員可取得即時操作資料。")
+        lines.append("💎 升級會員可取得即時建議資料。")
     return _telegram_text(lines)
 
 
 def telegram_price_alert(content: str) -> str:
-    return f"⚠️ <b>CicloTrade · 價格預警</b>\n<blockquote>{escape(str(content))}</blockquote>\n請先核對即時行情與風險限制。"
+    return f"⚠️ <b>CicloTrade · 價格預警建議</b>\n<blockquote>{escape(str(content))}</blockquote>\n請先核對即時行情與風險限制。"
 
 
 def telegram_binding(code: str) -> str:
@@ -269,7 +355,7 @@ def telegram_binding(code: str) -> str:
 
 
 def telegram_membership(plan: str, expiry: str, reason: str) -> str:
-    return f"💎 CicloTrade · 會員權益已更新\n方案　{plan}\n有效期至　{expiry}\n說明　{reason}\n登入網站即可使用已開放功能。"
+    return f"💎 CicloTrade · 會員權益已更新\n會員　{plan_display_name(plan)}\n有效期至　{expiry}\n說明　{reason}\n登入網站即可使用已開放功能。"
 
 
 def telegram_live_service_paused() -> str:

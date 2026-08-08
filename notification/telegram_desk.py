@@ -9,7 +9,14 @@ import threading
 import time
 from typing import Any
 
-from core.plans import PLANS, can, effective_plan
+from core.plans import (
+    PLANS,
+    TELEGRAM_CHANNEL_NAMES,
+    can,
+    effective_plan,
+    plan_display_name,
+    telegram_suggestion_name,
+)
 from core.quant_journal import QuantJournal
 from notification.telegram_bot import (
     TelegramKeyboard,
@@ -19,6 +26,7 @@ from notification.telegram_bot import (
     verified_account_for_chat,
 )
 from notification.telegram_models import TelegramDeskResponse
+from notification.telegram_timeline import handle_timeline_action
 from notification.telegram_security import (
     claim_telegram_callback,
     claim_telegram_update,
@@ -59,7 +67,7 @@ def _app_url(path: str) -> str:
 
 
 def _home_row() -> list[dict[str, str]]:
-    return [{"text": "⬅️ 主选单", "callback_data": "desk:home"}]
+    return [{"text": "⬅️ 主選單", "callback_data": "desk:home"}]
 
 
 def _account(database, chat_id: str) -> dict[str, Any] | None:
@@ -79,13 +87,13 @@ def _money(currency: object, value: object) -> str:
 def _home_card(chat_id: str, account: dict[str, Any] | None) -> str:
     if account:
         plan = effective_plan(account)
-        identity = f"{escape(str(account.get('display_name') or account['email']))} · {escape(plan)}"
+        identity = f"{escape(str(account.get('display_name') or account['email']))} · {escape(plan_display_name(plan))}"
     else:
         identity = f"尚未绑定账户 · Chat ID <code>{escape(str(chat_id))}</code>"
     return (
-        "🤖 <b>CicloTrade · 量化服务台</b>\n\n"
-        f"<blockquote>{identity}\n行情、模拟持仓、量化行动、会员与通知都可在这里完成。</blockquote>\n"
-        "请选择需要查看的功能。"
+        "🤖 <b>CicloTrade · 量化服務台</b>\n\n"
+        f"<blockquote>{identity}</blockquote>\n"
+        "請選擇服務。"
     )
 
 
@@ -95,7 +103,7 @@ def _account_card(chat_id: str, account: dict[str, Any] | None) -> tuple[str, Te
         message = (
             "🔗 <b>CicloTrade · 账户状态</b>\n\n"
             f"<blockquote>已验证 Chat ID：<code>{escape(str(chat_id))}</code>\n"
-            f"账户：{escape(str(account['email']))}\n会员：{escape(plan)}</blockquote>\n"
+            f"账户：{escape(str(account['email']))}\n会员：{escape(plan_display_name(plan))}</blockquote>\n"
             "网站与 Bot 使用同一份会员权限和通知设置。"
         )
         return message, [_home_row()]
@@ -112,7 +120,7 @@ def _account_card(chat_id: str, account: dict[str, Any] | None) -> tuple[str, Te
 
 
 def _plans_card(account: dict[str, Any] | None) -> tuple[str, TelegramKeyboard]:
-    current = effective_plan(account) if account else "未绑定"
+    current = plan_display_name(effective_plan(account)) if account else "未绑定"
     lines = [
         "💎 <b>CicloTrade · 会员方案</b>",
         "",
@@ -122,17 +130,19 @@ def _plans_card(account: dict[str, Any] | None) -> tuple[str, TelegramKeyboard]:
     buttons: TelegramKeyboard = []
     for slug, name in _PLAN_SLUGS.items():
         plan = PLANS[name]
+        display_name = plan_display_name(name)
         monthly = plan["prices"].get("monthly")
         price = "HKD 30,000 起" if monthly is None else f"HKD {float(monthly):,.0f}/月"
-        lines.append(f"<b>{escape(name)}</b> · {price}")
+        lines.append(f"<b>{escape(display_name)}</b> · {price}")
         lines.append(f"{escape(str(plan['summary']))}")
-        buttons.append([{"text": f"查看 {name}", "callback_data": f"buy:plan:{slug}"}])
+        buttons.append([{"text": f"查看 {display_name}", "callback_data": f"buy:plan:{slug}"}])
     buttons.append(_home_row())
     return "\n".join(lines), buttons
 
 
 def _plan_detail(slug: str, account: dict[str, Any] | None) -> tuple[str, TelegramKeyboard]:
     name = _PLAN_SLUGS[slug]
+    display_name = plan_display_name(name)
     plan = PLANS[name]
     features = "\n".join(f"• {escape(str(item))}" for item in plan["features"])
     annual_bonus = OrderService().annual_bonus_enabled()
@@ -147,9 +157,9 @@ def _plan_detail(slug: str, account: dict[str, Any] | None) -> tuple[str, Telegr
     buttons.extend(
         ([{"text": "⬅️ 返回方案", "callback_data": "desk:plans"}], _home_row())
     )
-    current = effective_plan(account) if account else "未绑定"
+    current = plan_display_name(effective_plan(account)) if account else "未绑定"
     return (
-        f"💎 <b>{escape(name)}</b>\n\n"
+        f"💎 <b>{escape(display_name)}</b>\n\n"
         f"<blockquote>当前：{escape(current)}\n{escape(str(plan['summary']))}</blockquote>\n"
         f"{features}\n\n选择付款周期继续。",
         buttons,
@@ -158,6 +168,7 @@ def _plan_detail(slug: str, account: dict[str, Any] | None) -> tuple[str, Telegr
 
 def _cycle_card(slug: str, cycle: str, account: dict[str, Any] | None) -> tuple[str, TelegramKeyboard]:
     name = _PLAN_SLUGS[slug]
+    display_name = plan_display_name(name)
     if cycle not in PLANS[name]["prices"]:
         raise ValueError("此方案不支持该付款周期。")
     amount = float(PLANS[name]["prices"][cycle])
@@ -191,7 +202,7 @@ def _cycle_card(slug: str, cycle: str, account: dict[str, Any] | None) -> tuple[
     availability = "选择付款方式继续。" if methods else "当前付款通道尚未开放，请联系客户服务。"
     return (
         f"🧾 <b>确认订单</b>\n\n"
-        f"<blockquote>{escape(name)} · {_CYCLE_LABELS[cycle]}\n"
+        f"<blockquote>{escape(display_name)} · {_CYCLE_LABELS[cycle]}\n"
         f"应付：HKD {amount:,.0f}</blockquote>\n"
         "数字服务付款后不支持主动退款。建立订单前，你需要再次确认同意用户协议、"
         f"风险披露与不退款政策。\n\n{availability}",
@@ -201,13 +212,14 @@ def _cycle_card(slug: str, cycle: str, account: dict[str, Any] | None) -> tuple[
 
 def _method_card(slug: str, cycle: str, method: str) -> tuple[str, TelegramKeyboard]:
     name = _PLAN_SLUGS[slug]
+    display_name = plan_display_name(name)
     if cycle not in PLANS[name]["prices"] or method not in {"fps", "paypal", "paddle"}:
         raise ValueError("订单选项无效。")
     amount = float(PLANS[name]["prices"][cycle])
     label = {"fps": "FPS 转数快", "paypal": "PayPal", "paddle": "Paddle"}[method]
     return (
         f"✅ <b>最后确认</b>\n\n"
-        f"<blockquote>{escape(name)} · {_CYCLE_LABELS[cycle]}\n"
+        f"<blockquote>{escape(display_name)} · {_CYCLE_LABELS[cycle]}\n"
         f"{label} · HKD {amount:,.0f}</blockquote>\n"
         "点击下方按钮即表示你已阅读并同意用户协议、隐私政策、风险披露与付款后不退款政策。",
         [
@@ -228,7 +240,7 @@ def _orders_card(database, account: dict[str, Any] | None) -> tuple[str, Telegra
     for order in orders:
         lines.extend(
             (
-                f"<b>{escape(str(order['plan_type']))}</b> · {_CYCLE_LABELS.get(str(order['billing_cycle']), '--')}",
+                f"<b>{escape(plan_display_name(str(order['plan_type'])))}</b> · {_CYCLE_LABELS.get(str(order['billing_cycle']), '--')}",
                 f"<code>{escape(str(order['order_no']))}</code> · {_STATUS_LABELS.get(str(order['status']), escape(str(order['status'])))} · "
                 f"{escape(str(order['currency']))} {float(order['amount']):,.0f}",
                 "",
@@ -240,23 +252,55 @@ def _orders_card(database, account: dict[str, Any] | None) -> tuple[str, Telegra
     ]
 
 
+def _membership_card(account: dict[str, Any] | None) -> tuple[str, TelegramKeyboard]:
+    if not account:
+        return (
+            "💎 <b>CicloTrade · 會員與訂單</b>\n\n綁定帳戶後，可查看會員權益與訂單。",
+            [
+                [{"text": "🔗 綁定帳戶", "callback_data": "desk:account"}],
+                [{"text": "💎 查看方案", "callback_data": "desk:plans"}],
+                _home_row(),
+            ],
+        )
+    plan = effective_plan(account)
+    if plan in {"免费版", "标准版"}:
+        channel = TELEGRAM_CHANNEL_NAMES["daily"]
+        access = "正股建議延遲 1 小時\n期權建議延遲 15 分鐘"
+    elif plan == "高级版":
+        channel = TELEGRAM_CHANNEL_NAMES["advanced"]
+        access = "即時正股建議\n期權建議需升級專業會員"
+    else:
+        channel = TELEGRAM_CHANNEL_NAMES["professional"]
+        access = "即時正股建議\n即時期權建議"
+    return (
+        "💎 <b>CicloTrade · 會員與訂單</b>\n\n"
+        f"<blockquote>會員　{escape(plan_display_name(plan))}\n"
+        f"頻道　{escape(channel)}\n{escape(access)}</blockquote>",
+        [
+            [{"text": "💎 會員方案", "callback_data": "desk:plans"}],
+            [{"text": "🧾 我的訂單", "callback_data": "desk:orders"}],
+            _home_row(),
+        ],
+    )
+
+
 def _actions_card(database, account: dict[str, Any] | None) -> tuple[str, TelegramKeyboard]:
     if not account:
         return (
-            "🔒 <b>今日行动需要绑定账户</b>\n\n绑定后，Bot 会按你的会员等级展示量化交易行动。",
+            "🔒 <b>今日建議需要綁定帳戶</b>\n\n綁定後，Bot 會按會員等級顯示量化建議。",
             [[{"text": "🔗 绑定账户", "callback_data": "desk:account"}], [{"text": "💎 查看方案", "callback_data": "desk:plans"}], _home_row()],
         )
     plan = effective_plan(account)
-    if not can(plan, "signal_web"):
+    if not can(plan, "tg_stock_signal"):
         return (
-            "🔒 <b>今日行动 · 会员功能</b>\n\n"
-            "标准版及以上可查看量化系统已执行的正股行动与时间线；高级版增加期权研究。",
+            "🔒 <b>即時建議 · 會員功能</b>\n\n"
+            "高級會員可查看即時正股建議；專業會員增加即時期權建議。",
             [[{"text": "💎 升级会员", "callback_data": "desk:plans"}], _home_row()],
         )
     journal = QuantJournal(database)
     events = journal.list_events(_SYSTEM_LEDGER)
-    include_options = can(plan, "option_chain")
-    lines = ["📈 <b>CicloTrade · 今日行动</b>", ""]
+    include_options = can(plan, "tg_option_signal")
+    lines = ["📈 <b>CicloTrade · 今日建議</b>", ""]
     visible = 0
     hidden_options = 0
     for event in reversed(events):
@@ -271,22 +315,22 @@ def _actions_card(database, account: dict[str, Any] | None) -> tuple[str, Telegr
                 hidden_options += 1
                 continue
             delta = float(leg.get("quantity_delta") or 0)
-            action = "买入" if delta > 0 else "卖出"
+            action = "買入建議" if delta > 0 else "賣出建議"
             symbol = escape(str(leg.get("symbol") or "--"))
-            instrument = "期权" if leg.get("instrument_type") == "option" else "正股"
+            instrument = telegram_suggestion_name(str(leg.get("instrument_type")))
             lines.append(
-                f"{'🟢' if delta > 0 else '🔴'} <b>{action} {symbol}</b> · {instrument} · {abs(delta):g} · "
+                f"{'🟢' if delta > 0 else '🔴'} <b>{action} · {symbol}</b>\n{instrument} · {abs(delta):g} · "
                 f"{_money(leg.get('currency'), leg.get('price'))}"
             )
-            lines.append(f"目标持仓 {float(leg.get('target_quantity') or 0):g} · {escape(str(event['strategy_name']))}")
+            lines.append(f"目標持倉 {float(leg.get('target_quantity') or 0):g} · {escape(str(event['strategy_name']))}")
             visible += 1
             if visible >= 5:
                 break
     if not visible:
-        lines.append("当前没有可展示的已验证量化操作。")
+        lines.append("目前沒有可展示的已驗證量化建議。")
     if hidden_options:
-        lines.append(f"\n🔒 另有 {hidden_options} 条期权行动，升级高级版后查看。")
-    lines.extend(("", "⚡ 经量化系统数据分析建议", "⚠️ 系统可能提前止盈或止损，请留意最新推送。"))
+        lines.append(f"\n🔒 另有 {hidden_options} 條期權建議，升級專業會員後查看。")
+    lines.extend(("", "⚡ 經量化系統數據分析建議", "⚠️ 系統可能提前止盈或止損，請留意最新建議。"))
     return "\n".join(lines), [
         [{"text": "💼 查看模拟持仓", "callback_data": "desk:portfolio"}],
         [{"text": "💎 会员方案", "callback_data": "desk:plans"}],
@@ -326,7 +370,7 @@ def _portfolio_card(database) -> tuple[str, TelegramKeyboard]:
         )
     lines.extend(("", "公开模拟组合，仅用于展示量化系统实际记录，不代表客户个人资产。"))
     return "\n".join(lines), [
-        [{"text": "📈 今日行动", "callback_data": "desk:actions"}],
+        [{"text": "📈 今日建議", "callback_data": "desk:actions"}],
         _home_row(),
     ]
 
@@ -374,7 +418,7 @@ def _help_card() -> tuple[str, TelegramKeyboard]:
         "❓ <b>CicloTrade · 使用帮助</b>\n\n"
         "<blockquote>1. 行情：查看美股与大A快照\n"
         "2. 模拟持仓：查看平台公开模拟组合\n"
-        "3. 今日行动：按会员权限查看量化操作\n"
+        "3. 今日建議：按會員權限查看量化建議\n"
         "4. 开通会员：选择方案、周期和付款方式\n"
         "5. 通知设置：网站与 Bot 自动同步</blockquote>\n"
         "Bot 不会要求券商密码、API Secret 或付款密码。",
@@ -417,12 +461,17 @@ def telegram_desk_response(
         )
         if billing is not None:
             return billing
+        timeline = handle_timeline_action(database, chat_id, account, command)
+        if timeline is not None:
+            return timeline
         if command in {"desk:home", "menu:home"}:
             message, keyboard = _home_card(chat_id, account), telegram_main_keyboard()
         elif command == "desk:account":
             message, keyboard = _account_card(chat_id, account)
         elif command == "desk:plans":
             message, keyboard = _plans_card(account)
+        elif command == "desk:membership":
+            message, keyboard = _membership_card(account)
         elif command == "desk:orders":
             message, keyboard = _orders_card(database, account)
         elif command == "desk:actions":

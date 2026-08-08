@@ -83,8 +83,8 @@ def entitled_user_target(user: dict[str, Any], settings: dict[str, Any], event: 
 
 
 _NOTIFY_COMMANDS = {
-    "stock": (("stock_signal",), "stock_signal_telegram", "正股量化操作"),
-    "option": (("option_signal",), "option_signal_telegram", "期權量化操作"),
+    "stock": (("stock_signal",), "stock_signal_telegram", "正股建議"),
+    "option": (("option_signal",), "option_signal_telegram", "期權建議"),
     "price": (("price_alert",), "tg_stock_signal", "價格預警"),
     "orders": (("order_submitted", "order_filled", "risk_rejected", "force_liquidation"), "tg_stock_signal", "個人訂單與風控"),
     "system": (("system_exception",), "tg_system", "系統異常"),
@@ -101,7 +101,11 @@ _CALLBACK_DATA = {"menu:home", "menu:settings"} | {
     f"notify:{name}:toggle" for name in _NOTIFY_COMMANDS
 }
 _CALLBACK_PATTERNS = (
-    re.compile(r"^desk:(?:home|actions|portfolio|market|plans|orders|settings|help|account)$"),
+    re.compile(
+        r"^desk:(?:home|queries|membership|timeline|actions|portfolio|market|plans|orders|settings|help|account)$"
+    ),
+    re.compile(r"^timeline:(?:choose|custom):(?:stock|option)$"),
+    re.compile(r"^timeline:show:(?:stock|option):[1-9][0-9]{0,2}:(?:0|[1-9][0-9]{0,2})$"),
     re.compile(r"^buy:plan:(?:standard|advanced|professional|custom)$"),
     re.compile(
         r"^buy:cycle:(?:standard|advanced|professional|custom):"
@@ -219,22 +223,11 @@ def _app_url(path: str) -> str:
 
 def telegram_main_keyboard() -> TelegramKeyboard:
     return [
-        [
-            {"text": "📈 今日行動", "callback_data": "desk:actions"},
-            {"text": "💼 模擬持倉", "callback_data": "desk:portfolio"},
-        ],
-        [
-            {"text": "📊 市場行情", "callback_data": "desk:market"},
-            {"text": "🔔 通知設定", "callback_data": "desk:settings"},
-        ],
-        [
-            {"text": "💎 開通會員", "callback_data": "desk:plans"},
-            {"text": "🧾 我的訂單", "callback_data": "desk:orders"},
-        ],
-        [
-            {"text": "🔗 帳戶綁定", "callback_data": "desk:account"},
-            {"text": "❓ 使用幫助", "callback_data": "desk:help"},
-        ],
+        [{"text": "🔎 查詢中心", "callback_data": "desk:queries"}],
+        [{"text": "🔔 我的通知", "callback_data": "desk:settings"}],
+        [{"text": "💎 會員與訂單", "callback_data": "desk:membership"}],
+        [{"text": "🔗 帳戶", "callback_data": "desk:account"}],
+        [{"text": "❓ 幫助與客服", "callback_data": "desk:help"}],
     ]
 
 
@@ -328,7 +321,7 @@ def update_notification_preference(database, chat_id: str, command: str) -> str:
     if parts and parts[0] == "/start":
         return (
             "🤖 <b>CicloTrade Bot</b>\n\n"
-            "<blockquote>量化操作、持倉、風控與會員通知助手。\n"
+            "<blockquote>量化建議、持倉、風控與會員通知助手。\n"
             f"你的 Chat ID：<code>{target}</code></blockquote>\n\n"
             "點按下方按鈕即可使用；綁定後可直接在 Bot 內管理私人通知。"
         )
@@ -341,7 +334,7 @@ def update_notification_preference(database, chat_id: str, command: str) -> str:
     if parts and parts[0] == "/help":
         return (
             "❓ <b>CicloTrade Bot 幫助</b>\n\n"
-            "點按下方按鈕查看今日行動、目前持倉、市場行情或管理通知。\n"
+            "點按下方按鈕查看今日建議、目前持倉、市場行情或管理通知。\n"
             "Bot 不會要求你提供券商密碼、API Secret 或付款密碼。"
         )
     if parts and parts[0] not in {"/notify", "/settings"}:
@@ -510,6 +503,7 @@ def send_telegram(
     parse_mode: str | None = None,
     button: tuple[str, str] | None = None,
     buttons: TelegramKeyboard | None = None,
+    protect_content: bool = False,
 ) -> None:
     enabled_env = str(_telegram_setting("enabled_env", "EXTERNAL_ALERTS_ENABLED"))
     if os.getenv(enabled_env, "false").strip().lower() != "true":
@@ -531,6 +525,8 @@ def send_telegram(
     except ValueError as exc:
         raise RuntimeError(str(exc)) from exc
     payload: dict[str, Any] = {"chat_id": target, "text": text, "disable_web_page_preview": True}
+    if protect_content:
+        payload["protect_content"] = True
     if parse_mode in {"HTML", "MarkdownV2"}:
         payload["parse_mode"] = parse_mode
     if keyboard:
@@ -640,6 +636,7 @@ def configure_telegram_bot() -> None:
     """Install commands, the native menu button, and the authenticated webhook."""
     commands = [
         {"command": "start", "description": "主選單與 Chat ID"},
+        {"command": "timeline", "description": "交易時間線查詢"},
         {"command": "plans", "description": "會員方案與開通"},
         {"command": "orders", "description": "我的訂閱訂單"},
         {"command": "id", "description": "顯示綁定 Chat ID"},

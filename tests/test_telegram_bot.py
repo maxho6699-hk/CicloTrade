@@ -69,9 +69,11 @@ def test_send_telegram_accepts_native_keyboard_and_rejects_untrusted_actions(mon
         "menu",
         chat_id="123456789",
         buttons=[[{"text": "設定", "callback_data": "menu:settings"}, {"text": "網站", "url": "https://ciclotrade.com/settings"}]],
+        protect_content=True,
     )
 
     assert captured[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "menu:settings"
+    assert captured[0]["protect_content"] is True
     with pytest.raises(RuntimeError, match="callback_data"):
         send_telegram("menu", chat_id="123456789", buttons=[[{"text": "bad", "callback_data": "user:1"}]])
     with pytest.raises(RuntimeError, match="HTTPS"):
@@ -95,7 +97,7 @@ def test_configure_telegram_bot_installs_commands_and_menu(monkeypatch):
 
     assert captured[0][0].endswith("/setMyCommands")
     assert [item["command"] for item in captured[0][1]["commands"]] == [
-        "start", "plans", "orders", "id", "settings", "help",
+        "start", "timeline", "plans", "orders", "id", "settings", "help",
     ]
     assert captured[1] == (captured[1][0], {"menu_button": {"type": "commands"}})
     assert captured[1][0].endswith("/setChatMenuButton")
@@ -115,6 +117,9 @@ def test_start_returns_chat_id_and_main_menu_without_binding(tmp_path):
     assert "Chat ID" in reply and "123456789" in reply
     assert any(button.get("callback_data") == "desk:settings" for row in keyboard for button in row)
     assert telegram_callback_allowed("notify:stock:toggle")
+    assert telegram_callback_allowed("timeline:show:stock:30:2")
+    assert not telegram_callback_allowed("timeline:show:stock:1000:0")
+    assert not telegram_callback_allowed("timeline:show:crypto:10:0")
     assert not telegram_callback_allowed("notify:stock:on")
 
 
@@ -132,6 +137,7 @@ def test_telegram_webhook_replies_to_private_start_and_ignores_group(monkeypatch
     )
     assert response.status_code == 200
     assert sent[0][0][1] == "123456789" and sent[0][1]["buttons"]
+    assert sent[0][1]["protect_content"] is True
 
     asyncio.run(
         asgi_app.telegram_webhook(

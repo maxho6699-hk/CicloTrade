@@ -391,6 +391,7 @@ async def api_orders(request):
                     mode, side, quantity, symbol.strip().upper(), price, order.get("status")
                 ),
                 chat_id=target_chat,
+                protect_content=True,
             )
         except RuntimeError:
             database.log_system_event("WARN", "NOTIFICATION", "API 订单 Telegram 通知失败", f"user={user['id']}")
@@ -861,6 +862,7 @@ async def telegram_webhook(request):
                 item.chat_id,
                 parse_mode="HTML",
                 buttons=item.buttons,
+                protect_content=True,
             )
 
     async def deliver_service_outbox() -> None:
@@ -903,7 +905,8 @@ async def telegram_webhook(request):
             return JSONResponse({"ok": True})
         if not consume_telegram_quota(database, chat_id, "photo" if photo else value):
             return JSONResponse({"ok": True})
-        result = telegram_desk_response(
+        result = await asyncio.to_thread(
+            telegram_desk_response,
             database,
             chat_id,
             value,
@@ -918,6 +921,7 @@ async def telegram_webhook(request):
                 chat_id,
                 parse_mode="HTML",
                 buttons=result.keyboard,
+                protect_content=True,
             )
             await deliver_followups(result)
             await deliver_service_outbox()
@@ -956,7 +960,8 @@ async def telegram_webhook(request):
             await asyncio.to_thread(answer_telegram_callback, callback_id, "此操作已经处理。")
             return JSONResponse({"ok": True})
         await asyncio.to_thread(answer_telegram_callback, callback_id)
-        result = telegram_desk_response(
+        result = await asyncio.to_thread(
+            telegram_desk_response,
             database,
             chat_id,
             data,

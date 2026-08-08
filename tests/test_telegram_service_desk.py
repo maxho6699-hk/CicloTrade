@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from core.compat import UTC
 from pathlib import Path
 import sqlite3
@@ -19,6 +19,7 @@ from notification.telegram_desk import (
     telegram_desk_response,
 )
 from notification.telegram_models import TelegramOutbound
+from notification.telegram_security import consume_telegram_timeline_quota
 from notification.telegram_outbox import (
     dispatch_telegram_service_outbox,
     enqueue_telegram_outbound,
@@ -226,9 +227,147 @@ def test_unbound_checkout_is_blocked_and_free_member_sees_upgrade_path(db):
 
     member = _bound_user(db, "free-member", "810010")
     actions = telegram_desk_response(db, "810010", "desk:actions", callback=True)
-    assert "会员功能" in actions.message
+    assert "會員功能" in actions.message
+    assert "即時正股建議" in actions.message
     assert any(button.get("callback_data") == "desk:plans" for row in actions.keyboard for button in row)
     assert db.fetch_one("SELECT plan_type FROM users WHERE id=?", (member["id"],))["plan_type"] == "免费版"
+
+
+def test_compact_menu_routes_to_queries_membership_and_delayed_timeline(db, monkeypatch):
+    member = _bound_user(db, "timeline-free", "810020")
+    updated = (datetime.now(UTC).replace(microsecond=0) - timedelta(hours=2)).isoformat()
+    cycle = {
+        "sequence": 1,
+        "instrument_key": "US:STOCK:AAPL",
+        "instrument_type": "stock",
+        "symbol": "AAPL",
+        "currency": "USD",
+        "direction": "long",
+        "opened_at": updated,
+        "updated_at": updated,
+        "closed_at": updated,
+        "opened_quantity": 10,
+        "current_quantity": 0,
+        "average_cost": 100,
+        "realized_pnl": 50,
+        "return": 0.05,
+    }
+    monkeypatch.setattr("notification.telegram_timeline._cycles", lambda *_args: ([cycle], None))
+
+    queries = telegram_desk_response(db, "810020", "desk:queries", callback=True)
+    assert "查詢中心" in queries.message
+    assert any(button.get("callback_data") == "desk:timeline" for row in queries.keyboard for button in row)
+
+    membership = telegram_desk_response(db, "810020", "desk:membership", callback=True)
+    assert "免費會員" in membership.message and "免費頻道" in membership.message
+    assert "正股建議延遲 1 小時" in membership.message
+
+    home = telegram_desk_response(db, "810020", "/timeline")
+    assert "交易時間線" in home.message
+    assert any("專業會員" in button["text"] for row in home.keyboard for button in row)
+    result = telegram_desk_response(db, "810020", "timeline:show:stock:10:0", callback=True)
+    assert "正股建議" in result.message and "延遲 1 小時" in result.message
+    assert "AAPL" in result.message and "交易回報" in result.message
+
+    option = telegram_desk_response(db, "810020", "timeline:choose:option", callback=True)
+    assert "需要升級會員" in option.message
+    assert db.fetch_one("SELECT plan_type FROM users WHERE id=?", (member["id"],))["plan_type"] == "免费版"
+
+
+def test_professional_timeline_allows_realtime_options_and_custom_limit(db, monkeypatch):
+    member = _bound_user(db, "timeline-pro", "810021")
+    db.execute(
+        "UPDATE users SET plan_type='专业版',subscription_expire='2099-01-01T00:00:00+00:00' WHERE id=?",
+        (member["id"],),
+    )
+    now = datetime.now(UTC).replace(microsecond=0).isoformat()
+    cycle = {
+        "sequence": 1,
+        "instrument_key": "US:OPTION:AAPL:20261218:CALL:200",
+        "instrument_type": "option",
+        "symbol": "AAPL",
+        "currency": "USD",
+        "option_expiry": "2026-12-18",
+        "option_right": "CALL",
+        "option_strike": 200,
+        "direction": "long",
+        "opened_at": now,
+        "updated_at": now,
+        "closed_at": None,
+        "opened_quantity": 1,
+        "current_quantity": 1,
+        "average_cost": 5,
+        "unrealized_pnl": 120,
+    }
+    monkeypatch.setattr("notification.telegram_timeline._cycles", lambda *_args: ([cycle], now))
+
+    picker = telegram_desk_response(db, "810021", "timeline:choose:option", callback=True)
+    assert "專業會員" in picker.message and "最多查詢 100 筆" in picker.message
+    result = telegram_desk_response(db, "810021", "/timeline option 1")
+    assert "期權建議" in result.message and "延遲" not in result.message
+    assert "浮動損益" in result.message and "+$120.00" in result.message
+
+
+def test_timeline_pagination_is_bounded_and_never_exceeds_telegram_limit(db, monkeypatch):
+    member = _bound_user(db, "timeline-pages", "810022")
+    db.execute(
+        "UPDATE users SET plan_type='专业版',subscription_expire='2099-01-01T00:00:00+00:00' WHERE id=?",
+        (member["id"],),
+    )
+    now = datetime.now(UTC).replace(microsecond=0)
+    cycles = []
+    for index in range(12):
+        occurred = (now - timedelta(days=index + 1)).isoformat()
+        cycles.append(
+            {
+                "sequence": index + 1,
+                "instrument_key": f"US:STOCK:TEST{index}",
+                "instrument_type": "stock",
+                "symbol": f"TEST{index}",
+                "currency": "USD",
+                "direction": "long",
+                "opened_at": occurred,
+                "updated_at": occurred,
+                "closed_at": occurred,
+                "opened_quantity": 10,
+                "current_quantity": 0,
+                "average_cost": 100,
+                "realized_pnl": 10 + index,
+                "return": 0.01,
+            }
+        )
+    monkeypatch.setattr("notification.telegram_timeline._cycles", lambda *_args: (cycles, None))
+
+    first = telegram_desk_response(db, "810022", "timeline:show:stock:10:0", callback=True)
+    second = telegram_desk_response(db, "810022", "timeline:show:stock:10:1", callback=True)
+    assert first.message.count("<blockquote>") == 5
+    assert second.message.count("<blockquote>") == 5
+    assert any(button.get("callback_data") == "timeline:show:stock:10:1" for row in first.keyboard for button in row)
+    assert any(button.get("callback_data") == "timeline:show:stock:10:0" for row in second.keyboard for button in row)
+    assert len(first.message.encode("utf-16-le")) // 2 < 4096
+    assert len(second.message.encode("utf-16-le")) // 2 < 4096
+
+
+def test_timeline_has_dedicated_minute_and_daily_rate_limits(db):
+    assert consume_telegram_timeline_quota(
+        db, "810023", per_minute=2, per_day=20, count_daily=False
+    )
+    assert consume_telegram_timeline_quota(
+        db, "810023", per_minute=2, per_day=20, count_daily=False
+    )
+    assert not consume_telegram_timeline_quota(
+        db, "810023", per_minute=2, per_day=20, count_daily=False
+    )
+
+    assert consume_telegram_timeline_quota(
+        db, "810024", per_minute=10, per_day=2, count_daily=True
+    )
+    assert consume_telegram_timeline_quota(
+        db, "810024", per_minute=10, per_day=2, count_daily=True
+    )
+    assert not consume_telegram_timeline_quota(
+        db, "810024", per_minute=10, per_day=2, count_daily=True
+    )
 
 
 def test_old_admin_button_cannot_review_a_resubmitted_claim(db):
