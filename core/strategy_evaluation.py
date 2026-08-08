@@ -29,6 +29,13 @@ SYSTEM_UNIVERSE = {
 }
 SYSTEM_INITIAL_CASH = {"USD": 100_000.0, "CNY": 100_000.0}
 _ADAPTIVE_SOURCE = "ciclotrade-adaptive"
+_CYCLE_LABELS = {
+    "premarket": "盤前",
+    "intraday": "盤中",
+    "after_close": "收盤後",
+    "overnight": "夜盤",
+    "manual": "管理員手動",
+}
 
 
 def _normalize_history(frame: pd.DataFrame) -> pd.DataFrame:
@@ -321,9 +328,13 @@ def run_system_quant_cycle(
     *,
     data_source=None,
     eval_date: date | str | None = None,
+    cycle_slot: str | None = None,
 ) -> dict[str, Any]:
-    """Re-rank strategies, rebalance the research ledger, and persist daily NAV."""
+    """Re-rank strategies and rebalance once per market checkpoint."""
     db = database or get_database()
+    slot = str(cycle_slot or "").strip().lower()
+    if slot and slot not in _CYCLE_LABELS:
+        raise ValueError("未知的量化循環時段。")
     closes, _ = _system_history(data_source=data_source, period="3y")
     if closes.empty:
         raise ValueError("系统量化循环没有可用历史行情。")
@@ -402,7 +413,8 @@ def run_system_quant_cycle(
             )
 
     event_created = False
-    external_event_id = f"adaptive-{day}"
+    cycle_label = _CYCLE_LABELS.get(slot, "每日收盤後")
+    external_event_id = f"adaptive-{day}{f'-{slot}' if slot else ''}"
     if legs and not db.fetch_one(
         "SELECT id FROM quant_events WHERE source=? AND external_event_id=?",
         (_ADAPTIVE_SOURCE, external_event_id),
@@ -416,9 +428,10 @@ def run_system_quant_cycle(
             legs=legs,
             metadata={
                 "reason": (
-                    f"每日收盘后对全部启用策略进行真实历史样本外评分；本期最佳正股策略为"
+                    f"{cycle_label}對全部啟用策略進行真實歷史樣本外評分；本期最佳正股策略為"
                     f"{definition['name']}，按每个市场最多 3 个标的、单标的初始资金 20% 建立模拟目标仓位。"
                 ),
+                "cycle_slot": slot or "daily",
                 "risk_level": definition["risk"],
                 "risk_levels": risk_levels,
                 "research_only": True,
@@ -437,7 +450,7 @@ def run_system_quant_cycle(
     snapshots_created = 0
     captured_at = datetime.now(UTC)
     for currency in ("USD", "CNY"):
-        snapshot_id = f"adaptive-{day}"
+        snapshot_id = external_event_id
         if db.fetch_one(
             "SELECT id FROM quant_equity_snapshots WHERE source=? AND external_snapshot_id=? AND currency=?",
             (_ADAPTIVE_SOURCE, snapshot_id, currency),
@@ -466,10 +479,12 @@ def run_system_quant_cycle(
         "QUANT_CYCLE",
         "STRATEGY",
         "服务器自适应量化循环完成",
-        f"date={day} strategy={definition['key']} event={int(event_created)} snapshots={snapshots_created}",
+        f"date={day} slot={slot or 'daily'} strategy={definition['key']} "
+        f"event={int(event_created)} snapshots={snapshots_created}",
     )
     return {
         "eval_date": day,
+        "cycle_slot": slot or "daily",
         "strategy_key": definition["key"],
         "strategy_name": definition["name"],
         "event_created": event_created,

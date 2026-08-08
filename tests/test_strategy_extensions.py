@@ -168,6 +168,49 @@ def test_adaptive_cycle_writes_one_idempotent_event_and_daily_nav(db, monkeypatc
     assert db.fetch_one("SELECT COUNT(*) count FROM quant_equity_snapshots")["count"] == 2
 
 
+def test_adaptive_cycle_is_idempotent_per_market_checkpoint(db, monkeypatch):
+    index = pd.date_range("2025-01-01", periods=320, freq="B")
+
+    class Source:
+        direction = 1
+
+        def history(self, symbols, period="3y", interval="1d"):
+            closes = pd.DataFrame(
+                {
+                    symbol: pd.Series(
+                        [100.0 + self.direction * value * 0.2 + offset for value in range(len(index))],
+                        index=index,
+                    )
+                    for offset, symbol in enumerate(symbols)
+                }
+            )
+            return closes, closes * 0 + 1_000
+
+    source = Source()
+    StrategyRegistry(db).sync_catalog()
+    monkeypatch.setattr(
+        "core.strategy_evaluation.score_daily_catalog",
+        lambda *_args, **_kwargs: [{"strategy_key": "template_tsmom_12m", "weighted_score": 90.0}],
+    )
+
+    premarket = run_system_quant_cycle(
+        db, data_source=source, eval_date="2026-03-24", cycle_slot="premarket"
+    )
+    source.direction = -1
+    after_close = run_system_quant_cycle(
+        db, data_source=source, eval_date="2026-03-24", cycle_slot="after_close"
+    )
+    repeated = run_system_quant_cycle(
+        db, data_source=source, eval_date="2026-03-24", cycle_slot="after_close"
+    )
+
+    assert premarket["event_created"] is True
+    assert after_close["event_created"] is True
+    assert repeated["event_created"] is False
+    assert db.fetch_one("SELECT COUNT(*) count FROM quant_events")["count"] == 2
+    assert db.fetch_one("SELECT COUNT(*) count FROM quant_equity_snapshots")["count"] == 4
+
+
 def test_system_history_routes_us_and_a_shares_to_supported_sources(monkeypatch):
     index = pd.date_range("2025-01-01", periods=100, freq="B")
     calls = []

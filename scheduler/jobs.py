@@ -879,9 +879,9 @@ def publish_free_daily_group_summary(database=None) -> int:
     return publish_daily_group_summary(database, free_group=True)
 
 
-def evaluate_strategy_catalog() -> int:
-    """Run the adaptive catalog evaluation and research-ledger cycle after close."""
-    return int(run_system_quant_cycle()["event_created"])
+def evaluate_strategy_catalog(cycle_slot: str = "after_close") -> int:
+    """Run one idempotent adaptive cycle for a US-market checkpoint."""
+    return int(run_system_quant_cycle(cycle_slot=cycle_slot)["event_created"])
 
 
 def aggregate_user_profiles(database=None) -> int:

@@ -211,13 +211,13 @@ def test_manual_strategy_cycle_requires_research_permission_and_is_audited(servi
     calls = []
     monkeypatch.setattr(
         "core.strategy_evaluation.run_system_quant_cycle",
-        lambda database: calls.append(database) or expected,
+        lambda database, **kwargs: calls.append((database, kwargs)) or expected,
     )
 
     with pytest.raises(PermissionError):
         service.run_strategy_cycle(support["id"])
     assert service.run_strategy_cycle(researcher["id"]) == expected
-    assert calls == [db]
+    assert calls == [(db, {"cycle_slot": "manual"})]
     audit = next(
         row for row in service.list_audit(researcher["id"])
         if row["action_type"] == "ADMIN_STRATEGY_CYCLE"

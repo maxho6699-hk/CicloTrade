@@ -517,7 +517,7 @@ class AdminService:
         self._require(actor_id, "research")
         from core.strategy_evaluation import run_system_quant_cycle
 
-        result = run_system_quant_cycle(self.db)
+        result = run_system_quant_cycle(self.db, cycle_slot="manual")
         with self.db.transaction() as conn:
             self._audit(
                 conn,

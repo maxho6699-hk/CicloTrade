@@ -436,8 +436,10 @@ def _render_research(service: AdminService, actor_id: int) -> None:
     section_label("策略與模板管理", "YAML 核心目錄 + 資料庫擴展 · 所有寫操作保留審計")
     with st.container(border=True):
         st.markdown("**每日策略評分與優選**")
-        st.caption("自動排程：每個美股交易日美東 16:01 執行；此按鈕可立即用最新真實行情重跑。"
-                   "同一交易日不會重複建立模擬交易或淨值記錄。")
+        st.caption(
+            "自動排程（美東）：盤前 08:45、盤中 12:30、收盤後 16:01、夜盤 20:05；"
+            "此按鈕只用於異常補跑，同一時段不會重複建立模擬交易或淨值記錄。"
+        )
         if result := st.session_state.pop("admin_quant_cycle_result", None):
             symbols = "、".join(result["selected_symbols"]) or "本次沒有符合條件的標的"
             st.success(
