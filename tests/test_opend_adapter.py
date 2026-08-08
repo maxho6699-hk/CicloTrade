@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
+from data.datasource import DataSourceError
 from data.opend_adapter import OpenDAdapter
 
 
@@ -67,3 +69,28 @@ def test_opend_history_and_option_greeks(monkeypatch):
     assert adapter.search("Apple") == [
         {"symbol": "AAPL", "name": "Apple Inc.", "exchange": "Futu OpenD", "type": "股票"}
     ]
+
+
+def test_opend_context_fails_fast_when_gateway_waits_for_authentication(monkeypatch):
+    class Connecting:
+        closed = False
+
+        def _is_ready(self):
+            return False
+
+        def close(self):
+            self.closed = True
+
+    context = Connecting()
+    options = {}
+    monkeypatch.setenv("OPEND_CONNECT_TIMEOUT_SECONDS", "1")
+    monkeypatch.setattr("futu.OpenQuoteContext", lambda **kwargs: options.update(kwargs) or context)
+    ticks = iter((0.0, 0.0, 2.0))
+    monkeypatch.setattr("data.opend_adapter.monotonic", lambda: next(ticks))
+    monkeypatch.setattr("data.opend_adapter.sleep", lambda _seconds: None)
+
+    with pytest.raises(DataSourceError, match="等待登录或图形验证"):
+        OpenDAdapter()._context()
+
+    assert context.closed is True
+    assert options["is_async_connect"] is True

@@ -6,6 +6,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 import os
 import socket
+from time import monotonic, sleep
 
 import pandas as pd
 
@@ -45,15 +46,29 @@ class OpenDAdapter(DataSource):
         except ImportError as exc:
             raise DataSourceError("尚未安装 futu-api。") from exc
         try:
-            return OpenQuoteContext(host=self.host, port=self.port)
+            timeout = float(os.getenv("OPEND_CONNECT_TIMEOUT_SECONDS", "2"))
+            timeout = max(0.5, min(timeout, 10.0))
+            context = OpenQuoteContext(host=self.host, port=self.port, is_async_connect=True)
+            deadline = monotonic() + timeout
+            while monotonic() < deadline:
+                if context._is_ready():
+                    return context
+                sleep(0.05)
+            context.close()
+            raise DataSourceError("OpenD 正在等待登录或图形验证。")
+        except DataSourceError:
+            raise
         except Exception as exc:
             raise DataSourceError("无法连接 Futu OpenD。") from exc
 
     def available(self) -> bool:
         try:
             with socket.create_connection((self.host, self.port), timeout=0.5):
-                return True
-        except OSError:
+                pass
+            context = self._context()
+            context.close()
+            return True
+        except (DataSourceError, OSError):
             return False
 
     @staticmethod
