@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=ciclotrade
 Group=ciclotrade
+SupplementaryGroups=opend
 WorkingDirectory=/opt/CicloTrade
 EnvironmentFile=/opt/CicloTrade/.env
 ExecStart=/opt/CicloTrade/.venv/bin/python -m streamlit run asgi_app.py --server.address=127.0.0.1 --server.port=8501 --server.headless=true --client.showErrorDetails=false

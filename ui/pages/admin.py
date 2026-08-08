@@ -16,6 +16,12 @@ from core.database import get_database
 from core.plans import PLAN_ORDER
 from core.strategy_scoring import StrategyScorer
 from core.user_profiles import UserProfileService
+from data.opend_control import (
+    OpenDControlError,
+    OpenDVerificationController,
+    clear_opend_probe_cache,
+    probe_opend_status,
+)
 from notification.email_sender import smtp_configured
 from notification.telegram_bot import telegram_configured
 from payment.order_service import OrderService
@@ -535,13 +541,33 @@ def _service_status_rows() -> list[dict[str, str]]:
     app_url = os.getenv("APP_BASE_URL", "http://localhost:8501")
     data_source = os.getenv("DATA_SOURCE", "yfinance").lower()
     polygon_ready = bool(os.getenv("POLYGON_API_KEY"))
+    if data_source in {"opend", "futu"}:
+        try:
+            opend_port = int(os.getenv("OPEND_PORT", "11111"))
+        except ValueError:
+            opend_port = 11111
+        opend_status = probe_opend_status("127.0.0.1", opend_port)
+        market_state = (
+            "可用"
+            if opend_status.ready
+            else "等待验证"
+            if opend_status.state == "verification_required"
+            else "暂不可用"
+        )
+        market_detail = opend_status.message
+    elif data_source == "yfinance":
+        market_state, market_detail = "可用", "Yahoo 无需密钥"
+    elif polygon_ready:
+        market_state, market_detail = "可用", "Polygon API Key 已配置"
+    else:
+        market_state, market_detail = "未配置", "缺少数据源凭证"
 
     return [
         {
             "服务": "市场数据",
-            "状态": "可用" if data_source == "yfinance" or polygon_ready else "未配置",
+            "状态": market_state,
             "环境": data_source,
-            "说明": "Yahoo 无需密钥" if data_source == "yfinance" else "Polygon API Key 已配置" if polygon_ready else "缺少 Polygon API Key",
+            "说明": market_detail,
         },
         {
             "服务": "Paddle Billing",
@@ -586,6 +612,104 @@ def _service_status_rows() -> list[dict[str, str]]:
             "说明": "上线前还需 HTTPS、DNS 与回调地址验证",
         },
     ]
+
+
+def _record_provider_verification(
+    service: AdminService, actor_id: int, action: str, success: bool
+) -> None:
+    try:
+        service.record_data_source_verification(actor_id, "opend", action, success)
+    except Exception as exc:
+        service.db.log_system_event(
+            "ERROR", "ADMIN", "数据源验证审计写入失败", str(exc)[:500]
+        )
+
+
+def _render_data_source_verification(service: AdminService, actor_id: int) -> None:
+    section_label("数据源验证", "永久保留 · 当前已接入 OpenD 验证器")
+    try:
+        port = int(os.getenv("OPEND_PORT", "11111"))
+    except ValueError:
+        port = 11111
+    status = probe_opend_status("127.0.0.1", port)
+    status_label = {
+        "ready": "已连接",
+        "verification_required": "等待验证码",
+        "unavailable": "暂不可用",
+    }.get(status.state, "未知")
+
+    with st.container(border=True):
+        st.markdown("**OpenD · 美国实时行情**")
+        st.metric("连接状态", status_label)
+        st.caption(status.message)
+        st.caption(
+            "此管理入口不会随数据源切换而移除；以后需要人工验证的数据接口会继续加入这里。"
+        )
+        with st.container(horizontal=True):
+            if st.button(
+                "检查连接",
+                icon=":material/refresh:",
+                key="admin_opend_check",
+            ):
+                clear_opend_probe_cache()
+                st.rerun()
+            refresh_captcha = st.button(
+                "刷新验证码",
+                type="primary" if status.state == "verification_required" else "secondary",
+                icon=":material/captcha:",
+                disabled=status.ready,
+                key="admin_opend_refresh_captcha",
+            )
+
+        if refresh_captcha:
+            try:
+                with st.spinner("正在向 OpenD 请求新验证码..."):
+                    image = OpenDVerificationController().request_captcha()
+            except OpenDControlError as exc:
+                _record_provider_verification(service, actor_id, "request_captcha", False)
+                st.error(str(exc), icon=":material/error:")
+            else:
+                _record_provider_verification(service, actor_id, "request_captcha", True)
+                st.session_state.admin_opend_captcha = image
+                st.success("新验证码已生成，请直接在下方输入。", icon=":material/check_circle:")
+
+        captcha_image = st.session_state.get("admin_opend_captcha")
+        if captcha_image:
+            st.image(captcha_image, caption="OpenD 图形验证码", width=320)
+            with st.form("admin_opend_captcha_form", clear_on_submit=True):
+                captcha_code = st.text_input(
+                    "输入图片中的 4 位验证码",
+                    max_chars=4,
+                    autocomplete="one-time-code",
+                    placeholder="区分大小写",
+                    key="admin_opend_captcha_code",
+                )
+                submit_captcha = st.form_submit_button(
+                    "提交验证",
+                    type="primary",
+                    icon=":material/verified_user:",
+                )
+            if submit_captcha:
+                try:
+                    message = OpenDVerificationController().submit_captcha(captcha_code)
+                except (OpenDControlError, ValueError) as exc:
+                    _record_provider_verification(service, actor_id, "submit_captcha", False)
+                    st.error(str(exc), icon=":material/error:")
+                else:
+                    _record_provider_verification(service, actor_id, "submit_captcha", True)
+                    st.session_state.pop("admin_opend_captcha", None)
+                    st.session_state.admin_flash = message
+                    st.rerun()
+        elif status.state == "verification_required":
+            st.info(
+                "点击“刷新验证码”，图片出现后直接输入 4 位字符即可。",
+                icon=":material/info:",
+            )
+        elif status.ready:
+            st.success(
+                "当前不需要输入验证码；下次 OpenD 要求验证时，此入口会继续保留。",
+                icon=":material/check_circle:",
+            )
 
 
 def _render_system(service: AdminService, actor_id: int) -> None:
@@ -643,6 +767,8 @@ def _render_system(service: AdminService, actor_id: int) -> None:
                 "用户自动交易服务已开放。",
                 "confirm_open_user_auto_trading",
             )
+
+    _render_data_source_verification(service, actor_id)
 
     section_label("服务与凭证", "仅显示配置状态，不读取或展示任何密钥")
     st.dataframe(pd.DataFrame(_service_status_rows()), hide_index=True)

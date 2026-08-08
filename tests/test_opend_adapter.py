@@ -5,6 +5,7 @@ import pytest
 
 from data.datasource import DataSourceError
 from data.opend_adapter import OpenDAdapter
+from data.opend_control import OpenDStatus
 
 
 class OpenD:
@@ -72,25 +73,27 @@ def test_opend_history_and_option_greeks(monkeypatch):
 
 
 def test_opend_context_fails_fast_when_gateway_waits_for_authentication(monkeypatch):
-    class Connecting:
-        closed = False
-
-        def _is_ready(self):
-            return False
-
-        def close(self):
-            self.closed = True
-
-    context = Connecting()
-    options = {}
-    monkeypatch.setenv("OPEND_CONNECT_TIMEOUT_SECONDS", "1")
-    monkeypatch.setattr("futu.OpenQuoteContext", lambda **kwargs: options.update(kwargs) or context)
-    ticks = iter((0.0, 0.0, 2.0))
-    monkeypatch.setattr("data.opend_adapter.monotonic", lambda: next(ticks))
-    monkeypatch.setattr("data.opend_adapter.sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        "data.opend_adapter.probe_opend_status",
+        lambda *_args, **_kwargs: OpenDStatus(
+            "verification_required", "OpenD 正在等待图形验证码。"
+        ),
+    )
 
     with pytest.raises(DataSourceError, match="等待登录或图形验证"):
         OpenDAdapter()._context()
 
-    assert context.closed is True
-    assert options["is_async_connect"] is True
+
+def test_opend_context_connects_synchronously_only_after_probe_is_ready(monkeypatch):
+    context = OpenD()
+    options = {}
+    monkeypatch.setattr(
+        "data.opend_adapter.probe_opend_status",
+        lambda *_args, **_kwargs: OpenDStatus("ready", "OpenD 已连接。"),
+    )
+    monkeypatch.setattr(
+        "futu.OpenQuoteContext", lambda **kwargs: options.update(kwargs) or context
+    )
+
+    assert OpenDAdapter()._context() is context
+    assert options == {"host": "127.0.0.1", "port": 11111}

@@ -6,11 +6,11 @@ from __future__ import annotations
 from datetime import date, timedelta
 import os
 import socket
-from time import monotonic, sleep
 
 import pandas as pd
 
 from data.datasource import DataSource, DataSourceError, require_market_data_enabled
+from data.opend_control import probe_opend_status
 
 
 _PERIOD_DAYS = {
@@ -41,23 +41,17 @@ class OpenDAdapter(DataSource):
             raise DataSourceError("OpenD 主机或端口配置无效。")
 
     def _context(self):
+        status = probe_opend_status(self.host, self.port)
+        if not status.ready:
+            if status.state == "verification_required":
+                raise DataSourceError("OpenD 正在等待登录或图形验证。")
+            raise DataSourceError("OpenD 暂时无法连接。")
         try:
             from futu import OpenQuoteContext
         except ImportError as exc:
             raise DataSourceError("尚未安装 futu-api。") from exc
         try:
-            timeout = float(os.getenv("OPEND_CONNECT_TIMEOUT_SECONDS", "2"))
-            timeout = max(0.5, min(timeout, 10.0))
-            context = OpenQuoteContext(host=self.host, port=self.port, is_async_connect=True)
-            deadline = monotonic() + timeout
-            while monotonic() < deadline:
-                if context._is_ready():
-                    return context
-                sleep(0.05)
-            context.close()
-            raise DataSourceError("OpenD 正在等待登录或图形验证。")
-        except DataSourceError:
-            raise
+            return OpenQuoteContext(host=self.host, port=self.port)
         except Exception as exc:
             raise DataSourceError("无法连接 Futu OpenD。") from exc
 
@@ -65,10 +59,8 @@ class OpenDAdapter(DataSource):
         try:
             with socket.create_connection((self.host, self.port), timeout=0.5):
                 pass
-            context = self._context()
-            context.close()
-            return True
-        except (DataSourceError, OSError):
+            return probe_opend_status(self.host, self.port).ready
+        except OSError:
             return False
 
     @staticmethod

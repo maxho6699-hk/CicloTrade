@@ -68,6 +68,29 @@ def test_rbac_user_subscription_and_global_controls(services):
     assert any(row["action_type"] == "ADMIN_USER_STATUS" for row in service.list_audit(admin["id"]))
 
 
+def test_data_source_verification_is_system_only_and_never_stores_captcha(services):
+    _db, auth, admin, service = services
+    finance = _register(auth, "finance-verification")
+    service.set_role(admin["id"], finance["id"], "finance")
+
+    service.record_data_source_verification(
+        admin["id"], "opend", "submit_captcha", True
+    )
+    record = next(
+        row
+        for row in service.list_audit(admin["id"])
+        if row["action_type"] == "ADMIN_DATA_SOURCE_VERIFICATION"
+    )
+    assert "opend" in record["details"]
+    assert "submit_captcha" in record["details"]
+    assert "code" not in record["details"]
+
+    with pytest.raises(PermissionError):
+        service.record_data_source_verification(
+            finance["id"], "opend", "request_captcha", True
+        )
+
+
 def test_live_platform_pause_requires_manual_user_resume(services, monkeypatch):
     db, auth, admin, service = services
     customer = _register(auth, "live-customer")

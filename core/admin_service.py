@@ -607,6 +607,29 @@ class AdminService:
                 ("CONTROL", "RISK", "全局暂停新开仓" if paused else "全局恢复新开仓", f"admin={actor_id}", now),
             )
 
+    def record_data_source_verification(
+        self, actor_id: int, provider: str, action: str, success: bool
+    ) -> None:
+        """Audit provider verification without storing captcha contents."""
+        self._require(actor_id, "system")
+        provider = provider.strip().lower()
+        if provider not in {"opend"} or action not in {"request_captcha", "submit_captcha"}:
+            raise ValueError("未知的数据源验证操作。")
+        now = _iso()
+        details = {"provider": provider, "action": action, "success": bool(success)}
+        with self.db.transaction() as conn:
+            self._audit(conn, actor_id, "ADMIN_DATA_SOURCE_VERIFICATION", details)
+            conn.execute(
+                "INSERT INTO system_events (event_type,component,message,details,created_at) VALUES (?,?,?,?,?)",
+                (
+                    "CONTROL" if success else "WARN",
+                    "MARKET_DATA",
+                    "数据源验证操作完成" if success else "数据源验证操作失败",
+                    json.dumps(details, ensure_ascii=False),
+                    now,
+                ),
+            )
+
     def _set_control(
         self, actor_id: int, key: str, enabled: bool, action: str, component: str
     ) -> None:
