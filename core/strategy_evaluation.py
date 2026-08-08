@@ -20,7 +20,7 @@ from core.strategy_registry import StrategyRegistry
 from core.strategy_scoring import StrategyScorer
 from core.strategy_tracking import StrategyPerformanceTracker
 from core.plans import can, effective_plan
-from data.datasource import get_resilient_data_source
+from data.datasource import DataSourceError, get_resilient_data_source
 
 
 SYSTEM_UNIVERSE = {
@@ -29,6 +29,61 @@ SYSTEM_UNIVERSE = {
 }
 SYSTEM_INITIAL_CASH = {"USD": 100_000.0, "CNY": 100_000.0}
 _ADAPTIVE_SOURCE = "ciclotrade-adaptive"
+
+
+def _normalize_history(frame: pd.DataFrame) -> pd.DataFrame:
+    """Align vendor daily indexes without shifting their local trading date."""
+    prepared = frame.copy()
+    index = pd.DatetimeIndex(pd.to_datetime(prepared.index))
+    if index.tz is not None:
+        index = index.tz_localize(None)
+    prepared.index = index
+    return prepared[~prepared.index.duplicated(keep="last")].sort_index()
+
+
+def _system_history(
+    *,
+    data_source=None,
+    symbols_by_market: dict[str, tuple[str, ...]] | None = None,
+    period: str = "3y",
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load each production market from its supported adapter.
+
+    An explicitly injected source remains authoritative for tests and future
+    strategy servers. Production uses OpenD for US instruments and the
+    existing Yahoo daily adapter for A shares.
+    """
+    universes = symbols_by_market or SYSTEM_UNIVERSE
+    symbols = tuple(symbol for market_symbols in universes.values() for symbol in market_symbols)
+    if data_source is not None:
+        closes, volumes = data_source.history(symbols, period=period)
+        return _normalize_history(closes), _normalize_history(volumes)
+
+    sources = {
+        "US": get_resilient_data_source(),
+        "CN": get_resilient_data_source("yfinance"),
+    }
+    close_frames: list[pd.DataFrame] = []
+    volume_frames: list[pd.DataFrame] = []
+    failures: list[str] = []
+    for market, market_symbols in universes.items():
+        if not market_symbols:
+            continue
+        source = sources.get(market) or get_resilient_data_source("yfinance")
+        try:
+            closes, volumes = source.history(tuple(market_symbols), period=period)
+        except (DataSourceError, OSError, RuntimeError, ValueError) as exc:
+            failures.append(f"{market}: {exc}")
+            continue
+        if not closes.empty:
+            close_frames.append(_normalize_history(closes))
+            volume_frames.append(_normalize_history(volumes))
+    if not close_frames:
+        detail = "; ".join(failures) or "所有市场均未返回数据"
+        raise DataSourceError(f"系统量化循环没有可用历史行情：{detail}")
+    closes = pd.concat(close_frames, axis=1).sort_index()
+    volumes = pd.concat(volume_frames, axis=1).reindex(closes.index).fillna(0)
+    return closes, volumes
 
 
 def _value(rule: dict, parameters: dict, key: str, default: float = 0) -> float:
@@ -229,8 +284,11 @@ def score_daily_catalog(
     registry = StrategyRegistry(db)
     registry.sync_catalog()
     definitions = registry.list()
-    source = data_source or get_resilient_data_source()
-    closes, _ = source.history(("AAPL", "510300"), period="3y")
+    closes, _ = _system_history(
+        data_source=data_source,
+        symbols_by_market={"US": ("AAPL",), "CN": ("510300",)},
+        period="3y",
+    )
     metrics: list[dict[str, Any]] = []
     for definition in definitions:
         if definition["family"] == "option":
@@ -266,13 +324,11 @@ def run_system_quant_cycle(
 ) -> dict[str, Any]:
     """Re-rank strategies, rebalance the research ledger, and persist daily NAV."""
     db = database or get_database()
-    source = data_source or get_resilient_data_source()
-    symbols = tuple(symbol for market in SYSTEM_UNIVERSE.values() for symbol in market)
-    closes, _ = source.history(symbols, period="3y")
+    closes, _ = _system_history(data_source=data_source, period="3y")
     if closes.empty:
         raise ValueError("系统量化循环没有可用历史行情。")
     day = str(eval_date or max(pd.Timestamp(closes[symbol].dropna().index[-1]).date() for symbol in closes))
-    ranked = score_daily_catalog(db, data_source=source, eval_date=day)
+    ranked = score_daily_catalog(db, data_source=data_source, eval_date=day)
     registry = StrategyRegistry(db)
     definitions = {item["key"]: item for item in registry.list()}
     winner = next((row for row in ranked if definitions[row["strategy_key"]]["family"] == "equity"), None)
@@ -282,6 +338,7 @@ def run_system_quant_cycle(
     ledger_key = os.getenv("TRADEAI_SYSTEM_LEDGER_KEY", "tradeai-system")
     journal = QuantJournal(db)
     state = journal.replay(ledger_key, initial_cash=SYSTEM_INITIAL_CASH)
+    symbols = tuple(symbol for market_symbols in SYSTEM_UNIVERSE.values() for symbol in market_symbols)
     current = {
         item["symbol"]: float(item["quantity"])
         for item in state["positions"].values()
@@ -292,6 +349,8 @@ def run_system_quant_cycle(
     for market, market_symbols in SYSTEM_UNIVERSE.items():
         candidates: list[tuple[float, str, float]] = []
         for symbol in market_symbols:
+            if symbol not in closes:
+                continue
             close = closes[symbol].dropna()
             if close.empty:
                 continue
@@ -305,15 +364,29 @@ def run_system_quant_cycle(
             selected[symbol] = current.get(symbol) or float(max(1, math.floor(20_000 / price)))
 
     legs = []
+    risk_levels: dict[str, dict[str, float | str]] = {}
     for market, market_symbols in SYSTEM_UNIVERSE.items():
         currency = "USD" if market == "US" else "CNY"
         for symbol in market_symbols:
+            mark_key = f"{market}:STOCK:{symbol}"
+            if mark_key not in marks:
+                continue
             before = current.get(symbol, 0.0)
             target = selected.get(symbol, 0.0)
             delta = target - before
             if abs(delta) < 1e-12:
                 continue
-            price = marks[f"{market}:STOCK:{symbol}"]
+            price = marks[mark_key]
+            close = closes[symbol].dropna()
+            daily_volatility = float(close.pct_change().tail(20).std()) if len(close) > 20 else 0.0
+            risk_pct = float(np.clip(daily_volatility * math.sqrt(10), 0.04, 0.12))
+            if target > 0:
+                risk_levels[mark_key] = {
+                    "entry_price": round(price, 4),
+                    "stop_loss": round(price * (1 - risk_pct), 4),
+                    "target_price": round(price * (1 + risk_pct * 2), 4),
+                    "method": "20日实现波动率 · 2:1盈亏比",
+                }
             legs.append(
                 {
                     "market": market,
@@ -347,6 +420,7 @@ def run_system_quant_cycle(
                     f"{definition['name']}，按每个市场最多 3 个标的、单标的初始资金 20% 建立模拟目标仓位。"
                 ),
                 "risk_level": definition["risk"],
+                "risk_levels": risk_levels,
                 "research_only": True,
                 "selected_symbols": sorted(selected),
                 "score": winner["weighted_score"],

@@ -20,6 +20,7 @@ from core.database import get_database
 from core.user_settings import load_user_settings
 from notification.telegram_bot import telegram_configured, verified_user_target
 from ui.components import page_heading, section_label
+from ui.quant_format import contract_label, strategy_version_label
 from ui.recommendations import load_recommendations
 
 
@@ -76,11 +77,7 @@ def _queue_page(page: str, payload_key: str | None = None, payload: dict[str, An
 
 
 def _contract_label(leg: dict[str, Any]) -> str:
-    if leg.get("instrument_type") != "option":
-        return str(leg.get("symbol") or leg.get("instrument_key") or "--")
-    right = "Call" if leg.get("option_right") == "CALL" else "Put"
-    strike = _number(leg.get("option_strike"), 2)
-    return f"{leg.get('symbol', '--')} · {leg.get('option_expiry', '--')} · {strike} {right}"
+    return contract_label(leg)
 
 
 def _event_status(event: dict[str, Any]) -> str:
@@ -146,7 +143,7 @@ def _timeline_frame(records: list[dict[str, Any]]) -> pd.DataFrame:
                 "记录价": leg.get("price"),
                 "币种": leg.get("currency") or "--",
                 "策略": event.get("strategy_name") or "--",
-                "版本": event.get("strategy_version") or "--",
+                "版本": strategy_version_label(event.get("strategy_version")),
                 "事件 ID": event.get("id"),
                 "来源": "策略服务",
             }
@@ -325,7 +322,7 @@ def _render_latest_action(records: list[dict[str, Any]], plan: str, market: str)
         st.badge(str(event.get("strategy_name") or "未命名策略"), color="gray")
     st.subheader(f"{_contract_label(leg)} · {_action_label(event, leg)}", anchor=False)
     st.caption(
-        f"策略 {event.get('strategy_name', '--')} / {event.get('strategy_version', '--')} · "
+        f"策略 {event.get('strategy_name', '--')} / {strategy_version_label(event.get('strategy_version'))} · "
         f"{occurred.strftime('%Y-%m-%d %H:%M:%S')}（台北）"
     )
     columns = st.columns(4, gap="small")
@@ -553,7 +550,7 @@ def _render_timeline(
     timeline = _timeline_frame(records)
     if timeline.empty:
         st.info(
-            f"{market}当前周期尚未发生已执行的量化买卖。第一笔正式动作出现后，记录会按时间永久追加；等待状态不会伪造为成交。",
+            f"{market}目前暂无已执行操作。系统会持续监测，出现买卖后自动记录并推送；无需手动设置。",
             icon=":material/history:",
         )
         return

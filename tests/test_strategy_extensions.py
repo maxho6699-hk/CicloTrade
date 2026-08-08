@@ -16,6 +16,7 @@ from core.sandbox import SandboxClient, validate_user_code
 from core.signal_imports import DISCLAIMER, SignalImportService, parse_csv
 from core.quant_journal import QuantJournal
 from core.strategy_evaluation import (
+    _system_history,
     _option_metrics,
     chronological_validation_start,
     evaluate_rule_strategy,
@@ -165,6 +166,38 @@ def test_adaptive_cycle_writes_one_idempotent_event_and_daily_nav(db, monkeypatc
     assert second["event_created"] is False and second["snapshots_created"] == 0
     assert state["event_count"] == 1
     assert db.fetch_one("SELECT COUNT(*) count FROM quant_equity_snapshots")["count"] == 2
+
+
+def test_system_history_routes_us_and_a_shares_to_supported_sources(monkeypatch):
+    index = pd.date_range("2025-01-01", periods=100, freq="B")
+    calls = []
+
+    class Source:
+        def __init__(self, market):
+            self.market = market
+
+        def history(self, symbols, period="3y", interval="1d"):
+            calls.append((self.market, symbols, period))
+            assert all(symbol.isdigit() for symbol in symbols) == (self.market == "CN")
+            frame = pd.DataFrame({symbol: range(len(index)) for symbol in symbols}, index=index)
+            return frame, frame * 0 + 1_000
+
+    monkeypatch.setattr(
+        "core.strategy_evaluation.get_resilient_data_source",
+        lambda name=None: Source("CN" if name == "yfinance" else "US"),
+    )
+
+    closes, volumes = _system_history(
+        symbols_by_market={"US": ("AAPL", "MSFT"), "CN": ("510300",)},
+        period="1y",
+    )
+
+    assert list(closes) == ["AAPL", "MSFT", "510300"]
+    assert list(volumes) == ["AAPL", "MSFT", "510300"]
+    assert calls == [
+        ("US", ("AAPL", "MSFT"), "1y"),
+        ("CN", ("510300",), "1y"),
+    ]
 
 
 def test_mean_reversion_negates_threshold_without_negating_period():

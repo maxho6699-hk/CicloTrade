@@ -429,8 +429,10 @@ def _render_research(service: AdminService, actor_id: int) -> None:
         strategy_frame = pd.DataFrame(
             [
                 {
-                    "Key": item["key"], "名稱": item["name"], "類型": item["family"],
-                    "風險": item["risk"], "核心": item["core"], "啟用": item["active"],
+                    "識別碼": item["key"], "名稱": item["name"],
+                    "類型": {"equity": "正股", "option": "期權"}.get(item["family"], item["family"]),
+                    "風險": {"low": "低", "medium": "中", "high": "高"}.get(item["risk"], item["risk"]),
+                    "核心": item["core"], "啟用": item["active"],
                 }
                 for item in definitions
             ]
@@ -457,10 +459,16 @@ def _render_research(service: AdminService, actor_id: int) -> None:
             first = st.columns(3, gap="small")
             strategy_key = first[0].text_input("策略 Key", max_chars=64, placeholder="custom_trend_v1")
             strategy_name = first[1].text_input("策略名稱", max_chars=120)
-            family = first[2].selectbox("類型", ["equity", "option"])
+            family = first[2].selectbox(
+                "類型", ["equity", "option"],
+                format_func=lambda value: "正股" if value == "equity" else "期權",
+            )
             second = st.columns(2, gap="small")
             engine = second[0].text_input("引擎 Key", value="rules", max_chars=80)
-            risk = second[1].selectbox("風險等級", ["low", "medium", "high"], index=1)
+            risk = second[1].selectbox(
+                "風險等級", ["low", "medium", "high"], index=1,
+                format_func=lambda value: {"low": "低", "medium": "中", "high": "高"}[value],
+            )
             scenario = st.text_input("適用場景", max_chars=1000)
             description = st.text_area("策略說明", max_chars=4000)
             parameters_text = st.text_area("參數 JSON", value="{}", max_chars=8000)

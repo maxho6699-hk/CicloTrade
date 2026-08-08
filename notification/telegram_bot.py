@@ -199,7 +199,13 @@ def confirm_verification(database, user_id: int, token: str) -> str:
         return str(row["chat_id"])
 
 
-def send_telegram(message: str, chat_id: str | None = None) -> None:
+def send_telegram(
+    message: str,
+    chat_id: str | None = None,
+    *,
+    parse_mode: str | None = None,
+    button: tuple[str, str] | None = None,
+) -> None:
     enabled_env = str(_telegram_setting("enabled_env", "EXTERNAL_ALERTS_ENABLED"))
     if os.getenv(enabled_env, "false").strip().lower() != "true":
         raise RuntimeError("Telegram 外部通知已由平台停用。")
@@ -207,7 +213,17 @@ def send_telegram(message: str, chat_id: str | None = None) -> None:
     target = chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
     if not token or not target:
         raise RuntimeError("Telegram Bot 尚未配置。")
-    data = json.dumps({"chat_id": target, "text": message, "disable_web_page_preview": True}).encode()
+    payload: dict[str, Any] = {"chat_id": target, "text": message, "disable_web_page_preview": True}
+    if parse_mode in {"HTML", "MarkdownV2"}:
+        payload["parse_mode"] = parse_mode
+    if button:
+        label, url = button
+        if not str(url).startswith("https://"):
+            raise RuntimeError("Telegram 按钮必须使用 HTTPS。")
+        payload["reply_markup"] = {
+            "inline_keyboard": [[{"text": str(label)[:64], "url": str(url)[:512]}]]
+        }
+    data = json.dumps(payload).encode()
     request = Request(
         f"https://api.telegram.org/bot{token}/sendMessage",
         data=data,

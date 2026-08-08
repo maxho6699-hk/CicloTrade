@@ -14,6 +14,7 @@ import streamlit as st
 from core.plans import can, effective_plan
 from core.quant_journal import QuantJournal
 from ui.components import page_heading, section_label
+from ui.quant_format import contract_label
 from ui.recommendations import load_recommendations, render_recommendations
 
 
@@ -101,7 +102,7 @@ def _history_rows(
                     action = f"撤销 · {action}"
                 elif event.get("event_type") == "correction":
                     action = f"更正 · {action}"
-                contract = leg["instrument_key"] if leg else "--"
+                contract = contract_label(leg, show_market=True) if leg else "--"
             occurred = pd.Timestamp(event["occurred_at"])
             if occurred.tzinfo is None:
                 occurred = occurred.tz_localize("UTC")
@@ -219,7 +220,7 @@ def _render_history(plan: str) -> None:
     frame = _history_rows(events, journal, include_options=can(plan, "option_chain"))
     if frame.empty:
         st.info(
-            "尚未接收到经过验证的量化操作。策略服务器推送第一笔正式事件后，记录会按时间线永久追加。",
+            "目前暂无已执行操作。系统会持续监测，出现买卖后自动显示并按会员权限推送，无需手动设置。",
             icon=":material/history:",
         )
         return

@@ -100,10 +100,10 @@ def _cards(items: list[dict], selected: str) -> str:
 def render(config: dict | None = None) -> None:
     del config
     page_heading(
-        "OPTIONS / RESEARCH",
+        "期權 / 策略研究",
         "策略研究",
         "先选市场观点，再调整行权价、到期日与仓位。图表展示到期损益，不触发真实订单。",
-        "8 STRATEGIES · EDUCATION MODEL",
+        "8 種策略 · 教學模型",
     )
 
     plan = effective_plan(st.session_state.user)
@@ -121,7 +121,9 @@ def render(config: dict | None = None) -> None:
         columns = st.columns(len(top), gap="small")
         for column, item in zip(columns, top, strict=True):
             with column.container(border=True):
-                st.caption(f"TOP {item['rank_position']} · {item['family'].upper()} · {item['risk_level'].upper()}")
+                family = "期權" if item["family"] == "option" else "正股"
+                risk = {"low": "低風險", "medium": "中風險", "high": "高風險"}.get(item["risk_level"], item["risk_level"])
+                st.caption(f"第 {item['rank_position']} 名 · {family} · {risk}")
                 st.subheader(item["name"])
                 st.metric("綜合評分", f"{float(item['weighted_score']):.1f} / 100")
                 st.caption(item["scenario"])

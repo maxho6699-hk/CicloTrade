@@ -13,6 +13,7 @@ from scheduler.jobs import (
     notify_inactive_users,
     process_quant_signal_notifications,
     publish_daily_group_summary,
+    publish_free_daily_group_summary,
     refresh_saved_strategy_performance,
     scan_price_alerts,
 )
@@ -26,16 +27,22 @@ def build_scheduler() -> BackgroundScheduler:
     scheduler.add_job(notify_expiring_subscriptions, "cron", hour=9, minute=30, id="renewal_reminders", replace_existing=True)
     scheduler.add_job(notify_inactive_users, "cron", hour=10, minute=0, id="inactive_users", replace_existing=True)
     scheduler.add_job(
-        publish_daily_group_summary, "cron", hour=8, minute=30,
+        publish_daily_group_summary, "cron", day_of_week="mon-fri", hour=16, minute=5,
+        timezone="America/New_York",
         id="telegram_daily_summary", replace_existing=True, max_instances=1, coalesce=True,
     )
     scheduler.add_job(
-        evaluate_strategy_catalog, "cron", day_of_week="mon-fri", hour=17, minute=30,
+        publish_free_daily_group_summary, "cron", day_of_week="mon-fri", hour=17, minute=5,
+        timezone="America/New_York",
+        id="telegram_free_daily_summary", replace_existing=True, max_instances=1, coalesce=True,
+    )
+    scheduler.add_job(
+        evaluate_strategy_catalog, "cron", day_of_week="mon-fri", hour=16, minute=1,
         timezone="America/New_York", id="strategy_daily_score", replace_existing=True,
         max_instances=1, coalesce=True,
     )
     scheduler.add_job(
-        refresh_saved_strategy_performance, "cron", day_of_week="mon-fri", hour=18, minute=15,
+        refresh_saved_strategy_performance, "cron", day_of_week="mon-fri", hour=16, minute=15,
         timezone="America/New_York", id="strategy_performance", replace_existing=True,
         max_instances=1, coalesce=True,
     )

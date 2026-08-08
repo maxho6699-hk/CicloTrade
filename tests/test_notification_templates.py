@@ -15,8 +15,10 @@ def test_telegram_templates_keep_decision_fields_in_first_screen():
         "occurred_at": "2026-08-07T12:00:00+00:00", "corrects_event_id": None,
     }
     legs = [{
-        "instrument_type": "option", "instrument_key": "US:OPTION:AAPL:20260918:CALL:210",
+        "market": "US", "instrument_type": "option", "instrument_key": "US:OPTION:AAPL:20260918:CALL:210",
+        "symbol": "AAPL", "option_expiry": "2026-09-18", "option_right": "CALL", "option_strike": 210,
         "currency": "USD", "price": 5, "quantity_delta": 1, "target_quantity": 1,
     }]
     message = telegram_quant_message(event, legs, {"stop_loss": 3.5, "target_price": 8})
-    assert "期權新操作" in message and "止損" in message and "目標" in message
+    assert "模擬帳戶已執行" in message and "止損 $3.50" in message and "目標 $8.00" in message
+    assert "美股 🟢 AAPL" in message and "US:OPTION" not in message and "catalog" not in message.lower()

@@ -1,0 +1,27 @@
+[Unit]
+Description=CicloTrade Streamlit ASGI service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ciclotrade
+Group=ciclotrade
+WorkingDirectory=/opt/CicloTrade
+EnvironmentFile=/opt/CicloTrade/.env
+ExecStart=/opt/CicloTrade/.venv/bin/python -m streamlit run asgi_app.py --server.address=127.0.0.1 --server.port=8501 --server.headless=true --client.showErrorDetails=false
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/CicloTrade/data /opt/CicloTrade/logs /var/lib/ciclotrade
+MemoryHigh=1100M
+MemoryMax=1400M
+TasksMax=256
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

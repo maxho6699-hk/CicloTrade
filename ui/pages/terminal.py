@@ -22,6 +22,7 @@ from core.user_settings import load_user_settings, merge_user_settings
 from data.datasource import get_data_source, get_resilient_data_source, public_market_status
 from ui.components import market_tape, metric_grid, page_heading, section_label
 from ui.data import market_summary
+from ui.quant_format import contract_label, source_label, strategy_version_label
 from ui.recommendations import A_SHARE_UNIVERSE, US_UNIVERSE
 
 
@@ -298,9 +299,9 @@ def _candlestick(
         price = leg.get("price")
         y_value = float(frame.iloc[nearest]["Close"]) if is_option or price is None else float(price)
         price_text = f"{float(price):,.2f}" if price is not None else "--"
-        contract = html.escape(str(leg["instrument_key"] if is_option else leg["symbol"]))
+        contract = html.escape(contract_label(leg))
         strategy = html.escape(str(event["strategy_name"]))
-        version = html.escape(str(event["strategy_version"]))
+        version = html.escape(strategy_version_label(event["strategy_version"]))
         occurred_at = html.escape(str(event["occurred_at"]))
         marker_groups[key]["x"].append(timestamp)
         marker_groups[key]["y"].append(y_value)
@@ -500,7 +501,7 @@ def _render_quant_action_center(symbol: str, market: str, plan: str) -> None:
         return
     if not events:
         st.info(
-            f"{symbol} 尚无经过验证的量化操作记录。接收到正式策略事件后，动作会永久保留在这里和审计日志中。",
+            f"{symbol} 目前暂无已执行操作。系统会持续监测，出现买卖后自动显示并推送，无需手动设置。",
             icon=":material/history:",
         )
         return
@@ -527,7 +528,7 @@ def _render_quant_action_center(symbol: str, market: str, plan: str) -> None:
         st.metric("最新动作", action, border=True)
         st.metric("正股目标仓位", f"{stock_quantity:g} 股", border=True)
         st.metric("期权持仓", f"{option_positions} 个合约" if option_positions is not None else "升级查看", border=True)
-        st.metric("策略版本", f"{latest['strategy_name']} · {latest['strategy_version']}", border=True)
+        st.metric("策略版本", f"{latest['strategy_name']} · {strategy_version_label(latest['strategy_version'])}", border=True)
     metadata = latest.get("metadata") or {}
     price = leg.get("price")
     price_text = (
@@ -535,8 +536,8 @@ def _render_quant_action_center(symbol: str, market: str, plan: str) -> None:
         if price is not None else "记录价 --"
     )
     with st.container(border=True):
-        st.markdown(f"**{leg['instrument_key']} · 数量变化 {float(leg['quantity_delta']):+g} · {price_text}**")
-        st.caption(f"事件 #{latest['id']} · {occurred} · 来源 {latest['source']} · 幂等编号 {latest['external_event_id']}")
+        st.markdown(f"**{contract_label(leg, show_market=True)} · 数量变化 {float(leg['quantity_delta']):+g} · {price_text}**")
+        st.caption(f"事件 #{latest['id']} · {occurred} · 来源 {source_label(latest['source'])}")
         if reason := metadata.get("reason") or metadata.get("rationale"):
             st.write(str(reason))
 

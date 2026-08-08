@@ -12,10 +12,13 @@ from core.user_settings import merge_user_settings
 from notification.telegram_bot import TelegramDeliveryUncertain
 from scheduler.jobs import (
     dispatch_quant_group_deliveries,
+    dispatch_delayed_free_group_deliveries,
     dispatch_quant_signal_deliveries,
+    enqueue_delayed_free_group_deliveries,
     enqueue_quant_group_deliveries,
     enqueue_quant_signal_deliveries,
     publish_daily_group_summary,
+    publish_free_daily_group_summary,
 )
 
 
@@ -45,6 +48,12 @@ def _event(db: DatabaseManager) -> dict:
         strategy_name="趋势交叉",
         strategy_version="v1",
         occurred_at="2026-08-06T01:30:00+00:00",
+        metadata={
+            "risk_levels": {
+                "US:STOCK:AAPL": {"stop_loss": 180, "target_price": 240},
+                "US:OPTION:AAPL:2026-09-18:CALL:210": {"stop_loss": 3.5, "target_price": 8},
+            }
+        },
         legs=[
             {
                 "market": "US",
@@ -90,11 +99,11 @@ def test_signal_outbox_enforces_tiers_and_is_idempotent(tmp_path, monkeypatch):
 
     sent = []
     monkeypatch.setattr("scheduler.jobs.telegram_configured", lambda *_: True)
-    monkeypatch.setattr("scheduler.jobs.send_telegram", lambda message, chat_id=None: sent.append((message, chat_id)))
+    monkeypatch.setattr("scheduler.jobs.send_telegram", lambda message, chat_id=None, **kwargs: sent.append((message, chat_id, kwargs)))
     assert dispatch_quant_signal_deliveries(db) == 3
     assert dispatch_quant_signal_deliveries(db) == 0
-    assert {target for _, target in sent} == {"10002", "10003"}
-    assert all("#1" in message for message, _ in sent)
+    assert {target for _, target, _ in sent} == {"10002", "10003"}
+    assert all("#1" in message and kwargs["parse_mode"] == "HTML" for message, _, kwargs in sent)
 
 
 def test_delivery_rechecks_watchlist_and_subscription_before_sending(tmp_path, monkeypatch):
@@ -146,7 +155,7 @@ def test_correction_notifies_adjustment_and_removed_symbol(tmp_path, monkeypatch
 
     sent = []
     monkeypatch.setattr("scheduler.jobs.telegram_configured", lambda *_: True)
-    monkeypatch.setattr("scheduler.jobs.send_telegram", lambda message, chat_id=None: sent.append(message))
+    monkeypatch.setattr("scheduler.jobs.send_telegram", lambda message, chat_id=None, **kwargs: sent.append(message))
     assert dispatch_quant_signal_deliveries(db) == 1
     sent.clear()
 
@@ -173,8 +182,9 @@ def test_correction_notifies_adjustment_and_removed_symbol(tmp_path, monkeypatch
 
     assert enqueue_quant_signal_deliveries(db) == 2
     assert dispatch_quant_signal_deliveries(db) == 2
-    assert any("US:STOCK:AAPL" in message and "變化　-10" in message and "目標持倉 0" in message for message in sent)
-    assert any("US:STOCK:MSFT" in message and "變化　+5" in message and "目標持倉 5" in message for message in sent)
+    assert any("賣出" in message and "美股 AAPL" in message and "現持 0" in message for message in sent)
+    assert any("買入" in message and "美股 MSFT" in message and "現持 5" in message for message in sent)
+    assert all("US:STOCK" not in message and "catalog" not in message.lower() for message in sent)
     assert enqueue_quant_signal_deliveries(db) == 0
 
 
@@ -266,20 +276,52 @@ def test_group_signal_routes_follow_membership_superset(tmp_path, monkeypatch):
     db = DatabaseManager(str(tmp_path / "quant-group-delivery.db"))
     _event(db)
     monkeypatch.setenv("TELEGRAM_GROUP_SIGNALS_ENABLED", "true")
-    assert enqueue_quant_group_deliveries(db) == 3
+    assert enqueue_quant_group_deliveries(db) == 2
     assert enqueue_quant_group_deliveries(db) == 0
     sent = []
     monkeypatch.setattr("scheduler.jobs.telegram_configured", lambda *_: True)
-    monkeypatch.setattr("scheduler.jobs.send_telegram", lambda message, chat_id=None: sent.append((message, chat_id)))
-    assert dispatch_quant_group_deliveries(db) == 3
-    assert {target for _, target in sent} == {"-1004460522940", "-1003902118990"}
-    professional = [message for message, target in sent if target == "-1003902118990"]
-    assert any("正股新操作" in message for message in professional)
-    assert any("期權新操作" in message for message in professional)
+    monkeypatch.setattr("scheduler.jobs.send_telegram", lambda message, chat_id=None, **kwargs: sent.append((message, chat_id, kwargs)))
+    assert dispatch_quant_group_deliveries(db) == 2
+    assert {target for _, target, _ in sent} == {"-1004460522940", "-1003902118990"}
+    advanced = next(message for message, target, _ in sent if target == "-1004460522940")
+    professional = next(message for message, target, _ in sent if target == "-1003902118990")
+    assert "美股 AAPL" in advanced and "Call" not in advanced
+    assert "美股 AAPL" in professional and "🟢 AAPL" in professional
+    assert "止損 $180.00" in advanced and "目標 $240.00" in advanced
+    assert "止損 $3.50" in professional and "目標 $8.00" in professional
+    assert all(kwargs["parse_mode"] == "HTML" and kwargs["button"][0] == "查看即時數據" for _, _, kwargs in sent)
+
+
+def test_free_group_signals_are_queued_with_stock_and_option_delays(tmp_path, monkeypatch):
+    db = DatabaseManager(str(tmp_path / "quant-free-delivery.db"))
+    _event(db)
+    monkeypatch.setenv("TELEGRAM_FREE_DELAYED_SIGNALS_ENABLED", "true")
+    assert enqueue_delayed_free_group_deliveries(db) == 2
+    assert enqueue_delayed_free_group_deliveries(db) == 0
+    rows = db.fetch_all(
+        "SELECT instrument_type,delay_minutes FROM telegram_delayed_group_deliveries ORDER BY instrument_type"
+    )
+    assert rows == [
+        {"instrument_type": "option", "delay_minutes": 15},
+        {"instrument_type": "stock", "delay_minutes": 60},
+    ]
+    db.execute(
+        "UPDATE telegram_delayed_group_deliveries SET next_attempt_at=?",
+        ((datetime.now(UTC) - timedelta(seconds=1)).isoformat(timespec="seconds"),),
+    )
+    sent = []
+    monkeypatch.setattr("scheduler.jobs.telegram_configured", lambda *_: True)
+    monkeypatch.setattr("scheduler.jobs.send_telegram", lambda message, chat_id=None, **kwargs: sent.append((message, chat_id, kwargs)))
+    assert dispatch_delayed_free_group_deliveries(db) == 2
+    assert {target for _, target, _ in sent} == {"-1003794694425"}
+    assert any("期權延遲 15 分鐘" in message and "🟢 AAPL" in message for message, _, _ in sent)
+    assert any("正股延遲 1 小時" in message and "美股 AAPL" in message for message, _, _ in sent)
+    assert all(kwargs["button"][0] == "升級會員" for _, _, kwargs in sent)
 
 
 def test_daily_group_summary_requires_new_persisted_snapshot(tmp_path, monkeypatch):
     db = DatabaseManager(str(tmp_path / "quant-daily-summary.db"))
+    _event(db)
     journal = QuantJournal(db)
     journal.append_equity_snapshot(
         ledger_key="tradeai-system", source="pytest", external_snapshot_id="usd-1",
@@ -294,9 +336,21 @@ def test_daily_group_summary_requires_new_persisted_snapshot(tmp_path, monkeypat
     monkeypatch.setenv("TELEGRAM_DAILY_SUMMARY_ENABLED", "true")
     monkeypatch.setattr("scheduler.jobs.telegram_configured", lambda *_: True)
     sent = []
-    monkeypatch.setattr("scheduler.jobs.send_telegram", lambda message, chat_id=None: sent.append((message, chat_id)))
+    monkeypatch.setattr("scheduler.jobs.send_telegram", lambda message, chat_id=None, **kwargs: sent.append((message, chat_id, kwargs)))
 
-    assert publish_daily_group_summary(db) == 1
+    assert publish_daily_group_summary(db) == 2
     assert publish_daily_group_summary(db) == 0
-    assert sent[0][1] == "-1003794694425"
-    assert "每日量化總結" in sent[0][0] and "USD 總資產" in sent[0][0] and "CNY 總資產" in sent[0][0]
+    assert publish_free_daily_group_summary(db) == 1
+    assert publish_free_daily_group_summary(db) == 0
+    assert {target for _, target, _ in sent} == {
+        "-1004460522940", "-1003902118990", "-1003794694425",
+    }
+    advanced = next(message for message, target, _ in sent if target == "-1004460522940")
+    professional = next(message for message, target, _ in sent if target == "-1003902118990")
+    free = next(message for message, target, _ in sent if target == "-1003794694425")
+    assert "每日總結" in advanced and "美元資產" in advanced and "人民幣資產" in advanced
+    assert "美股 AAPL" in advanced and "Call" not in advanced
+    assert "美股 AAPL" in professional and "🟢 AAPL" in professional
+    assert "止損 $180.00" in advanced and "目標 $240.00" in professional
+    assert "正股延遲 1 小時" in free and "期權延遲 15 分鐘" in free and "升級會員" in free
+    assert all(kwargs["parse_mode"] == "HTML" for _, _, kwargs in sent)

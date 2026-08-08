@@ -64,9 +64,9 @@ def render() -> None:
     registry.sync_catalog()
     templates = registry.list(family="equity")
     page_heading(
-        "STRATEGY / TEMPLATES", "策略模板庫",
+        "策略 / 模板", "策略模板庫",
         "選擇場景、套用參數並用真實歷史 K 線驗證；交易信號在下一根 K 線才生效。",
-        "5 CORE TEMPLATES · US + CN",
+        "5 套核心模板 · 美股 + A 股",
     )
     if not templates:
         st.warning("目前沒有可用的啟用模板；請稍後再試或聯絡管理員。", icon=":material/lock:")

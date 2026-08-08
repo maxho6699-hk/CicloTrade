@@ -139,22 +139,78 @@ def enqueue_quant_signal_deliveries(database=None) -> int:
     return queued
 
 
-def _quant_message(database, delivery: dict) -> str:
+def _quant_message(
+    database,
+    delivery: dict,
+    *,
+    audience: str | None = None,
+    delay_minutes: int | None = None,
+) -> str:
     event = database.fetch_one(
-        """SELECT id,event_type,strategy_name,strategy_version,corrects_event_id,
+        """SELECT id,ledger_key,source,event_type,strategy_name,strategy_version,corrects_event_id,
                   occurred_at,metadata_json FROM quant_events WHERE id=?""",
         (delivery["event_id"],),
     )
     if not event:
         raise RuntimeError("量化事件不存在")
-    legs = [
-        leg for leg in QuantJournal(database).execution_legs(event["id"])
-        if leg["instrument_type"] == delivery["instrument_type"] and leg["symbol"] == delivery["symbol"]
-    ]
+    journal = QuantJournal(database)
+    all_legs = journal.execution_legs(event["id"])
+    if audience == "professional":
+        allowed_types = {"stock", "option"}
+        legs = all_legs
+    elif audience == "advanced":
+        allowed_types = {"stock"}
+        legs = [leg for leg in all_legs if leg["instrument_type"] == "stock"]
+    elif audience == "daily":
+        allowed_types = {delivery["instrument_type"]}
+        legs = [leg for leg in all_legs if leg["instrument_type"] in allowed_types]
+    else:
+        allowed_types = {delivery["instrument_type"]}
+        legs = [
+            leg for leg in all_legs
+            if leg["instrument_type"] == delivery["instrument_type"] and leg["symbol"] == delivery["symbol"]
+        ]
     if not legs:
         raise RuntimeError("量化事件没有匹配的交易腿")
     metadata = _settings_json(event["metadata_json"])
-    return telegram_quant_message(event, legs, metadata)
+    risk_levels: dict = {}
+    for item in journal.list_events(event["ledger_key"]):
+        if not item.get("active") or not isinstance(item.get("metadata"), dict):
+            continue
+        values = item["metadata"].get("risk_levels")
+        if isinstance(values, dict):
+            risk_levels.update(values)
+    values = metadata.get("risk_levels")
+    if isinstance(values, dict):
+        risk_levels.update(values)
+    metadata["risk_levels"] = risk_levels
+    positions = [
+        position for position in journal.replay(event["ledger_key"])["positions"].values()
+        if position["instrument_type"] in allowed_types
+        and (audience is not None or position["symbol"] == delivery["symbol"])
+    ]
+    source_label = "Tiger 券商模擬帳戶" if str(event["source"]).startswith("tiger") else "CicloTrade 系統模擬帳戶"
+    delay_note = None
+    if delay_minutes:
+        delay_note = "期權延遲 15 分鐘" if int(delay_minutes) == 15 else "正股延遲 1 小時"
+    return telegram_quant_message(
+        event,
+        legs,
+        metadata,
+        positions=positions,
+        delay_note=delay_note,
+        source_label=source_label,
+    )
+
+
+def _send_quant_card(message: str, target: str, *, upgrade: bool = False) -> None:
+    base = os.getenv("APP_BASE_URL", "https://ciclotrade.com").rstrip("/")
+    send_telegram(
+        message,
+        chat_id=target,
+        parse_mode="HTML",
+        button=("升級會員" if upgrade else "查看即時數據", f"{base}/{'subscription' if upgrade else 'recommendations'}"),
+    )
 
 
 def dispatch_quant_signal_deliveries(database=None, limit: int = 100) -> int:
@@ -202,7 +258,7 @@ def dispatch_quant_signal_deliveries(database=None, limit: int = 100) -> int:
         try:
             if not telegram_configured(target):
                 raise RuntimeError("Telegram Bot 尚未配置")
-            send_telegram(_quant_message(db, delivery), chat_id=target)
+            _send_quant_card(_quant_message(db, delivery), target)
         except TelegramDeliveryUncertain as exc:
             db.execute(
                 """UPDATE quant_event_deliveries SET status='skipped',last_error=?,updated_at=?
@@ -237,6 +293,8 @@ def process_quant_signal_notifications(database=None) -> dict[str, int]:
         "sent": dispatch_quant_signal_deliveries(db),
         "group_queued": enqueue_quant_group_deliveries(db),
         "group_sent": dispatch_quant_group_deliveries(db),
+        "free_queued": enqueue_delayed_free_group_deliveries(db),
+        "free_sent": dispatch_delayed_free_group_deliveries(db),
     }
 
 
@@ -246,32 +304,43 @@ def enqueue_quant_group_deliveries(database=None) -> int:
     db = database or get_database()
     ledger_key = os.getenv("TRADEAI_SYSTEM_LEDGER_KEY", "tradeai-system")
     targets = db.fetch_all(
-        """SELECT DISTINCT e.id event_id,l.instrument_type,l.symbol
+        """SELECT DISTINCT e.id event_id,l.instrument_type
            FROM quant_events e JOIN quant_event_legs l ON l.event_id=e.id
            WHERE e.ledger_key=?
              AND NOT EXISTS (SELECT 1 FROM quant_events newer WHERE newer.corrects_event_id=e.id)
            UNION
-           SELECT DISTINCT e.id event_id,l.instrument_type,l.symbol
+           SELECT DISTINCT e.id event_id,l.instrument_type
            FROM quant_events e JOIN quant_event_legs l ON l.event_id=e.corrects_event_id
            WHERE e.ledger_key=? AND e.event_type IN ('correction','reversal')
              AND NOT EXISTS (SELECT 1 FROM quant_events newer WHERE newer.corrects_event_id=e.id)""",
         (ledger_key, ledger_key),
     )
+    event_types: dict[int, set[str]] = {}
+    for target in targets:
+        event_types.setdefault(int(target["event_id"]), set()).add(str(target["instrument_type"]))
     now = datetime.now(UTC).isoformat(timespec="seconds")
     queued = 0
     with db.transaction() as conn:
-        for target in targets:
-            groups = ("advanced", "professional") if target["instrument_type"] == "stock" else ("professional",)
-            for group in groups:
+        for event_id, instrument_types in event_types.items():
+            routes = []
+            if "stock" in instrument_types:
+                routes.append(("advanced", "stock"))
+            routes.append(("professional", "stock" if "stock" in instrument_types else "option"))
+            for group, instrument_type in routes:
                 chat_id = telegram_group(group)
                 if not chat_id:
+                    continue
+                if conn.execute(
+                    "SELECT 1 FROM telegram_group_deliveries WHERE event_id=? AND group_name=? LIMIT 1",
+                    (event_id, group),
+                ).fetchone():
                     continue
                 cursor = conn.execute(
                     """INSERT OR IGNORE INTO telegram_group_deliveries
                        (event_id,group_name,chat_id,instrument_type,symbol,status,attempts,
                         next_attempt_at,last_error,created_at,updated_at,sent_at)
                        VALUES (?,?,?,?,?,'pending',0,?,NULL,?,?,NULL)""",
-                    (target["event_id"], group, chat_id, target["instrument_type"], target["symbol"], now, now, now),
+                    (event_id, group, chat_id, instrument_type, "*", now, now, now),
                 )
                 queued += cursor.rowcount
     return queued
@@ -309,7 +378,7 @@ def dispatch_quant_group_deliveries(database=None, limit: int = 100) -> int:
         try:
             if not telegram_configured(target):
                 raise RuntimeError("Telegram 群组通知尚未启用")
-            send_telegram(_quant_message(db, delivery), chat_id=target)
+            _send_quant_card(_quant_message(db, delivery, audience=delivery["group_name"]), target)
         except TelegramDeliveryUncertain as exc:
             db.execute(
                 "UPDATE telegram_group_deliveries SET status='skipped',last_error=?,updated_at=? WHERE id=?",
@@ -328,6 +397,106 @@ def dispatch_quant_group_deliveries(database=None, limit: int = 100) -> int:
             continue
         db.execute(
             "UPDATE telegram_group_deliveries SET status='sent',sent_at=?,updated_at=?,last_error=NULL WHERE id=?",
+            (due, due, delivery["id"]),
+        )
+        sent += 1
+    return sent
+
+
+def enqueue_delayed_free_group_deliveries(database=None) -> int:
+    if os.getenv("TELEGRAM_FREE_DELAYED_SIGNALS_ENABLED", "false").strip().lower() != "true":
+        return 0
+    db = database or get_database()
+    target = telegram_group("daily")
+    if not target:
+        return 0
+    ledger_key = os.getenv("TRADEAI_SYSTEM_LEDGER_KEY", "tradeai-system")
+    rows = db.fetch_all(
+        """SELECT DISTINCT e.id event_id,e.recorded_at,l.instrument_type
+           FROM quant_events e JOIN quant_event_legs l ON l.event_id=e.id
+           WHERE e.ledger_key=?
+             AND NOT EXISTS (SELECT 1 FROM quant_events newer WHERE newer.corrects_event_id=e.id)
+           UNION
+           SELECT DISTINCT e.id event_id,e.recorded_at,l.instrument_type
+           FROM quant_events e JOIN quant_event_legs l ON l.event_id=e.corrects_event_id
+           WHERE e.ledger_key=? AND e.event_type IN ('correction','reversal')
+             AND NOT EXISTS (SELECT 1 FROM quant_events newer WHERE newer.corrects_event_id=e.id)""",
+        (ledger_key, ledger_key),
+    )
+    now = datetime.now(UTC)
+    queued = 0
+    with db.transaction() as conn:
+        for row in rows:
+            delay = 15 if row["instrument_type"] == "option" else 60
+            recorded = datetime.fromisoformat(str(row["recorded_at"]).replace("Z", "+00:00"))
+            if recorded.tzinfo is None:
+                recorded = recorded.replace(tzinfo=UTC)
+            release = recorded.astimezone(UTC) + timedelta(minutes=delay)
+            cursor = conn.execute(
+                """INSERT OR IGNORE INTO telegram_delayed_group_deliveries
+                   (event_id,chat_id,instrument_type,delay_minutes,status,attempts,next_attempt_at,
+                    last_error,created_at,updated_at,sent_at)
+                   VALUES (?,?,?,?,'pending',0,?,NULL,?,?,NULL)""",
+                (
+                    row["event_id"], target, row["instrument_type"], delay,
+                    release.isoformat(timespec="seconds"), now.isoformat(timespec="seconds"),
+                    now.isoformat(timespec="seconds"),
+                ),
+            )
+            queued += cursor.rowcount
+    return queued
+
+
+def dispatch_delayed_free_group_deliveries(database=None, limit: int = 100) -> int:
+    if os.getenv("TELEGRAM_FREE_DELAYED_SIGNALS_ENABLED", "false").strip().lower() != "true":
+        return 0
+    db = database or get_database()
+    now = datetime.now(UTC)
+    due = now.isoformat(timespec="seconds")
+    rows = db.fetch_all(
+        """SELECT * FROM telegram_delayed_group_deliveries
+           WHERE status IN ('pending','failed','sending') AND next_attempt_at<=?
+           ORDER BY id LIMIT ?""",
+        (due, max(1, min(int(limit), 500))),
+    )
+    sent = 0
+    for delivery in rows:
+        lease_until = (now + timedelta(minutes=10)).isoformat(timespec="seconds")
+        if not db.execute(
+            """UPDATE telegram_delayed_group_deliveries
+               SET status='sending',attempts=attempts+1,next_attempt_at=?,updated_at=?
+               WHERE id=? AND status IN ('pending','failed','sending') AND next_attempt_at<=?""",
+            (lease_until, due, delivery["id"], due),
+        ):
+            continue
+        try:
+            if not telegram_configured(delivery["chat_id"]):
+                raise RuntimeError("Telegram 普通群尚未启用")
+            message = _quant_message(
+                db,
+                delivery,
+                audience="daily",
+                delay_minutes=int(delivery["delay_minutes"]),
+            )
+            _send_quant_card(message, delivery["chat_id"], upgrade=True)
+        except TelegramDeliveryUncertain as exc:
+            db.execute(
+                "UPDATE telegram_delayed_group_deliveries SET status='skipped',last_error=?,updated_at=? WHERE id=?",
+                (f"delivery_uncertain_manual_retry: {exc}"[:300], due, delivery["id"]),
+            )
+            continue
+        except RuntimeError as exc:
+            retry_at = (now + timedelta(minutes=min(2 ** min(int(delivery["attempts"]) + 1, 6), 60))).isoformat(timespec="seconds")
+            token = telegram_token()
+            error = str(exc).replace(token, "[redacted]") if token else str(exc)
+            db.execute(
+                """UPDATE telegram_delayed_group_deliveries SET status='failed',next_attempt_at=?,
+                   last_error=?,updated_at=? WHERE id=?""",
+                (retry_at, error[:300], due, delivery["id"]),
+            )
+            continue
+        db.execute(
+            "UPDATE telegram_delayed_group_deliveries SET status='sent',sent_at=?,updated_at=?,last_error=NULL WHERE id=?",
             (due, due, delivery["id"]),
         )
         sent += 1
@@ -620,12 +789,40 @@ def notify_inactive_users() -> int:
     return sent
 
 
-def publish_daily_group_summary(database=None) -> int:
-    """Publish one public summary for each new auditable equity snapshot."""
+def _daily_summary_payload(database, ledger_key: str, snapshots: list[dict]) -> dict:
+    journal = QuantJournal(database)
+    latest_at = max(datetime.fromisoformat(str(row["captured_at"]).replace("Z", "+00:00")) for row in snapshots)
+    earliest = latest_at - timedelta(days=1)
+    events = []
+    risk_levels: dict = {}
+    for event in journal.list_events(ledger_key):
+        values = event.get("metadata", {}).get("risk_levels") if isinstance(event.get("metadata"), dict) else None
+        if event.get("active") and isinstance(values, dict):
+            risk_levels.update(values)
+        occurred = datetime.fromisoformat(str(event["occurred_at"]).replace("Z", "+00:00"))
+        if occurred.tzinfo is None:
+            occurred = occurred.replace(tzinfo=UTC)
+        if earliest <= occurred <= latest_at:
+            events.append(event)
+    trades = []
+    for event in events:
+        for leg in journal.execution_legs(int(event["id"])):
+            trades.append({**leg, "time": event["occurred_at"]})
+    state = journal.replay(ledger_key)
+    return {
+        "items": [
+            (snapshot, (journal.performance_windows(ledger_key, snapshot["currency"]) or {}).get("windows", {}))
+            for snapshot in snapshots
+        ],
+        "trades": trades,
+        "positions": list(state["positions"].values()),
+        "risk_levels": risk_levels,
+    }
+
+
+def publish_daily_group_summary(database=None, *, free_group: bool = False) -> int:
+    """Publish entitlement-specific summaries from the immutable simulation ledger."""
     if os.getenv("TELEGRAM_DAILY_SUMMARY_ENABLED", "false").strip().lower() != "true":
-        return 0
-    target = telegram_group("daily")
-    if not target or not telegram_configured(target):
         return 0
     db = database or get_database()
     ledger_key = os.getenv("TRADEAI_SYSTEM_LEDGER_KEY", "tradeai-system")
@@ -638,32 +835,48 @@ def publish_daily_group_summary(database=None) -> int:
     )
     if not snapshots:
         return 0
-    marker = ",".join(str(row["id"]) for row in snapshots)
-    saved = db.fetch_one(
-        "SELECT control_value FROM platform_controls WHERE control_key='telegram_daily_summary_snapshot'"
+    snapshot_marker = ",".join(str(row["id"]) for row in snapshots)
+    payload = _daily_summary_payload(db, ledger_key, snapshots)
+    routes = (("daily", "普通群", {"stock", "option"}, "正股延遲 1 小時 · 期權延遲 15 分鐘", True),) if free_group else (
+        ("advanced", "高級群", {"stock"}, None, False),
+        ("professional", "專業群", {"stock", "option"}, None, False),
     )
-    if saved and saved["control_value"] == marker:
-        return 0
-    earliest = min(datetime.fromisoformat(row["captured_at"]) for row in snapshots) - timedelta(days=1)
-    action_count = db.fetch_one(
-        "SELECT COUNT(*) count FROM quant_events WHERE ledger_key=? AND occurred_at>=?",
-        (ledger_key, earliest.isoformat()),
-    )["count"]
-    journal = QuantJournal(db)
-    items = [
-        (snapshot, (journal.performance_windows(ledger_key, snapshot["currency"]) or {}).get("windows", {}))
-        for snapshot in snapshots
-    ]
-    send_telegram(telegram_daily_summary(items, int(action_count)), chat_id=target)
     now = datetime.now(UTC).isoformat(timespec="seconds")
-    db.execute(
-        """INSERT INTO platform_controls(control_key,control_value,updated_by,updated_at)
-           VALUES ('telegram_daily_summary_snapshot',?,NULL,?)
-           ON CONFLICT(control_key) DO UPDATE SET control_value=excluded.control_value,
-           updated_by=NULL,updated_at=excluded.updated_at""",
-        (marker, now),
-    )
-    return 1
+    sent = 0
+    for group, audience, allowed, delay_note, upgrade in routes:
+        target = telegram_group(group)
+        if not target or not telegram_configured(target):
+            continue
+        control_key = f"telegram_daily_summary_snapshot_{group}"
+        saved = db.fetch_one("SELECT control_value FROM platform_controls WHERE control_key=?", (control_key,))
+        if saved and saved["control_value"] == snapshot_marker:
+            continue
+        trades = [row for row in payload["trades"] if row["instrument_type"] in allowed]
+        positions = [row for row in payload["positions"] if row["instrument_type"] in allowed]
+        message = telegram_daily_summary(
+            payload["items"],
+            len(trades),
+            trades=trades,
+            positions=positions,
+            risk_levels=payload["risk_levels"],
+            audience=audience,
+            delay_note=delay_note,
+        )
+        _send_quant_card(message, target, upgrade=upgrade)
+        db.execute(
+            """INSERT INTO platform_controls(control_key,control_value,updated_by,updated_at)
+               VALUES (?,?,NULL,?)
+               ON CONFLICT(control_key) DO UPDATE SET control_value=excluded.control_value,
+               updated_by=NULL,updated_at=excluded.updated_at""",
+            (control_key, snapshot_marker, now),
+        )
+        sent += 1
+    return sent
+
+
+def publish_free_daily_group_summary(database=None) -> int:
+    """Publish the free summary after the longest free-group signal delay."""
+    return publish_daily_group_summary(database, free_group=True)
 
 
 def evaluate_strategy_catalog() -> int:

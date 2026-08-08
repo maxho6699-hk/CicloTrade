@@ -14,6 +14,7 @@ from core.database import get_database
 from core.plans import can, effective_plan
 from core.quant_journal import QuantJournal
 from ui.components import page_heading, section_label
+from ui.quant_format import contract_label, source_label, strategy_version_label
 
 
 def _search(frame: pd.DataFrame, query: str) -> pd.DataFrame:
@@ -64,7 +65,7 @@ def _quant_rows(
                     action = f"撤销 · {action}"
                 elif event["event_type"] == "correction":
                     action = f"更正 · {action}"
-                contract = leg["instrument_key"] if leg else "--"
+                contract = contract_label(leg, show_market=True) if leg else "--"
             if event["event_type"] == "reversal":
                 status = "撤销事件"
             elif event["event_type"] == "correction":
@@ -82,14 +83,14 @@ def _quant_rows(
                     "发生时间": occurred.tz_convert("Asia/Hong_Kong"),
                     "状态": status,
                     "策略": event["strategy_name"],
-                    "版本": event["strategy_version"],
+                    "版本": strategy_version_label(event["strategy_version"]),
                     "标的 / 合约": contract,
                     "动作": action,
                     "数量变化": leg["quantity_delta"] if leg else None,
                     "目标仓位": leg["target_quantity"] if leg else None,
                     "记录价": leg["price"] if leg else None,
                     "币种": leg["currency"] if leg else "--",
-                    "来源": event["source"],
+                    "来源": source_label(event["source"]),
                     "外部编号": event["external_event_id"],
                     "更正事件": event["corrects_event_id"],
                     "说明": json.dumps(metadata, ensure_ascii=False, sort_keys=True) if metadata else "--",
@@ -155,7 +156,7 @@ def render() -> None:
             _show(
                 _quant_rows(events, journal, include_options=can(plan, "option_chain")),
                 query,
-                "尚未接收到经过验证的量化操作记录。",
+                "目前暂无已执行操作。系统会持续监测，出现买卖后自动记录，无需手动设置。",
             )
     with order_tab:
         section_label("订单记录", f"{len(orders)} 条")

@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from html import escape
 from typing import Iterable
+from zoneinfo import ZoneInfo
 
 
 def email_message(
@@ -91,68 +93,175 @@ def telegram_order_message(mode: str, side: str, quantity: int, symbol: str, pri
     )
 
 
-def telegram_quant_message(event: dict, legs: list[dict], metadata: dict) -> str:
-    kind = "正股" if legs[0]["instrument_type"] == "stock" else "期權"
-    label = {"signal": "新操作", "correction": "操作更正", "reversal": "撤銷操作"}[event["event_type"]]
-    icon = {"signal": "📊", "correction": "⚠️", "reversal": "⛔"}[event["event_type"]]
+def _telegram_contract(row: dict) -> str:
+    symbol = escape(str(row.get("symbol") or "--"))
+    market = "大A" if str(row.get("market") or "").upper() == "CN" or symbol.isdigit() else "美股"
+    if row.get("instrument_type") != "option":
+        return f"{market} {symbol}"
+    right = str(row.get("option_right") or row.get("right") or "").upper()
+    icon = "🟢" if right == "CALL" else "🔴"
+    label = "Call" if right == "CALL" else "Put"
+    expiry = escape(str(row.get("option_expiry") or row.get("expiry") or "--"))
+    strike = float(row.get("option_strike") or row.get("strike") or 0)
+    return f"{market} {icon} {symbol} {expiry} {strike:g} {label}"
+
+
+def _telegram_time(value: object) -> str:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            return parsed.strftime("%m-%d %H:%M")
+        return f"香港 {parsed.astimezone(ZoneInfo('Asia/Hong_Kong')):%m-%d %H:%M}"
+    except (TypeError, ValueError):
+        return escape(str(value))
+
+
+def _money(currency: object, value: object) -> str:
+    symbol = "¥" if str(currency).upper() == "CNY" else "$"
+    return f"{symbol}{float(value):,.2f}"
+
+
+def _risk_line(row: dict, risk_levels: dict, metadata: dict) -> str | None:
+    risk = risk_levels.get(row.get("instrument_key"), {}) if isinstance(risk_levels, dict) else {}
+    if not isinstance(risk, dict):
+        risk = {}
+    stop = risk.get("stop_loss", row.get("stop_loss", metadata.get("stop_loss")))
+    target = risk.get("target_price", row.get("target_price", metadata.get("target_price")))
+    parts = []
+    if stop is not None:
+        parts.append(f"🛡️ 止損 {_money(row.get('currency'), stop)}")
+    if target is not None:
+        parts.append(f"🏆 目標 {_money(row.get('currency'), target)}")
+    return " · ".join(parts) or None
+
+
+def _telegram_text(lines: list[str]) -> str:
+    selected: list[str] = []
+    for line in lines:
+        candidate = "\n".join((*selected, line))
+        if len(candidate) > 4040:
+            selected.append("其餘內容請到網站查看。")
+            break
+        selected.append(line)
+    return "\n".join(selected)
+
+
+def telegram_quant_message(
+    event: dict,
+    legs: list[dict],
+    metadata: dict,
+    *,
+    positions: list[dict] = (),
+    delay_note: str | None = None,
+    source_label: str = "CicloTrade 系統模擬帳戶",
+) -> str:
+    label = {"signal": "已執行", "correction": "已更正", "reversal": "已撤銷"}[event["event_type"]]
     lines = [
-        f"{icon} CicloTrade · {kind}{label}",
-        "━━━━━━━━━━━━━━",
-        f"策略　{event['strategy_name']} · {event['strategy_version']}",
-        f"時間　{event['occurred_at']}",
+        "╔══════════════════╗",
+        f"📊 <b>CicloTrade · 模擬帳戶{label}</b>",
+        "╚══════════════════╝",
     ]
-    if event["event_type"] == "reversal":
-        lines.append(f"撤銷　事件 #{event['corrects_event_id']}")
+    if delay_note:
+        lines.append(f"⏱ <b>{escape(delay_note)}</b>")
+    lines.extend((f"🕒 {_telegram_time(event['occurred_at'])}", "<b>本次成交</b>"))
+    risk_levels = metadata.get("risk_levels") if isinstance(metadata.get("risk_levels"), dict) else {}
     for leg in legs:
         delta = float(leg["quantity_delta"])
-        action = "持有" if abs(delta) < 1e-12 else "買入 / 增持" if delta > 0 else "賣出 / 減持"
-        price = f" · {leg['currency']} {float(leg['price']):,.2f}" if leg.get("price") is not None else ""
-        lines.extend(
-            (
-                "━━━━━━━━━━━━━━",
-                f"{leg['instrument_key']}",
-                f"動作　{action}{price}",
-                f"變化　{delta:+g}　→　目標持倉 {float(leg['target_quantity']):g}",
-            )
+        action_icon = "📈" if delta > 0 else "📉"
+        action = "買入" if delta > 0 else "賣出"
+        price = _money(leg.get("currency"), leg["price"]) if leg.get("price") is not None else "--"
+        lines.append(
+            f"{action_icon} <b>{action}</b> {_telegram_contract(leg)} · {abs(delta):g} · {price} · 現持 {float(leg['target_quantity']):g}"
         )
-    for label_name, key in (("入場", "entry_price"), ("止損", "stop_loss"), ("目標", "target_price")):
-        if metadata.get(key) is not None:
-            lines.append(f"{label_name}　{metadata[key]}")
-    if reason := metadata.get("reason") or metadata.get("rationale"):
-        lines.append(f"依據　{str(reason)[:420]}")
-    if risk := metadata.get("risk_level"):
-        lines.append(f"風險　{risk}")
-    lines.extend(("━━━━━━━━━━━━━━", f"事件 #{event['id']} · 連續量化帳本", "研究信號，不代表券商已自動下單；不構成投資建議。"))
-    return "\n".join(lines)[:4096]
+        if float(leg["target_quantity"]) != 0:
+            if risk_line := _risk_line(leg, risk_levels, metadata):
+                lines.append(f"　{risk_line}")
+    lines.append("<b>最新持倉</b>")
+    if positions:
+        for position in positions[:8]:
+            lines.append(
+                f"• {_telegram_contract(position)} · {float(position.get('quantity') or 0):g} · "
+                f"成本 {_money(position.get('currency'), position.get('average_cost') or 0)}"
+            )
+            if risk_line := _risk_line(position, risk_levels, metadata):
+                lines.append(f"　{risk_line}")
+    else:
+        lines.append("• 暫無持倉")
+    lines.extend(
+        (
+            "⚡ 經量化系統數據分析建議",
+            "⚠️ 可能提前止盈或止損，請留意最新推送。",
+            f"<i>{escape(source_label)} · 事件 #{int(event['id'])}</i>",
+        )
+    )
+    if delay_note:
+        lines.append("💎 升級會員可取得即時操作資料。")
+    return _telegram_text(lines)
 
 
-def telegram_daily_summary(items: list[tuple[dict, dict]], action_count: int) -> str:
+def telegram_daily_summary(
+    items: list[tuple[dict, dict]],
+    action_count: int,
+    *,
+    trades: list[dict] = (),
+    positions: list[dict] = (),
+    risk_levels: dict | None = None,
+    audience: str = "普通群",
+    delay_note: str | None = None,
+) -> str:
     total_pnl = sum(float(snapshot["total_pnl"]) for snapshot, _ in items)
     icon = "🟢" if total_pnl >= 0 else "🔴"
-    lines = [
-        f"{icon} CicloTrade · 每日量化總結",
-        "━━━━━━━━━━━━━━",
-        f"今日量化動作　{int(action_count)} 筆",
-    ]
+    lines = ["╔══════════════════╗", f"{icon} <b>CicloTrade · 每日總結</b>", "╚══════════════════╝"]
+    if delay_note:
+        lines.append(f"⏱ <b>{escape(delay_note)}</b>")
+    risks = risk_levels if isinstance(risk_levels, dict) else {}
+    lines.append(f"{escape(audience)} · 今日成交 {int(action_count)} 筆")
+    if trades:
+        lines.append("<b>今日買賣</b>")
+        for trade in trades[:8]:
+            icon = "📈" if float(trade["quantity_delta"]) > 0 else "📉"
+            action = "買入" if float(trade["quantity_delta"]) > 0 else "賣出"
+            lines.append(
+                f"{icon} {_telegram_time(trade['time'])} · {action} {_telegram_contract(trade)} · "
+                f"{abs(float(trade['quantity_delta'])):g} · {_money(trade.get('currency'), trade['price'])}"
+            )
+            if float(trade.get("target_quantity") or 0) != 0:
+                if risk_line := _risk_line(trade, risks, {}):
+                    lines.append(f"　{risk_line}")
+    lines.append("<b>收盤持倉</b>")
+    if positions:
+        for position in positions[:8]:
+            lines.append(
+                f"• {_telegram_contract(position)} · {float(position.get('quantity') or 0):g} · "
+                f"成本 {_money(position.get('currency'), position.get('average_cost') or 0)}"
+            )
+            if risk_line := _risk_line(position, risks, {}):
+                lines.append(f"　{risk_line}")
+    else:
+        lines.append("• 暫無持倉")
     for snapshot, windows in items:
         equity = float(snapshot["total_equity"])
         pnl = float(snapshot["total_pnl"])
         initial = float(snapshot["initial_cash"])
         lines.extend(
             (
-                "━━━━━━━━━━━━━━",
-                f"{snapshot['currency']} 總資產　{equity:,.2f}",
-                f"累計盈虧　{pnl:+,.2f} ({pnl / initial:+.2%})" if initial else f"累計盈虧　{pnl:+,.2f}",
-                f"現金 / 持倉　{float(snapshot['cash']):,.2f} / {float(snapshot['market_value']):,.2f}",
+                f"<b>{'美元' if snapshot['currency'] == 'USD' else '人民幣'}資產 {_money(snapshot['currency'], equity)}</b>",
+                f"盈虧 {_money(snapshot['currency'], pnl)} ({pnl / initial:+.2%})" if initial else f"盈虧 {_money(snapshot['currency'], pnl)}",
+                f"現金 {_money(snapshot['currency'], snapshot['cash'])} · 持倉 {_money(snapshot['currency'], snapshot['market_value'])}",
             )
         )
         for label in ("1周", "1个月", "3个月", "6个月", "1年"):
             value = windows.get(label, {})
             if value.get("available"):
-                lines.append(f"{label.replace('个月', '個月')}　{float(value['pnl']):+,.2f} ({float(value['return']):+.2%})")
+                lines.append(
+                    f"{label.replace('个月', '個月')} {_money(snapshot['currency'], value['pnl'])} "
+                    f"({float(value['return']):+.2%})"
+                )
     latest_at = max(str(snapshot["captured_at"]) for snapshot, _ in items)
-    lines.extend(("━━━━━━━━━━━━━━", f"數據時間　{latest_at}", "已審計連續帳本 · 歷史表現不代表未來收益", "僅供研究參考，不構成投資建議。"))
-    return "\n".join(lines)[:4096]
+    lines.extend((f"🕒 {_telegram_time(latest_at)}", "⚡ 經量化系統數據分析建議", "⚠️ 可能提前止盈或止損，請留意最新推送。"))
+    if delay_note:
+        lines.append("💎 升級會員可取得即時操作資料。")
+    return _telegram_text(lines)
 
 
 def telegram_price_alert(content: str) -> str:
