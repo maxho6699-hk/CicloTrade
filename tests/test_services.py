@@ -30,6 +30,7 @@ def db(tmp_path):
 @pytest.fixture(autouse=True)
 def jwt_secret(monkeypatch):
     monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-that-is-longer-than-thirty-two-characters")
+    monkeypatch.setenv("REQUIRE_EMAIL_VERIFICATION", "false")
 
 
 def _user(auth: AuthService, suffix: str = "one"):
