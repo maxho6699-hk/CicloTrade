@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 
 # The tunnel keeps OpenD's Telnet control port on loopback; it is never exposed publicly.
 $server = "8.210.21.43"
@@ -23,7 +23,8 @@ try {
     # OpenD may keep returning a previously downloaded image. Move it aside so
     # this run cannot continue until a genuinely new captcha has been written.
     $captchaStalePath = "$captchaRemotePath.stale-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-    $prepareResult = Invoke-SSHCommand -SessionId $session.SessionId -Command "if [ -f '$captchaRemotePath' ]; then mv -- '$captchaRemotePath' '$captchaStalePath'; fi"
+    $prepareCommand = 'if [ -f "' + $captchaRemotePath + '" ]; then mv -- "' + $captchaRemotePath + '" "' + $captchaStalePath + '"; fi'
+    $prepareResult = Invoke-SSHCommand -SessionId $session.SessionId -Command $prepareCommand
     if ($prepareResult.ExitStatus -ne 0) {
         throw "无法清理旧验证码图片。"
     }
@@ -44,7 +45,8 @@ try {
 
     $captchaReady = $false
     for ($attempt = 0; $attempt -lt 20; $attempt++) {
-        $checkResult = Invoke-SSHCommand -SessionId $session.SessionId -Command "test -s '$captchaRemotePath'"
+        $checkCommand = 'test -s "' + $captchaRemotePath + '"'
+        $checkResult = Invoke-SSHCommand -SessionId $session.SessionId -Command $checkCommand
         if ($checkResult.ExitStatus -eq 0) {
             $captchaReady = $true
             break
