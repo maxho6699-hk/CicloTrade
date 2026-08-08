@@ -34,12 +34,14 @@ from core.signal_imports import SignalImportService
 from core.user_settings import load_user_settings
 from notification.telegram_bot import (
     answer_telegram_callback,
+    configure_telegram_bot,
     copy_telegram_message,
     edit_telegram_message,
     entitled_user_target,
     send_telegram,
     telegram_callback_allowed,
     telegram_configured,
+    telegram_token,
 )
 from notification.telegram_desk import (
     TelegramDeskResponse,
@@ -1002,6 +1004,13 @@ def on_script_error(exc: Exception):
 async def lifespan(app):
     del app
     scheduler = None
+    if telegram_token():
+        try:
+            await asyncio.to_thread(configure_telegram_bot)
+        except RuntimeError as exc:
+            get_database().log_system_event(
+                "WARN", "TELEGRAM", "Telegram Bot 启动配置失败", str(exc)[:500]
+            )
     if os.getenv("SCHEDULER_ENABLED", "false").lower() == "true":
         scheduler = build_scheduler()
         scheduler.start()
