@@ -668,7 +668,7 @@ def _render_data_source_verification(service: AdminService, actor_id: int) -> No
             refresh_captcha = st.button(
                 "刷新验证码",
                 type="primary" if status.state == "verification_required" else "secondary",
-                icon=":material/captcha:",
+                icon=":material/image:",
                 disabled=status.ready,
                 key="admin_opend_refresh_captcha",
             )

@@ -37,7 +37,9 @@ def main() -> None:
         from futu import OpenQuoteContext
 
         context = OpenQuoteContext(host=host, port=port, is_async_connect=True)
-        deadline = monotonic() + 1.2
+        # Futu import takes about 1.2s on the 2 GB production host. Keep the
+        # connect window short so the parent can still enforce a 2s hard stop.
+        deadline = monotonic() + 0.45
         while monotonic() < deadline:
             if context._is_ready():
                 _finish("READY", 0)
