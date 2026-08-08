@@ -82,6 +82,8 @@ def test_send_telegram_accepts_native_keyboard_and_rejects_untrusted_actions(mon
 
 def test_configure_telegram_bot_installs_commands_and_menu(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-token")
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "webhook_secret-123")
+    monkeypatch.setenv("APP_BASE_URL", "https://ciclotrade.com")
     captured = []
 
     def capture(request, **_kwargs):
@@ -95,6 +97,13 @@ def test_configure_telegram_bot_installs_commands_and_menu(monkeypatch):
     assert [item["command"] for item in captured[0][1]["commands"]] == ["start", "id", "settings", "help"]
     assert captured[1] == (captured[1][0], {"menu_button": {"type": "commands"}})
     assert captured[1][0].endswith("/setChatMenuButton")
+    assert captured[2][0].endswith("/setWebhook")
+    assert captured[2][1] == {
+        "url": "https://ciclotrade.com/webhooks/telegram",
+        "secret_token": "webhook_secret-123",
+        "allowed_updates": ["message", "callback_query"],
+        "drop_pending_updates": False,
+    }
 
 
 def test_start_returns_chat_id_and_main_menu_without_binding(tmp_path):

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 from datetime import datetime, timedelta
 from core.compat import UTC
@@ -439,7 +440,14 @@ def _telegram_request(method: str, payload: dict[str, Any], *, token: str | None
     bot_token = token or telegram_token()
     if not bot_token:
         raise RuntimeError("Telegram Bot 尚未配置。")
-    if method not in {"sendMessage", "editMessageText", "answerCallbackQuery", "setMyCommands", "setChatMenuButton"}:
+    if method not in {
+        "sendMessage",
+        "editMessageText",
+        "answerCallbackQuery",
+        "setMyCommands",
+        "setChatMenuButton",
+        "setWebhook",
+    }:
         raise RuntimeError("Telegram API 方法无效。")
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     request = Request(
@@ -503,7 +511,7 @@ def answer_telegram_callback(callback_query_id: str, text: str | None = None) ->
 
 
 def configure_telegram_bot() -> None:
-    """Install the compact command list and the native command menu button."""
+    """Install commands, the native menu button, and the authenticated webhook."""
     commands = [
         {"command": "start", "description": "主選單與 Chat ID"},
         {"command": "id", "description": "顯示綁定 Chat ID"},
@@ -512,6 +520,19 @@ def configure_telegram_bot() -> None:
     ]
     _telegram_request("setMyCommands", {"commands": commands})
     _telegram_request("setChatMenuButton", {"menu_button": {"type": "commands"}})
+    webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+    if webhook_secret:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", webhook_secret):
+            raise RuntimeError("Telegram Webhook Secret 格式無效。")
+        _telegram_request(
+            "setWebhook",
+            {
+                "url": _app_url("webhooks/telegram"),
+                "secret_token": webhook_secret,
+                "allowed_updates": ["message", "callback_query"],
+                "drop_pending_updates": False,
+            },
+        )
 
 
 def remove_group_member(chat_id: str, user_id: str) -> None:
