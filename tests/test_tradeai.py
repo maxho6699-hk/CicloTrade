@@ -9,6 +9,7 @@ from ui.data import (
     portfolio_snapshot,
     strategy_curve,
 )
+from ui.pages.recommendations import position_size
 
 
 def test_strategy_catalog_has_eight_entries():
@@ -65,3 +66,10 @@ def test_user_paper_trades_rebuild_positions_cash_and_equity():
     assert account["assets"] == 100_050
     assert positions.iloc[0]["浮动盈亏"] == 30
     assert curve.iloc[-1]["账户净值"] == account["assets"]
+
+
+def test_position_size_uses_strictest_risk_constraint_and_rounds_down():
+    shares, risk = position_size(10_000, 100, 95)
+    assert shares == 10  # 10% concentration cap is stricter than the 1% risk budget.
+    assert risk == 50
+    assert position_size(10_000, 100, 100) == (0, 0.0)

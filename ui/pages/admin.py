@@ -602,12 +602,13 @@ def _render_system(service: AdminService, actor_id: int) -> None:
                     lambda: service.set_global_opening_paused(actor_id, True), "全局新开仓已暂停。"
                 )
 
-    auto_trading_open = service.control_enabled("user_auto_trading_enabled", False)
+    auto_trading_open = service.control_enabled("user_auto_trading_enabled", True)
     with st.container(border=True):
         st.metric("用户自动交易服务", "已开放" if auto_trading_open else "已关闭")
         st.caption(
             "关闭时保留前台完整功能展示，但锁定券商资料登记、个人自动交易开关和实盘订单；"
-            "开启后仍受会员、签约白名单、独立账户配置、风险限制和逐单确认保护。"
+            "已开启用户会收到自行检查/平仓提醒，个人开关会重置为关闭。再次开放后不会自动恢复，"
+            "用户会收到通知并可在网站一键重新开启，无需重填券商资料。"
         )
         if auto_trading_open:
             if st.button(
@@ -729,7 +730,7 @@ def render() -> None:
     labels = [label for label, _ in sections]
     if st.session_state.get("admin_section") not in labels:
         st.session_state.admin_section = labels[0]
-    section = st.segmented_control("后台区域", labels, key="admin_section", width="stretch")
+    section = st.segmented_control("后台区域", labels, key="admin_section", width="stretch", required=True)
     actor_id = int(admin["id"])
     if section == "用户与权限":
         _render_users(service, actor_id, role)

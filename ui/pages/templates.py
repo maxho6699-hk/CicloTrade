@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from core.compat import UTC
+import html
 import json
 
 import pandas as pd
@@ -16,7 +17,7 @@ from core.plans import backtest_years, can, effective_plan
 from core.strategy_evaluation import chronological_validation_start, evaluate_rule_strategy
 from core.strategy_registry import StrategyRegistry
 from core.strategy_tracking import StrategyPerformanceTracker
-from data.datasource import get_data_source
+from data.datasource import get_resilient_data_source
 from ui.components import metric_grid, page_heading, section_label
 
 
@@ -74,10 +75,10 @@ def render() -> None:
     selected_name = st.selectbox("選擇策略模板", names)
     definition = next(item for item in templates if item["name"] == selected_name)
     st.html(
-        f'<section class="verdict"><span>適用場景</span><strong>{definition["scenario"]}</strong>'
-        f'<p>{definition["description"]}</p></section>'
+        f'<section class="verdict"><span>適用場景</span><strong>{html.escape(str(definition["scenario"]))}</strong>'
+        f'<p>{html.escape(str(definition["description"]))}</p></section>'
     )
-    market = st.segmented_control("市場", ["美股", "A股"], default="美股", width="stretch", key="template_market")
+    market = st.segmented_control("市場", ["美股", "A股"], default="美股", width="stretch", key="template_market", required=True)
     default_symbol = "AAPL" if market == "美股" else "510300"
     symbol = st.text_input("標的代碼", value=default_symbol, max_chars=12, key=f"template_symbol_{market}").strip().upper()
     adjustable = can(plan, "strategy_template_parameters")
@@ -102,7 +103,7 @@ def render() -> None:
         else:
             try:
                 with st.spinner("正在讀取歷史 K 線並執行逐根回測…", show_time=True):
-                    closes, _ = get_data_source().history((symbol,), period=f"{years}y")
+                    closes, _ = get_resilient_data_source().history((symbol,), period=f"{years}y")
                     series = closes[symbol].dropna()
                     configured = {**definition, "parameters": parameters}
                     validation_start = chronological_validation_start(series)

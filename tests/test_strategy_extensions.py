@@ -14,9 +14,16 @@ from core.plans import (
 )
 from core.sandbox import SandboxClient, validate_user_code
 from core.signal_imports import DISCLAIMER, SignalImportService, parse_csv
-from core.strategy_evaluation import _option_metrics, chronological_validation_start, evaluate_rule_strategy
+from core.quant_journal import QuantJournal
+from core.strategy_evaluation import (
+    _option_metrics,
+    chronological_validation_start,
+    evaluate_rule_strategy,
+    run_system_quant_cycle,
+)
 from core.strategy_generator import generate_backtrader, validate_generated_code
 from core.strategy_parser import parse_strategy
+from core.strategy_registry import StrategyRegistry
 from core.user_profiles import UserProfileService, profile_tags
 
 
@@ -123,6 +130,41 @@ def test_chronological_validation_uses_last_thirty_percent_only():
     validation_start = chronological_validation_start(close)
 
     assert validation_start == index[84]
+
+
+def test_adaptive_cycle_writes_one_idempotent_event_and_daily_nav(db, monkeypatch):
+    index = pd.date_range("2025-01-01", periods=320, freq="B")
+
+    class Source:
+        def history(self, symbols, period="3y", interval="1d"):
+            closes = pd.DataFrame(
+                {
+                    symbol: pd.Series(
+                        [100.0 + value * 0.2 + offset for value in range(len(index))],
+                        index=index,
+                    )
+                    for offset, symbol in enumerate(symbols)
+                }
+            )
+            return closes, closes * 0 + 1_000
+
+    StrategyRegistry(db).sync_catalog()
+    monkeypatch.setattr(
+        "core.strategy_evaluation.score_daily_catalog",
+        lambda *_args, **_kwargs: [{"strategy_key": "template_tsmom_12m", "weighted_score": 90.0}],
+    )
+
+    first = run_system_quant_cycle(db, data_source=Source(), eval_date="2026-03-24")
+    second = run_system_quant_cycle(db, data_source=Source(), eval_date="2026-03-24")
+    state = QuantJournal(db).replay(
+        "tradeai-system", initial_cash={"USD": 100_000, "CNY": 100_000}
+    )
+
+    assert first["event_created"] is True and first["leg_count"] == 6
+    assert first["snapshots_created"] == 2
+    assert second["event_created"] is False and second["snapshots_created"] == 0
+    assert state["event_count"] == 1
+    assert db.fetch_one("SELECT COUNT(*) count FROM quant_equity_snapshots")["count"] == 2
 
 
 def test_mean_reversion_negates_threshold_without_negating_period():

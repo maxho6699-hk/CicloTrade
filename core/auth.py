@@ -10,6 +10,7 @@ import hashlib
 import os
 import re
 import secrets
+import string
 from typing import Any
 
 import bcrypt
@@ -109,12 +110,20 @@ def _decode_token(token: str, *, verify_exp: bool = True) -> dict[str, Any]:
 def validate_password(password: str) -> None:
     if (
         not isinstance(password, str)
-        or len(password) < 12
+        or len(password) < 8
         or len(password.encode("utf-8")) > 72
         or not re.search(r"[A-Za-z]", password)
         or not re.search(r"\d", password)
     ):
-        raise AuthError("密码需为 12 至 72 个字节，并同时包含英文字母和数字。")
+        raise AuthError("密码至少 8 个字符、最多 72 个字节，并同时包含英文字母和数字。")
+
+
+def _reset_code() -> str:
+    alphabet = string.ascii_uppercase + string.digits
+    while True:
+        code = "".join(secrets.choice(alphabet) for _ in range(8))
+        if any(char.isalpha() for char in code) and any(char.isdigit() for char in code):
+            return code
 
 
 def validate_display_name(display_name: str) -> str:
@@ -446,7 +455,7 @@ class AuthService:
                     return None
             except ValueError:
                 pass
-        token = secrets.token_urlsafe(32)
+        token = _reset_code()
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
         with self.db.transaction() as conn:
             conn.execute(
@@ -550,11 +559,15 @@ class AuthService:
                 (record["user_id"], "EMAIL_VERIFIED", "注册邮箱验证完成", _iso()),
             )
 
-    def reset_password(self, token: str, password: str) -> None:
+    def reset_password(self, token: str, password: str, ip_address: str = "unknown") -> None:
         validate_password(password)
-        if not isinstance(token, str) or not 32 <= len(token.strip()) <= 128:
-            raise AuthError("重设密码链接无效或已过期。")
-        digest = hashlib.sha256(token.strip().encode("utf-8")).hexdigest()
+        token = token.strip().upper() if isinstance(token, str) else ""
+        if not (re.fullmatch(r"[A-Z0-9]{8}", token) or 32 <= len(token) <= 128):
+            raise AuthError("重设验证码无效或已过期。")
+        now = _now()
+        rate_key = self._rate_key("reset-apply", "*", (ip_address or "unknown")[:64])
+        self._check_rate_limit(rate_key, now)
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
         record = self.db.fetch_one(
             "SELECT * FROM password_resets WHERE token_hash=? AND used_at IS NULL", (digest,)
         )
@@ -563,7 +576,10 @@ class AuthService:
         except (TypeError, ValueError):
             valid = False
         if not valid:
-            raise AuthError("重设密码链接无效或已过期。")
+            self._record_attempt(
+                rate_key, now, limit=10, window=timedelta(minutes=30), block=timedelta(minutes=30)
+            )
+            raise AuthError("重设验证码无效或已过期。")
         password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("ascii")
         with self.db.transaction() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -571,15 +587,16 @@ class AuthService:
                 "SELECT * FROM password_resets WHERE token_hash=? AND used_at IS NULL", (digest,)
             ).fetchone()
             if not record or datetime.fromisoformat(record["expires_at"]) <= _now():
-                raise AuthError("重设密码链接无效或已过期。")
+                raise AuthError("重设验证码无效或已过期。")
             claimed = conn.execute(
                 "UPDATE password_resets SET used_at=? WHERE id=? AND used_at IS NULL",
                 (_iso(), record["id"]),
             )
             if claimed.rowcount != 1:
-                raise AuthError("重设密码链接无效或已过期。")
+                raise AuthError("重设验证码无效或已过期。")
             conn.execute("UPDATE users SET password_hash=? WHERE id=?", (password_hash, record["user_id"]))
             conn.execute("UPDATE user_sessions SET is_active=0 WHERE user_id=?", (record["user_id"],))
+            conn.execute("DELETE FROM auth_rate_limits WHERE rate_key=?", (rate_key,))
 
     def get_user(self, user_id: int) -> dict[str, Any]:
         user = self.db.fetch_one(

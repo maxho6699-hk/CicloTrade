@@ -11,7 +11,7 @@ import streamlit as st
 from core.alerts import AlertService, condition_preview
 from core.plans import can, effective_plan
 from core.user_settings import load_user_settings
-from data.datasource import DataSourceError, get_data_source, market_data_status
+from data.datasource import DataSourceError, get_resilient_data_source, public_market_status
 from notification.telegram_bot import send_telegram, telegram_configured, verified_user_target
 from ui.components import market_tape, page_heading, section_label
 from ui.data import market_summary
@@ -20,14 +20,15 @@ from ui.recommendations import A_SHARE_UNIVERSE, US_UNIVERSE
 
 @st.cache_data(ttl=60, max_entries=20, show_spinner=False)
 def _history(symbols: tuple[str, ...], market: str, source_name: str):
-    source = get_data_source("yfinance" if market == "A股" else source_name)
+    source = get_resilient_data_source("yfinance" if market == "A股" else source_name)
     closes, volumes = source.history(symbols, period="3mo")
-    return closes, volumes, pd.Timestamp(closes.index[-1]).to_pydatetime(), source.name
+    public = public_market_status("yfinance" if market == "A股" else source_name, market)
+    return closes, volumes, pd.Timestamp(closes.index[-1]).to_pydatetime(), public["display_source"]
 
 
 @st.cache_data(ttl=300, max_entries=10, show_spinner=False)
 def _option_chain(symbol: str, source_name: str = "yfinance"):
-    return get_data_source(source_name).option_chain(symbol)
+    return get_resilient_data_source(source_name).option_chain(symbol)
 
 
 def render() -> None:
@@ -36,11 +37,11 @@ def render() -> None:
     alert_service = AlertService()
     page_heading(
         "MARKET / ALERTS",
-        "行情与预警",
+        "预警与期权链",
         "查看真实历史价格、日频期权链并建立持久化价格预警。",
-        f"{market_data_status(os.getenv('DATA_SOURCE', 'yfinance'))['source'].upper()} · 60S CACHE",
+        "市场数据 · 60 秒缓存",
     )
-    market = st.segmented_control("市场", ["美股", "A股"], default="美股", key="markets_market", width="stretch")
+    market = st.segmented_control("市场", ["美股", "A股"], default="美股", key="markets_market", width="stretch", required=True)
     universe = US_UNIVERSE if market == "美股" else A_SHARE_UNIVERSE
     symbols = st.multiselect(
         "监控标的",
@@ -57,12 +58,12 @@ def render() -> None:
         closes, volumes, updated_at, source_name = _history(
             tuple(symbols), market, os.getenv("DATA_SOURCE", "yfinance")
         )
-    except DataSourceError as exc:
-        st.error(f"行情请求失败：{exc}", icon=":material/cloud_off:")
+    except DataSourceError:
+        st.error("市场数据暂时不可用，请稍后重试。", icon=":material/cloud_off:")
         return
     market_tape(market_summary(closes), updated_at, source_name)
     price_frame = closes.tail(30).reset_index().rename(columns={closes.index.name or "index": "日期"})
-    status = market_data_status("yfinance" if market == "A股" else os.getenv("DATA_SOURCE", "yfinance"))
+    status = public_market_status("yfinance" if market == "A股" else os.getenv("DATA_SOURCE", "yfinance"), market)
     section_label("近 30 个交易日", f"真实收盘价 · {status['freshness']}")
     st.line_chart(price_frame, x="日期", y=list(closes.columns), x_label="日期", y_label="价格")
     with st.expander("查看近 30 日价格数据", icon=":material/table_chart:"):
@@ -90,7 +91,7 @@ def render() -> None:
                 alert_symbol = st.selectbox("标的", list(latest_prices))
                 max_conditions = 1 if plan == "免费版" else 3 if plan == "标准版" else 5
                 condition_count = st.number_input("条件数量", min_value=1, max_value=max_conditions, value=1, step=1)
-                logic = st.segmented_control("组合逻辑", ["AND", "OR"], default="AND") if condition_count > 1 else "AND"
+                logic = st.segmented_control("组合逻辑", ["AND", "OR"], default="AND", required=True) if condition_count > 1 else "AND"
                 conditions = []
                 for index in range(int(condition_count)):
                     left, middle, right = st.columns([1.05, .8, 1.15], gap="small")
@@ -138,14 +139,14 @@ def render() -> None:
                         source_name = os.getenv("DATA_SOURCE", "yfinance")
                         expiry, calls, puts = _option_chain(chain_symbol, source_name)
                         st.session_state.option_chain = (chain_symbol, expiry, calls, puts)
-                    except Exception as exc:
-                        st.error(f"期权链请求失败：{exc}")
+                    except Exception:
+                        st.error("期权链暂时不可用，请稍后重试或改用另一到期日。")
                 chain = st.session_state.get("option_chain")
                 if chain and len(chain) == 4 and chain[0] == chain_symbol:
                     _, expiry, calls, puts = chain
-                    chain_status = market_data_status(os.getenv("DATA_SOURCE", "yfinance"))
-                    st.caption(f"到期日 {expiry} · {chain_status['source']} · {chain_status['freshness']}")
-                    option_type = st.segmented_control("类型", ["Call", "Put"], default="Call")
+                    chain_status = public_market_status(os.getenv("DATA_SOURCE", "yfinance"), "美股")
+                    st.caption(f"到期日 {expiry} · {chain_status['display_source']} · {chain_status['freshness']}")
+                    option_type = st.segmented_control("类型", ["Call", "Put"], default="Call", required=True)
                     frame = calls if option_type == "Call" else puts
                     columns = [name for name in ["contractSymbol", "strike", "lastPrice", "bid", "ask", "volume", "openInterest", "impliedVolatility"] if name in frame]
                     st.dataframe(frame[columns].head(50), hide_index=True, width="stretch")

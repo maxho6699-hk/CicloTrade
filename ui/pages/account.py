@@ -67,7 +67,7 @@ def render() -> None:
             st.dataframe(frame, hide_index=True, width="stretch")
         st.caption("如需删除已绑定 IP，请联系 Telegram @Maxooo8 或 support@ciclotrade.com。")
     with telegram_tab:
-        section_label("绑定个人 Telegram", "先同意，再验证 Chat ID；系统不会使用平台共用 Chat ID")
+        section_label("绑定个人 Telegram", "约 1 分钟完成 · 网站与 Bot 共用同一份通知设置")
         settings = load_user_settings(user["id"], db)
         channel = settings.get("telegram") if isinstance(settings.get("telegram"), dict) else {}
         if channel.get("verified"):
@@ -76,10 +76,30 @@ def render() -> None:
                 merge_user_settings(user["id"], {"telegram": {"consent": False, "verified": False, "chat_id": ""}}, db)
                 st.rerun()
         else:
+            st.markdown(
+                "1. 点击下方按钮打开 **@Tradeai8_bot**。\n"
+                "2. 点击 **Start / 开始**，再发送 `/id`。\n"
+                "3. Bot 会回复一串纯数字，这就是你的 **Chat ID**。\n"
+                "4. 把数字粘贴到下方，勾选同意并点击 **发送验证码**。\n"
+                "5. 把 Bot 收到的验证码粘贴回网站，点击 **确认绑定**。"
+            )
+            st.link_button(
+                "打开 CicloTrade Bot",
+                "https://t.me/Tradeai8_bot",
+                icon=":material/open_in_new:",
+                type="primary",
+            )
+            st.caption("Chat ID 不是用户名、手机号或群组 ID；私人 Chat ID 只包含数字。")
             with st.form("telegram_bind_request"):
                 consent = st.checkbox("我同意 CicloTrade 按会员权限向我的 Telegram 发送通知", value=bool(channel.get("consent")))
-                chat_id = st.text_input("Telegram Chat ID", value=str(channel.get("chat_id") or ""), autocomplete="off")
-                request = st.form_submit_button("申请验证验证码", type="primary", icon=":material/send:")
+                chat_id = st.text_input(
+                    "Telegram Chat ID",
+                    value=str(channel.get("chat_id") or ""),
+                    autocomplete="off",
+                    placeholder="例如 123456789…",
+                    help="在 @Tradeai8_bot 私聊发送 /id 即可取得。",
+                )
+                request = st.form_submit_button("发送验证码", type="primary", icon=":material/send:")
             if request:
                 try:
                     if not consent:
@@ -94,7 +114,12 @@ def render() -> None:
                 except (ValueError, RuntimeError) as exc:
                     st.error(str(exc), icon=":material/error:")
             with st.form("telegram_bind_confirm"):
-                token = st.text_input("验证码", autocomplete="one-time-code", max_chars=80)
+                token = st.text_input(
+                    "Bot 验证码",
+                    autocomplete="one-time-code",
+                    max_chars=80,
+                    placeholder="粘贴 Bot 发来的验证码…",
+                )
                 confirm = st.form_submit_button("确认绑定", icon=":material/verified:")
             if confirm:
                 try:

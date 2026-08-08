@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import html
 import platform
 import shutil
 from pathlib import Path
@@ -25,10 +26,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _status_card(name: str, endpoint: str, status: str, detail: str, tone: str) -> str:
+    safe_name, safe_endpoint, safe_status, safe_detail, safe_tone = (
+        html.escape(str(value)) for value in (name, endpoint, status, detail, tone)
+    )
     return (
         '<article class="status-card"><header>'
-        f'<strong><i class="dot {tone}"></i>{name}</strong><b>{status}</b></header><dl>'
-        f'<div><dt>服务</dt><dd>{endpoint}</dd></div><div><dt>说明</dt><dd>{detail}</dd></div>'
+        f'<strong><i class="dot {safe_tone}"></i>{safe_name}</strong><b>{safe_status}</b></header><dl>'
+        f'<div><dt>服务</dt><dd>{safe_endpoint}</dd></div><div><dt>说明</dt><dd>{safe_detail}</dd></div>'
         '</dl></article>'
     )
 

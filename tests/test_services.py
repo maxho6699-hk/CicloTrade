@@ -19,7 +19,7 @@ from payment.order_service import OrderService
 from scheduler.jobs import downgrade_expired_subscriptions, notify_expiring_subscriptions, scan_price_alerts
 from trading.order_manager import OrderManager, trade_ledger_state
 from trading.risk_filter import validate_order
-from trading.tiger_api import TigerAPI
+from trading.tiger_api import TigerAPI, normalize_portfolio
 
 
 @pytest.fixture
@@ -92,6 +92,8 @@ def test_login_failures_do_not_globally_lock_victim_and_reset_has_cooldown(db):
     first = auth.request_password_reset(user["email"], "203.0.113.1")
     second = auth.request_password_reset(user["email"], "203.0.113.2")
     assert first and second is None
+    assert len(first) == 8 and first.isalnum()
+    assert any(char.isalpha() for char in first) and any(char.isdigit() for char in first)
     assert db.fetch_one(
         "SELECT COUNT(*) count FROM password_resets WHERE user_id=?", (user["id"],)
     )["count"] == 1
@@ -179,9 +181,9 @@ def test_auth_throttles_one_ip_across_accounts_and_reset_tokens_are_one_use(db, 
     user = _user(auth, "one-use-reset")
     token = auth.request_password_reset(user["email"], "203.0.113.50")
     assert token
-    auth.reset_password(token, "ReplacementPassword456")
+    auth.reset_password(token, "Replace1", "203.0.113.50")
     with pytest.raises(AuthError, match="无效或已过期"):
-        auth.reset_password(token, "AnotherPassword789")
+        auth.reset_password(token, "Another2", "203.0.113.50")
 
 
 def test_rate_limit_record_is_atomic_after_bucket_is_blocked(db):
@@ -246,15 +248,16 @@ def test_payment_requires_terms_and_never_allows_voluntary_refund(db):
 def test_broker_connection_enforces_platform_switch_plan_and_blocks_refund(db):
     auth = AuthService(db)
     free_user = _user(auth, "free-broker")
+    with pytest.raises(ValueError, match="暂不支持连接券商"):
+        OrderManager(db).add_broker_account(
+            free_user["id"], "Tiger", "模拟账户", "PAPER-1", "paper"
+        )
+    _set_user_auto_trading(db, False)
     with pytest.raises(ValueError, match="自助连接当前关闭"):
         OrderManager(db).add_broker_account(
             free_user["id"], "Tiger", "模拟账户", "PAPER-1", "paper"
         )
     _set_user_auto_trading(db)
-    with pytest.raises(ValueError, match="暂不支持连接券商"):
-        OrderManager(db).add_broker_account(
-            free_user["id"], "Tiger", "模拟账户", "PAPER-1", "paper"
-        )
 
     paid_user = _user(auth, "paid-broker")
     service = OrderService(db)
@@ -448,6 +451,14 @@ def test_live_trade_requires_user_level_auto_switch(db, monkeypatch):
     monkeypatch.setenv("TIGER_ENV", "live")
     monkeypatch.setenv("TIGER_REAL_TRADING_ENABLED", "true")
 
+    with pytest.raises(ValueError, match="用户实盘自动交易开关未开启"):
+        OrderManager(db).submit(
+            user_id=user["id"], symbol="AAPL", side="BUY", quantity=1, price=100,
+            strategy="测试", mode="live",
+            risk_config={"max_position_per_symbol": 5_000, "max_total_position": 50_000, "max_daily_loss": 2_000},
+            paused=False, live_confirmed=True,
+        )
+    _set_user_auto_trading(db, False)
     with pytest.raises(ValueError, match="总开关当前关闭"):
         OrderManager(db).submit(
             user_id=user["id"], symbol="AAPL", side="BUY", quantity=1, price=100,
@@ -463,6 +474,42 @@ def test_live_trade_requires_user_level_auto_switch(db, monkeypatch):
             risk_config={"max_position_per_symbol": 5_000, "max_total_position": 50_000, "max_daily_loss": 2_000},
             paused=False, live_confirmed=True,
         )
+
+
+def test_tiger_paper_snapshot_normalizes_stock_option_and_history():
+    from types import SimpleNamespace
+
+    assets = [SimpleNamespace(summary=SimpleNamespace(
+        currency="USD", net_liquidation=1_000_000, available_funds=700_000,
+        cash=700_000, gross_position_value=300_000,
+    ))]
+    positions = [
+        SimpleNamespace(
+            contract=SimpleNamespace(symbol="AAPL", sec_type="STK", currency="USD"),
+            quantity=100, average_cost=180, market_price=190, market_value=19_000,
+            realized_pnl=20, unrealized_pnl=1_000, today_pnl=150,
+        ),
+        SimpleNamespace(
+            contract=SimpleNamespace(
+                symbol="AAPL", sec_type="OPT", currency="USD", expiry="20261218",
+                strike=200, put_call="CALL",
+            ),
+            quantity=2, average_cost=5, market_price=6, market_value=1_200,
+            realized_pnl=0, unrealized_pnl=200, today_pnl=40,
+        ),
+    ]
+    orders = [SimpleNamespace(
+        contract=SimpleNamespace(symbol="AAPL", sec_type="STK"), action="BUY",
+        quantity=100, filled=100, avg_fill_price=180, commission=1,
+        status="FILLED", order_time=1_750_000_000_000, trade_time=None,
+    )]
+
+    snapshot = normalize_portfolio(assets, positions, orders)
+
+    assert snapshot["account"]["total_assets"] == 1_000_000
+    assert snapshot["account"]["unrealized_pnl"] == 1_200
+    assert [row["instrument_type"] for row in snapshot["positions"]] == ["stock", "option"]
+    assert snapshot["orders"][0]["status"] == "FILLED"
 
 
 def test_smtp_sender_can_differ_from_login_user(monkeypatch):

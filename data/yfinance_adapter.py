@@ -60,10 +60,41 @@ class YFinanceAdapter(DataSource):
 
     def history(self, symbols: tuple[str, ...], period: str = "3mo", interval: str = "1d") -> tuple[pd.DataFrame, pd.DataFrame]:
         require_market_data_enabled()
+        normalized = {raw_symbol: self.normalize_symbol(raw_symbol) for raw_symbol in symbols}
+        if len(normalized) > 1:
+            try:
+                bulk = yf.download(
+                    list(normalized.values()),
+                    period=period,
+                    interval=interval,
+                    auto_adjust=True,
+                    group_by="ticker",
+                    threads=True,
+                    progress=False,
+                    timeout=12,
+                )
+            except Exception as exc:
+                raise DataSourceError("批量行情请求暂时不可用。") from exc
+            closes: dict[str, pd.Series] = {}
+            volumes: dict[str, pd.Series] = {}
+            for raw_symbol, symbol in normalized.items():
+                try:
+                    frame = bulk[symbol] if isinstance(bulk.columns, pd.MultiIndex) else bulk
+                except KeyError:
+                    continue
+                if frame.empty or "Close" not in frame:
+                    continue
+                closes[raw_symbol.upper()] = frame["Close"].dropna()
+                volumes[raw_symbol.upper()] = frame["Volume"].reindex(frame.index).fillna(0)
+            if not closes:
+                raise DataSourceError("批量行情没有返回有效价格。")
+            close_frame = pd.concat(closes, axis=1).sort_index().ffill().dropna(how="all")
+            volume_frame = pd.concat(volumes, axis=1).reindex(close_frame.index).fillna(0)
+            return close_frame, volume_frame
+
         closes: dict[str, pd.Series] = {}
         volumes: dict[str, pd.Series] = {}
-        for raw_symbol in symbols:
-            symbol = self.normalize_symbol(raw_symbol)
+        for raw_symbol, symbol in normalized.items():
             frame = pd.DataFrame()
             last_error: Exception | None = None
             for attempt in range(3):

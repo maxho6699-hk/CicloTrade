@@ -23,7 +23,6 @@ from notification.templates import auth_email, email_message
 from ui.components import brand_bar, disclaimer, load_styles
 from ui.pages import (
     account,
-    actions,
     admin,
     backtest,
     dashboard,
@@ -230,14 +229,25 @@ def _auth_screen(auth: AuthService) -> None:
                             send_email(reset_email, *auth_email("reset", token, base_url))
                         except RuntimeError:
                             pass
-                    st.success("如账户存在且 SMTP 已配置，重设验证码已经发送。")
+                    st.success("如账户存在且 SMTP 已配置，8 位重设验证码已经发送。")
                 with st.form("apply_reset", border=False):
-                    reset_token = st.text_input("重设验证码", autocomplete="one-time-code")
-                    new_password = st.text_input("新密码", type="password", autocomplete="new-password")
+                    reset_token = st.text_input(
+                        "8 位重设验证码",
+                        autocomplete="one-time-code",
+                        max_chars=8,
+                        placeholder="英文字母 + 数字",
+                    )
+                    new_password = st.text_input(
+                        "新密码",
+                        type="password",
+                        autocomplete="new-password",
+                        help="至少 8 个字符，并同时包含英文字母和数字。",
+                    )
                     applied = st.form_submit_button("更新密码", type="primary", icon=":material/key:", width="stretch")
                 if applied:
                     try:
-                        auth.reset_password(reset_token, new_password)
+                        ip_address, _ = _client_context()
+                        auth.reset_password(reset_token, new_password, ip_address)
                         st.success("密码已更新，所有旧会话均已失效。")
                     except AuthError as exc:
                         st.error(str(exc), icon=":material/error:")
@@ -276,7 +286,7 @@ def _auth_screen(auth: AuthService) -> None:
             with st.form("email_register", border=False):
                 display_name = st.text_input("显示名称", autocomplete="name", max_chars=80)
                 email = st.text_input("邮箱", autocomplete="email", icon=":material/mail:")
-                password = st.text_input("密码", type="password", autocomplete="new-password", help="至少 12 个字符，并包含字母和数字。")
+                password = st.text_input("密码", type="password", autocomplete="new-password", help="至少 8 个字符，并包含英文字母和数字。")
                 referral = st.text_input("推荐码（可选）", value=referral, autocomplete="off", max_chars=20)
                 agreed = st.checkbox("我同意用户协议、隐私政策、风险披露与数码服务不退款政策")
                 submitted = st.form_submit_button("建立免费账户", type="primary", icon=":material/person_add:", width="stretch")
@@ -324,26 +334,6 @@ def _auth_screen(auth: AuthService) -> None:
         )
 
 
-def _dismiss_onboarding() -> None:
-    st.session_state.onboarding_dismissed = True
-
-
-@st.dialog("完成第一次策略回测", on_dismiss=_dismiss_onboarding)
-def _first_run_onboarding(user_id: int, backtest_page: object) -> None:
-    st.write("使用默认参数即可完成第一次研究；结果会保存到账户，之后可再调整标的、区间和策略。")
-    st.markdown("1. 选择美股或 A 股标的\n2. 选择策略与时间范围\n3. 运行回测并查看风险指标")
-    with st.container(horizontal=True, horizontal_alignment="right"):
-        if st.button("稍后", icon=":material/schedule:", key="dismiss_onboarding"):
-            _dismiss_onboarding()
-            st.rerun(scope="app")
-        if st.button("开始第一次回测", type="primary", icon=":material/play_arrow:", key="start_onboarding"):
-            get_database().execute(
-                "INSERT INTO user_action_logs (user_id,action_type,details,created_at) VALUES (?,?,?,?)",
-                (user_id, "ONBOARDING_STARTED", "用户进入第一次回测引导", datetime.now(UTC).isoformat(timespec="seconds")),
-            )
-            st.switch_page(backtest_page)
-
-
 _init_state()
 if os.getenv("MARKET_DATA_ENABLED", "false").strip().lower() != "true":
     st.session_state.market_live = False
@@ -372,71 +362,72 @@ if st.session_state.get("settings_loaded_for") != user["id"]:
     st.session_state.settings_loaded_for = user["id"]
 
 start_pages = [
-    st.Page(recommendations.render, title="量化推荐", icon=":material/recommend:", url_path="recommendations"),
-    st.Page(actions.render, title="行动建议", icon=":material/assistant_direction:", url_path="actions"),
-    st.Page(terminal.render, title="市场数据", icon=":material/monitoring:", url_path="terminal"),
-    st.Page(dashboard.render, title="资产与持仓", icon=":material/space_dashboard:", url_path="dashboard"),
+    st.Page(recommendations.render, title="今日行动", icon=":material/assistant_direction:", url_path="recommendations"),
+    st.Page(terminal.render, title="市场行情", icon=":material/candlestick_chart:", url_path="terminal"),
+    st.Page(dashboard.render, title="目前仓位", icon=":material/account_balance_wallet:", url_path="dashboard"),
+    st.Page(trading.render, title="交易", icon=":material/order_approve:", url_path="trading"),
 ]
 research_pages = [
-    st.Page(markets.render, title="行情与预警", icon=":material/candlestick_chart:", url_path="markets"),
-    st.Page(strategies.render, title="策略研究", icon=":material/query_stats:", url_path="strategies"),
+    st.Page(markets.render, title="预警与期权链", icon=":material/notifications_active:", url_path="markets"),
+    st.Page(strategies.render, title="策略实验室", icon=":material/query_stats:", url_path="strategies"),
     st.Page(templates.render, title="策略模板", icon=":material/library_books:", url_path="templates"),
     st.Page(backtest.render, title="策略回测", icon=":material/history:", url_path="backtest"),
     st.Page(research.render, title="研究名片", icon=":material/article:", url_path="research"),
 ]
-execution_pages = [
-    st.Page(trading.render, title="交易执行", icon=":material/order_approve:", url_path="trading"),
-    st.Page(monitor.render, title="通道监控", icon=":material/monitor_heart:", url_path="monitor"),
-    st.Page(emergency.render, title="紧急控制", icon=":material/emergency:", url_path="emergency"),
-]
 support_pages = [
-    st.Page(subscription.render, title="订阅与账单", icon=":material/credit_card:", url_path="subscription"),
     st.Page(account.render, title="账户与安全", icon=":material/manage_accounts:", url_path="account"),
+    st.Page(subscription.render, title="订阅与账单", icon=":material/credit_card:", url_path="subscription"),
     st.Page(settings.render, title="风险与通知", icon=":material/tune:", url_path="settings"),
     st.Page(help.render, title="帮助中心", icon=":material/help_center:", url_path="help"),
 ]
 more_pages = [
     st.Page(growth.render, title="推荐与奖励", icon=":material/redeem:", url_path="rewards"),
     st.Page(roadmap.render, title="功能路线图", icon=":material/route:", url_path="roadmap"),
-    st.Page(logs.render, title="系统记录", icon=":material/receipt_long:", url_path="logs"),
     st.Page(legal.render, title="政策与协议", icon=":material/gavel:", url_path="legal"),
 ]
 navigation = {
-    "开始使用": start_pages,
-    "专业研究": research_pages,
-    "专业操作": execution_pages,
-    "账户与支持": support_pages,
+    "主要任务": start_pages,
+    "研究工具": research_pages,
+    "我的账户": support_pages,
     "更多": more_pages,
 }
 if user.get("is_admin"):
-    navigation["客服后台"] = [st.Page(admin.render, title="用户与订单", icon=":material/admin_panel_settings:", url_path="admin")]
+    admin_pages = [
+        st.Page(admin.render, title="用户与订单", icon=":material/admin_panel_settings:", url_path="admin"),
+        st.Page(monitor.render, title="通道监控", icon=":material/monitor_heart:", url_path="monitor"),
+        st.Page(emergency.render, title="紧急控制", icon=":material/emergency:", url_path="emergency"),
+        st.Page(logs.render, title="系统记录", icon=":material/receipt_long:", url_path="logs"),
+    ]
+    navigation["管理员"] = admin_pages
 
 current_page = st.navigation(navigation, position="hidden")
 redirect_path = st.session_state.pop("auth_redirect_pending", "")
 page_by_path = {
     "recommendations": start_pages[0],
-    "actions": start_pages[1],
-    "terminal": start_pages[2],
-    "dashboard": start_pages[3],
+    "actions": start_pages[0],
+    "terminal": start_pages[1],
+    "dashboard": start_pages[2],
+    "trading": start_pages[3],
     "markets": research_pages[0],
     "strategies": research_pages[1],
     "templates": research_pages[2],
     "backtest": research_pages[3],
     "research": research_pages[4],
-    "trading": execution_pages[0],
-    "monitor": execution_pages[1],
-    "emergency": execution_pages[2],
-    "subscription": support_pages[0],
-    "account": support_pages[1],
+    "account": support_pages[0],
+    "subscription": support_pages[1],
     "settings": support_pages[2],
     "help": support_pages[3],
     "rewards": more_pages[0],
     "roadmap": more_pages[1],
-    "logs": more_pages[2],
-    "legal": more_pages[3],
+    "legal": more_pages[2],
 }
 if user.get("is_admin"):
-    page_by_path["admin"] = navigation["客服后台"][0]
+    page_by_path.update(
+        admin=admin_pages[0], monitor=admin_pages[1], emergency=admin_pages[2], logs=admin_pages[3]
+    )
+pending_path = str(st.session_state.pop("pending_page", ""))
+if pending_path in page_by_path:
+    st.switch_page(page_by_path[pending_path])
 if redirect_path in page_by_path:
     st.switch_page(page_by_path[redirect_path])
 
@@ -473,15 +464,4 @@ brand_slot = st.container()
 current_page.run()
 with brand_slot:
     brand_bar(st.session_state.paused, st.session_state.market_live)
-# The first-run prompt belongs to the terminal/backtest workflow; showing it on
-# research, billing, or account pages blocks navigation after slow data loads.
-active_page_path = str(getattr(current_page, "url_path", "") or "")
-if active_page_path in {"", "terminal", "backtest"} and not st.session_state.get("onboarding_dismissed"):
-    onboarding_done = get_database().fetch_one(
-        """SELECT 1 FROM user_action_logs WHERE user_id=? AND action_type='ONBOARDING_STARTED'
-           UNION ALL SELECT 1 FROM strategy_action_logs WHERE user_id=? AND action='BACKTEST' LIMIT 1""",
-        (user["id"], user["id"]),
-    )
-    if not onboarding_done:
-        _first_run_onboarding(int(user["id"]), research_pages[3])
 disclaimer()

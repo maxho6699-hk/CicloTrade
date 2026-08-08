@@ -1684,7 +1684,8 @@ kbd,
     height: 3.5rem;
     min-height: 3.5rem;
     border-bottom: 1px solid var(--line-soft);
-    background: rgba(12, 15, 19, 0.96);
+    background: var(--canvas);
+    box-shadow: none;
   }
 
   [data-testid="stToolbar"] {
@@ -1698,7 +1699,7 @@ kbd,
   }
 
   [data-testid="stMainBlockContainer"] {
-    padding: 4rem 0.75rem max(1.75rem, env(safe-area-inset-bottom));
+    padding: 3rem 0.75rem max(1.75rem, env(safe-area-inset-bottom));
   }
 
   body:has(.auth-shell) [data-testid="stHeader"] {
@@ -1727,10 +1728,7 @@ kbd,
   }
 
   .brand-bar {
-    min-height: 0;
-    gap: 0.5rem;
-    padding: 0.4rem 0 0.65rem;
-    flex-wrap: wrap;
+    display: none;
   }
 
   .brand-lockup {
@@ -1762,6 +1760,23 @@ kbd,
 
   .brand-status .chip {
     flex: 0 0 auto;
+  }
+
+  [data-testid="stTabs"] [role="tablist"] {
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+
+  [data-testid="stTabs"] [role="tablist"]::-webkit-scrollbar {
+    display: none;
+  }
+
+  [data-testid="stTabs"] [role="tab"] {
+    flex: 0 0 auto;
+    min-width: max-content;
+    white-space: nowrap;
+    writing-mode: horizontal-tb;
   }
 
   .page-heading {
@@ -1842,7 +1857,17 @@ kbd,
 }
 
 @media (max-width: 520px) {
-  .metric-grid,
+  .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .metric-card > strong {
+    font-size: 0.98rem;
+    line-height: 1.2;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
   .market-tape {
     grid-template-columns: minmax(0, 1fr);
   }

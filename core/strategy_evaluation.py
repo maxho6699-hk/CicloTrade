@@ -7,6 +7,7 @@ from datetime import date, datetime
 from core.compat import UTC
 import json
 import math
+import os
 from typing import Any
 
 import numpy as np
@@ -14,11 +15,20 @@ import pandas as pd
 
 from backtest.engine import BacktestEngine
 from core.database import DatabaseManager, get_database
+from core.quant_journal import QuantJournal
 from core.strategy_registry import StrategyRegistry
 from core.strategy_scoring import StrategyScorer
 from core.strategy_tracking import StrategyPerformanceTracker
 from core.plans import can, effective_plan
-from data.datasource import get_data_source
+from data.datasource import get_resilient_data_source
+
+
+SYSTEM_UNIVERSE = {
+    "US": ("AAPL", "MSFT", "NVDA", "TSLA", "SPY", "QQQ"),
+    "CN": ("000001", "000858", "300750", "510050", "510300", "600519", "601318"),
+}
+SYSTEM_INITIAL_CASH = {"USD": 100_000.0, "CNY": 100_000.0}
+_ADAPTIVE_SOURCE = "ciclotrade-adaptive"
 
 
 def _value(rule: dict, parameters: dict, key: str, default: float = 0) -> float:
@@ -78,6 +88,20 @@ def _combined(rules: list[dict], parameters: dict, close: pd.Series) -> pd.Serie
     for item in rules:
         result &= _rule(item, parameters, close)
     return result
+
+
+def _current_rule_position(close: pd.Series, definition: dict) -> bool:
+    parameters = definition.get("parameters") or {}
+    rules = definition.get("rules") or {}
+    entry = _combined(rules.get("entry") or [], parameters, close)
+    exit_trade = _combined(rules.get("exit") or [], parameters, close)
+    position = False
+    for index in range(len(close)):
+        if not position and bool(entry.iloc[index]):
+            position = True
+        elif position and bool(exit_trade.iloc[index]):
+            position = False
+    return position
 
 
 def _loss_streak(values: list[float]) -> int:
@@ -205,7 +229,7 @@ def score_daily_catalog(
     registry = StrategyRegistry(db)
     registry.sync_catalog()
     definitions = registry.list()
-    source = data_source or get_data_source()
+    source = data_source or get_resilient_data_source()
     closes, _ = source.history(("AAPL", "510300"), period="3y")
     metrics: list[dict[str, Any]] = []
     for definition in definitions:
@@ -234,6 +258,153 @@ def score_daily_catalog(
     return ranked
 
 
+def run_system_quant_cycle(
+    database: DatabaseManager | None = None,
+    *,
+    data_source=None,
+    eval_date: date | str | None = None,
+) -> dict[str, Any]:
+    """Re-rank strategies, rebalance the research ledger, and persist daily NAV."""
+    db = database or get_database()
+    source = data_source or get_resilient_data_source()
+    symbols = tuple(symbol for market in SYSTEM_UNIVERSE.values() for symbol in market)
+    closes, _ = source.history(symbols, period="3y")
+    if closes.empty:
+        raise ValueError("系统量化循环没有可用历史行情。")
+    day = str(eval_date or max(pd.Timestamp(closes[symbol].dropna().index[-1]).date() for symbol in closes))
+    ranked = score_daily_catalog(db, data_source=source, eval_date=day)
+    registry = StrategyRegistry(db)
+    definitions = {item["key"]: item for item in registry.list()}
+    winner = next((row for row in ranked if definitions[row["strategy_key"]]["family"] == "equity"), None)
+    if winner is None:
+        raise ValueError("没有可用于系统组合的正股策略。")
+    definition = definitions[winner["strategy_key"]]
+    ledger_key = os.getenv("TRADEAI_SYSTEM_LEDGER_KEY", "tradeai-system")
+    journal = QuantJournal(db)
+    state = journal.replay(ledger_key, initial_cash=SYSTEM_INITIAL_CASH)
+    current = {
+        item["symbol"]: float(item["quantity"])
+        for item in state["positions"].values()
+        if item["instrument_type"] == "stock" and item["symbol"] in symbols
+    }
+    marks: dict[str, float] = {}
+    selected: dict[str, float] = {}
+    for market, market_symbols in SYSTEM_UNIVERSE.items():
+        candidates: list[tuple[float, str, float]] = []
+        for symbol in market_symbols:
+            close = closes[symbol].dropna()
+            if close.empty:
+                continue
+            price = float(close.iloc[-1])
+            marks[f"{market}:STOCK:{symbol}"] = price
+            if _current_rule_position(close, definition):
+                lookback = min(126, len(close) - 1)
+                strength = float(price / close.iloc[-lookback - 1] - 1) if lookback else 0.0
+                candidates.append((strength, symbol, price))
+        for _, symbol, price in sorted(candidates, reverse=True)[:3]:
+            selected[symbol] = current.get(symbol) or float(max(1, math.floor(20_000 / price)))
+
+    legs = []
+    for market, market_symbols in SYSTEM_UNIVERSE.items():
+        currency = "USD" if market == "US" else "CNY"
+        for symbol in market_symbols:
+            before = current.get(symbol, 0.0)
+            target = selected.get(symbol, 0.0)
+            delta = target - before
+            if abs(delta) < 1e-12:
+                continue
+            price = marks[f"{market}:STOCK:{symbol}"]
+            legs.append(
+                {
+                    "market": market,
+                    "instrument_type": "stock",
+                    "symbol": symbol,
+                    "currency": currency,
+                    "target_quantity": target,
+                    "quantity_delta": delta,
+                    "price": price,
+                    "multiplier": 1,
+                    "commission": 0,
+                }
+            )
+
+    event_created = False
+    external_event_id = f"adaptive-{day}"
+    if legs and not db.fetch_one(
+        "SELECT id FROM quant_events WHERE source=? AND external_event_id=?",
+        (_ADAPTIVE_SOURCE, external_event_id),
+    ):
+        event = journal.append_event(
+            ledger_key=ledger_key,
+            source=_ADAPTIVE_SOURCE,
+            external_event_id=external_event_id,
+            strategy_name=definition["name"],
+            strategy_version=f"catalog-{day}",
+            legs=legs,
+            metadata={
+                "reason": (
+                    f"每日收盘后对全部启用策略进行真实历史样本外评分；本期最佳正股策略为"
+                    f"{definition['name']}，按每个市场最多 3 个标的、单标的初始资金 20% 建立模拟目标仓位。"
+                ),
+                "risk_level": definition["risk"],
+                "research_only": True,
+                "selected_symbols": sorted(selected),
+                "score": winner["weighted_score"],
+            },
+        )
+        event_created = bool(event["created"])
+
+    position_keys = set(journal.replay(ledger_key)["positions"])
+    replay = journal.replay(
+        ledger_key,
+        marks={key: value for key, value in marks.items() if key in position_keys},
+        initial_cash=SYSTEM_INITIAL_CASH,
+    )
+    snapshots_created = 0
+    captured_at = datetime.now(UTC)
+    for currency in ("USD", "CNY"):
+        snapshot_id = f"adaptive-{day}"
+        if db.fetch_one(
+            "SELECT id FROM quant_equity_snapshots WHERE source=? AND external_snapshot_id=? AND currency=?",
+            (_ADAPTIVE_SOURCE, snapshot_id, currency),
+        ):
+            continue
+        totals = replay["currencies"].get(currency) or {
+            "cash": SYSTEM_INITIAL_CASH[currency],
+            "market_value": 0.0,
+            "realized_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+        }
+        snapshot = journal.append_equity_snapshot(
+            ledger_key=ledger_key,
+            source=_ADAPTIVE_SOURCE,
+            external_snapshot_id=snapshot_id,
+            currency=currency,
+            initial_cash=SYSTEM_INITIAL_CASH[currency],
+            cash=totals["cash"],
+            market_value=totals["market_value"],
+            realized_pnl=totals["realized_pnl"],
+            unrealized_pnl=totals["unrealized_pnl"],
+            captured_at=captured_at,
+        )
+        snapshots_created += int(snapshot["created"])
+    db.log_system_event(
+        "QUANT_CYCLE",
+        "STRATEGY",
+        "服务器自适应量化循环完成",
+        f"date={day} strategy={definition['key']} event={int(event_created)} snapshots={snapshots_created}",
+    )
+    return {
+        "eval_date": day,
+        "strategy_key": definition["key"],
+        "strategy_name": definition["name"],
+        "event_created": event_created,
+        "leg_count": len(legs),
+        "snapshots_created": snapshots_created,
+        "selected_symbols": sorted(selected),
+    }
+
+
 def update_saved_strategy_performance(
     database: DatabaseManager | None = None,
     *,
@@ -245,7 +416,7 @@ def update_saved_strategy_performance(
     registry = StrategyRegistry(db)
     registry.sync_catalog()
     tracker = StrategyPerformanceTracker(db)
-    source = data_source or get_data_source()
+    source = data_source or get_resilient_data_source()
     rows = db.fetch_all(
         """SELECT s.*,u.plan_type,u.subscription_expire FROM saved_strategies s
            JOIN users u ON u.id=s.user_id WHERE s.is_active=1 AND u.is_active=1 ORDER BY s.id"""

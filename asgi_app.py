@@ -32,7 +32,12 @@ from core.plans import can, effective_plan, trading_limits
 from core.quant_journal import QuantJournal
 from core.signal_imports import SignalImportService
 from core.user_settings import load_user_settings
-from notification.telegram_bot import entitled_user_target, send_telegram, telegram_configured
+from notification.telegram_bot import (
+    entitled_user_target,
+    send_telegram,
+    telegram_configured,
+    update_notification_preference,
+)
 from notification.templates import telegram_incident, telegram_order_message
 from payment.order_service import OrderService
 from payment.paypal_client import PayPalClient
@@ -802,6 +807,30 @@ async def paypal_cancel(request):
     return _subscription_redirect("cancelled")
 
 
+async def telegram_webhook(request):
+    secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
+    provided = request.headers.get("x-telegram-bot-api-secret-token", "")
+    if not secret or not hmac.compare_digest(provided, secret):
+        raise ApiError("Telegram webhook 未授权。", 401)
+    payload = await _json_object(request, 65_536)
+    message = payload.get("message")
+    if not isinstance(message, dict) or not isinstance(message.get("text"), str):
+        return JSONResponse({"ok": True})
+    chat = message.get("chat")
+    if not isinstance(chat, dict) or chat.get("type") != "private":
+        return JSONResponse({"ok": True})
+    chat_id = str(chat.get("id") or "")
+    try:
+        reply = update_notification_preference(get_database(), chat_id, message["text"])
+    except ValueError as exc:
+        reply = str(exc)
+    try:
+        await asyncio.to_thread(send_telegram, reply, chat_id)
+    except RuntimeError as exc:
+        get_database().log_system_event("WARN", "TELEGRAM", "Telegram 设置回覆失败", str(exc)[:500])
+    return JSONResponse({"ok": True})
+
+
 async def api_error_handler(request, exc: ApiError):
     del request
     return JSONResponse({"error": str(exc)}, status_code=exc.status)
@@ -848,6 +877,7 @@ app = st.App(
         Route("/api/v1/quant/snapshots", api_quant_snapshots, methods=["POST"]),
         Route("/webhooks/paddle", paddle_webhook, methods=["POST"]),
         Route("/webhooks/paypal", paypal_webhook, methods=["POST"]),
+        Route("/webhooks/telegram", telegram_webhook, methods=["POST"]),
         Route("/payments/paypal/return", paypal_return, methods=["GET"]),
         Route("/payments/paypal/cancel", paypal_cancel, methods=["GET"]),
     ],

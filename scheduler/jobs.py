@@ -15,9 +15,9 @@ from core.database import get_database
 from core.plans import can, effective_plan
 from core.quant_journal import QuantJournal
 from core.user_settings import load_user_settings
-from core.strategy_evaluation import score_daily_catalog, update_saved_strategy_performance
+from core.strategy_evaluation import run_system_quant_cycle, update_saved_strategy_performance
 from core.user_profiles import UserProfileService
-from data.datasource import get_data_source
+from data.datasource import get_resilient_data_source
 from notification.email_sender import send_email, smtp_configured
 from notification.templates import (
     email_message,
@@ -414,7 +414,7 @@ def scan_price_alerts(database=None, data_source=None) -> int:
         return 0
     symbols = tuple(dict.fromkeys(str(row["symbol"]).upper() for row in alerts))
     try:
-        closes, volumes = (data_source or get_data_source()).history(symbols, period="3mo")
+        closes, volumes = (data_source or get_resilient_data_source()).history(symbols, period="3mo")
         if not isinstance(closes, pd.DataFrame) or not isinstance(volumes, pd.DataFrame):
             raise ValueError("行情源必须返回收盘价与成交量表格")
     except Exception as exc:
@@ -667,8 +667,8 @@ def publish_daily_group_summary(database=None) -> int:
 
 
 def evaluate_strategy_catalog() -> int:
-    """Run the real-data catalog evaluation after market close."""
-    return len(score_daily_catalog())
+    """Run the adaptive catalog evaluation and research-ledger cycle after close."""
+    return int(run_system_quant_cycle()["event_created"])
 
 
 def aggregate_user_profiles(database=None) -> int:

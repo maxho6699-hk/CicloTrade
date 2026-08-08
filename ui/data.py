@@ -9,12 +9,12 @@ from typing import Any, Iterable
 import numpy as np
 import pandas as pd
 
-from data.datasource import get_data_source
+from data.datasource import get_resilient_data_source
 from trading.order_manager import trade_ledger_state
 
 
 MARKET_SYMBOLS: tuple[str, ...] = ("AAPL", "MSFT", "NVDA")
-PAPER_STARTING_CASH = {"USD": 100_000.0, "CNY": 500_000.0}
+PAPER_STARTING_CASH = {"USD": 100_000.0, "CNY": 100_000.0}
 
 STRATEGIES: tuple[dict[str, Any], ...] = (
     {"name": "买入 Call", "category": "看涨", "scenario": "预期标的明显上涨，并愿意承担全部权利金风险", "max_loss": "已付权利金", "max_profit": "理论上无限", "difficulty": 1, "legs": "单腿", "accent": "bull"},
@@ -43,7 +43,7 @@ def load_market_history(
 ) -> tuple[pd.DataFrame, pd.DataFrame, datetime]:
     """Load adjusted daily closes and volume through the configured adapter."""
     try:
-        source = get_data_source(source_name)
+        source = get_resilient_data_source(source_name)
         closes, volumes = source.history(tuple(symbols), period="3mo", interval="1d")
     except Exception as exc:
         if isinstance(exc, MarketDataUnavailable):

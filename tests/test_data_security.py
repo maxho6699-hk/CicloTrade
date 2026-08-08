@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from data.polygon_adapter import PolygonAdapter
-from data.datasource import DataSourceError, market_data_status
+from data.datasource import DataSourceError, get_resilient_data_source, market_data_status
 from data.yfinance_adapter import YFinanceAdapter
 from ui.data import load_market_history
 
@@ -86,6 +86,37 @@ def test_market_status_requires_adapter_and_deployment_realtime_opt_in(monkeypat
     assert status["freshness"] == "实时"
 
 
+def test_unhealthy_realtime_source_truthfully_falls_back_to_delayed_data(monkeypatch):
+    class OfflineFeed:
+        name = "Internal Realtime"
+        supports_realtime = True
+        delay_minutes = None
+
+        def available(self):
+            return False
+
+    class DelayedFeed:
+        name = "Internal Delayed"
+        supports_realtime = False
+        delay_minutes = 15
+
+        def available(self):
+            return True
+
+    monkeypatch.setenv("MARKET_DATA_ENABLED", "true")
+    monkeypatch.setenv("MARKET_DATA_REALTIME", "true")
+    monkeypatch.setattr(
+        "data.datasource.get_data_source",
+        lambda name=None: DelayedFeed() if name == "yfinance" else OfflineFeed(),
+    )
+
+    status = market_data_status("opend")
+
+    assert status["is_realtime"] is False
+    assert status["display_source"] == "美国延迟市场数据"
+    assert get_resilient_data_source("opend").name == "Internal Delayed"
+
+
 def test_market_data_is_frozen_by_default_before_any_vendor_call(monkeypatch):
     monkeypatch.delenv("MARKET_DATA_ENABLED", raising=False)
     monkeypatch.setenv("POLYGON_API_KEY", "sensitive-key")
@@ -119,7 +150,7 @@ def test_market_history_uses_adapter_and_reports_last_bar_time(monkeypatch):
             assert (period, interval) == ("3mo", "1d")
             return closes, volumes
 
-    monkeypatch.setattr("ui.data.get_data_source", lambda _: Feed())
+    monkeypatch.setattr("ui.data.get_resilient_data_source", lambda _: Feed())
     result_closes, _, updated_at = load_market_history(("AAPL",), "premium")
 
     assert result_closes.equals(closes)

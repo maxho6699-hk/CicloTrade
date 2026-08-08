@@ -171,6 +171,11 @@ def _render_actions(frame: pd.DataFrame, market: str, plan: str = "专业版") -
             else f"**数量参考：** 0 股。{quantity_note}。"
         )
         st.markdown(f"**期权怎么做：** {selected['期权建议']}")
+        st.info(
+            "止盈与止损会随最新市场数据和策略判断动态调整。系统可能在目标价前建议提前止盈，"
+            "也可能在止损价前建议提前退出；请持续关注本站策略时间线及与你会员等级对应的 Telegram 推送。",
+            icon=":material/notifications_active:",
+        )
         st.caption(
             "期权权利金、买卖价差、真实合约代码与可买数量必须等待授权期权链返回；"
             "在数据缺失时系统不会伪造可成交报价。"
@@ -245,6 +250,7 @@ def render() -> None:
         default="美股",
         key="actions_market",
         width="stretch",
+        required=True,
     )
     view = st.segmented_control(
         "查看内容",
@@ -252,6 +258,7 @@ def render() -> None:
         default="现在怎么做",
         key="actions_view",
         width="stretch",
+        required=True,
     )
     st.caption(
         f"页面计算时间 {datetime.now(ZoneInfo('Asia/Taipei')).strftime('%Y-%m-%d %H:%M:%S')}（台北） · "

@@ -1,39 +1,46 @@
 # -*- coding: utf-8 -*-
-"""Live-market paper portfolio overview."""
+"""Public Tiger PAPER and user-scoped A-share virtual portfolio."""
 
 from __future__ import annotations
 
+from datetime import datetime
 import os
+from zoneinfo import ZoneInfo
 
-import plotly.graph_objects as go
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 from core.database import get_database
-from core.quant_journal import QuantJournal
-from core.strategy_registry import StrategyRegistry
-from core.user_profiles import UserProfileService
-from data.datasource import market_data_status
-from ui.components import gauge, market_tape, metric_grid, page_heading, section_label
+from data.datasource import public_market_status
+from trading.tiger_api import TigerAPI
+from ui.components import metric_grid, page_heading, section_label
 from ui.data import (
     PAPER_STARTING_CASH,
     MarketDataUnavailable,
     load_market_history,
-    market_summary,
     paper_account_from_trades,
-    paper_equity_curve_from_trades,
     portfolio_snapshot,
 )
 
 
-@st.cache_data(ttl=60, max_entries=20, show_spinner=False)
-def _market_data(symbols: tuple[str, ...], source_name: str = "yfinance"):
+LOCAL_ZONE = ZoneInfo("Asia/Taipei")
+
+
+@st.cache_data(ttl=60, max_entries=4, show_spinner=False)
+def _tiger_paper_snapshot() -> dict:
+    return TigerAPI().paper_snapshot()
+
+
+@st.cache_data(ttl=60, max_entries=12, show_spinner=False)
+def _market_data(symbols: tuple[str, ...], source_name: str):
     return load_market_history(symbols, source_name)
 
 
 def _market_trades(user_id: int, market: str) -> list[dict]:
     rows = get_database().fetch_all(
-        """SELECT t.trade_time,t.symbol,t.side,t.quantity,t.price,t.commission,o.account_mode,o.strategy_name
+        """SELECT t.trade_time,t.symbol,t.side,t.quantity,t.price,t.commission,
+                  o.account_mode,o.strategy_name
            FROM trades t JOIN orders o ON o.order_id=t.order_id
            WHERE o.reason=? AND o.account_mode='paper' ORDER BY t.trade_time""",
         (f"user={user_id}",),
@@ -43,243 +50,253 @@ def _market_trades(user_id: int, market: str) -> list[dict]:
     return [row for row in rows if not (str(row["symbol"]).isdigit() and len(str(row["symbol"])) == 6)]
 
 
-def _chart_layout(height: int) -> dict:
+def _local_snapshot(user_id: int, market: str) -> dict:
+    currency = "CNY" if market == "A股" else "USD"
+    trades = _market_trades(user_id, market)
+    paper_positions, cash = paper_account_from_trades(trades, PAPER_STARTING_CASH[currency])
+    defaults = ("000001", "600519", "300750") if market == "A股" else ("AAPL", "MSFT", "NVDA")
+    symbols = tuple(position["symbol"] for position in paper_positions) or defaults
+    source_name = "yfinance" if market == "A股" else os.getenv("DATA_SOURCE", "yfinance")
+    closes, _, updated_at = _market_data(symbols, source_name)
+    status = public_market_status(source_name, market)
+    account, positions = portfolio_snapshot(closes, paper_positions, cash, str(status["display_source"]))
+    account.update(currency=currency, total_assets=account["assets"], market_value=account["positions_value"])
     return {
-        "height": height,
-        "margin": {"l": 8, "r": 8, "t": 18, "b": 8},
-        "paper_bgcolor": "rgba(0,0,0,0)",
-        "plot_bgcolor": "#090b0d",
-        "font": {"color": "#8d999b", "family": "IBM Plex Mono"},
-        "hovermode": "x unified",
+        "account": account,
+        "positions": [
+            {
+                "instrument_type": "stock",
+                "symbol": row["标的"],
+                "currency": currency,
+                "quantity": row["数量"],
+                "average_cost": row["成本价"],
+                "market_price": row["最新价"],
+                "market_value": row["市值"],
+                "unrealized_pnl": row["浮动盈亏"],
+                "today_pnl": row["日涨跌"] * row["市值"],
+            }
+            for row in positions.to_dict("records")
+        ],
+        "orders": [
+            {
+                "time": row["trade_time"],
+                "instrument_type": "stock",
+                "symbol": row["symbol"],
+                "action": row["side"],
+                "quantity": row["quantity"],
+                "filled": row["quantity"],
+                "avg_fill_price": row["price"],
+                "commission": row["commission"],
+                "status": "FILLED",
+            }
+            for row in reversed(trades[-100:])
+        ],
+        "updated_at": updated_at,
+        "label": (
+            "CicloTrade A 股虚拟组合 · 个人模拟账本"
+            if market == "A股"
+            else "CicloTrade 美股虚拟组合 · 本地开发回退"
+        ),
+        "source": str(status["display_source"]),
+        "freshness": str(status["freshness"]),
     }
 
 
-def _render_system_performance(currency: str) -> None:
-    section_label("CicloTrade 量化系统组合", f"{currency} · 模拟跟踪 · 与个人账户分开核算")
-    try:
-        performance = QuantJournal().performance_windows(
-            os.getenv("TRADEAI_SYSTEM_LEDGER_KEY", "tradeai-system"), currency
-        )
-    except (RuntimeError, ValueError) as exc:
-        st.error(f"系统组合账本暂时不可用：{exc}", icon=":material/database_off:")
-        return
-    if performance is None:
-        st.info(
-            "尚未接收到经过验证的系统净值快照。接入策略服务器后才会显示真实连续模拟业绩。",
-            icon=":material/monitoring:",
-        )
-        return
-    current = performance["current"]
-    total_pnl = float(current["total_pnl"])
-    metric_grid(
-        (
-            ("系统总权益", f"{currency} {float(current['total_equity']):,.2f}", f"基准 {currency} {float(current['initial_cash']):,.2f}", ""),
-            ("累计盈亏", f"{currency} {total_pnl:+,.2f}", "已实现 + 浮动", "positive" if total_pnl >= 0 else "negative"),
-            ("当前现金", f"{currency} {float(current['cash']):,.2f}", "系统模型账户", ""),
-            ("持仓市值", f"{currency} {float(current['market_value']):,.2f}", "最后验证快照", ""),
-        )
+def _tiger_snapshot() -> dict:
+    snapshot = _tiger_paper_snapshot()
+    snapshot.update(
+        updated_at=datetime.now(LOCAL_ZONE),
+        label="CicloTrade Tiger PAPER · 公开模拟组合",
+        source="美国券商模拟账户",
+        freshness="60 秒刷新",
     )
-    rows = []
-    for label, window in performance["windows"].items():
-        rows.append(
+    return snapshot
+
+
+def _position_frame(rows: list[dict], instrument_type: str) -> pd.DataFrame:
+    result = []
+    for row in rows:
+        if row["instrument_type"] != instrument_type:
+            continue
+        label = row["symbol"]
+        if instrument_type == "option":
+            right = "Call" if str(row.get("right", "")).upper() == "CALL" else "Put"
+            label = f"{label} {row.get('expiry') or '--'} {row.get('strike') or '--'} {right}"
+        result.append(
             {
-                "周期": label,
-                "期间盈亏": f"{currency} {float(window['pnl']):+,.2f}" if window["available"] else "数据不足",
-                "期间收益率": f"{float(window['return']):+.2%}" if window.get("return") is not None else "--",
-                "比较基准": pd.Timestamp(window["baseline_at"]).tz_convert("Asia/Hong_Kong").strftime("%Y-%m-%d %H:%M") if window["available"] else "--",
+                "标的 / 合约": label,
+                "数量": row["quantity"],
+                "成本价": row["average_cost"],
+                "最新价": row["market_price"],
+                "市值": row["market_value"],
+                "浮动盈亏": row["unrealized_pnl"],
+                "今日盈亏": row["today_pnl"],
             }
         )
-    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-    captured = pd.Timestamp(current["captured_at"]).tz_convert("Asia/Hong_Kong").strftime("%Y-%m-%d %H:%M HKT")
-    st.caption(
-        f"最后快照 {captured} · 来源 {current['source']} · {performance['snapshot_count']} 个永久快照。"
-        "这是系统模拟组合记录，不是客户实盘收益或收益保证。"
+    return pd.DataFrame(result)
+
+
+def _render_positions(snapshot: dict, instrument_type: str) -> None:
+    label = "正股持仓" if instrument_type == "stock" else "期权持仓"
+    frame = _position_frame(snapshot["positions"], instrument_type)
+    section_label(label, "模拟账户当前仓位 · 价格和盈亏来自账户最近快照")
+    if frame.empty:
+        st.info(
+            f"当前没有{label}。" + ("期权个人下单通道尚未开放，可先在今日行动查看结构研究。" if instrument_type == "option" else "下一步可前往今日行动查看等待或模拟验证方案。"),
+            icon=":material/inventory_2:",
+        )
+        return
+    st.dataframe(
+        frame,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "数量": st.column_config.NumberColumn(format="%.4f"),
+            "成本价": st.column_config.NumberColumn(format="%.2f"),
+            "最新价": st.column_config.NumberColumn(format="%.2f"),
+            "市值": st.column_config.NumberColumn(format="%,.2f"),
+            "浮动盈亏": st.column_config.NumberColumn(format="%+.2f"),
+            "今日盈亏": st.column_config.NumberColumn(format="%+.2f"),
+        },
     )
+
+
+def _render_allocation(snapshot: dict) -> None:
+    account = snapshot["account"]
+    rows = [
+        {"资产": row["symbol"], "市值": max(0.0, float(row["market_value"]))}
+        for row in snapshot["positions"]
+        if float(row["market_value"]) > 0
+    ]
+    rows.append({"资产": "现金", "市值": max(0.0, float(account.get("cash", account.get("available", 0))))})
+    frame = pd.DataFrame(rows)
+    section_label("资产分析", "只分析当前账户快照，不混入系统策略组合")
+    if frame["市值"].sum() <= 0:
+        st.info("当前账户尚无可分析资产。", icon=":material/donut_large:")
+        return
+    chart_col, data_col = st.columns([1.15, 1], gap="small")
+    with chart_col.container(border=True):
+        figure = go.Figure(
+            go.Pie(
+                labels=frame["资产"],
+                values=frame["市值"],
+                hole=.68,
+                marker={"colors": ["#67d9ad", "#58bfe8", "#eab25b", "#f05c67", "#879298"]},
+                textinfo="label+percent",
+                hovertemplate="%{label}<br>%{value:,.2f}<br>%{percent}<extra></extra>",
+            )
+        )
+        figure.update_layout(
+            height=320,
+            margin={"l": 8, "r": 8, "t": 8, "b": 8},
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font={"color": "#aab3b5"},
+            showlegend=False,
+        )
+        st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
+    with data_col.container(border=True):
+        total = float(frame["市值"].sum())
+        frame["占比"] = frame["市值"] / total
+        st.dataframe(
+            frame.sort_values("市值", ascending=False),
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "市值": st.column_config.NumberColumn(format="%,.2f"),
+                "占比": st.column_config.NumberColumn(format="percent"),
+            },
+        )
+        usage = float(account.get("market_value", 0)) / float(account.get("total_assets", 0) or 1)
+        st.metric("资金使用率", f"{usage:.1%}", "持仓市值 / 总资产", border=True)
+
+
+def _render_orders(snapshot: dict) -> None:
+    section_label("交易记录", "按时间倒序 · 模拟成交与订单状态保持可追溯")
+    if not snapshot["orders"]:
+        st.info("当前没有交易记录。", icon=":material/receipt_long:")
+        return
+    frame = pd.DataFrame(snapshot["orders"])
+    frame = frame[["time", "instrument_type", "symbol", "action", "quantity", "filled", "avg_fill_price", "commission", "status"]]
+    frame.columns = ["时间", "类型", "标的", "方向", "数量", "已成交", "成交均价", "佣金", "状态"]
+    st.dataframe(frame, hide_index=True, width="stretch")
 
 
 def render(config: dict | None = None) -> None:
     del config
     page_heading(
-        "PORTFOLIO / OVERVIEW",
-        "账户总览",
-        "系统量化组合与当前用户模拟账户分开核算；没有正式记录时保持空状态。",
-        "AUDITABLE MODEL · USER-SCOPED PAPER ACCOUNT",
+        "PORTFOLIO / POSITIONS",
+        "目前仓位分析",
+        "集中查看账户资产、正股、期权和交易记录；系统策略表现已与客户账户完全分开。",
+        "ACCOUNT FIRST · NO MIXED BALANCES",
     )
-
-    profile_service = UserProfileService()
-    profile = profile_service.get(int(st.session_state.user["id"]))
-    registry = StrategyRegistry()
-    registry.sync_catalog()
-    matched = profile_service.matching_strategies(int(st.session_state.user["id"]), registry.list(), 3)
-    section_label("為你匹配的策略", "僅依平台內部回測行為，每週更新，不對外共享")
-    st.caption("研究偏好：" + " · ".join(profile["tags"]))
-    match_columns = st.columns(len(matched), gap="small")
-    for column, item in zip(match_columns, matched, strict=True):
-        with column.container(border=True):
-            st.caption(f"{item['family'].upper()} · {item['risk'].upper()}")
-            st.subheader(item["name"])
-            st.write(item["scenario"])
-            st.caption("匹配推薦不是買賣指令；請先完成歷史回測與風險檢查。")
-
-    market = st.segmented_control("模拟账户", ["美股", "A股"], default="美股", key="dashboard_market", width="stretch")
-    currency = "USD" if market == "美股" else "CNY"
-    _render_system_performance(currency)
-    starting_cash = PAPER_STARTING_CASH[currency]
-    trades = _market_trades(int(st.session_state.user["id"]), market)
-    paper_positions, available_cash = paper_account_from_trades(trades, starting_cash)
-    default_symbols = ("AAPL", "MSFT", "NVDA") if market == "美股" else ("000001", "600519", "300750")
-    symbols = tuple(position["symbol"] for position in paper_positions) or default_symbols
-
+    market = st.segmented_control(
+        "账户",
+        ["公开组合 · Tiger PAPER", "我的美股模拟", "我的 A 股模拟"],
+        default="公开组合 · Tiger PAPER",
+        key="dashboard_market",
+        width="stretch",
+        required=True,
+    ) or "公开组合 · Tiger PAPER"
+    is_public = market.startswith("公开组合")
+    is_us = market != "我的 A 股模拟"
+    tiger = TigerAPI()
     try:
-        source_name = "yfinance" if market == "A股" else os.getenv("DATA_SOURCE", "yfinance")
-        with st.spinner("正在连接市场数据…", show_time=True):
-            closes, volumes, updated_at = _market_data(symbols, source_name)
-    except MarketDataUnavailable as exc:
-        st.session_state.market_live = False
-        st.error(f"真实行情暂时不可用：{exc}", icon=":material/cloud_off:")
-        st.caption("系统不会用固定演示价格冒充实时行情。请恢复网络或数据源后重试。")
-        if st.button("重新连接", icon=":material/refresh:"):
+        if is_public:
+            if not tiger.configured:
+                raise RuntimeError("Tiger PAPER 尚未在当前环境配置；可切换到“我的美股模拟”继续验证。")
+            with st.spinner("正在同步 Tiger PAPER 账户…", show_time=True):
+                snapshot = _tiger_snapshot()
+        else:
+            with st.spinner("正在重建虚拟组合…", show_time=True):
+                snapshot = _local_snapshot(int(st.session_state.user["id"]), "美股" if is_us else "A股")
+    except (RuntimeError, MarketDataUnavailable, ValueError) as exc:
+        st.error(f"账户快照暂时不可用：{exc}", icon=":material/cloud_off:")
+        st.caption("系统不会用另一套账户或固定演示资产冒充当前组合。")
+        if st.button("重新同步", icon=":material/refresh:"):
+            _tiger_paper_snapshot.clear()
             _market_data.clear()
             st.rerun()
         return
 
-    st.session_state.market_live = True
-    data_status = market_data_status(source_name)
-    account, positions = portfolio_snapshot(closes, paper_positions, available_cash, str(data_status["source"]))
-    market_tape(market_summary(closes), updated_at, str(data_status["source"]))
-
-    section_label("组合快照", f"{currency} · {data_status['source']} · {data_status['freshness']}")
-    daily_tone = "positive" if account["daily_pnl"] >= 0 else "negative"
-    pnl_sign = "+" if account["daily_pnl"] >= 0 else ""
-    unrealized_sign = "+" if account["unrealized"] >= 0 else ""
+    account = snapshot["account"]
+    currency = str(account.get("currency") or ("USD" if is_us else "CNY"))
+    updated = pd.Timestamp(snapshot["updated_at"])
+    if updated.tzinfo is None:
+        updated = updated.tz_localize("UTC")
+    updated = updated.tz_convert("Asia/Taipei")
+    with st.container(horizontal=True, gap="small", vertical_alignment="center"):
+        st.badge(snapshot["label"], icon=":material/account_balance_wallet:", color="blue")
+        st.badge(snapshot["freshness"], icon=":material/schedule:", color="gray")
+    st.caption(f"{snapshot['source']} · 最后同步 {updated.strftime('%Y-%m-%d %H:%M:%S')}（台北）")
+    total = float(account.get("total_assets", 0))
+    today = float(account.get("today_pnl", account.get("daily_pnl", 0)) or 0)
+    unrealized = float(account.get("unrealized_pnl", account.get("unrealized", 0)) or 0)
     metric_grid(
         (
-            ("组合总资产", f"{currency} {account['assets']:,.2f}", "模拟现金 + 当前账户持仓", ""),
-            ("当日变化", f"{pnl_sign}{currency} {account['daily_pnl']:,.2f}", "按最近两个交易日估算", daily_tone),
-            ("可用现金", f"{currency} {account['available']:,.2f}", "当前模拟账户余额", ""),
-            ("未实现盈亏", f"{unrealized_sign}{currency} {account['unrealized']:,.2f}", "相对账户平均成本", "positive" if account["unrealized"] >= 0 else "negative"),
+            ("总资产", f"{currency} {total:,.2f}", "账户最近快照", ""),
+            ("可用资金", f"{currency} {float(account.get('available', 0)):,.2f}", "可用于模拟交易", ""),
+            ("今日盈亏", f"{currency} {today:+,.2f}", "按账户最近快照", "positive" if today >= 0 else "negative"),
+            ("浮动盈亏", f"{currency} {unrealized:+,.2f}", "未平仓仓位", "positive" if unrealized >= 0 else "negative"),
         )
     )
-
-    section_label("组合走势", "最近 60 个交易日 · 可悬停查看")
-    main_col, allocation_col = st.columns([1.8, 1], gap="small")
-    with main_col:
-        with st.container(border=True):
-            curve = paper_equity_curve_from_trades(closes, trades, starting_cash)
-            figure = go.Figure(
-                go.Scatter(
-                    x=curve["日期"],
-                    y=curve["账户净值"],
-                    mode="lines",
-                    line={"color": "#37d996", "width": 2},
-                    fill="tozeroy",
-                    fillcolor="rgba(55,217,150,.06)",
-                    hovertemplate=f"%{{x|%Y-%m-%d}}<br>组合净值 {currency} %{{y:,.2f}}<extra></extra>",
-                )
-            )
-            figure.update_layout(**_chart_layout(370))
-            figure.update_xaxes(showgrid=False, zeroline=False)
-            figure.update_yaxes(gridcolor="#1b2327", zeroline=False, tickprefix=f"{currency} ")
-            st.plotly_chart(figure, width="stretch", config={"displayModeBar": False, "scrollZoom": False})
-            start_value = float(curve["账户净值"].iloc[0])
-            end_value = float(curve["账户净值"].iloc[-1])
-            change = end_value / start_value - 1 if start_value else 0.0
-            st.markdown(
-                f"**图表摘要：** 期初 {currency} {start_value:,.2f}，期末 {currency} {end_value:,.2f}，"
-                f"区间变化 {change:+.2%}；最低 {currency} {curve['账户净值'].min():,.2f}，"
-                f"最高 {currency} {curve['账户净值'].max():,.2f}。"
-            )
-            curve_details = st.expander(
-                "查看组合净值数据", icon=":material/table_chart:", on_change="rerun"
-            )
-            if curve_details.open:
-                with curve_details:
-                    st.dataframe(
-                        curve,
-                        hide_index=True,
-                        width="stretch",
-                        column_config={
-                            "账户净值": st.column_config.NumberColumn(format=f"{currency} %,.2f")
-                        },
-                    )
-    with allocation_col:
-        with st.container(border=True):
-            allocation_frame = pd.DataFrame(
-                {
-                    "资产": [*positions["标的"].tolist(), "现金"],
-                    "市值": [*positions["市值"].tolist(), account["available"]],
-                }
-            )
-            allocation_total = float(allocation_frame["市值"].sum())
-            allocation_frame["占比"] = (
-                allocation_frame["市值"] / allocation_total if allocation_total else 0.0
-            )
-            allocation = go.Figure(
-                go.Pie(
-                    labels=allocation_frame["资产"],
-                    values=allocation_frame["市值"],
-                    hole=.68,
-                    marker={"colors": ["#37d996", "#2fb9e8", "#eab25b", "#f05c67", "#273034"], "line": {"color": "#111518", "width": 2}},
-                    textinfo="label+percent",
-                    textfont={"size": 11},
-                    hovertemplate=f"%{{label}}<br>{currency} %{{value:,.2f}}<br>%{{percent}}<extra></extra>",
-                )
-            )
-            allocation.update_layout(**_chart_layout(370), showlegend=False, annotations=[{"text": "资产配置", "showarrow": False, "font": {"color": "#f1f4f2", "size": 13}}])
-            st.plotly_chart(allocation, width="stretch", config={"displayModeBar": False})
-            largest = allocation_frame.loc[allocation_frame["占比"].idxmax()]
-            cash_weight = float(allocation_frame.loc[allocation_frame["资产"] == "现金", "占比"].iloc[0])
-            st.markdown(
-                f"**图表摘要：** 最大配置为 {largest['资产']}，占 {float(largest['占比']):.1%}；"
-                f"现金占 {cash_weight:.1%}。"
-            )
-            allocation_details = st.expander(
-                "查看资产配置数据", icon=":material/table_chart:", on_change="rerun"
-            )
-            if allocation_details.open:
-                with allocation_details:
-                    st.dataframe(
-                        allocation_frame,
-                        hide_index=True,
-                        width="stretch",
-                        column_config={
-                            "市值": st.column_config.NumberColumn(format=f"{currency} %,.2f"),
-                            "占比": st.column_config.NumberColumn(format="percent"),
-                        },
-                    )
-
-    section_label("风险概览", "颜色用于快速识别，数字提供准确判断")
-    gauge_columns = st.columns(3, gap="small")
-    with gauge_columns[0]:
-        gauge("资金使用率", account["usage_pct"], "持仓市值占组合总资产", "#2fb9e8")
-    with gauge_columns[1]:
-        gauge("盈利持仓", account["winning_pct"], "按模拟成本价计算", "#37d996")
-    with gauge_columns[2]:
-        risk_budget = min(account["usage_pct"] / 80 * 100, 100)
-        gauge("风险预算", risk_budget, "80% 为当前组合上限", "#eab25b" if risk_budget < 90 else "#f05c67")
-
-    section_label("当前持仓", f"价格真实 · {currency} 模拟账户 · 当前用户成交重建")
-    if positions.empty:
-        st.info(f"当前 {market} 模拟账户没有持仓。可前往“交易执行”提交模拟订单。", icon=":material/account_balance_wallet:")
+    view = st.segmented_control(
+        "查看内容",
+        ["资产分析", "正股持仓", "期权持仓", "交易记录"],
+        default="正股持仓",
+        key=f"dashboard_view_{'US' if is_us else 'CN'}",
+        width="stretch",
+        required=True,
+    ) or "正股持仓"
+    if view == "资产分析":
+        _render_allocation(snapshot)
+    elif view == "正股持仓":
+        _render_positions(snapshot, "stock")
+    elif view == "期权持仓":
+        _render_positions(snapshot, "option")
     else:
-        st.dataframe(
-            positions,
-            hide_index=True,
-            width="stretch",
-            column_config={
-                "数量": st.column_config.NumberColumn(format="%d"),
-                "成本价": st.column_config.NumberColumn(format=f"{currency} %.2f"),
-                "最新价": st.column_config.NumberColumn(format=f"{currency} %.2f"),
-                "日涨跌": st.column_config.NumberColumn(format="percent"),
-                "市值": st.column_config.NumberColumn(format=f"{currency} %,.2f"),
-                "浮动盈亏": st.column_config.NumberColumn(format=f"{currency} %+.2f"),
-            },
-        )
-
-    section_label("最近成交", "仅显示当前账户的模拟/实盘记录")
-    if trades:
-        frame = pd.DataFrame(list(reversed(trades[-50:])))
-        frame.columns = ["时间", "标的", "方向", "数量", "价格", "佣金", "账户", "策略"]
-        st.dataframe(frame, hide_index=True, width="stretch")
-    else:
-        st.info(f"当前 {market} 模拟账户尚无成交记录。先去“交易执行”提交一笔模拟订单，账户总览会自动重建持仓。", icon=":material/receipt_long:")
+        _render_orders(snapshot)
+    st.caption(
+        "Tiger PAPER 为平台公开模拟组合，不是你的个人券商资产；A 股虚拟组合是本站模拟账本。"
+        "所有数据用于研究与流程验证，不代表收益保证。"
+    )

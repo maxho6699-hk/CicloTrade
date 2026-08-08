@@ -6,7 +6,7 @@ from __future__ import annotations
 import streamlit as st
 
 from core.database import get_database
-from data.datasource import market_data_status
+from data.datasource import public_market_status
 from ui.components import experience_hero, section_label
 
 
@@ -25,11 +25,11 @@ def render() -> None:
     )
     section_label("第一次使用", "先看建议，再决定是否进入模拟盘")
     with st.container(border=True):
-        st.markdown("1. 在**实时数据看板**搜索美股或 A 股代码，确认数据源与更新时间。\n2. 在**策略研究**先看方向、止损和目标条件，再使用损益实验室。\n3. 在**行情与预警**建立单条件或组合预警。\n4. 在**交易执行**用模拟盘验证订单与风控；未配置券商时不会发送实盘订单。")
+        st.markdown("1. 打开**今日行动**，先看等待、买入、减仓或退出。\n2. 点主按钮进入已预填的模拟订单，只需核对一次。\n3. 到**目前仓位**查看股票、期权、资产分析和交易记录。\n4. 需要时再到**市场行情**看 K 线，或在**预警与期权链**建立提醒。")
     section_label("数据与券商接入", "没有凭证时只展示清晰的未配置状态")
     with st.container(border=True):
-        status = market_data_status()
-        st.caption(f"行情数据源：{status['source']} · {status['freshness']}。{status['detail']}。")
+        status = public_market_status()
+        st.caption(f"行情数据：{status['display_source']} · {status['freshness']}。{status['detail']}。")
         st.caption("Tiger / Alpaca / IBKR：完整接入流程会保留展示；管理员总开关关闭时，券商账户与 API 资料输入会锁定并引导联系客服。")
         st.caption("任何状态下都不要通过网页聊天、Telegram 或邮件发送券商密码、私钥或 Token。")
         st.caption("Futu / QMT / PTrade：需要定制部署、券商授权和本机网关，当前不会伪造连接成功。")

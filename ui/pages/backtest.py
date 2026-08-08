@@ -23,7 +23,7 @@ from core.strategy_generator import StrategyGenerationService
 from core.strategy_parser import parse_strategy
 from core.strategy_registry import StrategyRegistry
 from core.strategy_tracking import StrategyPerformanceTracker
-from data.datasource import get_data_source
+from data.datasource import get_resilient_data_source
 from ui.components import metric_grid, page_heading, section_label
 from ui.data import STRATEGIES
 from ui.recommendations import load_recommendations, render_recommendations
@@ -75,7 +75,7 @@ def _natural_language_builder(user: dict, plan: str) -> None:
             generation = StrategyGenerationService().save(int(user["id"]), description, parsed)
             years = backtest_years(plan)
             with st.spinner("正在讀取真實歷史 K 線並逐根回測…", show_time=True):
-                closes, _ = get_data_source().history((parsed["symbol"],), period=f"{years}y")
+                closes, _ = get_resilient_data_source().history((parsed["symbol"],), period=f"{years}y")
                 series = closes[parsed["symbol"]].dropna()
                 validation_start = chronological_validation_start(series)
                 configured = {"parameters": {}, "rules": {"entry": parsed["entry"], "exit": parsed["exit"]}}
@@ -176,10 +176,10 @@ def render() -> None:
     if not available_names:
         st.warning("目前沒有可回測的啟用策略；請稍後再試或聯絡管理員。", icon=":material/lock:")
         return
-    market = st.segmented_control("市场", ["美股", "A股"], default="美股", key="backtest_market", width="stretch")
+    market = st.segmented_control("市场", ["美股", "A股"], default="美股", key="backtest_market", width="stretch", required=True)
     currency = "USD" if market == "美股" else "CNY"
     default_symbol = "AAPL" if market == "美股" else "510300"
-    mode = st.segmented_control("使用方式", ["快速验证", "专业参数"], default="快速验证", width="stretch")
+    mode = st.segmented_control("使用方式", ["快速验证", "专业参数"], default="快速验证", width="stretch", required=True)
     if mode == "快速验证":
         try:
             candidates = load_recommendations(market)

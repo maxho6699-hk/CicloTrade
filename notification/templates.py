@@ -66,8 +66,8 @@ def auth_email(kind: str, code: str, base_url: str) -> tuple[str, str, str]:
         return email_message(
             "CicloTrade 密碼重設",
             "重設你的登入密碼",
-            "輸入以下一次性驗證碼以設定新密碼；完成後所有舊工作階段會立即失效。",
-            ("驗證碼將在 30 分鐘後失效。", "如非本人操作，請立即檢查帳戶安全。"),
+            "輸入以下 8 位英數驗證碼以設定新密碼；完成後所有舊工作階段會立即失效。",
+            ("驗證碼將在 30 分鐘後失效。", "請勿向任何人透露驗證碼；如非本人操作，請立即檢查帳戶安全。"),
             code=code,
             action_url=base_url,
         )
@@ -165,6 +165,29 @@ def telegram_binding(code: str) -> str:
 
 def telegram_membership(plan: str, expiry: str, reason: str) -> str:
     return f"💎 CicloTrade · 會員權益已更新\n━━━━━━━━━━━━━━\n方案　{plan}\n有效期至　{expiry}\n說明　{reason}\n━━━━━━━━━━━━━━\n登入網站即可使用已開放功能。"
+
+
+def telegram_live_service_paused() -> str:
+    return (
+        "⛔ CicloTrade · 實盤自動交易已暫停\n"
+        "━━━━━━━━━━━━━━\n"
+        "平台已停止新的實盤自動操作，並關閉你的個人實盤開關。\n"
+        "現有券商綁定資料仍會保留，但系統不會代你平倉。\n\n"
+        "請立即登入券商帳戶核對持倉、未完成訂單與風險，並按需要自行撤單或平倉。\n"
+        "━━━━━━━━━━━━━━\n"
+        "恢復服務後不會自動重啟；請等待下一則通知，再回到網站手動開啟。"
+    )
+
+
+def telegram_live_service_resumed() -> str:
+    return (
+        "✅ CicloTrade · 實盤自動交易可重新申請\n"
+        "━━━━━━━━━━━━━━\n"
+        "平台服務已恢復，但你的個人實盤開關仍保持關閉。\n"
+        "券商綁定資料無需重新填寫；請登入網站核對帳戶與風控後，手動開啟實盤自動交易。\n"
+        "━━━━━━━━━━━━━━\n"
+        "系統不會在未經你再次確認時自動恢復任何實盤操作。"
+    )
 
 
 def telegram_incident(incident_id: str, incident_type: str) -> str:

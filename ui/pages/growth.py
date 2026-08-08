@@ -171,7 +171,7 @@ def _render_social_review(user: dict, db) -> None:
             list(labels),
             format_func=labels.__getitem__,
         )
-        decision = st.segmented_control("审核结果", ["批准", "驳回"], default="批准")
+        decision = st.segmented_control("审核结果", ["批准", "驳回"], default="批准", required=True)
         days = st.number_input(
             "批准奖励天数",
             min_value=1,

@@ -83,7 +83,7 @@ class AdminService:
                     ("recommendations_published", "1", now),
                     ("opening_paused", "0", now),
                     ("annual_bonus_enabled", "1", now),
-                    ("user_auto_trading_enabled", "0", now),
+                    ("user_auto_trading_enabled", "1", now),
                 ),
             )
 
@@ -522,15 +522,68 @@ class AdminService:
             "BILLING",
         )
 
-    def set_user_auto_trading_enabled(self, actor_id: int, enabled: bool) -> None:
-        self._require(actor_id, "system")
-        self._set_control(
-            actor_id,
-            "user_auto_trading_enabled",
-            enabled,
-            "ADMIN_USER_AUTO_TRADING_STATUS",
-            "TRADING",
-        )
+    def set_user_auto_trading_enabled(self, actor_id: int, enabled: bool) -> dict[str, int]:
+        if self._role_for_id(actor_id) != "super_admin":
+            raise PermissionError("仅超级管理员可控制用户实盘自动交易服务。")
+        from notification.telegram_bot import send_telegram, telegram_configured, verified_user_target
+        from notification.templates import telegram_live_service_paused, telegram_live_service_resumed
+
+        now = _iso()
+        targets: list[str] = []
+        affected = 0
+        with self.db.transaction() as conn:
+            current_row = conn.execute(
+                "SELECT control_value FROM platform_controls WHERE control_key='user_auto_trading_enabled'"
+            ).fetchone()
+            current = bool(current_row and str(current_row[0]).lower() in {"1", "true", "yes", "on"})
+            if current == bool(enabled):
+                return {"affected": 0, "notified": 0}
+            rows = conn.execute(
+                "SELECT user_id,settings_json FROM user_settings"
+            ).fetchall()
+            for row in rows:
+                try:
+                    settings = json.loads(row["settings_json"])
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(settings, dict):
+                    continue
+                selected = settings.get("live_auto_platform_suspended") is True if enabled else settings.get("live_auto_enabled") is True
+                if not selected:
+                    continue
+                affected += 1
+                if not enabled:
+                    settings["live_auto_enabled"] = False
+                    settings["live_auto_platform_suspended"] = True
+                    conn.execute(
+                        "UPDATE user_settings SET settings_json=?,updated_at=? WHERE user_id=?",
+                        (json.dumps(settings, ensure_ascii=False), now, int(row["user_id"])),
+                    )
+                if target := verified_user_target(settings):
+                    targets.append(target)
+            conn.execute(
+                """INSERT INTO platform_controls (control_key,control_value,updated_by,updated_at) VALUES (?,?,?,?)
+                   ON CONFLICT(control_key) DO UPDATE SET control_value=excluded.control_value,
+                   updated_by=excluded.updated_by,updated_at=excluded.updated_at""",
+                ("user_auto_trading_enabled", str(int(enabled)), actor_id, now),
+            )
+            self._audit(conn, actor_id, "ADMIN_USER_AUTO_TRADING_STATUS", {"enabled": enabled, "affected": affected})
+            conn.execute(
+                "INSERT INTO system_events (event_type,component,message,details,created_at) VALUES (?,?,?,?,?)",
+                ("CONTROL", "TRADING", "ADMIN_USER_AUTO_TRADING_STATUS", f"enabled={enabled}; affected={affected}; admin={actor_id}", now),
+            )
+
+        message = telegram_live_service_resumed() if enabled else telegram_live_service_paused()
+        notified = 0
+        for target in targets:
+            try:
+                if not telegram_configured(target):
+                    raise RuntimeError("Telegram 外部通知当前不可用。")
+                send_telegram(message, target)
+                notified += 1
+            except RuntimeError as exc:
+                self.db.log_system_event("WARN", "TELEGRAM", "实盘服务状态通知失败", str(exc)[:500])
+        return {"affected": affected, "notified": notified}
 
     def set_global_opening_paused(self, actor_id: int, paused: bool) -> None:
         self._require(actor_id, "system")

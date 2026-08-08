@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 import os
+import socket
 
 import pandas as pd
 
@@ -47,6 +48,13 @@ class OpenDAdapter(DataSource):
             return OpenQuoteContext(host=self.host, port=self.port)
         except Exception as exc:
             raise DataSourceError("无法连接 Futu OpenD。") from exc
+
+    def available(self) -> bool:
+        try:
+            with socket.create_connection((self.host, self.port), timeout=0.5):
+                return True
+        except OSError:
+            return False
 
     @staticmethod
     def _code(symbol: str) -> str:

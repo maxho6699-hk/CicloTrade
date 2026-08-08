@@ -61,6 +61,28 @@ def test_symbol_search_keeps_only_requested_market(monkeypatch):
     assert [item["symbol"] for item in YFinanceAdapter.search("600519", "A股")] == ["600519.SS"]
 
 
+def test_multi_symbol_history_uses_one_parallel_bulk_request(monkeypatch):
+    index = pd.date_range("2026-08-01", periods=2)
+    bulk = pd.DataFrame(
+        {
+            ("AAPL", "Close"): [100.0, 101.0],
+            ("AAPL", "Volume"): [10, 11],
+            ("MSFT", "Close"): [200.0, 202.0],
+            ("MSFT", "Volume"): [20, 22],
+        },
+        index=index,
+    )
+    calls = []
+    monkeypatch.setenv("MARKET_DATA_ENABLED", "true")
+    monkeypatch.setattr(yf, "download", lambda *args, **kwargs: calls.append((args, kwargs)) or bulk)
+
+    closes, volumes = YFinanceAdapter().history(("AAPL", "MSFT"), period="6mo")
+
+    assert len(calls) == 1
+    assert list(closes) == ["AAPL", "MSFT"]
+    assert volumes.loc[index[-1], "MSFT"] == 22
+
+
 def test_recommendation_publish_gate_runs_before_cached_data(monkeypatch):
     class StoppedAdminService:
         def control_enabled(self, key, default):

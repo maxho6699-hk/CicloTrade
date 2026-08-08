@@ -131,6 +131,19 @@ strategies:
       entry: [{indicator: return, operator: gt, period_param: lookback, value_param: entry_return}]
       exit: [{indicator: return, operator: lt, period_param: lookback, value_param: exit_return}]
     example_metrics: {status: 运行后生成真实历史回测}
+  - key: template_tsmom_12m
+    name: 12个月趋势动量
+    family: equity
+    engine: rules
+    scenario: 中长期趋势延续与风险切换
+    description: 过去 12 个月收益为正时持有，趋势转负时退出；依据公开时间序列动量研究实现。
+    risk: medium
+    core: true
+    parameters: {lookback: 252, entry_return: 0.0, exit_return: 0.0}
+    rules:
+      entry: [{indicator: return, operator: gt, period_param: lookback, value_param: entry_return}]
+      exit: [{indicator: return, operator: lt, period_param: lookback, value_param: exit_return}]
+    example_metrics: {status: 运行后生成真实历史回测}
   - key: template_mean_reversion
     name: 均值回归策略
     family: equity

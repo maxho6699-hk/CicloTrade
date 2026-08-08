@@ -11,7 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from core.admin_service import AdminService
-from data.datasource import get_data_source
+from data.datasource import get_resilient_data_source
 
 
 US_UNIVERSE = ("AAPL", "MSFT", "NVDA", "TSLA", "SPY", "QQQ")
@@ -109,7 +109,7 @@ def _load_recommendations(
 ) -> pd.DataFrame:
     base = A_SHARE_UNIVERSE if market == "A股" else US_UNIVERSE
     symbols = tuple(dict.fromkeys((*base, *(symbol.upper() for symbol in extra_symbols))))
-    source = get_data_source("yfinance" if market == "A股" else source_name)
+    source = get_resilient_data_source("yfinance" if market == "A股" else source_name)
     closes, volumes = source.history(symbols, period="6mo")
     return score_candidates(closes, volumes, market)
 

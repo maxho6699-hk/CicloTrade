@@ -37,3 +37,12 @@ def test_brand_bar_has_no_session_resetting_internal_links(monkeypatch):
     assert 'href="/research"' not in rendered[0]
     assert 'href="/roadmap"' not in rendered[0]
     assert 'href="/help"' not in rendered[0]
+
+
+def test_monitor_status_card_escapes_dynamic_values():
+    from ui.pages.monitor import _status_card
+
+    rendered = _status_card("<b>name</b>", "<script>x</script>", "ok", "<img>", "warn")
+
+    assert "<script>" not in rendered
+    assert "&lt;script&gt;x&lt;/script&gt;" in rendered

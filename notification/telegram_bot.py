@@ -15,6 +15,7 @@ from urllib.request import Request, urlopen
 
 from core.config_loader import get_config
 from core.plans import can, effective_plan
+from core.user_settings import load_user_settings, merge_user_settings
 
 
 class TelegramDeliveryUncertain(RuntimeError):
@@ -75,6 +76,73 @@ def entitled_user_target(user: dict[str, Any], settings: dict[str, Any], event: 
     capability = "tg_option_signal" if option_event else "tg_system" if system_event else "tg_stock_signal"
     required_event = None if event == "membership_update" else event
     return verified_user_target(settings, required_event) if can(effective_plan(user), capability) else None
+
+
+_NOTIFY_COMMANDS = {
+    "stock": (("stock_signal",), "stock_signal_telegram", "正股量化操作"),
+    "option": (("option_signal",), "option_signal_telegram", "期权量化操作"),
+    "price": (("price_alert",), "tg_stock_signal", "价格预警"),
+    "orders": (("order_submitted", "order_filled", "risk_rejected", "force_liquidation"), "tg_stock_signal", "个人订单与风控"),
+    "system": (("system_exception",), "tg_system", "系统异常"),
+}
+
+
+def update_notification_preference(database, chat_id: str, command: str) -> str:
+    """Apply a private /notify command to the same settings used by the website."""
+    target = str(chat_id).strip()
+    if not target.isdigit():
+        raise ValueError("请在与 CicloTrade Bot 的私人对话中使用通知设置。")
+    parts = str(command or "").strip().lower().split()
+    if parts and parts[0].startswith(("/id@", "/start@")):
+        parts[0] = parts[0].split("@", 1)[0]
+    if parts in (["/id"], ["/start"]):
+        return (
+            "🔗 CicloTrade · Telegram 绑定\n"
+            "━━━━━━━━━━━━━━\n"
+            f"你的 Chat ID：{target}\n\n"
+            "1. 复制上方数字\n"
+            "2. 回到网站「账户与安全 → Telegram」\n"
+            "3. 粘贴 Chat ID 并申请验证码\n"
+            "4. 把 Bot 发来的验证码粘贴回网站完成绑定"
+        )
+    row = database.fetch_one(
+        """SELECT u.id,u.plan_type,u.subscription_expire,s.settings_json
+           FROM users u JOIN user_settings s ON s.user_id=u.id
+           WHERE u.is_active=1
+             AND CAST(json_extract(s.settings_json,'$.telegram.chat_id') AS TEXT)=?""",
+        (target,),
+    )
+    if not row:
+        raise ValueError("此 Telegram 尚未绑定 CicloTrade 账户，请先在网站设置页完成验证。")
+    settings = load_user_settings(int(row["id"]), database)
+    if verified_user_target(settings) != target:
+        raise ValueError("Telegram 绑定尚未完成同意与验证。")
+    if parts and parts[0].startswith("/notify@"):
+        parts[0] = "/notify"
+
+    def status() -> str:
+        events = settings.get("tg_events") if isinstance(settings.get("tg_events"), dict) else {}
+        lines = ["⚙️ CicloTrade · 私人通知设置", "━━━━━━━━━━━━━━"]
+        for name, (keys, capability, label) in _NOTIFY_COMMANDS.items():
+            included = can(effective_plan(row), capability)
+            enabled = included and all(events.get(key) is True for key in keys)
+            lines.append(f"{label}　{'开启' if enabled else '关闭' if included else '当前会员未开放'}　/notify {name} on|off")
+        lines.extend(("━━━━━━━━━━━━━━", "网站设置页与此处实时共用同一份偏好；会员降级后会自动停止越级推送。"))
+        return "\n".join(lines)
+
+    if parts in ([], ["/notify"], ["/settings"]):
+        return status()
+    if len(parts) != 3 or parts[0] != "/notify" or parts[1] not in _NOTIFY_COMMANDS or parts[2] not in {"on", "off"}:
+        return "格式：/notify stock|option|price|orders|system on|off\n发送 /notify 查看当前设置。"
+    keys, capability, label = _NOTIFY_COMMANDS[parts[1]]
+    if not can(effective_plan(row), capability):
+        return f"{label}不在当前会员等级内，设置未改变。发送 /notify 查看可用项目。"
+    events = dict(settings.get("tg_events") or {})
+    for key in keys:
+        events[key] = parts[2] == "on"
+    settings = merge_user_settings(int(row["id"]), {"tg_events": events}, database)
+    state = "已开启" if parts[2] == "on" else "已关闭"
+    return f"✅ {label}{state}。\n\n" + status()
 
 
 def issue_verification_token(database, user_id: int, chat_id: str, consent: bool, ttl_minutes: int = 15) -> str:

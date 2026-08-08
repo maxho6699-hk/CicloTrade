@@ -16,6 +16,9 @@ import streamlit as st
 from core.plans import can, effective_plan
 from core.quant_journal import QuantJournal
 from core.strategy_registry import StrategyRegistry
+from core.database import get_database
+from core.user_settings import load_user_settings
+from notification.telegram_bot import telegram_configured, verified_user_target
 from ui.components import page_heading, section_label
 from ui.recommendations import load_recommendations
 
@@ -23,7 +26,6 @@ from ui.recommendations import load_recommendations
 LOCAL_ZONE = ZoneInfo("Asia/Taipei")
 MARKET_CODES = {"美股": "US", "A股": "CN"}
 MARKET_CURRENCIES = {"美股": "USD", "A股": "CNY"}
-INITIAL_CAPITAL = {"USD": 100_000, "CNY": 100_000}
 
 
 def _system_ledger_key() -> str:
@@ -51,6 +53,26 @@ def _number(value: Any, digits: int = 2) -> str:
 def _money(value: Any, currency: str) -> str:
     number = _number(value, 2)
     return "--" if number == "--" else f"{currency} {number}"
+
+
+def position_size(account_budget: float, entry: float, stop: float) -> tuple[int, float]:
+    """Use 1% fixed risk with a 10% single-position cap; always round down."""
+    values = (float(account_budget), float(entry), float(stop))
+    if not all(math.isfinite(value) and value > 0 for value in values):
+        return 0, 0.0
+    risk_per_share = abs(entry - stop)
+    if risk_per_share <= 0:
+        return 0, 0.0
+    by_risk = math.floor(account_budget * 0.01 / risk_per_share)
+    by_concentration = math.floor(account_budget * 0.10 / entry)
+    shares = max(0, min(by_risk, by_concentration))
+    return shares, shares * risk_per_share
+
+
+def _queue_page(page: str, payload_key: str | None = None, payload: dict[str, Any] | None = None) -> None:
+    if payload_key:
+        st.session_state[payload_key] = payload or {}
+    st.session_state["pending_page"] = page
 
 
 def _contract_label(leg: dict[str, Any]) -> str:
@@ -126,7 +148,7 @@ def _timeline_frame(records: list[dict[str, Any]]) -> pd.DataFrame:
                 "策略": event.get("strategy_name") or "--",
                 "版本": event.get("strategy_version") or "--",
                 "事件 ID": event.get("id"),
-                "来源": event.get("source") or "--",
+                "来源": "策略服务",
             }
         )
     return pd.DataFrame(rows)
@@ -212,13 +234,34 @@ def _render_symbol_control(market: str) -> tuple[str, ...]:
     return extras
 
 
-def _render_access_status(plan: str) -> None:
-    telegram_ready = bool(
-        os.getenv("EXTERNAL_ALERTS_ENABLED", "false").strip().lower() == "true"
-        and os.getenv("TELEGRAM_BOT_TOKEN")
+def _telegram_status(user: dict[str, Any], event: str, capability: str, instrument_type: str) -> tuple[str, str]:
+    if not can(effective_plan(user), capability):
+        return "套餐未包含", "gray"
+    settings = load_user_settings(int(user["id"]))
+    target = verified_user_target(settings)
+    if not telegram_configured("1"):
+        return "通知服务维护中", "orange"
+    if not target:
+        return "平台可用，待绑定", "blue"
+    events = settings.get("tg_events") if isinstance(settings.get("tg_events"), dict) else {}
+    if events.get(event) is not True:
+        return "已绑定，事件未开启", "gray"
+    latest = get_database().fetch_one(
+        """SELECT status,sent_at,updated_at FROM quant_event_deliveries
+           WHERE user_id=? AND instrument_type=? ORDER BY id DESC LIMIT 1""",
+        (int(user["id"]), instrument_type),
     )
-    stock_tg = can(plan, "tg_stock_signal")
-    option_tg = can(plan, "tg_option_signal")
+    if latest and latest["status"] == "failed":
+        return "推送异常，系统重试中", "orange"
+    if latest and latest["status"] == "sent":
+        sent = _local_time(latest["sent_at"]).strftime("%m-%d %H:%M")
+        return f"推送中 · 最近 {sent}", "green"
+    return "推送中 · 等待新事件", "green"
+
+
+def _render_access_status(user: dict[str, Any], plan: str) -> None:
+    stock_status, stock_color = _telegram_status(user, "stock_signal", "tg_stock_signal", "stock")
+    option_status, option_color = _telegram_status(user, "option_signal", "tg_option_signal", "option")
     with st.container(horizontal=True, gap="small", vertical_alignment="center"):
         st.badge(plan, icon=":material/workspace_premium:", color="primary")
         st.badge(
@@ -227,14 +270,14 @@ def _render_access_status(plan: str) -> None:
             color="green" if can(plan, "signal_web") else "gray",
         )
         st.badge(
-            "正股 Telegram 已開啟" if stock_tg and telegram_ready else "正股 Telegram 平台暫停" if stock_tg else "正股 Telegram 未包含",
-            icon=":material/notifications_active:" if stock_tg and telegram_ready else ":material/notifications_off:",
-            color="blue" if stock_tg and telegram_ready else "gray",
+            f"正股 Telegram · {stock_status}",
+            icon=":material/notifications_active:" if stock_color == "green" else ":material/notifications_off:",
+            color=stock_color,
         )
         st.badge(
-            "期權 Telegram 已開啟" if option_tg and telegram_ready else "期權 Telegram 平台暫停" if option_tg else "期權 Telegram 未包含",
-            icon=":material/notifications_active:" if option_tg and telegram_ready else ":material/notifications_off:",
-            color="violet" if option_tg and telegram_ready else "gray",
+            f"期权 Telegram · {option_status}",
+            icon=":material/notifications_active:" if option_color == "green" else ":material/notifications_off:",
+            color=option_color,
         )
 
 
@@ -247,10 +290,20 @@ def _render_latest_action(records: list[dict[str, Any]], plan: str, market: str)
         )
         return
     if not records:
-        st.info(
-            f"{market}今日暂无经过验证的正式操作指令。策略服务器写入第一笔事件前，系统不会用评分候选冒充买卖信号。",
-            icon=":material/hourglass_empty:",
-        )
+        with st.container(border=True):
+            with st.container(horizontal=True, gap="small", vertical_alignment="center"):
+                st.badge("当前动作", icon=":material/pause_circle:", color="blue")
+                st.badge("等待", color="gray")
+            st.subheader(f"{market} · 暂不新增仓位", anchor=False)
+            st.write("当前没有通过策略交叉验证和风险闸门的新动作。等待本身也是系统决策，不需要用户配置任何任务。")
+            st.caption("系统会在收盘后自动复核，并在盘中数据或已验证事件触发时更新；下方研究候选仅用于观察，不冒充正式买卖。")
+            st.button(
+                "查看市场行情",
+                icon=":material/candlestick_chart:",
+                width="stretch",
+                on_click=_queue_page,
+                args=("terminal", "market_prefill", {"market": market}),
+            )
         return
 
     latest = records[-1]
@@ -282,51 +335,38 @@ def _render_latest_action(records: list[dict[str, Any]], plan: str, market: str)
     columns[3].metric("事件编号", f"#{event.get('id', '--')}", border=True)
     st.caption("记录价来自策略事件，不代表当前可成交价；执行前必须核对实时行情、账户资金和风险限制。")
 
+    quantity_delta = float(leg.get("quantity_delta") or 0)
+    price = float(leg.get("price") or 0)
+    if leg.get("instrument_type") == "stock" and quantity_delta and price > 0:
+        st.button(
+            "用模拟盘验证这笔操作",
+            type="primary",
+            icon=":material/order_approve:",
+            width="stretch",
+            on_click=_queue_page,
+            args=(
+                "trading",
+                "trade_prefill",
+                {
+                    "market": market,
+                    "symbol": leg.get("symbol"),
+                    "side": "BUY" if quantity_delta > 0 else "SELL",
+                    "quantity": max(1, int(abs(quantity_delta))),
+                    "price": price,
+                    "strategy": event.get("strategy_name") or "量化事件",
+                },
+            ),
+        )
+    elif leg.get("instrument_type") == "option":
+        st.caption("期权事件已记录，但个人期权订单通道尚未开放；请先复核真实合约、权利金与流动性。")
+
     reason = _safe_reason(event)
     with st.expander("为什么出现这笔操作", icon=":material/account_tree:"):
         st.markdown(reason or "策略事件没有附带可公开的决策说明。")
         st.caption(
-            f"来源 {event.get('source', '--')} · 外部编号 {event.get('external_event_id', '--')} · "
+            f"事件来源：策略服务 · 外部编号 {event.get('external_event_id', '--')} · "
             f"事件类型 {event.get('event_type', '--')}"
         )
-
-
-def _render_portfolio(replay: dict[str, Any], market: str) -> None:
-    currency = MARKET_CURRENCIES[market]
-    totals = replay.get("currencies", {}).get(currency, {})
-    positions = _position_frame(replay, market)
-    equity = float(totals.get("cash") or 0) + float(totals.get("market_value") or 0)
-    section_label("系统组合", "初始本金 100,000 · 按最后一笔账本记录价估值")
-    columns = st.columns(4, gap="small")
-    columns[0].metric("当前总资金", _money(equity, currency), border=True)
-    columns[1].metric("现金", _money(totals.get("cash"), currency), border=True)
-    columns[2].metric("持仓账本值", _money(totals.get("market_value"), currency), border=True)
-    columns[3].metric(
-        "累计盈亏",
-        _money(totals.get("total_pnl"), currency),
-        f"{float(totals.get('total_pnl') or 0) / INITIAL_CAPITAL[currency]:+.2%}",
-        border=True,
-    )
-    with st.expander(
-        f"查看当前持仓（{len(positions)}）",
-        icon=":material/account_balance_wallet:",
-    ):
-        if positions.empty:
-            st.info(f"{market}账本当前没有未平仓仓位。", icon=":material/inventory_2:")
-        else:
-            st.dataframe(
-                positions,
-                hide_index=True,
-                width="stretch",
-                column_config={
-                    "数量": st.column_config.NumberColumn(format="%.4f"),
-                    "平均成本": st.column_config.NumberColumn(format="%.4f"),
-                    "账本标记价": st.column_config.NumberColumn(format="%.4f"),
-                    "持仓价值": st.column_config.NumberColumn(format="%.2f"),
-                    "浮动盈亏": st.column_config.NumberColumn(format="%.2f"),
-                },
-            )
-        st.caption("账本估值用于保持策略时间线一致，不是券商账户实时净值。")
 
 
 def _render_research(frame: pd.DataFrame, market: str) -> pd.Series | None:
@@ -366,8 +406,64 @@ def _render_research(frame: pd.DataFrame, market: str) -> pd.Series | None:
     columns[1].metric("正式入场价", "未生成", "等待账本事件", border=True)
     columns[2].metric("止损参考", _money(selected["止损参考"], currency), "研究阈值", border=True)
     columns[3].metric("目标参考", _money(selected["目标参考"], currency), "不是收益保证", border=True)
-    st.markdown(f"**现在怎么看：** {selected['正股建议']}")
-    st.markdown("**建议数量：** 未生成。正式事件到达前，系统不会把模拟仓位包装成真实指令。")
+    score = int(selected["评分"])
+    action = "观察买入" if score >= 30 else "回避 / 减仓" if score <= -30 else "等待"
+    st.markdown(f"**现在怎么做：** {action}。{selected['正股建议']}")
+    if score >= 30:
+        budget = st.number_input(
+            f"本次模拟预算（{currency}）",
+            min_value=1_000.0,
+            max_value=10_000_000.0,
+            value=10_000.0,
+            step=1_000.0,
+            key=f"recommendations_budget_{market}",
+            help="这里只用于模拟仓位计算，不读取或改变你的券商资金。",
+        )
+        shares, risk_amount = position_size(
+            float(budget), float(selected["最新价"]), float(selected["止损参考"])
+        )
+        st.markdown(
+            f"**模拟数量：** {shares:,} 股 · 止损触发预计风险约 {currency} {risk_amount:,.2f}。"
+            "按预算 1% 风险并限制单一标的不超过预算 10%，取更小值。"
+        )
+        if shares > 0:
+            st.button(
+                "用模拟盘验证",
+                type="primary",
+                icon=":material/order_approve:",
+                width="stretch",
+                on_click=_queue_page,
+                args=(
+                    "trading",
+                    "trade_prefill",
+                    {
+                        "market": market,
+                        "symbol": str(selected["标的"]),
+                        "side": "BUY",
+                        "quantity": shares,
+                        "price": float(selected["最新价"]),
+                        "strategy": "量价研究候选",
+                    },
+                ),
+            )
+    elif score <= -30:
+        st.button(
+            "查看目前仓位",
+            type="primary",
+            icon=":material/account_balance_wallet:",
+            width="stretch",
+            on_click=_queue_page,
+            args=("dashboard",),
+        )
+    else:
+        st.button(
+            "查看市场行情",
+            type="primary",
+            icon=":material/candlestick_chart:",
+            width="stretch",
+            on_click=_queue_page,
+            args=("terminal", "market_prefill", {"market": market, "symbol": str(selected["标的"])}),
+        )
 
     with st.expander("查看评分证据与全部候选", icon=":material/analytics:"):
         st.markdown(f"**当前证据：** {selected['依据']}")
@@ -428,6 +524,11 @@ def _render_option_candidate(
             "这是结构研究候选，执行前必须复核真实合约代码、到期日、买卖价差、成交量、未平仓量和即时权利金。",
             icon=":material/fact_check:",
         )
+        st.info(
+            "止盈与止损不是固定等到价格触发。系统会按最新数据持续复核，可能提前建议止盈或退出；"
+            "请密切关注本站策略时间线及与你会员等级对应的 Telegram 推送。",
+            icon=":material/notifications_active:",
+        )
     st.caption(
         "当前页面不会把估算行权价伪装成可成交订单；只有量化账本写入经过验证的期权事件后，才会显示正式数量和记录价。"
     )
@@ -452,7 +553,7 @@ def _render_timeline(
     timeline = _timeline_frame(records)
     if timeline.empty:
         st.info(
-            f"{market}尚未接收到正式量化事件。策略服务器推送后，这里会形成持续且不可变的操作记录。",
+            f"{market}当前周期尚未发生已执行的量化买卖。第一笔正式动作出现后，记录会按时间永久追加；等待状态不会伪造为成交。",
             icon=":material/history:",
         )
         return
@@ -490,9 +591,9 @@ def render() -> None:
     }
     page_heading(
         "DECISION / VERIFIED ACTIONS",
-        "行动建议",
-        "先看量化系统真正做了什么，再看研究候选。正式指令、评分研究与期权结构使用不同状态，避免误判。",
-        "LEDGER FIRST · NO FABRICATED SIGNALS",
+        "今日行动",
+        "先回答现在做什么、买多少、何时退出；正式事件与研究候选始终明确区分。",
+        "ONE NEXT STEP · AUDITABLE HISTORY",
     )
     market = st.segmented_control(
         "市场",
@@ -500,33 +601,30 @@ def render() -> None:
         default="美股",
         key="recommendations_market",
         width="stretch",
+        required=True,
     ) or "美股"
-    _render_access_status(plan)
+    _render_access_status(user, plan)
     extras = _render_symbol_control(market)
 
     journal: QuantJournal | None = None
     records: list[dict[str, Any]] = []
-    replay: dict[str, Any] = {}
     ledger_error: Exception | None = None
     if can(plan, "signal_web"):
         try:
             journal = QuantJournal()
             events = journal.list_events(_system_ledger_key())
             records = _execution_records(journal, events, market)
-            replay = journal.replay(_system_ledger_key(), initial_cash=INITIAL_CAPITAL)
         except Exception as exc:
             ledger_error = exc
 
     if ledger_error:
         section_label("正式操作", "不可变账本")
         st.error(
-            f"量化账本暂时无法读取：{ledger_error}。研究候选仍可继续查看，但不会被标记为正式操作。",
+            "量化账本暂时无法读取。研究候选仍可继续查看，但不会被标记为正式操作；系统会自动重试。",
             icon=":material/database_off:",
         )
     else:
         _render_latest_action(records, plan, market)
-        if can(plan, "signal_web") and replay:
-            _render_portfolio(replay, market)
 
     try:
         with st.spinner("正在读取量价数据并更新研究候选…", show_time=True):

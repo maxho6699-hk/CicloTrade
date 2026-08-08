@@ -19,10 +19,10 @@ import streamlit as st
 from core.plans import can, effective_plan
 from core.quant_journal import QuantJournal
 from core.user_settings import load_user_settings, merge_user_settings
-from data.datasource import get_data_source, market_data_status
+from data.datasource import get_data_source, get_resilient_data_source, public_market_status
 from ui.components import market_tape, metric_grid, page_heading, section_label
 from ui.data import market_summary
-from ui.recommendations import A_SHARE_UNIVERSE, US_UNIVERSE, load_recommendations, render_recommendations
+from ui.recommendations import A_SHARE_UNIVERSE, US_UNIVERSE
 
 
 INTERVALS = {
@@ -75,14 +75,22 @@ def _events_for_symbol(
 
 @st.cache_data(ttl=5, max_entries=20, show_spinner=False)
 def _bars(symbol: str, period: str, interval: str, source_name: str = "yfinance") -> tuple[pd.DataFrame, datetime]:
-    frame = get_data_source(source_name).bars(symbol, period, interval)
+    selected = get_data_source(source_name)
+    try:
+        # Test doubles and custom adapters may not expose a health probe; their
+        # explicit selection still takes precedence over the fallback source.
+        healthy = selected.available() if hasattr(selected, "available") else True
+    except Exception:
+        healthy = False
+    source = selected if healthy else get_resilient_data_source(source_name)
+    frame = source.bars(symbol, period, interval)
     latest = pd.Timestamp(frame.index[-1])
     return frame, latest.to_pydatetime()
 
 
 @st.cache_data(ttl=30, max_entries=20, show_spinner=False)
 def _watchlist(symbols: tuple[str, ...] = WATCHLIST, market: str = "美股", source_name: str = "yfinance") -> pd.DataFrame:
-    source = get_data_source("yfinance" if market == "A股" else source_name)
+    source = get_resilient_data_source("yfinance" if market == "A股" else source_name)
     closes, volumes = source.history(symbols, period="5d")
     rows = []
     for symbol in symbols:
@@ -103,9 +111,9 @@ def _watchlist(symbols: tuple[str, ...] = WATCHLIST, market: str = "美股", sou
 
 @st.cache_data(ttl=600, max_entries=64, show_spinner=False)
 def _symbol_search(query: str, market: str, source_name: str) -> list[dict[str, str]]:
-    source = get_data_source("yfinance" if market == "A股" else source_name)
+    source = get_resilient_data_source("yfinance" if market == "A股" else source_name)
     results = source.search(query, market)
-    return results or (get_data_source("yfinance").search(query, market) if source_name != "yfinance" else [])
+    return results or (get_resilient_data_source("yfinance").search(query, market) if source_name != "yfinance" else [])
 
 
 def _canonical_symbol(symbol: str, market: str) -> str:
@@ -178,7 +186,7 @@ def _render_symbol_search(user_id: int, market: str, selector_key: str, active_k
                 st.warning("请输入股票代码或公司名称。", icon=":material/info:")
             else:
                 try:
-                    with st.spinner(f"正在查询 {'Yahoo Finance' if market == 'A股' else get_data_source(source_name).name} 证券目录…"):
+                    with st.spinner("正在查询市场证券目录…"):
                         st.session_state[results_key] = _symbol_search(query, market, source_name)
                 except Exception as exc:
                     st.session_state[results_key] = []
@@ -219,9 +227,13 @@ def _render_symbol_search(user_id: int, market: str, selector_key: str, active_k
 @st.cache_data(ttl=60, max_entries=4, show_spinner=False)
 def _tape_data(market: str = "美股", source_name: str = "yfinance"):
     symbols = ("SPY", "QQQ", "^VIX") if market == "美股" else ("000001.SS", "399001.SZ", "000300.SS")
-    source = get_data_source("yfinance" if market == "A股" else source_name)
+    source = get_resilient_data_source("yfinance" if market == "A股" else source_name)
     closes, _ = source.history(symbols, period="5d")
-    return closes, pd.Timestamp(closes.index[-1]).to_pydatetime(), source.name
+    return (
+        closes,
+        pd.Timestamp(closes.index[-1]).to_pydatetime(),
+        str(public_market_status(source_name, market)["display_source"]),
+    )
 
 
 def _indicators(frame: pd.DataFrame) -> pd.DataFrame:
@@ -461,10 +473,10 @@ def _live_panel(
             st.markdown("**主要资产 20 日相关矩阵**")
             try:
                 correlation_symbols = ("AAPL", "MSFT", "NVDA", "SPY", "QQQ") if market == "美股" else ("000001", "000858", "300750", "510300", "600519")
-                source = get_data_source(source_name)
+                source = get_resilient_data_source(source_name)
                 closes, _ = source.history(correlation_symbols, period="3mo")
                 corr = closes.pct_change().tail(20).corr()
-                st.dataframe(corr.style.background_gradient(cmap="RdYlGn", vmin=-1, vmax=1), width="stretch")
+                st.dataframe(corr.round(2), width="stretch")
             except Exception as exc:
                 st.error(f"相关矩阵不可用：{exc}")
 
@@ -533,15 +545,22 @@ def render() -> None:
     user = st.session_state.user
     user_id = int(user["id"])
     plan = effective_plan(user)
+    prefill = st.session_state.pop("market_prefill", None)
+    if isinstance(prefill, dict):
+        prefill_market = prefill.get("market") if prefill.get("market") in {"美股", "A股"} else "美股"
+        prefill_symbol = str(prefill.get("symbol") or ("AAPL" if prefill_market == "美股" else "600519")).upper()
+        st.session_state["terminal_market"] = prefill_market
+        st.session_state[f"terminal_active_symbol_{prefill_market}"] = prefill_symbol
+        st.session_state[f"terminal_symbol_{prefill_market}"] = prefill_symbol
     source_name = "yfinance" if st.session_state.get("terminal_market") == "A股" else os.getenv("DATA_SOURCE", "yfinance")
-    source_status = market_data_status(source_name)
+    source_status = public_market_status(source_name, st.session_state.get("terminal_market", "美股"))
     page_heading(
         "MARKET / LIVE TERMINAL",
-        "实时数据看板",
+        "市场行情",
         f"真实分钟 K 线、成交量与关键技术数据集中展示。当前为{source_status['freshness']}。",
-        f"5S K线 · 60S摘要 · {source_status['source'].upper()}",
+        f"{source_status['display_source']} · {source_status['freshness']}",
     )
-    market = st.segmented_control("市场", ["美股", "A股"], default="美股", key="terminal_market", width="stretch")
+    market = st.segmented_control("市场", ["美股", "A股"], default="美股", key="terminal_market", width="stretch", required=True)
     source_name = "yfinance" if market == "A股" else os.getenv("DATA_SOURCE", "yfinance")
     defaults = WATCHLIST if market == "美股" else A_SHARE_WATCHLIST
     saved = _saved_watchlist(user_id, market)
@@ -580,7 +599,6 @@ def render() -> None:
         else:
             st.caption("系统候选可直接查看；通过上方搜索可把其他股票加入个人自选。")
     period, interval = intervals[timeframe]
-    _render_quant_action_center(symbol, market, plan)
     _live_panel(
         symbol,
         period,
@@ -592,14 +610,3 @@ def render() -> None:
         can(plan, "signal_web"),
         can(plan, "option_chain"),
     )
-
-    section_label(
-        "数据建议",
-        f"系统候选 + {len(saved)} 只个人自选 · 6 个月真实日线量价综合评分",
-    )
-    try:
-        recommendations = load_recommendations(market, saved)
-        render_recommendations(recommendations)
-        st.caption("研究候选按量价评分生成，不包含个人适当性判断；A 股个股期权需另行核对交易所合约，执行前必须核对流动性与风险。")
-    except Exception as exc:
-        st.warning(f"数据建议暂时不可用：{exc}", icon=":material/cloud_off:")

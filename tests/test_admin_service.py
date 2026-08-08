@@ -11,6 +11,7 @@ import pytest
 from core.admin_service import AdminService
 from core.auth import AuthError, AuthService
 from core.database import DatabaseManager
+from core.user_settings import load_user_settings, merge_user_settings
 from payment.order_service import OrderService
 from ui.pages.growth import _canonical_social_url, _claim_daily_checkin, _submit_social_share
 
@@ -50,6 +51,10 @@ def test_rbac_user_subscription_and_global_controls(services):
     assert service.list_ips(admin["id"], customer["id"])[0]["ip_address"] == "203.0.113.10"
     service.set_recommendations_published(admin["id"], False)
     assert service.control_enabled("recommendations_published", True) is False
+    assert service.control_enabled("user_auto_trading_enabled", False) is True
+    with pytest.raises(PermissionError, match="超级管理员"):
+        service.set_user_auto_trading_enabled(support["id"], False)
+    service.set_user_auto_trading_enabled(admin["id"], False)
     assert service.control_enabled("user_auto_trading_enabled", True) is False
     service.set_user_auto_trading_enabled(admin["id"], True)
     assert service.control_enabled("user_auto_trading_enabled", False) is True
@@ -61,6 +66,35 @@ def test_rbac_user_subscription_and_global_controls(services):
     assert db.fetch_one("SELECT is_active FROM users WHERE id=?", (customer["id"],))["is_active"] == 0
     assert any(row["action_type"] == "ADMIN_USER_AUTO_TRADING_STATUS" for row in service.list_audit(admin["id"]))
     assert any(row["action_type"] == "ADMIN_USER_STATUS" for row in service.list_audit(admin["id"]))
+
+
+def test_live_platform_pause_requires_manual_user_resume(services, monkeypatch):
+    db, auth, admin, service = services
+    customer = _register(auth, "live-customer")
+    merge_user_settings(
+        customer["id"],
+        {
+            "live_auto_enabled": True,
+            "telegram": {"chat_id": "123456789", "consent": True, "verified": True},
+        },
+        db,
+    )
+    sent = []
+    monkeypatch.setattr("notification.telegram_bot.telegram_configured", lambda _target: True)
+    monkeypatch.setattr("notification.telegram_bot.send_telegram", lambda message, target: sent.append((message, target)))
+
+    paused = service.set_user_auto_trading_enabled(admin["id"], False)
+    settings = load_user_settings(customer["id"], db)
+    assert paused == {"affected": 1, "notified": 1}
+    assert settings["live_auto_enabled"] is False
+    assert settings["live_auto_platform_suspended"] is True
+
+    resumed = service.set_user_auto_trading_enabled(admin["id"], True)
+    settings = load_user_settings(customer["id"], db)
+    assert resumed == {"affected": 1, "notified": 1}
+    assert settings["live_auto_enabled"] is False
+    assert settings["live_auto_platform_suspended"] is True
+    assert len(sent) == 2
 
 
 def test_admin_ip_removal_revokes_only_matching_sessions(services):

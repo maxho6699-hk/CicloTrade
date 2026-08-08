@@ -72,7 +72,11 @@ def _set_live_auto(enabled: bool) -> None:
     db = get_database()
     if enabled and not user_auto_trading_open(db):
         raise ValueError("用户自动交易总开关当前关闭，请联系管理员申请开通。")
-    merge_user_settings(user_id, {"live_auto_enabled": enabled}, db)
+    merge_user_settings(
+        user_id,
+        {"live_auto_enabled": enabled, "live_auto_platform_suspended": False},
+        db,
+    )
     db.execute(
         "INSERT INTO user_action_logs (user_id,action_type,details,created_at) VALUES (?,?,?,datetime('now'))",
         (user_id, "LIVE_AUTO_ENABLE" if enabled else "LIVE_AUTO_DISABLE", f"enabled={enabled}"),
@@ -135,6 +139,22 @@ def _confirm_live_order(
 
 def render() -> None:
     user = st.session_state.user
+    prefill = st.session_state.pop("trade_prefill", None)
+    if isinstance(prefill, dict):
+        prefill_market = prefill.get("market") if prefill.get("market") in {"美股", "A股"} else "美股"
+        st.session_state["trading_market"] = prefill_market
+        st.session_state["trading_mode"] = "paper"
+        st.session_state[f"order_symbol_{prefill_market}"] = str(prefill.get("symbol") or ("AAPL" if prefill_market == "美股" else "600519"))
+        st.session_state[f"order_side_{prefill_market}"] = str(prefill.get("side") or "BUY")
+        st.session_state[f"order_quantity_{prefill_market}"] = max(1, int(prefill.get("quantity") or 1))
+        st.session_state[f"order_price_{prefill_market}"] = max(0.01, float(prefill.get("price") or 100))
+        st.session_state[f"order_strategy_{prefill_market}"] = str(prefill.get("strategy") or "手动下单")
+    for name, symbol in (("美股", "AAPL"), ("A股", "600519")):
+        st.session_state.setdefault(f"order_symbol_{name}", symbol)
+        st.session_state.setdefault(f"order_side_{name}", "BUY")
+        st.session_state.setdefault(f"order_quantity_{name}", 1)
+        st.session_state.setdefault(f"order_price_{name}", 100.0)
+        st.session_state.setdefault(f"order_strategy_{name}", "手动下单")
     plan = effective_plan(user)
     db = get_database()
     tiger = TigerAPI()
@@ -147,10 +167,16 @@ def render() -> None:
         "模拟盘用于验证订单与风控流程。实盘必须具备套餐权限、老虎凭证、额外签约与总开关。",
         "RISK FIRST · NO FAKE FILLS",
     )
-    market = st.segmented_control("市场", ["美股", "A股"], default="美股", key="trading_market")
-    mode = st.segmented_control("账户模式", ["paper", "live"], default="paper", format_func=lambda value: "模拟盘" if value == "paper" else "实盘")
+    market = st.segmented_control("市场", ["美股", "A股"], default="美股", key="trading_market", required=True)
+    mode = st.segmented_control(
+        "账户模式", ["paper", "live"], default="paper",
+        format_func=lambda value: "模拟盘" if value == "paper" else "实盘",
+        key="trading_mode",
+        required=True,
+    )
     user_settings = load_user_settings(int(user["id"]), db)
     user_live_enabled = user_settings.get("live_auto_enabled") is True
+    platform_suspended = user_settings.get("live_auto_platform_suspended") is True
     platform_auto_trading_open = user_auto_trading_open(db)
     contract_users = {value.strip() for value in os.getenv("TRADEAI_STOCK_AUTO_CONTRACT_USER_IDS", "").split(",") if value.strip()}
     operator_id = os.getenv("TRADEAI_LIVE_OPERATOR_USER_ID", "").strip()
@@ -192,13 +218,26 @@ def render() -> None:
             if st.button("立即关闭实盘自动交易", icon=":material/pause_circle:", width="stretch"):
                 _set_live_auto(False)
                 st.rerun()
-        elif bool(user.get("is_admin")) and can(plan, "real_trade"):
-            if st.button("申请开启我的实盘自动交易", icon=":material/verified_user:", width="stretch"):
+        elif live_entitled:
+            if platform_suspended:
+                st.info(
+                    "平台服务已经恢复，但不会替你自动重启。请重新确认后自行开启。",
+                    icon=":material/restart_alt:",
+                )
+            if st.button("开启我的实盘自动交易", icon=":material/verified_user:", width="stretch"):
                 _confirm_live_auto_enable()
         elif can(plan, "real_trade"):
             st.info(
-                "Tiger 实盘目前仅供平台管理员联调。高阶会员请联系 Telegram @Maxooo8 了解开放条件。",
+                "你的会员包含受控实盘申请资格，但个人券商凭证隔离尚未完成。请联系管理员评估；"
+                "系统不会把平台共享账户用于你的交易。",
                 icon=":material/support_agent:",
+            )
+            st.link_button(
+                "联系管理员评估",
+                "https://t.me/Maxooo8",
+                icon=":material/support_agent:",
+                type="primary",
+                width="stretch",
             )
         else:
             st.info("当前会员等级不包含实盘自动交易；模拟盘可继续使用。", icon=":material/lock:")
@@ -221,18 +260,32 @@ def render() -> None:
             with columns[0]:
                 symbol = st.text_input(
                     "标的",
-                    value="AAPL" if market == "美股" else "600519",
                     max_chars=12,
                     key=f"order_symbol_{market}",
                 ).strip().upper()
-                side = st.segmented_control("方向", ["BUY", "SELL"], default="BUY")
+                side = st.segmented_control(
+                    "方向", ["BUY", "SELL"], default="BUY", key=f"order_side_{market}", required=True
+                )
             with columns[1]:
-                quantity = st.number_input("数量", 1, 10_000, 1, 1)
+                quantity = st.number_input(
+                    "数量", 1, 10_000, 1, 1, key=f"order_quantity_{market}"
+                )
                 currency = "USD" if market == "美股" else "CNY"
-                price = st.number_input(f"限价（{currency}）", 0.01, 1_000_000.0, 100.0, 0.5)
+                price = st.number_input(
+                    f"限价（{currency}）", 0.01, 1_000_000.0, 100.0, 0.5,
+                    key=f"order_price_{market}",
+                )
             with columns[2]:
-                strategy_options = [item["name"] for item in allowed_strategies] or ["手动下单"]
-                strategy = st.selectbox("订单来源", strategy_options)
+                strategy_options = list(dict.fromkeys([
+                    "手动下单", "量价研究候选", "量化事件",
+                    *[item["name"] for item in allowed_strategies],
+                ]))
+                saved_strategy = st.session_state[f"order_strategy_{market}"]
+                if saved_strategy not in strategy_options:
+                    strategy_options.append(saved_strategy)
+                strategy = st.selectbox(
+                    "订单来源", strategy_options, key=f"order_strategy_{market}"
+                )
                 st.metric("名义金额", f"{currency} {int(quantity) * float(price):,.2f}", border=True)
             submitted = st.form_submit_button("提交订单", type="primary", icon=":material/send:")
         if submitted:
@@ -246,14 +299,19 @@ def render() -> None:
             elif mode == "live":
                 _confirm_live_order(symbol, side, int(quantity), float(price), strategy)
             else:
-                _execute_order(
+                if _execute_order(
                     symbol=symbol,
                     side=side,
                     quantity=int(quantity),
                     price=float(price),
                     strategy=strategy,
                     mode="paper",
-                )
+                ):
+                    st.session_state["dashboard_market"] = (
+                        "我的美股模拟" if market == "美股" else "我的 A 股模拟"
+                    )
+                    st.session_state["pending_page"] = "dashboard"
+                    st.rerun()
 
     section_label("订单记录", "模拟记录与券商订单明确区分")
     orders = db.fetch_all("SELECT * FROM orders WHERE reason=? ORDER BY created_at DESC LIMIT 100", (f"user={user['id']}",))
@@ -310,7 +368,7 @@ def render() -> None:
                     alias = st.text_input("账户别名", max_chars=50)
                 with columns[2]:
                     external_id = st.text_input("券商账户 ID", max_chars=80, autocomplete="off")
-                account_mode = st.segmented_control("环境", ["paper", "live"], default="paper")
+                account_mode = st.segmented_control("环境", ["paper", "live"], default="paper", required=True)
                 add_account = st.form_submit_button("添加券商账户", icon=":material/add:")
             if add_account:
                 if account_limit is not None and len(accounts) >= limits["broker_accounts"]:

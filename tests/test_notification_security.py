@@ -11,8 +11,10 @@ from notification.telegram_bot import (
     issue_verification_token,
     send_telegram,
     telegram_configured,
+    update_notification_preference,
     verified_user_target,
 )
+from core.user_settings import load_user_settings, merge_user_settings
 
 
 def test_user_telegram_requires_consent_verification_and_enabled_event(monkeypatch):
@@ -107,3 +109,35 @@ def test_membership_update_uses_system_entitlement_without_trade_event_toggle():
     future = "2099-01-01T00:00:00+00:00"
 
     assert entitled_user_target({"plan_type": "标准版", "subscription_expire": future}, settings, "membership_update") == "123456789"
+
+
+def test_private_notify_command_syncs_website_settings_and_enforces_plan(tmp_path):
+    db = DatabaseManager(str(tmp_path / "notify-settings.db"))
+    user = AuthService(db).register("notify@example.com", "Correct1", "Notify", True)
+    db.execute(
+        "UPDATE users SET plan_type='高级版',subscription_expire='2099-01-01T00:00:00+00:00' WHERE id=?",
+        (user["id"],),
+    )
+    merge_user_settings(
+        user["id"],
+        {
+            "telegram": {"chat_id": "123456789", "consent": True, "verified": True},
+            "tg_events": {},
+        },
+        db,
+    )
+
+    reply = update_notification_preference(db, "123456789", "/notify stock on")
+    blocked = update_notification_preference(db, "123456789", "/notify option on")
+
+    assert "已开启" in reply
+    assert load_user_settings(user["id"], db)["tg_events"]["stock_signal"] is True
+    assert "当前会员等级" in blocked
+    assert load_user_settings(user["id"], db)["tg_events"].get("option_signal") is not True
+
+
+def test_private_id_command_returns_binding_steps_without_account_lookup(tmp_path):
+    db = DatabaseManager(str(tmp_path / "notify-id.db"))
+    reply = update_notification_preference(db, "123456789", "/id")
+    assert "Chat ID：123456789" in reply
+    assert "账户与安全" in reply

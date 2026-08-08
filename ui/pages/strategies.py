@@ -6,20 +6,78 @@ from __future__ import annotations
 import html
 from datetime import datetime
 from core.compat import UTC
+import os
 
 import plotly.graph_objects as go
 import pandas as pd
 import streamlit as st
 
 from core.plans import can, effective_plan
+from core.quant_journal import QuantJournal
 from core.database import get_database
 from core.strategy_registry import StrategyRegistry
 from core.strategy_scoring import StrategyScorer
-from data.datasource import get_data_source
+from data.datasource import get_resilient_data_source
 from payment.order_service import OrderService
 from strategies.signal_generator import generate_signal
 from ui.components import metric_grid, page_heading, section_label
 from ui.data import MYSTIC_REFERENCES, STRATEGIES, breakeven_points, strategy_curve
+
+
+def _render_system_performance() -> None:
+    section_label("系统组合表现", "独立策略账本 · 不是客户资金或收益保证")
+    currency = st.segmented_control(
+        "组合币种", ["USD", "CNY"], default="USD", key="strategy_performance_currency", required=True
+    ) or "USD"
+    try:
+        performance = QuantJournal().performance_windows(
+            os.getenv("TRADEAI_SYSTEM_LEDGER_KEY", "tradeai-system"), currency
+        )
+    except (RuntimeError, ValueError):
+        st.error("系统策略表现暂时无法读取。", icon=":material/database_off:")
+        return
+    if not performance:
+        st.info(
+            "策略服务完成第一笔收盘净值快照后，这里会自动显示连续业绩；系统不会补造历史收益。",
+            icon=":material/monitoring:",
+        )
+        return
+    current = performance["current"]
+    pnl = float(current["total_pnl"])
+    metric_grid(
+        (
+            ("系统总权益", f"{currency} {float(current['total_equity']):,.2f}", f"基准 {currency} {float(current['initial_cash']):,.2f}", ""),
+            ("累计盈亏", f"{currency} {pnl:+,.2f}", "已实现 + 浮动", "positive" if pnl >= 0 else "negative"),
+            ("已实现盈亏", f"{currency} {float(current['realized_pnl']):+,.2f}", "已平仓结果", ""),
+            ("浮动盈亏", f"{currency} {float(current['unrealized_pnl']):+,.2f}", "当前未平仓", ""),
+        )
+    )
+    rows = []
+    for label, window in performance["windows"].items():
+        rows.append(
+            {
+                "周期": label,
+                "期间盈亏": float(window["pnl"]) if window["available"] else None,
+                "期间收益率": window.get("return") if window["available"] else None,
+                "数据状态": "完整" if window["available"] else "历史不足",
+            }
+        )
+    st.dataframe(
+        pd.DataFrame(rows),
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "期间盈亏": st.column_config.NumberColumn(format=f"{currency} %+.2f"),
+            "期间收益率": st.column_config.NumberColumn(format="percent"),
+        },
+    )
+    captured = pd.Timestamp(current["captured_at"])
+    if captured.tzinfo is None:
+        captured = captured.tz_localize("UTC")
+    st.caption(
+        f"最后快照 {captured.tz_convert('Asia/Taipei').strftime('%Y-%m-%d %H:%M')}（台北） · "
+        f"{performance['snapshot_count']} 个不可变净值快照。"
+    )
 
 
 def _cards(items: list[dict], selected: str) -> str:
@@ -91,7 +149,12 @@ def render(config: dict | None = None) -> None:
             )
         st.caption(f"評估日期 {ranking[0]['eval_date']} · 30 日末位進入觀察池，60 日末位僅標記待淘汰，必須由管理員確認。")
     else:
-        st.info("尚無可驗證的每日評分。啟用排程並完成第一次收盤後回測後，這裡才會顯示真實 Top 3。", icon=":material/schedule:")
+        st.info(
+            "每日评分等待下一次收盘评估。系统任务会自动运行；当前仍可查看策略目录、系统组合与损益实验室。",
+            icon=":material/schedule:",
+        )
+
+    _render_system_performance()
 
     section_label("选择市场观点", "筛选后选择策略查看完整分析")
     available_names = {item["name"] for item in available_definitions}
@@ -106,6 +169,7 @@ def render(config: dict | None = None) -> None:
         default="全部",
         key="strategy_category",
         width="stretch",
+        required=True,
     )
     filtered = [item for item in catalog if category == "全部" or item["category"] == category]
     if not filtered:
@@ -143,7 +207,7 @@ def render(config: dict | None = None) -> None:
             st.code(signal, language="text")
             if st.button("生成可复制信号", icon=":material/content_copy:"):
                 try:
-                    closes, _ = get_data_source().history(("AAPL",), period="3mo")
+                    closes, _ = get_resilient_data_source().history(("AAPL",), period="3mo")
                     generated = generate_signal(strategy["name"], "AAPL", closes["AAPL"])
                     st.session_state.generated_signal = (
                         f"策略：{generated['strategy']}\n标的：{generated['symbol']}\n方向：{generated['direction']}\n"

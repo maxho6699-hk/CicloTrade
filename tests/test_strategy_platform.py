@@ -55,7 +55,7 @@ def test_catalog_sync_and_database_registration_are_dynamic_and_preserve_admin_s
     registry = StrategyRegistry(db)
     synced = registry.sync_catalog()
 
-    assert len(synced) == 13
+    assert len(synced) == 14
     assert len(registry.list(family="option")) == 8
     registry.set_active("option_long_call", False)
     registry.sync_catalog()
