@@ -20,6 +20,14 @@ try {
     $session = New-SSHSession -ComputerName $server -Credential $credential -AcceptKey -ConnectionTimeout 20 -ErrorAction Stop
     New-SSHLocalPortForward -SessionId $session.SessionId -BoundHost "127.0.0.1" -BoundPort $localPort -RemoteAddress "127.0.0.1" -RemotePort 22222 | Out-Null
 
+    # OpenD may keep returning a previously downloaded image. Move it aside so
+    # this run cannot continue until a genuinely new captcha has been written.
+    $captchaStalePath = "$captchaRemotePath.stale-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+    $prepareResult = Invoke-SSHCommand -SessionId $session.SessionId -Command "if [ -f '$captchaRemotePath' ]; then mv -- '$captchaRemotePath' '$captchaStalePath'; fi"
+    if ($prepareResult.ExitStatus -ne 0) {
+        throw "无法清理旧验证码图片。"
+    }
+
     $requestClient = [Net.Sockets.TcpClient]::new()
     $requestClient.Connect("127.0.0.1", $localPort)
     try {
@@ -29,9 +37,22 @@ try {
         try { [void]$requestStream.Read($requestBuffer, 0, $requestBuffer.Length) } catch [System.IO.IOException] { }
         $requestPayload = [Text.Encoding]::UTF8.GetBytes("req_pic_verify_code`r`n")
         $requestStream.Write($requestPayload, 0, $requestPayload.Length)
-        Start-Sleep -Milliseconds 1000
+        Start-Sleep -Milliseconds 500
     } finally {
         $requestClient.Dispose()
+    }
+
+    $captchaReady = $false
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        $checkResult = Invoke-SSHCommand -SessionId $session.SessionId -Command "test -s '$captchaRemotePath'"
+        if ($checkResult.ExitStatus -eq 0) {
+            $captchaReady = $true
+            break
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    if (-not $captchaReady) {
+        throw "OpenD 未生成新的验证码图片，请确认服务仍在等待图形验证。"
     }
 
     $captchaName = "ciclotrade-opend-captcha-{0}.png" -f (Get-Date -Format "yyyyMMdd-HHmmss")
