@@ -10,6 +10,7 @@ from ui.pages.admin import _captcha_is_expired
 
 
 PNG = b"\x89PNG\r\n\x1a\n"
+JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00"
 
 
 def test_captcha_refresh_returns_only_a_new_valid_image(tmp_path, monkeypatch):
@@ -24,6 +25,34 @@ def test_captcha_refresh_returns_only_a_new_valid_image(tmp_path, monkeypatch):
 
     monkeypatch.setattr(controller, "_exchange", refresh)
     assert controller.request_captcha() == PNG + b"new"
+
+
+def test_captcha_refresh_accepts_opend_jpeg_with_png_filename(tmp_path, monkeypatch):
+    captcha = tmp_path / "PicVerifyCode.png"
+    captcha.write_bytes(PNG + b"old")
+    controller = OpenDVerificationController(captcha)
+
+    def refresh(command: str) -> str:
+        assert command == "req_pic_verify_code"
+        captcha.write_bytes(JPEG + b"new")
+        return "OK"
+
+    monkeypatch.setattr(controller, "_exchange", refresh)
+    assert controller.request_captcha() == JPEG + b"new"
+
+
+def test_captcha_refresh_rejects_unsupported_image_content(tmp_path, monkeypatch):
+    captcha = tmp_path / "PicVerifyCode.png"
+    captcha.write_bytes(PNG + b"old")
+    controller = OpenDVerificationController(captcha)
+
+    def refresh(_command: str) -> str:
+        captcha.write_bytes(b"not-an-image")
+        return "OK"
+
+    monkeypatch.setattr(controller, "_exchange", refresh)
+    with pytest.raises(OpenDControlError, match="图片无效"):
+        controller.request_captcha()
 
 
 def test_captcha_submission_is_strict_and_never_accepts_other_commands(monkeypatch, tmp_path):

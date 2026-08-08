@@ -23,6 +23,7 @@ _DEFAULT_CAPTCHA_PATH = Path(
 _CAPTCHA_RE = re.compile(r"^[A-Za-z0-9]{4}$")
 _INPUT_COMMAND_RE = re.compile(r"^input_pic_verify_code -code=[A-Za-z0-9]{4}$")
 _PNG_HEADER = b"\x89PNG\r\n\x1a\n"
+_JPEG_HEADER = b"\xff\xd8\xff"
 _MAX_CAPTCHA_BYTES = 512 * 1024
 _PROBE_CACHE_SECONDS = 5.0
 _probe_cache: dict[tuple[str, int], tuple[float, "OpenDStatus"]] = {}
@@ -135,7 +136,7 @@ class OpenDVerificationController:
             image = self._captcha_path.read_bytes()
         except OSError as exc:
             raise OpenDControlError("网站服务暂时无法读取 OpenD 验证码。") from exc
-        if not image.startswith(_PNG_HEADER):
+        if not image.startswith((_PNG_HEADER, _JPEG_HEADER)):
             raise OpenDControlError("OpenD 返回的验证码图片无效。")
         fingerprint = (metadata.st_mtime_ns, len(image), hashlib.sha256(image).hexdigest())
         return fingerprint, image
