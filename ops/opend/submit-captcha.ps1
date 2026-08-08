@@ -10,7 +10,11 @@ if (-not (Test-Path -LiteralPath $rootPasswordPath -PathType Leaf)) {
     throw "找不到 $rootPasswordPath"
 }
 
-Import-Module Posh-SSH
+$userPowerShellModules = Join-Path $env:USERPROFILE "Documents\PowerShell\Modules"
+if (Test-Path -LiteralPath $userPowerShellModules) {
+    $env:PSModulePath = "$userPowerShellModules;$env:PSModulePath"
+}
+Import-Module Posh-SSH -ErrorAction Stop
 $rootPassword = (Get-Content -Raw -LiteralPath $rootPasswordPath).Trim()
 $securePassword = ConvertTo-SecureString $rootPassword -AsPlainText -Force
 $credential = [pscredential]::new("root", $securePassword)
