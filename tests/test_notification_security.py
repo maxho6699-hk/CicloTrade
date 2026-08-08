@@ -130,14 +130,14 @@ def test_private_notify_command_syncs_website_settings_and_enforces_plan(tmp_pat
     reply = update_notification_preference(db, "123456789", "/notify stock on")
     blocked = update_notification_preference(db, "123456789", "/notify option on")
 
-    assert "已开启" in reply
+    assert "已開啟" in reply
     assert load_user_settings(user["id"], db)["tg_events"]["stock_signal"] is True
-    assert "当前会员等级" in blocked
+    assert "目前會員等級" in blocked
     assert load_user_settings(user["id"], db)["tg_events"].get("option_signal") is not True
 
 
 def test_private_id_command_returns_binding_steps_without_account_lookup(tmp_path):
     db = DatabaseManager(str(tmp_path / "notify-id.db"))
     reply = update_notification_preference(db, "123456789", "/id")
-    assert "Chat ID：123456789" in reply
+    assert "Chat ID" in reply and "<code>123456789</code>" in reply
     assert "账户与安全" in reply

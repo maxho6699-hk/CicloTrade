@@ -289,7 +289,13 @@ def test_group_signal_routes_follow_membership_superset(tmp_path, monkeypatch):
     assert "美股 AAPL" in professional and "🟢 AAPL" in professional
     assert "止損 $180.00" in advanced and "目標 $240.00" in advanced
     assert "止損 $3.50" in professional and "目標 $8.00" in professional
-    assert all(kwargs["parse_mode"] == "HTML" and kwargs["button"][0] == "查看即時數據" for _, _, kwargs in sent)
+    assert all(
+        kwargs["parse_mode"] == "HTML"
+        and len(kwargs["buttons"]) == 2
+        and all(len(row) == 2 for row in kwargs["buttons"])
+        and all("callback_data" not in button for row in kwargs["buttons"] for button in row)
+        for _, _, kwargs in sent
+    )
 
 
 def test_free_group_signals_are_queued_with_stock_and_option_delays(tmp_path, monkeypatch):
@@ -316,7 +322,12 @@ def test_free_group_signals_are_queued_with_stock_and_option_delays(tmp_path, mo
     assert {target for _, target, _ in sent} == {"-1003794694425"}
     assert any("期權延遲 15 分鐘" in message and "🟢 AAPL" in message for message, _, _ in sent)
     assert any("正股延遲 1 小時" in message and "美股 AAPL" in message for message, _, _ in sent)
-    assert all(kwargs["button"][0] == "升級會員" for _, _, kwargs in sent)
+    assert all(
+        len(kwargs["buttons"]) == 2
+        and all(len(row) == 2 for row in kwargs["buttons"])
+        and any(button["text"] == "💎 升級會員" for row in kwargs["buttons"] for button in row)
+        for _, _, kwargs in sent
+    )
 
 
 def test_daily_group_summary_requires_new_persisted_snapshot(tmp_path, monkeypatch):

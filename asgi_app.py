@@ -33,10 +33,13 @@ from core.quant_journal import QuantJournal
 from core.signal_imports import SignalImportService
 from core.user_settings import load_user_settings
 from notification.telegram_bot import (
+    answer_telegram_callback,
+    edit_telegram_message,
     entitled_user_target,
     send_telegram,
+    telegram_bot_response,
+    telegram_callback_allowed,
     telegram_configured,
-    update_notification_preference,
 )
 from notification.templates import telegram_incident, telegram_order_message
 from payment.order_service import OrderService
@@ -810,24 +813,76 @@ async def paypal_cancel(request):
 async def telegram_webhook(request):
     secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
     provided = request.headers.get("x-telegram-bot-api-secret-token", "")
-    if not secret or not hmac.compare_digest(provided, secret):
+    if not secret or len(provided) > 256 or not hmac.compare_digest(provided, secret):
         raise ApiError("Telegram webhook 未授权。", 401)
     payload = await _json_object(request, 65_536)
+    database = get_database()
+
+    def private_message(source: object) -> tuple[str, int] | None:
+        if not isinstance(source, dict):
+            return None
+        chat = source.get("chat")
+        message_id = source.get("message_id")
+        if (
+            not isinstance(chat, dict)
+            or chat.get("type") != "private"
+            or isinstance(chat.get("id"), bool)
+            or not isinstance(chat.get("id"), int)
+            or chat["id"] <= 0
+            or isinstance(message_id, bool)
+            or not isinstance(message_id, int)
+            or not 1 <= message_id <= 2_147_483_647
+        ):
+            return None
+        return str(chat["id"]), message_id
+
     message = payload.get("message")
-    if not isinstance(message, dict) or not isinstance(message.get("text"), str):
+    if isinstance(message, dict) and isinstance(message.get("text"), str):
+        destination = private_message(message)
+        text = message["text"]
+        if destination is None or not text.strip() or len(text) > 512:
+            return JSONResponse({"ok": True})
+        chat_id, _ = destination
+        reply, keyboard = telegram_bot_response(database, chat_id, text)
+        try:
+            await asyncio.to_thread(send_telegram, reply, chat_id, parse_mode="HTML", buttons=keyboard)
+        except RuntimeError as exc:
+            database.log_system_event("WARN", "TELEGRAM", "Telegram 设置回覆失败", str(exc)[:500])
         return JSONResponse({"ok": True})
-    chat = message.get("chat")
-    if not isinstance(chat, dict) or chat.get("type") != "private":
+
+    callback = payload.get("callback_query")
+    if not isinstance(callback, dict):
         return JSONResponse({"ok": True})
-    chat_id = str(chat.get("id") or "")
+    callback_id = callback.get("id")
+    destination = private_message(callback.get("message"))
+    data = callback.get("data")
+    actor = callback.get("from")
+    if (
+        not isinstance(callback_id, str)
+        or not 1 <= len(callback_id) <= 128
+        or destination is None
+        or not isinstance(actor, dict)
+        or isinstance(actor.get("id"), bool)
+        or not isinstance(actor.get("id"), int)
+        or actor["id"] <= 0
+        or str(actor["id"]) != destination[0]
+        or not telegram_callback_allowed(data)
+    ):
+        return JSONResponse({"ok": True})
+    chat_id, message_id = destination
     try:
-        reply = update_notification_preference(get_database(), chat_id, message["text"])
-    except ValueError as exc:
-        reply = str(exc)
-    try:
-        await asyncio.to_thread(send_telegram, reply, chat_id)
+        await asyncio.to_thread(answer_telegram_callback, callback_id)
+        reply, keyboard = telegram_bot_response(database, chat_id, data, callback=True)
+        await asyncio.to_thread(
+            edit_telegram_message,
+            chat_id,
+            message_id,
+            reply,
+            buttons=keyboard,
+            parse_mode="HTML",
+        )
     except RuntimeError as exc:
-        get_database().log_system_event("WARN", "TELEGRAM", "Telegram 设置回覆失败", str(exc)[:500])
+        database.log_system_event("WARN", "TELEGRAM", "Telegram callback 回覆失败", str(exc)[:500])
     return JSONResponse({"ok": True})
 
 

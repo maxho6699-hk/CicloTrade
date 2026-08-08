@@ -82,11 +82,9 @@ def telegram_order_message(mode: str, side: str, quantity: int, symbol: str, pri
     return "\n".join(
         (
             f"{icon} CicloTrade · {'實盤' if live else '模擬盤'}訂單",
-            "━━━━━━━━━━━━━━",
             f"{symbol} · {str(side).upper()} · {int(quantity):,} 股",
             f"限價　USD {float(price):,.2f}",
             f"狀態　{status}",
-            "━━━━━━━━━━━━━━",
             "已送出券商訂單。" if live else "已寫入模擬交易帳本，未動用真實資金。",
             "研究與風控提示，不構成投資建議。",
         )
@@ -157,9 +155,7 @@ def telegram_quant_message(
 ) -> str:
     label = {"signal": "已執行", "correction": "已更正", "reversal": "已撤銷"}[event["event_type"]]
     lines = [
-        "╔══════════════════╗",
         f"📊 <b>CicloTrade · 模擬帳戶{label}</b>",
-        "╚══════════════════╝",
     ]
     if delay_note:
         lines.append(f"⏱ <b>{escape(delay_note)}</b>")
@@ -211,7 +207,7 @@ def telegram_daily_summary(
 ) -> str:
     total_pnl = sum(float(snapshot["total_pnl"]) for snapshot, _ in items)
     icon = "🟢" if total_pnl >= 0 else "🔴"
-    lines = ["╔══════════════════╗", f"{icon} <b>CicloTrade · 每日總結</b>", "╚══════════════════╝"]
+    lines = [f"{icon} <b>CicloTrade · 每日總結</b>"]
     if delay_note:
         lines.append(f"⏱ <b>{escape(delay_note)}</b>")
     risks = risk_levels if isinstance(risk_levels, dict) else {}
@@ -265,25 +261,23 @@ def telegram_daily_summary(
 
 
 def telegram_price_alert(content: str) -> str:
-    return f"⚠️ CicloTrade · 價格預警\n━━━━━━━━━━━━━━\n{content}\n━━━━━━━━━━━━━━\n請先核對即時行情與風險限制。"
+    return f"⚠️ <b>CicloTrade · 價格預警</b>\n<blockquote>{escape(str(content))}</blockquote>\n請先核對即時行情與風險限制。"
 
 
 def telegram_binding(code: str) -> str:
-    return f"🔐 CicloTrade · Telegram 綁定\n━━━━━━━━━━━━━━\n一次性驗證碼　{code}\n15 分鐘內回到網站完成確認。"
+    return f"🔐 CicloTrade · Telegram 綁定\n一次性驗證碼　{code}\n15 分鐘內回到網站完成確認。"
 
 
 def telegram_membership(plan: str, expiry: str, reason: str) -> str:
-    return f"💎 CicloTrade · 會員權益已更新\n━━━━━━━━━━━━━━\n方案　{plan}\n有效期至　{expiry}\n說明　{reason}\n━━━━━━━━━━━━━━\n登入網站即可使用已開放功能。"
+    return f"💎 CicloTrade · 會員權益已更新\n方案　{plan}\n有效期至　{expiry}\n說明　{reason}\n登入網站即可使用已開放功能。"
 
 
 def telegram_live_service_paused() -> str:
     return (
         "⛔ CicloTrade · 實盤自動交易已暫停\n"
-        "━━━━━━━━━━━━━━\n"
         "平台已停止新的實盤自動操作，並關閉你的個人實盤開關。\n"
         "現有券商綁定資料仍會保留，但系統不會代你平倉。\n\n"
         "請立即登入券商帳戶核對持倉、未完成訂單與風險，並按需要自行撤單或平倉。\n"
-        "━━━━━━━━━━━━━━\n"
         "恢復服務後不會自動重啟；請等待下一則通知，再回到網站手動開啟。"
     )
 
@@ -291,13 +285,11 @@ def telegram_live_service_paused() -> str:
 def telegram_live_service_resumed() -> str:
     return (
         "✅ CicloTrade · 實盤自動交易可重新申請\n"
-        "━━━━━━━━━━━━━━\n"
         "平台服務已恢復，但你的個人實盤開關仍保持關閉。\n"
         "券商綁定資料無需重新填寫；請登入網站核對帳戶與風控後，手動開啟實盤自動交易。\n"
-        "━━━━━━━━━━━━━━\n"
         "系統不會在未經你再次確認時自動恢復任何實盤操作。"
     )
 
 
 def telegram_incident(incident_id: str, incident_type: str) -> str:
-    return f"🚨 CicloTrade · 系統異常\n━━━━━━━━━━━━━━\n事件編號　{incident_id}\n類型　{incident_type}\n請前往管理後台檢查日誌。"
+    return f"🚨 CicloTrade · 系統異常\n事件編號　{incident_id}\n類型　{incident_type}\n請前往管理後台檢查日誌。"

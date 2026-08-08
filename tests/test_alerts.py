@@ -184,7 +184,7 @@ def test_price_alert_telegram_requires_advanced_plan_and_verified_consent(db, mo
     monkeypatch.setattr("scheduler.jobs.telegram_configured", lambda *_: True)
     monkeypatch.setattr(
         "scheduler.jobs.send_telegram",
-        lambda message, chat_id=None: sent.append((message, chat_id)),
+        lambda message, chat_id=None, **_kwargs: sent.append((message, chat_id)),
     )
 
     assert scan_price_alerts(db, Prices()) == 3
@@ -221,7 +221,7 @@ def test_price_alert_delivery_retries_without_reactivating_alert(db, monkeypatch
     sent = []
     monkeypatch.setattr(
         "scheduler.jobs.send_telegram",
-        lambda message, chat_id=None: sent.append((message, chat_id)),
+        lambda message, chat_id=None, **_kwargs: sent.append((message, chat_id)),
     )
     assert dispatch_price_alert_deliveries(db) == 1
     assert sent and sent[0][1] == "2001"

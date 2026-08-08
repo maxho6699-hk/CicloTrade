@@ -588,7 +588,7 @@ def test_background_telegram_uses_only_verified_user_destination(db, monkeypatch
     monkeypatch.setattr("scheduler.jobs.telegram_configured", lambda *_: True)
     monkeypatch.setattr(
         "scheduler.jobs.send_telegram",
-        lambda message, chat_id=None: sent.append((message, chat_id)),
+        lambda message, chat_id=None, **_kwargs: sent.append((message, chat_id)),
     )
     assert scan_price_alerts(db, Prices()) == 2
     assert len(sent) == 1 and sent[0][1] == "123456789"

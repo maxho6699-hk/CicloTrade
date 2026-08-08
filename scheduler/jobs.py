@@ -205,11 +205,34 @@ def _quant_message(
 
 def _send_quant_card(message: str, target: str, *, upgrade: bool = False) -> None:
     base = os.getenv("APP_BASE_URL", "https://ciclotrade.com").rstrip("/")
+    buttons = (
+        [
+            [
+                {"text": "📈 今日行動", "url": f"{base}/recommendations"},
+                {"text": "💼 目前持倉", "url": f"{base}/dashboard"},
+            ],
+            [
+                {"text": "📊 市場行情", "url": f"{base}/terminal"},
+                {"text": "⚙️ 網站設定", "url": f"{base}/settings"},
+            ],
+        ]
+        if not upgrade
+        else [
+            [
+                {"text": "📈 延遲行情", "url": f"{base}/recommendations"},
+                {"text": "💎 升級會員", "url": f"{base}/subscription"},
+            ],
+            [
+                {"text": "📊 市場行情", "url": f"{base}/terminal"},
+                {"text": "❓ 方案說明", "url": f"{base}/subscription"},
+            ],
+        ]
+    )
     send_telegram(
         message,
         chat_id=target,
         parse_mode="HTML",
-        button=("升級會員" if upgrade else "查看即時數據", f"{base}/{'subscription' if upgrade else 'recommendations'}"),
+        buttons=buttons,
     )
 
 
@@ -542,7 +565,7 @@ def dispatch_price_alert_deliveries(database=None, limit: int = 100) -> int:
         try:
             if not telegram_configured(target):
                 raise RuntimeError("Telegram Bot 尚未配置")
-            send_telegram(telegram_price_alert(delivery["content"]), chat_id=target)
+            send_telegram(telegram_price_alert(delivery["content"]), chat_id=target, parse_mode="HTML")
         except TelegramDeliveryUncertain as exc:
             db.execute(
                 "UPDATE price_alert_deliveries SET status='skipped',last_error=?,updated_at=? WHERE id=? AND status='sending'",
