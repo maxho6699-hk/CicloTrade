@@ -10,7 +10,7 @@ Group=ciclotrade
 SupplementaryGroups=opend
 WorkingDirectory=/opt/CicloTrade
 EnvironmentFile=/opt/CicloTrade/.env
-ExecStart=/opt/CicloTrade/.venv/bin/python -m streamlit run asgi_app.py --server.address=127.0.0.1 --server.port=8501 --server.headless=true --client.showErrorDetails=false
+ExecStart=/opt/CicloTrade/.venv/bin/python -m uvicorn asgi_app:app --host 127.0.0.1 --port 8501 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1 --no-access-log
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
