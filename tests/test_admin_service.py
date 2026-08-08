@@ -192,6 +192,45 @@ def test_dashboard_metrics_follow_role_permissions(services):
     }
 
 
+def test_manual_strategy_cycle_requires_research_permission_and_is_audited(services, monkeypatch):
+    db, auth, admin, service = services
+    researcher = _register(auth, "cycle-researcher")
+    support = _register(auth, "cycle-support")
+    service.set_role(admin["id"], researcher["id"], "research")
+    service.set_role(admin["id"], support["id"], "support")
+    expected = {
+        "eval_date": "2026-08-07",
+        "strategy_key": "template_tsmom_12m",
+        "strategy_name": "時間序列動量",
+        "event_created": True,
+        "leg_count": 3,
+        "snapshots_created": 2,
+        "selected_symbols": ["AAPL", "MSFT"],
+    }
+    calls = []
+    monkeypatch.setattr(
+        "core.strategy_evaluation.run_system_quant_cycle",
+        lambda database: calls.append(database) or expected,
+    )
+
+    with pytest.raises(PermissionError):
+        service.run_strategy_cycle(support["id"])
+    assert service.run_strategy_cycle(researcher["id"]) == expected
+    assert calls == [db]
+    audit = next(
+        row for row in service.list_audit(researcher["id"])
+        if row["action_type"] == "ADMIN_STRATEGY_CYCLE"
+    )
+    details = json.loads(audit["details"])
+    assert details == {
+        "eval_date": "2026-08-07",
+        "event_created": True,
+        "leg_count": 3,
+        "snapshots_created": 2,
+        "strategy_key": "template_tsmom_12m",
+    }
+
+
 def test_super_admin_and_support_can_grant_trial_but_finance_cannot(services):
     db, auth, admin, service = services
     support = _register(auth, "trial-support")

@@ -512,6 +512,27 @@ class AdminService:
             strategy_key, active, audit_actor=actor_id
         )
 
+    def run_strategy_cycle(self, actor_id: int) -> dict[str, Any]:
+        """Run the idempotent daily research cycle from the admin console."""
+        self._require(actor_id, "research")
+        from core.strategy_evaluation import run_system_quant_cycle
+
+        result = run_system_quant_cycle(self.db)
+        with self.db.transaction() as conn:
+            self._audit(
+                conn,
+                actor_id,
+                "ADMIN_STRATEGY_CYCLE",
+                {
+                    "eval_date": result["eval_date"],
+                    "strategy_key": result["strategy_key"],
+                    "event_created": bool(result["event_created"]),
+                    "leg_count": int(result["leg_count"]),
+                    "snapshots_created": int(result["snapshots_created"]),
+                },
+            )
+        return result
+
     def set_annual_bonus_enabled(self, actor_id: int, enabled: bool) -> None:
         self._require(actor_id, "billing")
         self._set_control(

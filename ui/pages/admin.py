@@ -434,6 +434,30 @@ def _render_research(service: AdminService, actor_id: int) -> None:
         _run_action(profile_service.aggregate_all, "用戶畫像已更新。")
 
     section_label("策略與模板管理", "YAML 核心目錄 + 資料庫擴展 · 所有寫操作保留審計")
+    with st.container(border=True):
+        st.markdown("**每日策略評分與優選**")
+        st.caption("自動排程：每個美股交易日美東 16:01 執行；此按鈕可立即用最新真實行情重跑。"
+                   "同一交易日不會重複建立模擬交易或淨值記錄。")
+        if result := st.session_state.pop("admin_quant_cycle_result", None):
+            symbols = "、".join(result["selected_symbols"]) or "本次沒有符合條件的標的"
+            st.success(
+                f"{result['eval_date']} 已完成：優勝策略為 {result['strategy_name']}；"
+                f"入選標的：{symbols}。",
+                icon=":material/check_circle:",
+            )
+        if st.button(
+            "一鍵執行策略評分與優選",
+            type="primary",
+            icon=":material/play_arrow:",
+            width="stretch",
+            key="admin_run_strategy_cycle",
+        ):
+            def run_cycle() -> None:
+                st.session_state.admin_quant_cycle_result = service.run_strategy_cycle(actor_id)
+
+            with st.spinner("正在讀取最新行情、評分策略並更新模擬組合...", show_time=True):
+                _run_action(run_cycle, "策略評分與優選已完成。")
+
     definitions = service.list_strategy_definitions(actor_id)
     if definitions:
         strategy_frame = pd.DataFrame(
