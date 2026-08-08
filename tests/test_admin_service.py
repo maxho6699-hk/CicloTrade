@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from core.compat import UTC
+import json
 import sqlite3
 
 import pytest
@@ -76,14 +77,24 @@ def test_data_source_verification_is_system_only_and_never_stores_captcha(servic
     service.record_data_source_verification(
         admin["id"], "opend", "submit_captcha", True
     )
-    record = next(
-        row
+    service.record_data_source_verification(
+        admin["id"], "opend", "request_phone_code", True
+    )
+    service.record_data_source_verification(
+        admin["id"], "opend", "submit_phone_code", True
+    )
+    records = [
+        json.loads(row["details"])
         for row in service.list_audit(admin["id"])
         if row["action_type"] == "ADMIN_DATA_SOURCE_VERIFICATION"
-    )
-    assert "opend" in record["details"]
-    assert "submit_captcha" in record["details"]
-    assert "code" not in record["details"]
+    ]
+    assert {record["action"] for record in records} >= {
+        "submit_captcha",
+        "request_phone_code",
+        "submit_phone_code",
+    }
+    assert all(set(record) == {"provider", "action", "success"} for record in records)
+    assert all(record["provider"] == "opend" for record in records)
 
     with pytest.raises(PermissionError):
         service.record_data_source_verification(

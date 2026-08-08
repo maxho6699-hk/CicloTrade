@@ -613,7 +613,12 @@ class AdminService:
         """Audit provider verification without storing captcha contents."""
         self._require(actor_id, "system")
         provider = provider.strip().lower()
-        if provider not in {"opend"} or action not in {"request_captcha", "submit_captcha"}:
+        if provider not in {"opend"} or action not in {
+            "request_captcha",
+            "submit_captcha",
+            "request_phone_code",
+            "submit_phone_code",
+        }:
             raise ValueError("未知的数据源验证操作。")
         now = _iso()
         details = {"provider": provider, "action": action, "success": bool(success)}

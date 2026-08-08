@@ -74,6 +74,10 @@ def test_captcha_submission_is_strict_and_never_accepts_other_commands(monkeypat
         OpenDVerificationController()._exchange(
             "input_pic_verify_code -code=AB12\r\nshutdown"
         )
+    with pytest.raises(OpenDControlError, match="不允许"):
+        OpenDVerificationController()._exchange(
+            "input_phone_verify_code -code=123456\r\nshutdown"
+        )
 
 
 def test_captcha_failure_response_is_not_reported_as_success(monkeypatch, tmp_path):
@@ -81,6 +85,35 @@ def test_captcha_failure_response_is_not_reported_as_success(monkeypatch, tmp_pa
     monkeypatch.setattr(controller, "_exchange", lambda _command: "验证码错误，登录失败")
     with pytest.raises(OpenDControlError, match="未通过"):
         controller.submit_captcha("AB12")
+
+
+def test_phone_verification_commands_are_strict_and_do_not_log_the_code(
+    monkeypatch, tmp_path, caplog
+):
+    controller = OpenDVerificationController(tmp_path / "unused.png")
+    sent: list[str] = []
+    monkeypatch.setattr(controller, "_exchange", lambda command: sent.append(command) or "OK")
+
+    with pytest.raises(ValueError, match="6 位数字"):
+        controller.submit_phone_code("12345")
+    with pytest.raises(ValueError, match="6 位数字"):
+        controller.submit_phone_code("12345a")
+
+    assert controller.request_phone_code().startswith("手机验证码已发送")
+    assert controller.submit_phone_code("123456").startswith("手机验证码已提交")
+    assert sent == ["req_phone_verify_code", "input_phone_verify_code -code=123456"]
+    assert "123456" not in caplog.text
+
+
+def test_phone_verification_failure_response_is_not_reported_as_success(monkeypatch, tmp_path):
+    controller = OpenDVerificationController(tmp_path / "unused.png")
+    monkeypatch.setattr(controller, "_exchange", lambda _command: "验证码错误，登录失败")
+
+    with pytest.raises(OpenDControlError, match="未能发送"):
+        controller.request_phone_code()
+    with pytest.raises(OpenDControlError, match="未通过") as exc_info:
+        controller.submit_phone_code("123456")
+    assert "123456" not in str(exc_info.value)
 
 
 def test_probe_uses_a_two_second_child_process_timeout_and_short_cache(monkeypatch):
@@ -100,6 +133,36 @@ def test_probe_uses_a_two_second_child_process_timeout_and_short_cache(monkeypat
     assert len(calls) == 1
     assert calls[0]["timeout"] == 2.0
     assert calls[0]["command"][1:3] == ["-m", "data.opend_probe"]
+
+
+def test_probe_reports_phone_verification_requirement(monkeypatch):
+    def run(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command, 4, stdout="PHONE_VERIFICATION_REQUIRED\n", stderr=""
+        )
+
+    opend_control.clear_opend_probe_cache()
+    monkeypatch.setattr(opend_control.subprocess, "run", run)
+    status = opend_control.probe_opend_status(force=True)
+
+    assert status.state == "phone_verification_required"
+    assert status.message == "OpenD 正在等待手机验证码。"
+
+
+def test_probe_detects_phone_verification_from_futu_sdk_output(monkeypatch):
+    def run(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            2,
+            stdout="SDK: init connect fail: 需要手机验证码\nVERIFICATION_REQUIRED\n",
+            stderr="",
+        )
+
+    opend_control.clear_opend_probe_cache()
+    monkeypatch.setattr(opend_control.subprocess, "run", run)
+    status = opend_control.probe_opend_status(force=True)
+
+    assert status.state == "phone_verification_required"
 
 
 def test_probe_timeout_returns_a_safe_fallback_state(monkeypatch):

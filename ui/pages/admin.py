@@ -647,6 +647,7 @@ def _render_data_source_verification(service: AdminService, actor_id: int) -> No
     status_label = {
         "ready": "已连接",
         "verification_required": "等待验证码",
+        "phone_verification_required": "等待手机验证码",
         "unavailable": "暂不可用",
     }.get(status.state, "未知")
 
@@ -669,7 +670,7 @@ def _render_data_source_verification(service: AdminService, actor_id: int) -> No
                 "刷新验证码",
                 type="primary" if status.state == "verification_required" else "secondary",
                 icon=":material/image:",
-                disabled=status.ready,
+                disabled=status.ready or status.state == "phone_verification_required",
                 key="admin_opend_refresh_captcha",
             )
 
@@ -734,6 +735,61 @@ def _render_data_source_verification(service: AdminService, actor_id: int) -> No
                 "点击“刷新验证码”，图片出现后直接输入 4 位字符即可。",
                 icon=":material/info:",
             )
+        elif status.state == "phone_verification_required":
+            st.success(
+                "图形验证码已通过。请输入发送到 OpenD 绑定手机的 6 位验证码。",
+                icon=":material/mark_email_read:",
+            )
+            if st.button(
+                "重新发送手机验证码",
+                icon=":material/sms:",
+                key="admin_opend_request_phone_code",
+            ):
+                try:
+                    message = OpenDVerificationController().request_phone_code()
+                except OpenDControlError as exc:
+                    _record_provider_verification(
+                        service, actor_id, "request_phone_code", False
+                    )
+                    st.error(str(exc), icon=":material/error:")
+                else:
+                    _record_provider_verification(
+                        service, actor_id, "request_phone_code", True
+                    )
+                    st.success(message, icon=":material/check_circle:")
+
+            with st.form("admin_opend_phone_code_form", clear_on_submit=True):
+                phone_code = st.text_input(
+                    "输入短信中的 6 位验证码",
+                    max_chars=6,
+                    type="password",
+                    autocomplete="one-time-code",
+                    placeholder="6 位数字",
+                    key="admin_opend_phone_code",
+                )
+                submit_phone_code = st.form_submit_button(
+                    "提交手机验证",
+                    type="primary",
+                    icon=":material/verified_user:",
+                )
+            if submit_phone_code:
+                try:
+                    message = OpenDVerificationController().submit_phone_code(
+                        phone_code
+                    )
+                except ValueError as exc:
+                    st.error(str(exc), icon=":material/error:")
+                except OpenDControlError as exc:
+                    _record_provider_verification(
+                        service, actor_id, "submit_phone_code", False
+                    )
+                    st.error(str(exc), icon=":material/error:")
+                else:
+                    _record_provider_verification(
+                        service, actor_id, "submit_phone_code", True
+                    )
+                    st.session_state.admin_flash = message
+                    st.rerun()
         elif status.ready:
             st.success(
                 "当前不需要输入验证码；下次 OpenD 要求验证时，此入口会继续保留。",

@@ -72,15 +72,26 @@ def test_opend_history_and_option_greeks(monkeypatch):
     ]
 
 
-def test_opend_context_fails_fast_when_gateway_waits_for_authentication(monkeypatch):
+@pytest.mark.parametrize(
+    ("state", "message", "expected_phase"),
+    [
+        ("verification_required", "OpenD 正在等待图形验证码。", "图形验证"),
+        (
+            "phone_verification_required",
+            "OpenD 正在等待手机验证码。",
+            "手机验证",
+        ),
+    ],
+)
+def test_opend_context_fails_fast_when_gateway_waits_for_authentication(
+    monkeypatch, state, message, expected_phase
+):
     monkeypatch.setattr(
         "data.opend_adapter.probe_opend_status",
-        lambda *_args, **_kwargs: OpenDStatus(
-            "verification_required", "OpenD 正在等待图形验证码。"
-        ),
+        lambda *_args, **_kwargs: OpenDStatus(state, message),
     )
 
-    with pytest.raises(DataSourceError, match="等待登录或图形验证"):
+    with pytest.raises(DataSourceError, match=rf"等待登录或{expected_phase}"):
         OpenDAdapter()._context()
 
 

@@ -43,8 +43,9 @@ class OpenDAdapter(DataSource):
     def _context(self):
         status = probe_opend_status(self.host, self.port)
         if not status.ready:
-            if status.state == "verification_required":
-                raise DataSourceError("OpenD 正在等待登录或图形验证。")
+            if status.state in {"verification_required", "phone_verification_required"}:
+                phase = "图形验证" if status.state == "verification_required" else "手机验证"
+                raise DataSourceError(f"OpenD 正在等待登录或{phase}。")
             raise DataSourceError("OpenD 暂时无法连接。")
         try:
             from futu import OpenQuoteContext
