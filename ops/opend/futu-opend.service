@@ -8,6 +8,9 @@ Type=simple
 User=opend
 Group=opend
 WorkingDirectory=/opt/opend/current
+Environment=HOME=/var/lib/opend
+Environment=XDG_CONFIG_HOME=/var/lib/opend/.config
+Environment=XDG_DATA_HOME=/var/lib/opend/.local/share
 Environment=LD_LIBRARY_PATH=/opt/opend/current
 ExecStart=/opt/opend/current/FutuOpenD -cfg_file=/etc/ciclotrade/FutuOpenD.xml -console=0 -no_monitor=1
 Restart=on-failure
@@ -17,7 +20,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/var/log/futu-opend /opt/opend/current
+ReadWritePaths=/var/log/futu-opend /var/lib/opend /opt/opend/current /opt/opend/.com.futunn.FutuOpenD
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 MemoryHigh=700M
 MemoryMax=1000M
