@@ -162,12 +162,12 @@ export function AppShell({ children }: AppShellProps) {
     }))
     const directMarket = /^\d{6}$/.test(query) ? 'CN' : 'US'
     const direct = /^(?:[A-Za-z][A-Za-z0-9.=-]{0,14}|\d{6})$/.test(query)
-      ? [{ to: `/markets?market=${directMarket}&symbol=${query.toUpperCase()}`, label: `打开 ${query.toUpperCase()} 行情`, icon: CandlestickChart, keywords: query, meta: '直接打开代码' }]
+      ? [{ to: `/markets?market=${directMarket}&symbol=${query.toUpperCase()}`, label: `${locale === 'zh-Hant' ? '開啟' : '打开'} ${query.toUpperCase()} 行情`, icon: CandlestickChart, keywords: query, meta: '直接打开代码' }]
       : []
     const unique = new Map<string, typeof staticItems[number]>()
     for (const item of [...staticItems, ...marketItems, ...direct]) unique.set(`${item.to}|${item.label}`, item)
     return [...unique.values()]
-  }, [commandQuery, marketMatches, workspace.data?.settings.watchlists])
+  }, [commandQuery, locale, marketMatches, workspace.data?.settings.watchlists])
 
   const runCommand = (to: string) => {
     navigate(to)
