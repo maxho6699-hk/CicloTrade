@@ -14,7 +14,9 @@ from core.database import DatabaseManager
 from core.user_settings import merge_user_settings
 from notification.telegram_bot import (
     configure_telegram_bot,
+    download_telegram_file,
     send_telegram,
+    send_telegram_photo,
     telegram_bot_response,
     telegram_callback_allowed,
 )
@@ -28,6 +30,15 @@ class _TelegramResponse:
 
     def __exit__(self, *_args):
         return False
+
+
+class _TelegramFileResponse(_TelegramResponse):
+    def __init__(self, body: bytes, headers: dict[str, str] | None = None):
+        self.body = body
+        self.headers = headers or {}
+
+    def read(self, limit: int = -1) -> bytes:
+        return self.body if limit < 0 else self.body[:limit]
 
 
 def _telegram_request(payload: dict, secret: str = "webhook-secret") -> Request:
@@ -97,7 +108,7 @@ def test_configure_telegram_bot_installs_commands_and_menu(monkeypatch):
 
     assert captured[0][0].endswith("/setMyCommands")
     assert [item["command"] for item in captured[0][1]["commands"]] == [
-        "start", "timeline", "plans", "orders", "id", "settings", "help",
+        "start", "timeline", "plans", "orders", "id", "settings", "payconfig", "help",
     ]
     assert captured[1] == (captured[1][0], {"menu_button": {"type": "commands"}})
     assert captured[1][0].endswith("/setChatMenuButton")
@@ -118,9 +129,62 @@ def test_start_returns_chat_id_and_main_menu_without_binding(tmp_path):
     assert any(button.get("callback_data") == "desk:settings" for row in keyboard for button in row)
     assert telegram_callback_allowed("notify:stock:toggle")
     assert telegram_callback_allowed("timeline:show:stock:30:2")
+    assert telegram_callback_allowed("timeline:pnl:7d:0")
     assert not telegram_callback_allowed("timeline:show:stock:1000:0")
     assert not telegram_callback_allowed("timeline:show:crypto:10:0")
+    assert not telegram_callback_allowed("timeline:pnl:2026-08-09:0")
     assert not telegram_callback_allowed("notify:stock:on")
+    assert telegram_callback_allowed("buy:create:advanced:yearly:alipay")
+    assert telegram_callback_allowed("buy:method:professional:monthly:wechat")
+    assert not telegram_callback_allowed("buy:create:advanced:yearly:paypal")
+    assert telegram_callback_allowed("paycfg:setqr:wechat")
+    assert telegram_callback_allowed("paycfg:home")
+    assert not telegram_callback_allowed("paycfg:setqr:paypal")
+
+
+def test_send_telegram_photo_uses_validated_same_bot_file_id(monkeypatch):
+    monkeypatch.setenv("EXTERNAL_ALERTS_ENABLED", "true")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-token")
+    captured = []
+
+    def capture(request, **_kwargs):
+        captured.append((request.full_url, json.loads(request.data.decode("utf-8"))))
+        return _TelegramResponse()
+
+    monkeypatch.setattr("notification.telegram_bot.urlopen", capture)
+    send_telegram_photo("FPS 收款二维码", "telegram-qr-file-id", "123456789")
+    assert captured[0][0].endswith("/sendPhoto")
+    assert captured[0][1]["photo"] == "telegram-qr-file-id"
+    assert captured[0][1]["protect_content"] is True
+    with pytest.raises(RuntimeError, match="图片标识"):
+        send_telegram_photo("QR", "bad file id", "123456789")
+
+
+def test_download_telegram_file_enforces_metadata_and_stream_limits(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-token")
+    calls = []
+
+    def oversized(request, **_kwargs):
+        calls.append(request.full_url)
+        return _TelegramFileResponse(json.dumps({
+            "ok": True,
+            "result": {"file_path": "photos/proof.jpg", "file_size": 4 * 1024 * 1024 + 1},
+        }).encode("utf-8"))
+
+    monkeypatch.setattr("notification.telegram_bot.urlopen", oversized)
+    with pytest.raises(ValueError, match="小于 4 MB"):
+        download_telegram_file("telegram-file")
+    assert len(calls) == 1 and calls[0].endswith("/getFile")
+
+    responses = iter((
+        _TelegramFileResponse(json.dumps({
+            "ok": True,
+            "result": {"file_path": "photos/proof.jpg", "file_size": 5},
+        }).encode("utf-8")),
+        _TelegramFileResponse(b"proof", {"Content-Length": "5"}),
+    ))
+    monkeypatch.setattr("notification.telegram_bot.urlopen", lambda *_args, **_kwargs: next(responses))
+    assert download_telegram_file("telegram-file") == b"proof"
 
 
 def test_telegram_webhook_replies_to_private_start_and_ignores_group(monkeypatch, tmp_path):

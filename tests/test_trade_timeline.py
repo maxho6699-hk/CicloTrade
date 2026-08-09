@@ -1,4 +1,11 @@
-from core.trade_timeline import project_trade_cycles, summarize_trade_cycles
+from datetime import datetime
+
+from core.trade_timeline import (
+    closed_trade_window,
+    filter_closed_trade_cycles,
+    project_trade_cycles,
+    summarize_trade_cycles,
+)
 
 
 def _leg(
@@ -117,3 +124,36 @@ def test_open_trade_without_fresh_mark_does_not_fabricate_pnl():
 
     assert cycles[0]["unrealized_pnl"] is None
     assert summary["currencies"]["USD"]["open_missing_marks"] == 1
+
+
+def test_trade_cycle_keeps_open_add_reduce_and_close_executions():
+    events = [
+        _event(1, _leg(10, 10, 100)),
+        _event(2, _leg(5, 15, 110)),
+        _event(3, _leg(-3, 12, 120)),
+        _event(4, _leg(-12, 0, 130)),
+    ]
+
+    cycle = project_trade_cycles(events, "stock")[0]
+
+    assert [item["role"] for item in cycle["executions"]] == ["open", "add", "reduce", "close"]
+    assert [item["quantity"] for item in cycle["executions"]] == [10, 5, 3, 12]
+    assert [item["position_after"] for item in cycle["executions"]] == [10, 15, 12, 0]
+    assert [item["price"] for item in cycle["executions"]] == [100, 110, 120, 130]
+
+
+def test_closed_trade_windows_use_hong_kong_calendar_boundaries():
+    now = datetime.fromisoformat("2026-08-09T08:00:00+00:00")
+    today_start, today_end = closed_trade_window("today", now)
+    assert today_start.isoformat() == "2026-08-08T16:00:00+00:00"
+    assert today_end.isoformat() == "2026-08-09T16:00:00+00:00"
+
+    cycles = [
+        {"sequence": 1, "closed_at": "2026-08-08T16:00:00+00:00"},
+        {"sequence": 2, "closed_at": "2026-08-08T15:59:59+00:00"},
+        {"sequence": 3, "closed_at": "2026-08-02T16:00:00+00:00"},
+        {"sequence": 4, "closed_at": None},
+    ]
+    assert [row["sequence"] for row in filter_closed_trade_cycles(cycles, "today", now=now)] == [1]
+    assert [row["sequence"] for row in filter_closed_trade_cycles(cycles, "yesterday", now=now)] == [2]
+    assert [row["sequence"] for row in filter_closed_trade_cycles(cycles, "7d", now=now)] == [1, 2, 3]

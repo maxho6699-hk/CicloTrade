@@ -3,8 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-from core.compat import UTC
+from datetime import datetime
 import html
 import os
 import re

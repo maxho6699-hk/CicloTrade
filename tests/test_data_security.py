@@ -2,7 +2,7 @@
 
 import json
 from datetime import date
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 import pandas as pd
 import pytest

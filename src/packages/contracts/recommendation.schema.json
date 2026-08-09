@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ciclotrade.com/contracts/recommendation.v1.schema.json",
+  "title": "CicloTrade Recommendation V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "action", "instrument", "evidence", "risk", "provenance"],
+  "properties": {
+    "status": { "enum": ["official", "research", "wait", "blocked"] },
+    "action": { "enum": ["BUY", "HOLD", "REDUCE", "EXIT", "WAIT"] },
+    "instrument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["market", "instrument_type", "symbol", "currency"],
+      "properties": {
+        "market": { "enum": ["US", "CN", "HK", "CRYPTO"] },
+        "instrument_type": { "enum": ["stock", "option", "crypto_pair"] },
+        "symbol": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "currency": { "type": "string", "minLength": 3, "maxLength": 8 }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["supporting", "counter"],
+      "properties": {
+        "supporting": { "type": "array", "items": { "type": "string" } },
+        "counter": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "risk": {
+      "type": "object",
+      "required": ["invalidation", "maximum_modeled_loss", "data_freshness"],
+      "properties": {
+        "invalidation": { "type": "string" },
+        "maximum_modeled_loss": { "type": ["number", "null"] },
+        "data_freshness": { "enum": ["live", "delayed", "stale", "incomplete"] }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["model_version", "generated_at", "source_snapshot"],
+      "properties": {
+        "model_version": { "type": "string" },
+        "generated_at": { "type": "string", "format": "date-time" },
+        "source_snapshot": { "type": "string" },
+        "official_event_id": { "type": ["integer", "null"] }
+      }
+    }
+  }
+}

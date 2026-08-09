@@ -340,7 +340,14 @@ def telegram_daily_summary(
                     f"({float(value['return']):+.2%})"
                 )
     latest_at = max(str(snapshot["captured_at"]) for snapshot, _ in items)
-    lines.extend((f"🕒 {_telegram_time(latest_at)}", "⚡ 經量化系統數據分析建議", "⚠️ 可能提前止盈或止損，請留意最新建議推送。"))
+    lines.extend(
+        (
+            f"🕒 {_telegram_time(latest_at)}",
+            "⚡ 經量化系統數據分析建議",
+            "⚠️ 可能提前止盈或止損，請留意最新建議推送。",
+            "🔎 盈利／虧損明細，請私聊機器人查詢。",
+        )
+    )
     if delay_note:
         lines.append("💎 升級會員可取得即時建議資料。")
     return _telegram_text(lines)

@@ -7,13 +7,29 @@ from datetime import datetime, timedelta
 from core.compat import UTC
 import ipaddress
 import json
+import re
 import sqlite3
 from typing import Any
+import unicodedata
 
 from core.auth import AuthService
 from core.database import DatabaseManager, get_database
 from core.plans import PLAN_ORDER
-from payment.order_service import OrderService, grant_subscription_days
+from payment.order_service import (
+    LEGACY_PROVIDER_METHODS,
+    MANUAL_PAYMENT_METHODS,
+    OrderService,
+    grant_subscription_days,
+)
+from payment.proof_storage import verify_payment_proof
+
+
+def _canonical_settlement_reference(value: str | None) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value or "")).strip().upper()
+    canonical = re.sub(r"[\s\-_.:/]+", "", normalized)
+    if not re.fullmatch(r"[A-Z0-9]{6,64}", canonical):
+        raise ValueError("结算参考编号必须为 6 到 64 个英文字母或数字。")
+    return canonical
 
 
 ROLE_LABELS = {
@@ -444,7 +460,7 @@ class AdminService:
     def list_orders(self, actor_id: int, status: str = "全部", method: str = "全部") -> list[dict[str, Any]]:
         self._require(actor_id, "billing")
         valid_status = {"全部", "pending", "paid", "failed", "cancelled", "refunded"}
-        valid_method = {"全部", "paddle", "paypal", "fps"}
+        valid_method = {"全部", *MANUAL_PAYMENT_METHODS, *LEGACY_PROVIDER_METHODS}
         if status not in valid_status or method not in valid_method:
             raise ValueError("订单筛选条件无效。")
         clauses, params = [], []
@@ -473,16 +489,26 @@ class AdminService:
         )
 
     def list_manual_payment_claims(
-        self, actor_id: int, status: str = "submitted", limit: int = 500
+        self,
+        actor_id: int,
+        status: str = "submitted",
+        limit: int = 500,
+        method: str = "全部",
     ) -> list[dict[str, Any]]:
         self._require(actor_id, "billing")
         if status not in {"submitted", "approved", "rejected", "all"}:
             raise ValueError("付款凭证状态无效。")
+        if method not in {"全部", *MANUAL_PAYMENT_METHODS}:
+            raise ValueError("人工付款方式无效。")
+        clauses: list[str] = []
         params: list[Any] = []
-        where = ""
         if status != "all":
-            where = "WHERE c.status=?"
+            clauses.append("c.status=?")
             params.append(status)
+        if method != "全部":
+            clauses.append("o.pay_method=?")
+            params.append(method)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(max(1, min(int(limit), 1000)))
         return self.db.fetch_all(
             f"""SELECT c.*,o.plan_type,o.billing_cycle,o.amount,o.currency,o.pay_method,
@@ -512,7 +538,8 @@ class AdminService:
             approved = value in {"approve", "approved"}
         if not isinstance(approved, bool):
             raise ValueError("付款凭证审核决定无效。")
-        reference = str(settlement_reference or "").strip()
+        raw_reference = str(settlement_reference or "").strip()
+        reference = _canonical_settlement_reference(raw_reference) if approved and raw_reference else ""
         reason = str(rejection_reason or "").strip()
         now = datetime.now(UTC)
         with self.db.transaction() as conn:
@@ -527,7 +554,11 @@ class AdminService:
             if claim["user_id"] == actor_id:
                 raise PermissionError("审核人不能审核自己的付款凭证。")
             if claim["status"] == "approved":
-                if approved and (not reference or claim["settlement_reference"] == reference):
+                try:
+                    existing_reference = _canonical_settlement_reference(claim["settlement_reference"])
+                except ValueError:
+                    existing_reference = str(claim["settlement_reference"] or "")
+                if approved and (not reference or existing_reference == reference):
                     return claim
                 raise ValueError("付款凭证已经审核通过。")
             if claim["status"] == "rejected":
@@ -535,14 +566,38 @@ class AdminService:
                     return claim
                 raise ValueError("已拒绝的付款凭证必须由用户重新提交。")
             if approved:
-                if not 6 <= len(reference) <= 64:
-                    raise ValueError("结算参考编号必须为 6 到 64 个字符。")
+                if not reference:
+                    raise ValueError("结算参考编号必须为 6 到 64 个英文字母或数字。")
+                if not claim.get("evidence_file_id") or not claim.get("evidence_file_unique_id"):
+                    raise ValueError("付款申报缺少可核验的付款凭证截图。")
+                proof_sha256 = str(claim.get("evidence_sha256") or "").strip().lower()
+                storage_key = str(claim.get("evidence_storage_key") or "").strip().lower()
+                if proof_sha256 and not verify_payment_proof(storage_key, proof_sha256):
+                    raise ValueError("付款凭证文件缺失或完整性校验失败。")
+                if str(claim.get("evidence_source")) == "web" and not proof_sha256:
+                    raise ValueError("网站付款凭证缺少完整性摘要。")
+                approved_references = conn.execute(
+                    """SELECT id,settlement_reference FROM manual_payment_claims
+                       WHERE status='approved' AND id<>? AND settlement_reference IS NOT NULL""",
+                    (claim_id,),
+                ).fetchall()
+                for approved_claim in approved_references:
+                    try:
+                        existing_reference = _canonical_settlement_reference(
+                            approved_claim["settlement_reference"]
+                        )
+                    except ValueError:
+                        continue
+                    if existing_reference == reference:
+                        raise ValueError("结算参考编号已经使用。")
                 order_row = conn.execute(
                     "SELECT * FROM subscription_orders WHERE order_no=? AND user_id=?",
                     (claim["order_no"], claim["user_id"]),
                 ).fetchone()
                 if not order_row or order_row["status"] != "pending":
                     raise ValueError("关联订单已不是待付款状态。")
+                if str(order_row["pay_method"]) not in MANUAL_PAYMENT_METHODS:
+                    raise ValueError("关联订单不是人工付款订单。")
                 try:
                     changed = OrderService._activate_paid_order(conn, dict(order_row), now)
                     if not changed:
@@ -581,7 +636,7 @@ class AdminService:
     def confirm_fps(self, actor_id: int, order_no: str) -> None:
         del order_no
         self._require(actor_id, "billing")
-        raise PermissionError("FPS 订单必须先由用户提交付款申报，再通过财务审核队列处理。")
+        raise PermissionError("人工付款订单必须先由用户提交凭证，再通过独立财务审核队列处理。")
 
     def record_external_refund(self, actor_id: int, order_no: str) -> None:
         """Record a refund already completed in the original payment channel."""

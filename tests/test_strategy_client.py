@@ -1,5 +1,3 @@
-import json
-
 from strategy_client.push import push
 
 

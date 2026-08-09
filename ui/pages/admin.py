@@ -26,9 +26,13 @@ from data.opend_control import (
 from notification.email_sender import smtp_configured
 from notification.telegram_billing import queue_manual_payment_review_notice
 from notification.telegram_bot import telegram_configured
-from payment.order_service import OrderService
-from payment.paddle_client import PaddleClient
-from payment.paypal_client import PayPalClient
+from payment.order_service import (
+    LEGACY_PROVIDER_METHODS,
+    MANUAL_PAYMENT_INSTRUCTION_ENVS,
+    PAYMENT_METHOD_LABELS,
+    ManualPaymentMethod,
+)
+from payment.proof_storage import resolve_payment_proof
 from trading.tiger_api import TigerAPI
 from ui.components import page_heading, section_label
 
@@ -334,10 +338,18 @@ def _render_billing(service: AdminService, actor_id: int) -> None:
             "订单状态", ["全部", "pending", "paid", "failed", "cancelled", "refunded"], key="order_status"
         )
     with right:
-        method = st.selectbox("付款方式", ["全部", "paddle", "paypal", "fps"], key="order_method")
+        method = st.selectbox(
+            "付款方式",
+            ["全部", *(item.value for item in ManualPaymentMethod), *sorted(LEGACY_PROVIDER_METHODS)],
+            format_func=lambda value: "全部" if value == "全部" else PAYMENT_METHOD_LABELS[value],
+            key="order_method",
+        )
     orders = service.list_orders(actor_id, status, method)
     if orders:
         order_frame = pd.DataFrame(orders)
+        order_frame["pay_method"] = order_frame["pay_method"].map(
+            lambda value: PAYMENT_METHOD_LABELS.get(str(value), str(value))
+        )
         order_frame.columns = [
             "订单号",
             "用户邮箱",
@@ -360,13 +372,22 @@ def _render_billing(service: AdminService, actor_id: int) -> None:
     else:
         st.info("没有符合条件的订单。", icon=":material/inbox:")
 
-    claims = service.list_manual_payment_claims(actor_id, "submitted")
+    claim_method = st.selectbox(
+        "人工付款审核方式",
+        ["全部", *(item.value for item in ManualPaymentMethod)],
+        format_func=lambda value: "全部" if value == "全部" else PAYMENT_METHOD_LABELS[value],
+        key="manual_payment_method",
+    )
+    claims = service.list_manual_payment_claims(
+        actor_id, "submitted", method=claim_method
+    )
     if claims:
-        section_label("FPS 付款审核", f"{len(claims)} 笔等待核对")
+        section_label("人工付款审核", f"{len(claims)} 笔等待独立财务核对")
         claim_frame = pd.DataFrame(claims)[
-            ["id", "created_at", "user_email", "order_no", "plan_type", "billing_cycle", "amount", "currency", "attempt"]
+            ["id", "created_at", "user_email", "order_no", "pay_method", "plan_type", "billing_cycle", "amount", "currency", "attempt"]
         ]
-        claim_frame.columns = ["申报号", "申报时间", "用户", "订单号", "方案", "周期", "金额", "币种", "提交次数"]
+        claim_frame["pay_method"] = claim_frame["pay_method"].map(PAYMENT_METHOD_LABELS)
+        claim_frame.columns = ["申报号", "申报时间", "用户", "订单号", "方式", "方案", "周期", "金额", "币种", "提交次数"]
         st.dataframe(claim_frame, hide_index=True, width="stretch")
         claim_id = st.selectbox(
             "选择付款申报",
@@ -378,10 +399,22 @@ def _render_billing(service: AdminService, actor_id: int) -> None:
             key="manual_payment_claim",
         )
         selected_claim = next(row for row in claims if int(row["id"]) == claim_id)
+        if selected_claim.get("evidence_storage_key"):
+            try:
+                proof_path = resolve_payment_proof(str(selected_claim.get("evidence_storage_key") or ""))
+                if proof_path.is_file():
+                    source_label = "网站" if str(selected_claim.get("evidence_source")) == "web" else "Telegram"
+                    st.image(str(proof_path), caption=f"{source_label} 付款凭证 · {selected_claim['order_no']}")
+                else:
+                    st.warning("付款凭证文件不存在，请保留申报记录并人工联系用户补交。")
+            except ValueError:
+                st.warning("付款凭证存储标识无效，请保留申报记录并人工联系用户补交。")
+        else:
+            st.caption("该付款凭证由 Telegram Bot 接收，复核时请在对应 Bot 消息中查看原图。")
         approve_col, reject_col = st.columns(2)
         with approve_col, st.form("approve_manual_payment"):
-            settlement = st.text_input("银行 / FPS 流水号", max_chars=64)
-            verified = st.checkbox("已核对到账金额、币种、订单备注与流水号")
+            settlement = st.text_input("结算流水号", max_chars=64)
+            verified = st.checkbox("已在对应收款渠道核对金额、订单备注、凭证与流水号")
             approve_claim = st.form_submit_button(
                 "核对到账并开通",
                 type="primary",
@@ -395,7 +428,7 @@ def _render_billing(service: AdminService, actor_id: int) -> None:
                 )
                 queue_manual_payment_review_notice(get_database(), reviewed, True)
 
-            _run_action(approve_action, "FPS 付款已核对，会员权益已开通。")
+            _run_action(approve_action, "人工付款已由财务核对，会员权益已开通。")
         with reject_col, st.form("reject_manual_payment"):
             rejection_reason = st.text_area("驳回原因", max_chars=500)
             reject_claim = st.form_submit_button("未到账 / 驳回", icon=":material/cancel:")
@@ -408,7 +441,7 @@ def _render_billing(service: AdminService, actor_id: int) -> None:
 
             _run_action(reject_action, "付款申报已驳回，订单未开通。")
     else:
-        st.success("没有等待人工审核的 FPS 付款申报。", icon=":material/check_circle:")
+        st.success("没有符合筛选条件的待审核人工付款申报。", icon=":material/check_circle:")
 
     st.info(
         "平台不接受主动退款。支付平台确认的退款、争议或拒付会由签名 Webhook 自动撤销权益。",
@@ -424,7 +457,7 @@ def _render_billing(service: AdminService, actor_id: int) -> None:
         else:
             st.caption("尚无支付回调。")
 
-    st.caption("Paddle 尚未配置时不会创建真实交易；PayPal 与 FPS 继续按各自实际状态处理。")
+    st.caption("新订单只开放 FPS、支付宝和微信人工付款；PayPal/Paddle 历史订单与已签名回调仍保留用于对账。")
 
 
 def _render_research(service: AdminService, actor_id: int) -> None:
@@ -594,17 +627,7 @@ def _render_research(service: AdminService, actor_id: int) -> None:
 
 
 def _service_status_rows() -> list[dict[str, str]]:
-    paddle = PaddleClient()
-    paypal = PayPalClient()
     tiger = TigerAPI()
-    price_keys = [
-        f"PADDLE_PRICE_{plan}_{cycle}"
-        for plan in ("STANDARD", "ADVANCED", "PROFESSIONAL")
-        for cycle in ("MONTHLY", "QUARTERLY", "YEARLY")
-    ]
-    paddle_prices = sum(bool(os.getenv(key)) for key in price_keys)
-    paddle_webhook = bool(os.getenv("PADDLE_WEBHOOK_SECRET"))
-    paypal_webhook = bool(os.getenv("PAYPAL_WEBHOOK_ID"))
     tiger_sdk = find_spec("tigeropen") is not None
     app_url = os.getenv("APP_BASE_URL", "http://localhost:8501")
     data_source = os.getenv("DATA_SOURCE", "yfinance").lower()
@@ -630,6 +653,17 @@ def _service_status_rows() -> list[dict[str, str]]:
     else:
         market_state, market_detail = "未配置", "缺少数据源凭证"
 
+    manual_payment_rows = [
+        {
+            "服务": PAYMENT_METHOD_LABELS[method.value],
+            "状态": "已配置，待核对流程验收"
+            if os.getenv(MANUAL_PAYMENT_INSTRUCTION_ENVS[method.value], "").strip()
+            else "未配置",
+            "环境": "人工核对",
+            "说明": "用户必须上传付款凭证，且只有独立财务确认到账后才开通订阅",
+        }
+        for method in ManualPaymentMethod
+    ]
     return [
         {
             "服务": "市场数据",
@@ -637,24 +671,7 @@ def _service_status_rows() -> list[dict[str, str]]:
             "环境": data_source,
             "说明": market_detail,
         },
-        {
-            "服务": "Paddle Billing",
-            "状态": "配置齐全，待联调" if paddle.configured and paddle_webhook and paddle_prices == len(price_keys) else "未配置完整",
-            "环境": paddle.environment,
-            "说明": f"API {'有' if paddle.configured else '缺'} · Webhook {'有' if paddle_webhook else '缺'} · Price ID {paddle_prices}/{len(price_keys)}",
-        },
-        {
-            "服务": "PayPal",
-            "状态": "配置齐全，待联调" if paypal.configured and paypal_webhook else "未配置完整",
-            "环境": paypal.environment,
-            "说明": f"客户端密钥 {'有' if paypal.configured else '缺'} · Webhook ID {'有' if paypal_webhook else '缺'}",
-        },
-        {
-            "服务": "FPS",
-            "状态": "已配置，待核对流程验收" if os.getenv("FPS_PAYMENT_INSTRUCTIONS", "").strip() else "未配置",
-            "环境": "人工核对",
-            "说明": "只有配置收款说明且后台确认银行入账后才开通订阅",
-        },
+        *manual_payment_rows,
         {
             "服务": "Tiger OpenAPI",
             "状态": "配置齐全，待联调" if tiger.configured and tiger_sdk else "未配置完整",

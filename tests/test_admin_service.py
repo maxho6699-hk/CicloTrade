@@ -34,6 +34,9 @@ def services(tmp_path):
 def jwt_secret(monkeypatch):
     monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-that-is-longer-than-thirty-two-characters")
     monkeypatch.setenv("REQUIRE_EMAIL_VERIFICATION", "false")
+    monkeypatch.setenv("FPS_PAYMENT_INSTRUCTIONS", "Test FPS receiver")
+    monkeypatch.setenv("ALIPAY_PAYMENT_INSTRUCTIONS", "Test Alipay receiver")
+    monkeypatch.setenv("WECHAT_PAYMENT_INSTRUCTIONS", "Test WeChat receiver")
 
 
 def test_rbac_user_subscription_and_global_controls(services):
@@ -266,9 +269,49 @@ def test_legacy_fps_confirmation_is_fail_closed_for_every_role(services):
 
     with pytest.raises(PermissionError):
         service.confirm_fps(support["id"], order["order_no"])
-    with pytest.raises(PermissionError, match="付款申报"):
+    with pytest.raises(PermissionError, match="独立财务审核"):
         service.confirm_fps(finance["id"], order["order_no"])
     assert OrderService(db).get_order(order["order_no"])["status"] == "pending"
+
+
+def test_billing_filters_cover_manual_and_historical_provider_orders(services):
+    db, auth, admin, service = services
+    customer = _register(auth, "billing-filter-customer")
+    orders = OrderService(db)
+    methods = ("fps", "alipay", "wechat", "paypal", "paddle")
+
+    for method in methods:
+        source = "legacy" if method in {"paypal", "paddle"} else "web"
+        order = orders.create_order(
+            customer["id"],
+            "标准版",
+            "monthly",
+            method,
+            terms_accepted=True,
+            source=source,
+        )
+        if method in {"fps", "alipay", "wechat"}:
+            orders.submit_manual_payment_claim(
+                customer["id"],
+                order["order_no"],
+                evidence_file_id=f"{method}-file",
+                evidence_file_unique_id=f"{method}-unique",
+            )
+
+    for method in methods:
+        filtered = service.list_orders(admin["id"], method=method)
+        assert len(filtered) == 1
+        assert filtered[0]["pay_method"] == method
+
+    for method in ("fps", "alipay", "wechat"):
+        filtered = service.list_manual_payment_claims(admin["id"], method=method)
+        assert len(filtered) == 1
+        assert filtered[0]["pay_method"] == method
+
+    with pytest.raises(ValueError, match="订单筛选"):
+        service.list_orders(admin["id"], method="card")
+    with pytest.raises(ValueError, match="人工付款方式"):
+        service.list_manual_payment_claims(admin["id"], method="paypal")
 
 
 def test_social_share_review_is_idempotent_audited_and_atomic(services):

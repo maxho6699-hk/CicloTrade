@@ -5,8 +5,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from core.compat import UTC
+from enum import Enum
 import hashlib
 import json
+import os
 import secrets
 from typing import Any
 
@@ -19,7 +21,39 @@ YEARLY_PROMO_DAYS = 90
 TERMINAL_STATUSES = {"paid", "failed", "cancelled", "refunded"}
 REFERRAL_REWARD_PERCENT = 30
 TERMS_VERSION = "2026-08-07-no-refund-v1"
-ORDER_EXPIRY_HOURS = {"telegram": 1, "web": 24}
+ORDER_EXPIRY_HOURS = {"telegram": 1, "web": 24, "legacy": 24}
+MAX_PENDING_MANUAL_ORDERS = 3
+
+
+class ManualPaymentMethod(str, Enum):
+    FPS = "fps"
+    ALIPAY = "alipay"
+    WECHAT = "wechat"
+
+
+MANUAL_PAYMENT_METHODS = frozenset(method.value for method in ManualPaymentMethod)
+LEGACY_PROVIDER_METHODS = frozenset({"paypal", "paddle"})
+PAYMENT_METHOD_LABELS = {
+    ManualPaymentMethod.FPS.value: "FPS 转数快",
+    ManualPaymentMethod.ALIPAY.value: "支付宝",
+    ManualPaymentMethod.WECHAT.value: "微信支付",
+    "paypal": "PayPal（历史）",
+    "paddle": "Paddle（历史）",
+}
+MANUAL_PAYMENT_INSTRUCTION_ENVS = {
+    ManualPaymentMethod.FPS.value: "FPS_PAYMENT_INSTRUCTIONS",
+    ManualPaymentMethod.ALIPAY.value: "ALIPAY_PAYMENT_INSTRUCTIONS",
+    ManualPaymentMethod.WECHAT.value: "WECHAT_PAYMENT_INSTRUCTIONS",
+}
+
+
+def manual_payment_instructions(method: str) -> str:
+    """Return configured receiving instructions with safe, predictable line breaks."""
+    env_name = MANUAL_PAYMENT_INSTRUCTION_ENVS.get(str(method or "").strip().lower())
+    if not env_name:
+        return ""
+    value = os.getenv(env_name, "")
+    return value.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n").strip()
 
 
 def _iso(value: datetime | None = None) -> str:
@@ -97,11 +131,14 @@ class OrderService:
             cycle = "project"
         if cycle not in prices:
             raise ValueError("该方案不支持所选付款周期。")
-        if method not in {"paddle", "paypal", "fps"}:
-            raise ValueError("不支持的支付方式。")
         source = str(source or "web").strip().lower()
         if source not in ORDER_EXPIRY_HOURS:
             raise ValueError("订单来源无效。")
+        method = str(method or "").strip().lower()
+        if method not in MANUAL_PAYMENT_METHODS and not (
+            source == "legacy" and method in LEGACY_PROVIDER_METHODS
+        ):
+            raise ValueError("新订单仅支持 FPS、支付宝或微信支付人工付款。")
         if idempotency_key is not None:
             idempotency_key = str(idempotency_key).strip()
             if not 1 <= len(idempotency_key) <= 128:
@@ -117,8 +154,8 @@ class OrderService:
                     "plan": plan,
                     "cycle": cycle,
                     "method": method,
-                    "source": source,
                     "amount_minor": amount_minor,
+                    "entitlement_days": entitlement_days,
                     "terms_version": TERMS_VERSION,
                 },
                 sort_keys=True,
@@ -131,6 +168,18 @@ class OrderService:
             user = conn.execute("SELECT is_active FROM users WHERE id=?", (user_id,)).fetchone()
             if not user or not user["is_active"]:
                 raise PermissionError("账户不存在或已停用。")
+            if method in MANUAL_PAYMENT_METHODS:
+                placeholders = ",".join("?" for _ in MANUAL_PAYMENT_METHODS)
+                conn.execute(
+                    f"""UPDATE subscription_orders SET status='cancelled'
+                        WHERE user_id=? AND status='pending' AND pay_method IN ({placeholders})
+                          AND expires_at IS NOT NULL AND datetime(expires_at)<=datetime(?)
+                          AND NOT EXISTS (
+                              SELECT 1 FROM manual_payment_claims c
+                              WHERE c.order_no=subscription_orders.order_no AND c.status='submitted'
+                          )""",
+                    (user_id, *sorted(MANUAL_PAYMENT_METHODS), _iso(now)),
+                )
             if idempotency_key:
                 existing = conn.execute(
                     "SELECT * FROM subscription_orders WHERE user_id=? AND idempotency_key=?",
@@ -139,16 +188,36 @@ class OrderService:
                 if existing:
                     if existing["request_fingerprint"] != fingerprint:
                         raise ValueError("幂等键已用于不同的订单请求。")
+                    if method in MANUAL_PAYMENT_METHODS:
+                        from payment.receiving_profile import ReceivingProfileService
+
+                        ReceivingProfileService.snapshot_order(conn, str(existing["order_no"]), method)
                     return dict(existing)
-            if source == "telegram":
+            if method in MANUAL_PAYMENT_METHODS:
+                existing_purchase = conn.execute(
+                    """SELECT * FROM subscription_orders
+                       WHERE user_id=? AND status='pending' AND request_fingerprint=?
+                         AND datetime(expires_at)>datetime(?)
+                       ORDER BY id DESC LIMIT 1""",
+                    (user_id, fingerprint, _iso(now)),
+                ).fetchone()
+                if existing_purchase:
+                    from payment.receiving_profile import ReceivingProfileService
+
+                    ReceivingProfileService.snapshot_order(
+                        conn, str(existing_purchase["order_no"]), method
+                    )
+                    return dict(existing_purchase)
                 pending = conn.execute(
                     """SELECT COUNT(*) FROM subscription_orders
-                       WHERE user_id=? AND source='telegram' AND status='pending'
-                         AND datetime(created_at)>=datetime(?)""",
-                    (user_id, _iso(now - timedelta(hours=1))),
+                       WHERE user_id=? AND status='pending'
+                         AND pay_method IN ({}) AND datetime(expires_at)>datetime(?)""".format(
+                        ",".join("?" for _ in MANUAL_PAYMENT_METHODS)
+                    ),
+                    (user_id, *sorted(MANUAL_PAYMENT_METHODS), _iso(now)),
                 ).fetchone()[0]
-                if pending >= 3:
-                    raise ValueError("Telegram 建立订单过于频繁，请稍后再试。")
+                if pending >= MAX_PENDING_MANUAL_ORDERS:
+                    raise ValueError("待付款订单过多，请先完成现有订单或等待订单到期。")
             order_no = f"TA{now:%Y%m%d%H%M%S}{secrets.token_hex(3).upper()}"
             expires_at = _iso(now + timedelta(hours=ORDER_EXPIRY_HOURS[source]))
             conn.execute(
@@ -163,6 +232,10 @@ class OrderService:
                     fingerprint, amount_minor, expires_at,
                 ),
             )
+            if method in MANUAL_PAYMENT_METHODS:
+                from payment.receiving_profile import ReceivingProfileService
+
+                ReceivingProfileService.snapshot_order(conn, order_no, method)
             conn.execute(
                 "INSERT INTO user_action_logs (user_id,action_type,details,created_at) VALUES (?,?,?,?)",
                 (
@@ -217,16 +290,23 @@ class OrderService:
         file_id = str(evidence_file_id).strip() if evidence_file_id is not None else None
         unique_id = str(evidence_file_unique_id).strip() if evidence_file_unique_id is not None else None
         message_id = str(evidence_message_id).strip() if evidence_message_id is not None else None
-        if (file_id is None) != (unique_id is None):
-            raise ValueError("Telegram 文件凭证必须同时包含 file_id 和 file_unique_id。")
+        if file_id is None or unique_id is None:
+            raise ValueError("必须上传 Telegram 付款凭证截图。")
         for value in (file_id, unique_id):
             if value is not None and not 1 <= len(value) <= 256:
                 raise ValueError("Telegram 文件凭证无效。")
         if message_id is not None and (not message_id.isdigit() or not 1 <= len(message_id) <= 64):
             raise ValueError("Telegram 消息凭证无效。")
-        if file_id is None and message_id is None:
-            raise ValueError("必须提供 Telegram 付款凭证。")
         return file_id, unique_id, message_id
+
+    def require_payment_claim_capacity(self, user_id: int) -> None:
+        recent = self.db.fetch_one(
+            """SELECT COUNT(*) count FROM manual_payment_claims
+               WHERE user_id=? AND datetime(created_at)>=datetime(?)""",
+            (int(user_id), _iso(datetime.now(UTC) - timedelta(hours=1))),
+        )
+        if int((recent or {}).get("count") or 0) >= 3:
+            raise ValueError("付款凭证提交过于频繁，请稍后再试。")
 
     def submit_manual_payment_claim(
         self,
@@ -240,14 +320,31 @@ class OrderService:
         file_unique_id: str | None = None,
         message_id: str | int | None = None,
         source_update_id: str | int | None = None,
+        evidence_source: str = "telegram",
+        evidence_storage_key: str | None = None,
+        evidence_sha256: str | None = None,
     ) -> dict[str, Any]:
-        """Submit a Telegram payment proof without granting entitlement."""
+        """Submit payment proof metadata without granting entitlement."""
         evidence_file_id = evidence_file_id if evidence_file_id is not None else file_id
         evidence_file_unique_id = evidence_file_unique_id if evidence_file_unique_id is not None else file_unique_id
         evidence_message_id = evidence_message_id if evidence_message_id is not None else message_id
         file_id, unique_id, message_id = self._validated_claim_evidence(
             evidence_file_id, evidence_file_unique_id, evidence_message_id
         )
+        evidence_source = str(evidence_source or "").strip().lower()
+        storage_key = str(evidence_storage_key or "").strip().lower() or None
+        proof_sha256 = str(evidence_sha256 or "").strip().lower() or None
+        if evidence_source not in {"telegram", "web"}:
+            raise ValueError("付款凭证来源无效。")
+        if evidence_source == "web":
+            if storage_key is None or file_id != f"web:{storage_key}":
+                raise ValueError("网站付款凭证存储资料无效。")
+        if (storage_key is None) != (proof_sha256 is None):
+            raise ValueError("付款凭证存储资料不完整。")
+        if proof_sha256 is not None and (
+            len(proof_sha256) != 64 or any(char not in "0123456789abcdef" for char in proof_sha256)
+        ):
+            raise ValueError("付款凭证内容摘要无效。")
         update_id = str(source_update_id).strip() if source_update_id is not None else None
         if update_id is not None and (not update_id or len(update_id) > 64):
             raise ValueError("Telegram 更新编号无效。")
@@ -272,6 +369,8 @@ class OrderService:
                 raise PermissionError("订单不存在或不属于当前用户。")
             if order["status"] != "pending":
                 raise ValueError("只有待付款订单可以提交付款凭证。")
+            if str(order["pay_method"]) not in MANUAL_PAYMENT_METHODS:
+                raise ValueError("此订单不是人工付款订单，不能提交人工付款凭证。")
             if order["expires_at"]:
                 try:
                     expires_at = datetime.fromisoformat(order["expires_at"])
@@ -282,6 +381,15 @@ class OrderService:
                     if str(exc) == "订单已过期，请重新建立订单。":
                         raise
                     raise ValueError("订单过期时间无效。") from exc
+            if proof_sha256:
+                duplicate_evidence = conn.execute(
+                    """SELECT order_no FROM manual_payment_claims
+                       WHERE evidence_sha256=? AND order_no<>? AND status IN ('submitted','approved')
+                       LIMIT 1""",
+                    (proof_sha256, order_no),
+                ).fetchone()
+                if duplicate_evidence:
+                    raise ValueError("这张付款凭证已经用于其他订单。")
             existing = conn.execute(
                 "SELECT * FROM manual_payment_claims WHERE order_no=? AND status='submitted'", (order_no,)
             ).fetchone()
@@ -299,9 +407,13 @@ class OrderService:
             inserted = conn.execute(
                 """INSERT INTO manual_payment_claims
                    (order_no,user_id,attempt,status,evidence_file_id,evidence_file_unique_id,
-                    evidence_message_id,source_update_id,created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
-                (order_no, user_id, attempt, "submitted", file_id, unique_id, message_id, update_id, _iso(now)),
+                    evidence_message_id,source_update_id,evidence_source,evidence_storage_key,
+                    evidence_sha256,created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    order_no, user_id, attempt, "submitted", file_id, unique_id, message_id,
+                    update_id, evidence_source, storage_key, proof_sha256, _iso(now),
+                ),
             )
             claim_id = inserted.lastrowid
             if update_id:
@@ -430,6 +542,8 @@ class OrderService:
             if order["status"] != "pending":
                 conn.execute("UPDATE payment_callbacks SET processed=1 WHERE event_id=?", (event_id,))
                 return False
+            if str(order["pay_method"]) in MANUAL_PAYMENT_METHODS:
+                raise ValueError("人工付款订单只能通过财务审核处理。")
             if status == "paid":
                 capture_id = raw_data.get("capture_id")
                 if capture_id is not None and (

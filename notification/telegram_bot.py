@@ -14,7 +14,7 @@ import hashlib
 from html import escape
 from typing import Any
 from urllib.error import HTTPError
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 
 from core.config_loader import get_config
@@ -102,10 +102,11 @@ _CALLBACK_DATA = {"menu:home", "menu:settings"} | {
 }
 _CALLBACK_PATTERNS = (
     re.compile(
-        r"^desk:(?:home|queries|membership|timeline|actions|portfolio|market|plans|orders|settings|help|account)$"
+        r"^desk:(?:home|queries|pnl|membership|timeline|actions|portfolio|market|plans|orders|settings|help|account|receiving)$"
     ),
     re.compile(r"^timeline:(?:choose|custom):(?:stock|option)$"),
     re.compile(r"^timeline:show:(?:stock|option):[1-9][0-9]{0,2}:(?:0|[1-9][0-9]{0,2})$"),
+    re.compile(r"^timeline:pnl:(?:today|yesterday|7d):(?:0|[1-9][0-9]{0,2})$"),
     re.compile(r"^buy:plan:(?:standard|advanced|professional|custom)$"),
     re.compile(
         r"^buy:cycle:(?:standard|advanced|professional|custom):"
@@ -113,10 +114,12 @@ _CALLBACK_PATTERNS = (
     ),
     re.compile(
         r"^buy:(?:method|create):(?:standard|advanced|professional|custom):"
-        r"(?:monthly|quarterly|yearly|project):(?:fps|paypal|paddle)$"
+        r"(?:monthly|quarterly|yearly|project):(?:fps|alipay|wechat)$"
     ),
     re.compile(r"^pay:claimed:TA[0-9A-F]{12,40}$"),
     re.compile(r"^admin:(?:approve|reject):[1-9][0-9]{0,9}:[1-9][0-9]{0,3}$"),
+    re.compile(r"^paycfg:(?:home|cancel)$"),
+    re.compile(r"^paycfg:(?:show|settext|setqr|cleartext|clearqr):(?:fps|alipay|wechat)$"),
 )
 
 
@@ -534,12 +537,44 @@ def send_telegram(
     _telegram_request("sendMessage", payload, token=token)
 
 
+def send_telegram_photo(
+    message: str,
+    photo_file_id: str,
+    chat_id: str,
+    *,
+    buttons: TelegramKeyboard | None = None,
+    protect_content: bool = True,
+) -> None:
+    """Send a previously validated same-bot Telegram photo without exposing its file ID."""
+    enabled_env = str(_telegram_setting("enabled_env", "EXTERNAL_ALERTS_ENABLED"))
+    if os.getenv(enabled_env, "false").strip().lower() != "true":
+        raise RuntimeError("Telegram 外部通知已由平台停用。")
+    file_id = str(photo_file_id or "").strip()
+    if not 1 <= len(file_id) <= 256 or any(ord(char) < 33 or ord(char) > 126 for char in file_id):
+        raise RuntimeError("Telegram 图片标识无效。")
+    try:
+        payload: dict[str, Any] = {
+            "chat_id": _telegram_chat_id(chat_id, private=True),
+            "photo": file_id,
+            "caption": _telegram_text(message, limit=1024),
+        }
+        keyboard = _telegram_keyboard(buttons)
+        if keyboard:
+            payload["reply_markup"] = {"inline_keyboard": keyboard}
+        if protect_content:
+            payload["protect_content"] = True
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    _telegram_request("sendPhoto", payload)
+
+
 def _telegram_request(method: str, payload: dict[str, Any], *, token: str | None = None) -> None:
     bot_token = token or telegram_token()
     if not bot_token:
         raise RuntimeError("Telegram Bot 尚未配置。")
     if method not in {
         "sendMessage",
+        "sendPhoto",
         "copyMessage",
         "editMessageText",
         "answerCallbackQuery",
@@ -565,6 +600,66 @@ def _telegram_request(method: str, payload: dict[str, Any], *, token: str | None
         raise
     except Exception as exc:
         raise TelegramDeliveryUncertain(f"Telegram delivery uncertain: {type(exc).__name__}") from exc
+
+
+def download_telegram_file(file_id: str, max_bytes: int = 4 * 1024 * 1024) -> bytes:
+    """Download one Telegram photo with a hard response-size limit."""
+    value = str(file_id or "").strip()
+    if not 1 <= len(value) <= 256 or any(ord(char) < 33 or ord(char) > 126 for char in value):
+        raise ValueError("Telegram 文件标识无效。")
+    if not 1 <= int(max_bytes) <= 4 * 1024 * 1024:
+        raise ValueError("Telegram 文件大小限制无效。")
+    token = telegram_token()
+    if not token:
+        raise RuntimeError("Telegram Bot 尚未配置。")
+    request = Request(
+        f"https://api.telegram.org/bot{token}/getFile",
+        data=json.dumps({"file_id": value}, separators=(",", ":")).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=15) as response:
+            if response.status != 200:
+                raise RuntimeError(f"Telegram HTTP {response.status}")
+            payload = json.loads(response.read(64 * 1024).decode("utf-8"))
+    except HTTPError as exc:
+        raise RuntimeError(f"Telegram HTTP {exc.code}") from exc
+    except (RuntimeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        raise
+    except Exception as exc:
+        raise TelegramDeliveryUncertain(f"Telegram 文件读取不确定：{type(exc).__name__}") from exc
+    result = payload.get("result") if isinstance(payload, dict) and payload.get("ok") is True else None
+    file_path = result.get("file_path") if isinstance(result, dict) else None
+    file_size = result.get("file_size") if isinstance(result, dict) else None
+    if (
+        not isinstance(file_path, str)
+        or not 1 <= len(file_path) <= 256
+        or ".." in file_path
+        or any(ord(char) < 33 or ord(char) > 126 for char in file_path)
+    ):
+        raise ValueError("Telegram 文件路径无效。")
+    if file_size is not None and (isinstance(file_size, bool) or int(file_size) > max_bytes):
+        raise ValueError("Telegram 付款凭证图片必须小于 4 MB。")
+    download_request = Request(
+        f"https://api.telegram.org/file/bot{token}/{quote(file_path, safe='/')}",
+        method="GET",
+    )
+    try:
+        with urlopen(download_request, timeout=15) as response:
+            content_length = response.headers.get("Content-Length")
+            if content_length and int(content_length) > max_bytes:
+                raise ValueError("Telegram 付款凭证图片必须小于 4 MB。")
+            data = response.read(max_bytes + 1)
+    except HTTPError as exc:
+        raise RuntimeError(f"Telegram HTTP {exc.code}") from exc
+    except (RuntimeError, ValueError):
+        raise
+    except Exception as exc:
+        raise TelegramDeliveryUncertain(f"Telegram 文件下载不确定：{type(exc).__name__}") from exc
+    if not 1 <= len(data) <= max_bytes:
+        raise ValueError("Telegram 付款凭证图片必须小于 4 MB。")
+    return data
 
 
 def edit_telegram_message(
@@ -641,6 +736,7 @@ def configure_telegram_bot() -> None:
         {"command": "orders", "description": "我的訂閱訂單"},
         {"command": "id", "description": "顯示綁定 Chat ID"},
         {"command": "settings", "description": "私人通知設定"},
+        {"command": "payconfig", "description": "財務管理員收款資料"},
         {"command": "help", "description": "使用說明"},
     ]
     _telegram_request("setMyCommands", {"commands": commands})

@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from core.exceptions import DatabaseError
 

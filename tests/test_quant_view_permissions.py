@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from core.compat import UTC
-
 import pandas as pd
 
 from core.database import DatabaseManager

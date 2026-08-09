@@ -1,0 +1,28 @@
+[Unit]
+Description=CicloTrade React compatibility API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ciclotrade
+Group=ciclotrade
+SupplementaryGroups=opend
+WorkingDirectory=/opt/CicloTrade
+EnvironmentFile=/opt/CicloTrade/.env
+ExecStart=/opt/CicloTrade/.venv/bin/python -m uvicorn src.apps.api.app:app --host 127.0.0.1 --port 8001 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1 --no-access-log
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/CicloTrade/data /opt/CicloTrade/logs /var/lib/ciclotrade
+MemoryHigh=700M
+MemoryMax=950M
+TasksMax=192
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

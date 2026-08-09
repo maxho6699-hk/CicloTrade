@@ -6,15 +6,22 @@ from __future__ import annotations
 from datetime import datetime
 from core.compat import UTC
 from html import escape
-import os
 from typing import Any
 
 from core.admin_service import AdminService
 from core.plans import PLANS, plan_display_name
 from notification.telegram_models import TelegramDeskResponse, TelegramOutbound
 from notification.telegram_outbox import enqueue_telegram_outbound
+from notification.telegram_bot import download_telegram_file
+from notification.telegram_payment_receivers import handle_payment_receiver_action
 from notification.templates import telegram_membership
-from payment.order_service import OrderService
+from payment.order_service import (
+    MANUAL_PAYMENT_METHODS,
+    PAYMENT_METHOD_LABELS,
+    OrderService,
+)
+from payment.proof_storage import delete_payment_proof, store_payment_proof
+from payment.receiving_profile import ReceivingProfileService
 
 
 _PLAN_SLUGS = {
@@ -22,12 +29,6 @@ _PLAN_SLUGS = {
     "advanced": "高级版",
     "professional": "专业版",
     "custom": "定制版",
-}
-_PLAN_ENV = {
-    "标准版": "STANDARD",
-    "高级版": "ADVANCED",
-    "专业版": "PROFESSIONAL",
-    "定制版": "CUSTOM",
 }
 _CYCLE_LABELS = {
     "monthly": "月付",
@@ -73,7 +74,7 @@ def _user_chat(database, user_id: int) -> str | None:
 
 
 def _valid_order_options(slug: str, cycle: str, method: str) -> tuple[str, float]:
-    if slug not in _PLAN_SLUGS or method not in {"fps", "paypal", "paddle"}:
+    if slug not in _PLAN_SLUGS or method not in MANUAL_PAYMENT_METHODS:
         raise ValueError("订单选项无效。")
     plan = _PLAN_SLUGS[slug]
     if cycle not in PLANS[plan]["prices"]:
@@ -88,6 +89,7 @@ def _order_idempotency(user_id: int, slug: str, cycle: str, method: str) -> str:
 
 def _create_order(
     database,
+    chat_id: str,
     account: dict[str, Any] | None,
     slug: str,
     cycle: str,
@@ -96,9 +98,7 @@ def _create_order(
     if not account:
         return _binding_required()
     plan, amount = _valid_order_options(slug, cycle, method)
-    fps_instructions = os.getenv("FPS_PAYMENT_INSTRUCTIONS", "").strip()
-    if method == "fps" and not fps_instructions:
-        raise ValueError("FPS 收款资料尚未配置，请联系客户服务。")
+    method_label = PAYMENT_METHOD_LABELS[method]
     service = OrderService(database)
     order = service.create_order(
         int(account["id"]),
@@ -110,59 +110,34 @@ def _create_order(
         idempotency_key=_order_idempotency(int(account["id"]), slug, cycle, method),
     )
     order_no = str(order["order_no"])
-    if method == "fps":
-        message = (
-            "🏦 <b>CicloTrade · FPS 待付款</b>\n\n"
-            f"<blockquote>订单：<code>{escape(order_no)}</code>\n"
-            f"方案：{escape(plan_display_name(plan))} · {_CYCLE_LABELS[cycle]}\n"
-            f"金额：HKD {amount:,.0f}</blockquote>\n"
-            f"{escape(fps_instructions)}\n\n"
-            f"转账备注必须填写 <code>{escape(order_no)}</code>。付款后可直接点击“已付款”，"
-            "也可上传付款截图；系统只会提交人工审核，不会自动开通会员。"
+    profile = ReceivingProfileService(database).for_order(order_no, int(account["id"]))
+    instructions = str(profile.get("receiver_text") or "")
+    message = (
+        f"🏦 <b>CicloTrade · {escape(method_label)}待付款</b>\n\n"
+        f"<blockquote>订单：<code>{escape(order_no)}</code>\n"
+        f"方案：{escape(plan_display_name(plan))} · {_CYCLE_LABELS[cycle]}\n"
+        f"金额：HKD {amount:,.0f}</blockquote>\n"
+        f"{escape(instructions) if instructions else '请扫描下方收款二维码。'}\n\n"
+        f"付款备注必须填写 <code>{escape(order_no)}</code>。付款后点击“上传付款凭证”，"
+        "并发送清晰截图；只有独立财务审核到账后才会开通会员。"
+    )
+    followups = ()
+    if profile.get("qr_telegram_file_id"):
+        followups = (
+            TelegramOutbound(
+                str(chat_id),
+                f"{method_label} 收款二维码 · 订单 {order_no}",
+                photo_file_id=str(profile["qr_telegram_file_id"]),
+            ),
         )
-        return TelegramDeskResponse(
-            message,
-            [
-                [{"text": "✅ 我已付款", "callback_data": f"pay:claimed:{order_no}"}],
-                [{"text": "🧾 我的订单", "callback_data": "desk:orders"}],
-                *_home_keyboard(),
-            ],
-        )
-
-    checkout_url = None
-    if method == "paypal":
-        from payment.paypal_client import PayPalClient
-
-        client = PayPalClient()
-        if not client.configured:
-            raise ValueError("PayPal 付款暂未开放。")
-        external = client.create_order(order_no, amount)
-        service.attach_external_id(order_no, str(external["id"]))
-        checkout_url = next(
-            (str(link["href"]) for link in external.get("links", []) if link.get("rel") == "approve"),
-            None,
-        )
-    else:
-        from payment.paddle_client import PaddleClient
-
-        client = PaddleClient()
-        price_id = os.getenv(f"PADDLE_PRICE_{_PLAN_ENV[plan]}_{cycle.upper()}", "").strip()
-        if not client.configured or not price_id:
-            raise ValueError("Paddle 付款暂未开放。")
-        external = client.create_transaction(order_no, price_id)
-        service.attach_external_id(order_no, str(external["id"]), price_id)
-        checkout_url = str((external.get("checkout") or {}).get("url") or "") or None
-    if not checkout_url:
-        raise RuntimeError("付款平台未返回安全付款网址。")
     return TelegramDeskResponse(
-        "🔐 <b>安全付款订单已建立</b>\n\n"
-        f"<blockquote><code>{escape(order_no)}</code>\n{escape(plan_display_name(plan))} · HKD {amount:,.0f}</blockquote>\n"
-        "付款完成后，支付平台会自动回传并开通会员。",
+        message,
         [
-            [{"text": "前往安全付款", "url": checkout_url}],
+            [{"text": "📷 上传付款凭证", "callback_data": f"pay:claimed:{order_no}"}],
             [{"text": "🧾 我的订单", "callback_data": "desk:orders"}],
             *_home_keyboard(),
         ],
+        followups,
     )
 
 
@@ -180,8 +155,9 @@ def _claim_followups(
         f"<blockquote>申报 #{int(claim['id'])}\n"
         f"订单：<code>{escape(str(order['order_no']))}</code>\n"
         f"账户：{escape(str(account['email']))}\n"
+        f"方式：{escape(PAYMENT_METHOD_LABELS[str(order['pay_method'])])}\n"
         f"{escape(plan_display_name(str(order['plan_type'])))} · {escape(str(order['currency']))} {float(order['amount']):,.0f}</blockquote>\n"
-        "请先核对银行到账、金额与订单备注，再批准。"
+        "请在对应收款渠道核对到账、金额与订单备注，再批准。"
     )
     buttons = [
         [{"text": "✅ 开始核对到账", "callback_data": f"admin:approve:{claim['id']}:{claim['attempt']}"}],
@@ -213,20 +189,48 @@ def _submit_claim(
         return _binding_required()
     service = OrderService(database)
     order = service.get_order_for_user(int(account["id"]), order_no)
-    if str(order["pay_method"]) != "fps":
+    if str(order["pay_method"]) not in MANUAL_PAYMENT_METHODS:
         raise ValueError("此订单由支付平台自动确认，无需人工申报。")
     existing = database.fetch_one(
         "SELECT * FROM manual_payment_claims WHERE order_no=? AND status='submitted'",
         (order_no,),
     )
-    claim = service.submit_manual_payment_claim(
-        int(account["id"]),
-        order_no,
-        evidence_file_id=photo.get("file_id") if photo else None,
-        evidence_file_unique_id=photo.get("file_unique_id") if photo else None,
-        evidence_message_id=message_id,
-        source_update_id=update_id,
-    )
+    if existing and photo is not None:
+        return TelegramDeskResponse(
+            "⏳ <b>付款申报已提交</b>\n\n"
+            f"<blockquote>订单：<code>{escape(order_no)}</code>\n状态：等待财务人工核对</blockquote>\n"
+            "审核通过后，Bot 会自动通知你并更新会员；请勿重复提交或连续点击。",
+            [[{"text": "🧾 查看订单", "callback_data": "desk:orders"}], *_home_keyboard()],
+        )
+    if photo is None:
+        return TelegramDeskResponse(
+            "📷 <b>请上传付款凭证</b>\n\n"
+            f"<blockquote>订单：<code>{escape(order_no)}</code>\n"
+            f"方式：{escape(PAYMENT_METHOD_LABELS[str(order['pay_method'])])}</blockquote>\n"
+            "请发送清晰的付款截图。只有上传凭证后才会建立人工申报；"
+            "如有多张待付款订单，请在图片说明填写完整订单号。",
+            [[{"text": "🧾 查看订单", "callback_data": "desk:orders"}], *_home_keyboard()],
+        )
+    service.require_payment_claim_capacity(int(account["id"]))
+    stored = None
+    try:
+        raw_proof = download_telegram_file(str(photo.get("file_id") or ""))
+        stored = store_payment_proof(raw_proof, "image/jpeg")
+        claim = service.submit_manual_payment_claim(
+            int(account["id"]),
+            order_no,
+            evidence_file_id=photo.get("file_id"),
+            evidence_file_unique_id=photo.get("file_unique_id"),
+            evidence_message_id=message_id,
+            source_update_id=update_id,
+            evidence_source="telegram",
+            evidence_storage_key=stored.storage_key,
+            evidence_sha256=stored.sha256,
+        )
+    except Exception:
+        if stored is not None:
+            delete_payment_proof(stored.storage_key)
+        raise
     if not existing:
         for outbound in _claim_followups(
             database,
@@ -261,12 +265,12 @@ def _photo_claim(
     if not account:
         return _binding_required()
     pending = [
-        order for order in OrderService(database).list_pending_orders(int(account["id"]), source="telegram")
-        if str(order.get("pay_method")) == "fps"
+        order for order in OrderService(database).list_pending_orders(int(account["id"]))
+        if str(order.get("pay_method")) in MANUAL_PAYMENT_METHODS
     ]
     if not pending:
         return TelegramDeskResponse(
-            "🧾 <b>没有可关联的 FPS 待付款订单</b>\n\n请先选择会员方案并建立订单，再上传付款截图。",
+            "🧾 <b>没有可关联的人工付款订单</b>\n\n请先选择会员方案并建立订单，再上传付款截图。",
             [[{"text": "💎 选择方案", "callback_data": "desk:plans"}], *_home_keyboard()],
         )
     order = pending[0] if len(pending) == 1 else next(
@@ -378,9 +382,9 @@ def _approval_prompt(
     return TelegramDeskResponse(
         "🔐 <b>CicloTrade · 财务复核</b>\n\n"
         f"<blockquote>订单：<code>{escape(order_no)}</code>\n"
-        "请在银行或 FPS 后台确认收款金额和备注。</blockquote>\n"
+        "请在对应收款渠道确认金额、付款备注与凭证一致。</blockquote>\n"
         "确认后发送：\n"
-        f"<code>/approve {int(claim_id)} {int(attempt)} 银行流水号</code>\n\n"
+        f"<code>/approve {int(claim_id)} {int(attempt)} 结算流水号</code>\n\n"
         "流水号只用于防止同一笔入账重复开通，不会展示给用户。",
         [[{"text": "❌ 未到账 / 驳回", "callback_data": f"admin:reject:{int(claim_id)}:{int(attempt)}"}], *_home_keyboard()],
     )
@@ -396,13 +400,18 @@ def handle_billing_action(
     update_id: str | int | None = None,
     photo: dict[str, str] | None = None,
 ) -> TelegramDeskResponse | None:
+    receiver = handle_payment_receiver_action(
+        database, chat_id, account, command, photo=photo
+    )
+    if receiver is not None:
+        return receiver
     if photo is not None:
         if message_id is None:
             raise ValueError("Telegram 图片消息无效。")
         return _photo_claim(database, chat_id, account, photo, message_id, update_id, command)
     if command.startswith("buy:create:"):
         _, _, slug, cycle, method = command.split(":")
-        return _create_order(database, account, slug, cycle, method)
+        return _create_order(database, chat_id, account, slug, cycle, method)
     if command.startswith("pay:claimed:"):
         if message_id is None:
             raise ValueError("Telegram 付款确认消息无效。")
@@ -422,7 +431,7 @@ def handle_billing_action(
     if command.lower().split(maxsplit=1)[0].split("@", 1)[0] == "/approve":
         parts = command.split(maxsplit=3)
         if len(parts) != 4:
-            raise ValueError("请使用 /approve 申报号 次数 银行流水号 完成审核。")
+            raise ValueError("请使用 /approve 申报号 次数 结算流水号 完成审核。")
         return _review_claim(
             database,
             account,

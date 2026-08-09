@@ -99,21 +99,22 @@ def _fresh_marks(database) -> tuple[dict[str, float], str | None]:
         return {}, None
 
 
-def _cycles(database, kind: str) -> tuple[list[dict[str, Any]], str | None]:
+def _cycles(database, kind: str, *, include_marks: bool = True) -> tuple[list[dict[str, Any]], str | None]:
     ttl = max(15, min(int(os.getenv("TELEGRAM_TIMELINE_CACHE_SECONDS", "30")), 120))
     now = time.monotonic()
+    cache_key = f"{kind}:{'marked' if include_marks else 'closed'}"
     with _CACHE_LOCK:
-        cached = _CACHE.get(kind)
+        cached = _CACHE.get(cache_key)
         if cached and now - cached[0] < ttl:
             return cached[1], cached[2]
     events = QuantJournal(database).list_events(_SYSTEM_LEDGER)
     max_events = max(500, min(int(os.getenv("TELEGRAM_TIMELINE_MAX_EVENTS", "5000")), 20_000))
     if len(events) > max_events:
         raise RuntimeError("交易記錄正在建立索引，請稍後再試。")
-    marks, marked_at = _fresh_marks(database)
+    marks, marked_at = _fresh_marks(database) if include_marks else ({}, None)
     result = project_trade_cycles(events, kind, marks=marks)
     with _CACHE_LOCK:
-        _CACHE[kind] = (now, result, marked_at)
+        _CACHE[cache_key] = (now, result, marked_at)
     return result, marked_at
 
 
@@ -121,21 +122,25 @@ def _plan_visible_cycles(
     cycles: list[dict[str, Any]],
     plan: str,
     kind: str,
+    *,
+    delay_minutes: int | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Prevent private Bot queries from bypassing channel delay entitlements."""
-    delay = telegram_timeline_limits(plan)[f"{kind}_delay_minutes"]
+    delay = telegram_timeline_limits(plan)[f"{kind}_delay_minutes"] if delay_minutes is None else int(delay_minutes)
     if delay <= 0:
         return cycles, 0
     cutoff = datetime.now(UTC) - timedelta(minutes=delay)
     visible: list[dict[str, Any]] = []
     for cycle in cycles:
         try:
-            updated_at = datetime.fromisoformat(str(cycle.get("updated_at")).replace("Z", "+00:00"))
-            if updated_at.tzinfo is None:
-                updated_at = updated_at.replace(tzinfo=UTC)
+            visible_at = datetime.fromisoformat(
+                str(cycle.get("recorded_at") or cycle.get("updated_at")).replace("Z", "+00:00")
+            )
+            if visible_at.tzinfo is None:
+                visible_at = visible_at.replace(tzinfo=UTC)
         except (TypeError, ValueError):
             continue
-        if updated_at > cutoff:
+        if visible_at > cutoff:
             continue
         delayed = dict(cycle)
         delayed["mark_price"] = None
@@ -208,6 +213,7 @@ def _query_center() -> TelegramDeskResponse:
         "🔎 <b>CicloTrade · 查詢中心</b>\n\n"
         "請選擇查詢項目。",
         [
+            [{"text": "📅 已平倉盈虧", "callback_data": "desk:pnl"}],
             [{"text": "📜 交易時間線", "callback_data": "desk:timeline"}],
             [{"text": "📈 今日建議", "callback_data": "desk:actions"}],
             [{"text": "💼 模擬持倉", "callback_data": "desk:portfolio"}],
@@ -227,6 +233,8 @@ def _timeline_home(account: dict[str, Any] | None) -> TelegramDeskResponse:
     plan = effective_plan(account)
     limits = telegram_timeline_limits(plan)
     option_label = "期權建議時間線" if limits["option"] else "🔒 期權建議 · 專業會員"
+    if limits["option"] and limits["option_delay_minutes"]:
+        option_label += f" · 延遲 {_delay_label(limits['option_delay_minutes'])}"
     return TelegramDeskResponse(
         "📜 <b>CicloTrade · 交易時間線</b>\n\n"
         f"<blockquote>目前等級　{escape(plan_display_name(plan))}\n"
@@ -353,6 +361,10 @@ def handle_timeline_action(
     lower = value.lower()
     if value == "desk:queries":
         return _query_center()
+    if value == "desk:pnl" or value.startswith("timeline:pnl:"):
+        from notification.telegram_pnl import handle_closed_pnl_action
+
+        return handle_closed_pnl_action(database, chat_id, account, value)
     if value == "desk:timeline" or lower == "/timeline":
         return _timeline_home(account)
     if lower.startswith("/timeline "):

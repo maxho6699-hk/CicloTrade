@@ -15,6 +15,7 @@ class TelegramOutbound:
     buttons: TelegramKeyboard | None = None
     copy_from_chat_id: str | None = None
     copy_message_id: int | None = None
+    photo_file_id: str | None = None
 
 
 @dataclass(frozen=True)

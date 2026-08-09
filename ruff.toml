@@ -1,0 +1,13 @@
+target-version = "py310"
+line-length = 120
+extend-exclude = [
+    ".agents",
+    ".claude",
+    ".claude-flow",
+    ".codex",
+    ".pytest-*",
+    ".swarm",
+]
+
+[lint]
+select = ["E4", "E7", "E9", "F"]

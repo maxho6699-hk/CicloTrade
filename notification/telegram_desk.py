@@ -26,13 +26,19 @@ from notification.telegram_bot import (
     verified_account_for_chat,
 )
 from notification.telegram_models import TelegramDeskResponse
-from notification.telegram_timeline import handle_timeline_action
 from notification.telegram_security import (
-    claim_telegram_callback,
-    claim_telegram_update,
-    consume_telegram_quota,
+    claim_telegram_callback as claim_telegram_callback,
+    claim_telegram_update as claim_telegram_update,
+    consume_telegram_quota as consume_telegram_quota,
 )
-from payment.order_service import OrderService
+from notification.telegram_timeline import handle_timeline_action
+from payment.order_service import (
+    MANUAL_PAYMENT_METHODS,
+    PAYMENT_METHOD_LABELS,
+    ManualPaymentMethod,
+    OrderService,
+)
+from payment.receiving_profile import ReceivingProfileService
 
 
 _SYSTEM_LEDGER = os.getenv("TRADEAI_SYSTEM_LEDGER_KEY", "tradeai-system")
@@ -166,7 +172,7 @@ def _plan_detail(slug: str, account: dict[str, Any] | None) -> tuple[str, Telegr
     )
 
 
-def _cycle_card(slug: str, cycle: str, account: dict[str, Any] | None) -> tuple[str, TelegramKeyboard]:
+def _cycle_card(database, slug: str, cycle: str, account: dict[str, Any] | None) -> tuple[str, TelegramKeyboard]:
     name = _PLAN_SLUGS[slug]
     display_name = plan_display_name(name)
     if cycle not in PLANS[name]["prices"]:
@@ -175,23 +181,12 @@ def _cycle_card(slug: str, cycle: str, account: dict[str, Any] | None) -> tuple[
     if not account:
         message, buttons = _account_card("--", None)
         return message, buttons
-    methods: list[tuple[str, str]] = []
-    if os.getenv("FPS_PAYMENT_INSTRUCTIONS", "").strip():
-        methods.append(("fps", "FPS 转数快 · 人工核对"))
-    try:
-        from payment.paypal_client import PayPalClient
-
-        if PayPalClient().configured:
-            methods.append(("paypal", "PayPal 安全付款"))
-    except Exception:
-        pass
-    try:
-        from payment.paddle_client import PaddleClient
-
-        if PaddleClient().configured:
-            methods.append(("paddle", "Paddle 安全付款"))
-    except Exception:
-        pass
+    availability = ReceivingProfileService(database).availability()
+    methods = [
+        (method.value, f"{PAYMENT_METHOD_LABELS[method.value]} · 人工核对")
+        for method in ManualPaymentMethod
+        if availability[method.value]["available"]
+    ]
     buttons = [
         [{"text": label, "callback_data": f"buy:method:{slug}:{cycle}:{method}"}]
         for method, label in methods
@@ -210,13 +205,15 @@ def _cycle_card(slug: str, cycle: str, account: dict[str, Any] | None) -> tuple[
     )
 
 
-def _method_card(slug: str, cycle: str, method: str) -> tuple[str, TelegramKeyboard]:
+def _method_card(database, slug: str, cycle: str, method: str) -> tuple[str, TelegramKeyboard]:
     name = _PLAN_SLUGS[slug]
     display_name = plan_display_name(name)
-    if cycle not in PLANS[name]["prices"] or method not in {"fps", "paypal", "paddle"}:
+    if cycle not in PLANS[name]["prices"] or method not in MANUAL_PAYMENT_METHODS:
         raise ValueError("订单选项无效。")
+    if not ReceivingProfileService(database).current(method)["available"]:
+        raise ValueError(f"{PAYMENT_METHOD_LABELS[method]}收款资料尚未配置。")
     amount = float(PLANS[name]["prices"][cycle])
-    label = {"fps": "FPS 转数快", "paypal": "PayPal", "paddle": "Paddle"}[method]
+    label = PAYMENT_METHOD_LABELS[method]
     return (
         f"✅ <b>最后确认</b>\n\n"
         f"<blockquote>{escape(display_name)} · {_CYCLE_LABELS[cycle]}\n"
@@ -238,11 +235,13 @@ def _orders_card(database, account: dict[str, Any] | None) -> tuple[str, Telegra
     if not orders:
         lines.append("尚无订阅订单。")
     for order in orders:
+        method = str(order["pay_method"])
         lines.extend(
             (
                 f"<b>{escape(plan_display_name(str(order['plan_type'])))}</b> · {_CYCLE_LABELS.get(str(order['billing_cycle']), '--')}",
                 f"<code>{escape(str(order['order_no']))}</code> · {_STATUS_LABELS.get(str(order['status']), escape(str(order['status'])))} · "
-                f"{escape(str(order['currency']))} {float(order['amount']):,.0f}",
+                f"{escape(str(order['currency']))} {float(order['amount']):,.0f} · "
+                f"{escape(PAYMENT_METHOD_LABELS.get(method, method))}",
                 "",
             )
         )
@@ -466,6 +465,10 @@ def telegram_desk_response(
             return timeline
         if command in {"desk:home", "menu:home"}:
             message, keyboard = _home_card(chat_id, account), telegram_main_keyboard()
+            from notification.telegram_payment_receivers import is_billing_admin
+
+            if is_billing_admin(database, account):
+                keyboard.insert(-1, [{"text": "🏦 收款资料管理", "callback_data": "desk:receiving"}])
         elif command == "desk:account":
             message, keyboard = _account_card(chat_id, account)
         elif command == "desk:plans":
@@ -503,10 +506,10 @@ def telegram_desk_response(
             message, keyboard = _plan_detail(command.split(":")[2], account)
         elif command.startswith("buy:cycle:"):
             _, _, slug, cycle = command.split(":")
-            message, keyboard = _cycle_card(slug, cycle, account)
+            message, keyboard = _cycle_card(database, slug, cycle, account)
         elif command.startswith("buy:method:"):
             _, _, slug, cycle, method = command.split(":")
-            message, keyboard = _method_card(slug, cycle, method)
+            message, keyboard = _method_card(database, slug, cycle, method)
         else:
             message, keyboard = _help_card()
     except (KeyError, ValueError, PermissionError) as exc:

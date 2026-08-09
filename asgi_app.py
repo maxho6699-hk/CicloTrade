@@ -39,6 +39,7 @@ from notification.telegram_bot import (
     edit_telegram_message,
     entitled_user_target,
     send_telegram,
+    send_telegram_photo,
     telegram_callback_allowed,
     telegram_configured,
     telegram_token,
@@ -856,14 +857,24 @@ async def telegram_webhook(request):
                     item.copy_from_chat_id,
                     item.copy_message_id,
                 )
-            await asyncio.to_thread(
-                send_telegram,
-                item.message,
-                item.chat_id,
-                parse_mode="HTML",
-                buttons=item.buttons,
-                protect_content=True,
-            )
+            if item.photo_file_id:
+                await asyncio.to_thread(
+                    send_telegram_photo,
+                    item.message,
+                    item.photo_file_id,
+                    item.chat_id,
+                    buttons=item.buttons,
+                    protect_content=True,
+                )
+            else:
+                await asyncio.to_thread(
+                    send_telegram,
+                    item.message,
+                    item.chat_id,
+                    parse_mode="HTML",
+                    buttons=item.buttons,
+                    protect_content=True,
+                )
 
     async def deliver_service_outbox() -> None:
         try:

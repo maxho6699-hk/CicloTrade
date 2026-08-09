@@ -5,10 +5,15 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
+from datetime import datetime, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
+
+from core.compat import UTC
 
 
 _EPSILON = 1e-12
+_HONG_KONG = ZoneInfo("Asia/Hong_Kong")
 
 
 def _finite(value: object, *, default: float = 0.0) -> float:
@@ -35,6 +40,7 @@ def _new_cycle(leg: dict[str, Any], event: dict[str, Any], sequence: int) -> dic
         "opened_at": str(event["occurred_at"]),
         "closed_at": None,
         "updated_at": str(event["occurred_at"]),
+        "recorded_at": str(event.get("recorded_at") or event["occurred_at"]),
         "strategy_name": str(event.get("strategy_name") or "--"),
         "current_quantity": 0.0,
         "average_cost": 0.0,
@@ -49,7 +55,76 @@ def _new_cycle(leg: dict[str, Any], event: dict[str, Any], sequence: int) -> dic
         "mark_price": None,
         "unrealized_pnl": None,
         "event_count": 0,
+        "executions": [],
     }
+
+
+def _execution(
+    event: dict[str, Any],
+    role: str,
+    quantity: float,
+    price: float,
+    commission: float,
+    position_after: float,
+) -> dict[str, Any]:
+    event_id = event.get("id")
+    return {
+        "event_id": event_id if isinstance(event_id, int) and not isinstance(event_id, bool) else None,
+        "occurred_at": str(event["occurred_at"]),
+        "role": role,
+        "quantity": abs(quantity),
+        "price": price,
+        "commission": commission,
+        "position_after": position_after,
+    }
+
+
+def closed_trade_window(period: str, now: datetime | None = None) -> tuple[datetime, datetime]:
+    """Return a half-open UTC window for one Hong Kong calendar period."""
+    if period not in {"today", "yesterday", "7d"}:
+        raise ValueError("period must be today, yesterday, or 7d")
+    current = now or datetime.now(UTC)
+    if not isinstance(current, datetime):
+        raise TypeError("now must be a datetime")
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    local_date = current.astimezone(_HONG_KONG).date()
+    today_start = datetime.combine(local_date, time.min, tzinfo=_HONG_KONG)
+    if period == "today":
+        start, end = today_start, today_start + timedelta(days=1)
+    elif period == "yesterday":
+        start, end = today_start - timedelta(days=1), today_start
+    else:
+        start, end = today_start - timedelta(days=6), today_start + timedelta(days=1)
+    return start.astimezone(UTC), end.astimezone(UTC)
+
+
+def filter_closed_trade_cycles(
+    cycles: Sequence[dict[str, Any]],
+    period: str,
+    *,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Select closed lifecycles by their Hong Kong closing calendar date."""
+    start, end = closed_trade_window(period, now)
+    selected: list[dict[str, Any]] = []
+    for cycle in cycles:
+        closed_at = cycle.get("closed_at")
+        if not closed_at:
+            continue
+        try:
+            closed = datetime.fromisoformat(str(closed_at).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            continue
+        if closed.tzinfo is None:
+            closed = closed.replace(tzinfo=UTC)
+        if start <= closed.astimezone(UTC) < end:
+            selected.append(cycle)
+    return sorted(
+        selected,
+        key=lambda row: (str(row["closed_at"]), int(row["sequence"])),
+        reverse=True,
+    )
 
 
 def project_trade_cycles(
@@ -91,6 +166,7 @@ def project_trade_cycles(
                 quantity = _finite(state["quantity"])
                 average = _finite(state["average_cost"])
                 if abs(quantity) < _EPSILON or quantity * remaining > 0:
+                    opening = abs(quantity) < _EPSILON
                     if state["cycle"] is None:
                         sequence += 1
                         state["cycle"] = _new_cycle(leg, event, sequence)
@@ -112,6 +188,20 @@ def project_trade_cycles(
                     cycle["commission"] += piece_commission
                     cycle["event_count"] += 1
                     cycle["updated_at"] = str(event["occurred_at"])
+                    cycle["recorded_at"] = max(
+                        str(cycle.get("recorded_at") or ""),
+                        str(event.get("recorded_at") or event["occurred_at"]),
+                    )
+                    cycle["executions"].append(
+                        _execution(
+                            event,
+                            "open" if opening else "add",
+                            piece,
+                            price,
+                            piece_commission,
+                            new_quantity,
+                        )
+                    )
                     remaining = 0.0
                     remaining_commission = 0.0
                     continue
@@ -132,7 +222,21 @@ def project_trade_cycles(
                 cycle["commission"] += piece_commission
                 cycle["event_count"] += 1
                 cycle["updated_at"] = str(event["occurred_at"])
+                cycle["recorded_at"] = max(
+                    str(cycle.get("recorded_at") or ""),
+                    str(event.get("recorded_at") or event["occurred_at"]),
+                )
                 cycle["current_quantity"] = 0.0 if abs(new_quantity) < _EPSILON else new_quantity
+                cycle["executions"].append(
+                    _execution(
+                        event,
+                        "close" if abs(new_quantity) < _EPSILON else "reduce",
+                        piece,
+                        price,
+                        piece_commission,
+                        cycle["current_quantity"],
+                    )
+                )
                 state["quantity"] = cycle["current_quantity"]
                 remaining -= piece
                 remaining_commission = max(0.0, remaining_commission - piece_commission)

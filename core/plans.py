@@ -111,14 +111,14 @@ def telegram_suggestion_name(instrument_type: str) -> str:
 def telegram_timeline_limits(plan: str) -> dict[str, int]:
     """Bound private Bot timeline access by the effective membership."""
     return {
-        "免费版": {"stock": 10, "option": 0, "stock_delay_minutes": 60, "option_delay_minutes": 15, "per_minute": 2, "per_day": 5},
-        "标准版": {"stock": 30, "option": 0, "stock_delay_minutes": 60, "option_delay_minutes": 15, "per_minute": 6, "per_day": 30},
-        "高级版": {"stock": 100, "option": 0, "stock_delay_minutes": 0, "option_delay_minutes": 0, "per_minute": 10, "per_day": 100},
-        "专业版": {"stock": 100, "option": 100, "stock_delay_minutes": 0, "option_delay_minutes": 0, "per_minute": 12, "per_day": 200},
-        "定制版": {"stock": 100, "option": 100, "stock_delay_minutes": 0, "option_delay_minutes": 0, "per_minute": 12, "per_day": 200},
+        "免费版": {"stock": 10, "option": 0, "stock_delay_minutes": 60, "option_delay_minutes": 15, "pnl_stock": 10, "pnl_option": 10, "pnl_stock_delay_minutes": 60, "pnl_option_delay_minutes": 15, "per_minute": 2, "per_day": 5},
+        "标准版": {"stock": 30, "option": 0, "stock_delay_minutes": 60, "option_delay_minutes": 15, "pnl_stock": 30, "pnl_option": 30, "pnl_stock_delay_minutes": 60, "pnl_option_delay_minutes": 15, "per_minute": 6, "per_day": 30},
+        "高级版": {"stock": 100, "option": 0, "stock_delay_minutes": 0, "option_delay_minutes": 0, "pnl_stock": 100, "pnl_option": 30, "pnl_stock_delay_minutes": 0, "pnl_option_delay_minutes": 15, "per_minute": 10, "per_day": 100},
+        "专业版": {"stock": 100, "option": 100, "stock_delay_minutes": 0, "option_delay_minutes": 0, "pnl_stock": 100, "pnl_option": 100, "pnl_stock_delay_minutes": 0, "pnl_option_delay_minutes": 0, "per_minute": 12, "per_day": 200},
+        "定制版": {"stock": 100, "option": 100, "stock_delay_minutes": 0, "option_delay_minutes": 0, "pnl_stock": 100, "pnl_option": 100, "pnl_stock_delay_minutes": 0, "pnl_option_delay_minutes": 0, "per_minute": 12, "per_day": 200},
     }.get(
         str(plan),
-        {"stock": 10, "option": 0, "stock_delay_minutes": 60, "option_delay_minutes": 15, "per_minute": 2, "per_day": 5},
+        {"stock": 10, "option": 0, "stock_delay_minutes": 60, "option_delay_minutes": 15, "pnl_stock": 10, "pnl_option": 10, "pnl_stock_delay_minutes": 60, "pnl_option_delay_minutes": 15, "per_minute": 2, "per_day": 5},
     )
 
 

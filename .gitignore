@@ -12,3 +12,8 @@ data/*.db
 data/*.db-*
 logs/*.log
 output/
+node_modules/
+dist/
+.vite/
+data/payment-proofs/
+data/payment-receiver-assets/

@@ -35,7 +35,9 @@ from notification.telegram_bot import (
     telegram_token,
     verified_user_target,
 )
-from notification.telegram_outbox import dispatch_telegram_service_outbox
+from notification.telegram_outbox import (
+    dispatch_telegram_service_outbox as dispatch_telegram_service_outbox,
+)
 
 
 def _settings_json(value) -> dict:
@@ -680,7 +682,6 @@ def scan_price_alerts(database=None, data_source=None) -> int:
     triggered_count = 0
     service = AlertService(db)
     for user_id in dict.fromkeys(int(row["user_id"]) for row in alerts):
-        user = db.fetch_one("SELECT plan_type,subscription_expire FROM users WHERE id=?", (user_id,)) or {}
         for alert in service.evaluate(user_id, prices, metrics):
             triggered_count += 1
     dispatch_price_alert_deliveries(db)

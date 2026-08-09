@@ -237,7 +237,9 @@ def test_payment_requires_terms_and_never_allows_voluntary_refund(db):
     service = OrderService(db)
     with pytest.raises(ValueError, match="不退款政策"):
         service.create_order(user["id"], "标准版", "monthly", "fps")
-    order = service.create_order(user["id"], "标准版", "monthly", "fps", terms_accepted=True)
+    order = service.create_order(
+        user["id"], "标准版", "monthly", "paypal", terms_accepted=True, source="legacy"
+    )
     assert service.process_callback("event-1", order["order_no"], "paid", {"event": "paid"}) is True
     assert service.process_callback("event-1", order["order_no"], "paid", {"event": "paid"}) is False
     assert service.refund_eligibility(order["order_no"])[0] is False
@@ -262,7 +264,9 @@ def test_broker_connection_enforces_platform_switch_plan_and_blocks_refund(db):
 
     paid_user = _user(auth, "paid-broker")
     service = OrderService(db)
-    order = service.create_order(paid_user["id"], "专业版", "monthly", "fps", terms_accepted=True)
+    order = service.create_order(
+        paid_user["id"], "专业版", "monthly", "paypal", terms_accepted=True, source="legacy"
+    )
     assert service.process_callback("broker-plan-paid", order["order_no"], "paid", {})
     assert service.refund_eligibility(order["order_no"])[0] is False
     OrderManager(db).add_broker_account(

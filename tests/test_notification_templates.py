@@ -1,4 +1,4 @@
-from notification.templates import auth_email, telegram_order_message, telegram_quant_message
+from notification.templates import auth_email, telegram_daily_summary, telegram_order_message, telegram_quant_message
 
 
 def test_email_template_has_plain_and_html_versions():
@@ -25,3 +25,19 @@ def test_telegram_templates_keep_decision_fields_in_first_screen():
     assert "美股 🟢 AAPL" in message and "US:OPTION" not in message and "catalog" not in message.lower()
     assert "📦 數量　1 張" in message
     assert message.count("<blockquote>") == 1
+
+
+def test_daily_summary_directs_detailed_pnl_queries_to_private_bot():
+    snapshot = {
+        "total_pnl": 125,
+        "total_equity": 100_125,
+        "initial_cash": 100_000,
+        "currency": "USD",
+        "cash": 95_000,
+        "market_value": 5_125,
+        "captured_at": "2026-08-07T20:00:00+00:00",
+    }
+
+    message = telegram_daily_summary([(snapshot, {})], 0)
+
+    assert "🔎 盈利／虧損明細，請私聊機器人查詢。" in message

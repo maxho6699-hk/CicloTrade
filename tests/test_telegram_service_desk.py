@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from core.compat import UTC
+import hashlib
+from io import BytesIO
 from pathlib import Path
 import sqlite3
 
 import pytest
+from PIL import Image
 
 from core.admin_service import AdminService
 from core.auth import AuthService
@@ -24,6 +27,7 @@ from notification.telegram_outbox import (
     dispatch_telegram_service_outbox,
     enqueue_telegram_outbound,
 )
+from payment.order_service import OrderService
 
 
 @pytest.fixture
@@ -32,9 +36,22 @@ def db(tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def billing_environment(monkeypatch):
+def billing_environment(monkeypatch, tmp_path):
     monkeypatch.setenv("FPS_PAYMENT_INSTRUCTIONS", "FPS 123-456-789; use the order number as reference.")
+    monkeypatch.setenv("ALIPAY_PAYMENT_INSTRUCTIONS", "Alipay merchant account; use the order number.")
+    monkeypatch.setenv("WECHAT_PAYMENT_INSTRUCTIONS", "WeChat merchant account; use the order number.")
     monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-that-is-longer-than-thirty-two-characters")
+    monkeypatch.setenv("PAYMENT_PROOF_DIR", str(tmp_path / "payment-proofs"))
+    monkeypatch.setenv("PAYMENT_RECEIVER_ASSET_DIR", str(tmp_path / "payment-receiver-assets"))
+
+    def fake_download(file_id: str) -> bytes:
+        color = tuple(hashlib.sha256(file_id.encode("utf-8")).digest()[:3])
+        output = BytesIO()
+        Image.new("RGB", (96, 96), color).save(output, format="JPEG")
+        return output.getvalue()
+
+    monkeypatch.setattr("notification.telegram_billing.download_telegram_file", fake_download)
+    monkeypatch.setattr("notification.telegram_payment_receivers.download_telegram_file", fake_download)
 
 
 def _user(db: DatabaseManager, name: str) -> dict:
@@ -57,11 +74,158 @@ def _bound_user(db: DatabaseManager, name: str, chat_id: str) -> dict:
     return user
 
 
-def _create_fps_order(db: DatabaseManager, chat_id: str, slug: str = "standard") -> str:
-    response = telegram_desk_response(
-        db, chat_id, f"buy:create:{slug}:monthly:fps", callback=True
+def _bound_admin(db: DatabaseManager, name: str, chat_id: str) -> dict:
+    user = _bound_user(db, name, chat_id)
+    db.execute("UPDATE users SET is_admin=1 WHERE id=?", (user["id"],))
+    AdminService(db)
+    return user
+
+
+def test_tg_finance_admin_sets_receiver_text_and_qr_while_non_admin_is_denied(db):
+    _bound_user(db, "ordinary-config", "830001")
+    denied = telegram_desk_response(db, "830001", "/payconfig")
+    assert "后台权限" in denied.message
+
+    admin = _bound_admin(db, "receiver-admin", "830002")
+    home = telegram_desk_response(db, "830002", "/start")
+    assert any(
+        button.get("callback_data") == "desk:receiving"
+        for row in home.keyboard for button in row
     )
-    assert "FPS 待付款" in response.message
+
+    waiting_text = telegram_desk_response(db, "830002", "paycfg:settext:alipay", callback=True)
+    assert "直接发送收款 ID" in waiting_text.message
+    cancelled = telegram_desk_response(db, "830002", "paycfg:cancel", callback=True)
+    assert "收款资料管理" in cancelled.message
+    assert db.fetch_one(
+        "SELECT COUNT(*) count FROM telegram_payment_receiver_sessions WHERE chat_id='830002'"
+    )["count"] == 0
+    telegram_desk_response(db, "830002", "paycfg:settext:alipay", callback=True)
+    saved_text = telegram_desk_response(db, "830002", "Alipay ID: maxho@example.com")
+    assert "Alipay ID: maxho@example.com" in saved_text.message
+
+    waiting_qr = telegram_desk_response(db, "830002", "paycfg:setqr:alipay", callback=True)
+    assert "二维码图片" in waiting_qr.message
+    saved_qr = telegram_desk_response(
+        db,
+        "830002",
+        "photo",
+        message_id=701,
+        update_id=701,
+        photo={"file_id": "alipay-receiver-file", "file_unique_id": "alipay-receiver-unique"},
+    )
+    assert "二维码：已设置" in saved_qr.message
+    profile = db.fetch_one("SELECT * FROM manual_payment_receivers WHERE method='alipay'")
+    assert profile["receiver_text"] == "Alipay ID: maxho@example.com"
+    assert profile["qr_telegram_file_id"] == "alipay-receiver-file"
+    assert profile["updated_by"] == admin["id"]
+    assert db.fetch_one("SELECT COUNT(*) count FROM manual_payment_claims")["count"] == 0
+
+
+def test_receiver_order_snapshot_survives_later_tg_admin_changes(db):
+    _bound_admin(db, "snapshot-admin", "830003")
+    telegram_desk_response(db, "830003", "paycfg:settext:fps", callback=True)
+    telegram_desk_response(db, "830003", "FPS ID OLD")
+    telegram_desk_response(db, "830003", "paycfg:setqr:fps", callback=True)
+    telegram_desk_response(
+        db,
+        "830003",
+        "photo",
+        message_id=702,
+        update_id=702,
+        photo={"file_id": "fps-old-file", "file_unique_id": "fps-old-unique"},
+    )
+
+    _bound_user(db, "snapshot-buyer", "830004")
+    first = telegram_desk_response(
+        db, "830004", "buy:create:standard:monthly:fps", callback=True
+    )
+    first_order = db.fetch_one(
+        "SELECT order_no FROM subscription_orders WHERE user_id=(SELECT user_id FROM telegram_accounts WHERE chat_id='830004')"
+    )["order_no"]
+    assert "FPS ID OLD" in first.message
+    assert first.followups[0].photo_file_id == "fps-old-file"
+
+    telegram_desk_response(db, "830003", "paycfg:settext:fps", callback=True)
+    telegram_desk_response(db, "830003", "FPS ID NEW")
+    telegram_desk_response(db, "830003", "paycfg:setqr:fps", callback=True)
+    telegram_desk_response(
+        db,
+        "830003",
+        "photo",
+        message_id=703,
+        update_id=703,
+        photo={"file_id": "fps-new-file", "file_unique_id": "fps-new-unique"},
+    )
+
+    snapshot = db.fetch_one(
+        "SELECT receiver_text,qr_telegram_file_id FROM subscription_order_payment_receivers WHERE order_no=?",
+        (first_order,),
+    )
+    assert snapshot == {"receiver_text": "FPS ID OLD", "qr_telegram_file_id": "fps-old-file"}
+    repeated = telegram_desk_response(
+        db, "830004", "buy:create:standard:monthly:fps", callback=True
+    )
+    assert "FPS ID OLD" in repeated.message
+    assert repeated.followups[0].photo_file_id == "fps-old-file"
+
+
+def test_receiver_clear_fields_support_qr_only_text_only_and_disabled(db):
+    _bound_admin(db, "clear-admin", "830005")
+    telegram_desk_response(db, "830005", "paycfg:settext:wechat", callback=True)
+    telegram_desk_response(db, "830005", "WeChat receiver ID")
+    telegram_desk_response(db, "830005", "paycfg:setqr:wechat", callback=True)
+    telegram_desk_response(
+        db,
+        "830005",
+        "photo",
+        message_id=704,
+        update_id=704,
+        photo={"file_id": "wechat-file", "file_unique_id": "wechat-unique"},
+    )
+
+    qr_only = telegram_desk_response(db, "830005", "paycfg:cleartext:wechat", callback=True)
+    assert "ID / 说明：尚未设置" in qr_only.message and "二维码：已设置" in qr_only.message
+    text_state = telegram_desk_response(db, "830005", "paycfg:settext:wechat", callback=True)
+    assert "等待输入" in text_state.message
+    telegram_desk_response(db, "830005", "WeChat restored ID")
+    text_only = telegram_desk_response(db, "830005", "paycfg:clearqr:wechat", callback=True)
+    assert "WeChat restored ID" in text_only.message and "二维码：尚未设置" in text_only.message
+    disabled = telegram_desk_response(db, "830005", "paycfg:cleartext:wechat", callback=True)
+    assert "状态：未启用" in disabled.message
+
+
+def test_expired_or_revoked_admin_receiver_session_never_becomes_payment_claim(db):
+    admin = _bound_admin(db, "revoked-config", "830006")
+    buyer_order = OrderService(db).create_order(
+        admin["id"], "标准版", "monthly", "fps", terms_accepted=True, source="web"
+    )
+    telegram_desk_response(db, "830006", "paycfg:setqr:fps", callback=True)
+    db.execute("UPDATE users SET is_admin=0 WHERE id=?", (admin["id"],))
+    stopped = telegram_desk_response(
+        db,
+        "830006",
+        "photo",
+        message_id=705,
+        update_id=705,
+        photo={"file_id": "must-not-claim", "file_unique_id": "must-not-claim-unique"},
+    )
+    assert "已没有财务权限" in stopped.message
+    assert db.fetch_one(
+        "SELECT COUNT(*) count FROM manual_payment_claims WHERE order_no=?", (buyer_order["order_no"],)
+    )["count"] == 0
+
+
+def _create_manual_order(
+    db: DatabaseManager,
+    chat_id: str,
+    slug: str = "standard",
+    method: str = "fps",
+) -> str:
+    response = telegram_desk_response(
+        db, chat_id, f"buy:create:{slug}:monthly:{method}", callback=True
+    )
+    assert "待付款" in response.message
     return db.fetch_one(
         "SELECT order_no FROM subscription_orders WHERE user_id=(SELECT user_id FROM telegram_accounts WHERE chat_id=?) "
         "ORDER BY id DESC LIMIT 1",
@@ -69,14 +233,33 @@ def _create_fps_order(db: DatabaseManager, chat_id: str, slug: str = "standard")
     )["order_no"]
 
 
+def _create_fps_order(db: DatabaseManager, chat_id: str, slug: str = "standard") -> str:
+    return _create_manual_order(db, chat_id, slug, "fps")
+
+
 def _submit_fps_claim(db: DatabaseManager, chat_id: str, order_no: str, update_id: int = 1) -> dict:
-    response = telegram_desk_response(
+    before = db.fetch_one(
+        "SELECT COUNT(*) count FROM manual_payment_claims WHERE order_no=?", (order_no,)
+    )["count"]
+    prompt = telegram_desk_response(
         db,
         chat_id,
         f"pay:claimed:{order_no}",
         callback=True,
         message_id=100 + update_id,
         update_id=update_id,
+    )
+    assert "上传付款凭证" in prompt.message
+    assert db.fetch_one(
+        "SELECT COUNT(*) count FROM manual_payment_claims WHERE order_no=?", (order_no,)
+    )["count"] == before
+    response = telegram_desk_response(
+        db,
+        chat_id,
+        f"付款订单 {order_no}",
+        message_id=100 + update_id,
+        update_id=update_id,
+        photo={"file_id": f"proof-{update_id}", "file_unique_id": f"unique-{update_id}"},
     )
     assert "付款申报已提交" in response.message
     return db.fetch_one(
@@ -96,9 +279,44 @@ def test_service_desk_exposes_plan_cycle_and_available_payment_method(db):
     detail = telegram_desk_response(db, "810001", "buy:plan:standard", callback=True)
     assert any(button.get("callback_data") == "buy:cycle:standard:monthly" for row in detail.keyboard for button in row)
     cycle = telegram_desk_response(db, "810001", "buy:cycle:standard:monthly", callback=True)
-    assert any(button.get("callback_data") == "buy:method:standard:monthly:fps" for row in cycle.keyboard for button in row)
+    method_buttons = {
+        button.get("callback_data")
+        for row in cycle.keyboard
+        for button in row
+        if button.get("callback_data", "").startswith("buy:method:")
+    }
+    assert method_buttons == {
+        "buy:method:standard:monthly:fps",
+        "buy:method:standard:monthly:alipay",
+        "buy:method:standard:monthly:wechat",
+    }
+    assert not any("paypal" in value or "paddle" in value for value in method_buttons)
     confirmation = telegram_desk_response(db, "810001", "buy:method:standard:monthly:fps", callback=True)
     assert any(button.get("callback_data") == "buy:create:standard:monthly:fps" for row in confirmation.keyboard for button in row)
+
+
+@pytest.mark.parametrize(("method", "chat_id"), [("alipay", "820001"), ("wechat", "820002")])
+def test_alipay_and_wechat_require_proof_and_wait_for_finance_review(db, method, chat_id):
+    user = _bound_user(db, f"manual-{method}", chat_id)
+    order_no = _create_manual_order(db, chat_id, method=method)
+
+    prompt = telegram_desk_response(
+        db, chat_id, f"pay:claimed:{order_no}",
+        callback=True, message_id=90, update_id=90,
+    )
+    assert "上传付款凭证" in prompt.message
+    assert db.fetch_one("SELECT COUNT(*) count FROM manual_payment_claims")["count"] == 0
+    submitted = telegram_desk_response(
+        db, chat_id, "photo", message_id=91, update_id=91,
+        photo={"file_id": f"{method}-proof", "file_unique_id": f"{method}-unique"},
+    )
+
+    assert "付款申报已提交" in submitted.message
+    assert db.fetch_one("SELECT pay_method,status FROM subscription_orders WHERE order_no=?", (order_no,)) == {
+        "pay_method": method,
+        "status": "pending",
+    }
+    assert db.fetch_one("SELECT plan_type FROM users WHERE id=?", (user["id"],))["plan_type"] == "免费版"
 
 
 def test_fps_creation_is_idempotent_and_manual_claim_does_not_activate(db):
@@ -115,7 +333,7 @@ def test_fps_creation_is_idempotent_and_manual_claim_does_not_activate(db):
     assert member == {"plan_type": "免费版", "subscription_expire": None}
 
 
-def test_photo_claim_stores_telegram_file_references_only(db):
+def test_photo_claim_stores_telegram_references_and_private_content_hash(db):
     user = _bound_user(db, "photo-proof", "810003")
     order_no = _create_fps_order(db, "810003")
     response = telegram_desk_response(
@@ -128,16 +346,40 @@ def test_photo_claim_stores_telegram_file_references_only(db):
     )
     assert "付款申报已提交" in response.message
     claim = db.fetch_one(
-        "SELECT user_id,order_no,evidence_file_id,evidence_file_unique_id,evidence_message_id FROM manual_payment_claims WHERE order_no=?",
+        """SELECT user_id,order_no,evidence_file_id,evidence_file_unique_id,evidence_message_id,
+                  evidence_storage_key,evidence_sha256
+           FROM manual_payment_claims WHERE order_no=?""",
         (order_no,),
     )
-    assert claim == {
-        "user_id": user["id"], "order_no": order_no,
-        "evidence_file_id": "AgACAgQAAxkBAAI", "evidence_file_unique_id": "AQADunique",
-        "evidence_message_id": "33",
-    }
+    assert claim["user_id"] == user["id"] and claim["order_no"] == order_no
+    assert claim["evidence_file_id"] == "AgACAgQAAxkBAAI"
+    assert claim["evidence_file_unique_id"] == "AQADunique"
+    assert claim["evidence_message_id"] == "33"
+    assert len(claim["evidence_storage_key"]) == 36
+    assert len(claim["evidence_sha256"]) == 64
     columns = {row["name"] for row in db.fetch_all("PRAGMA table_info(manual_payment_claims)")}
     assert not {"photo", "image", "file_path", "blob_data"} & columns
+
+
+def test_web_order_can_submit_payment_proof_through_bound_telegram(db):
+    user = _bound_user(db, "web-proof", "810030")
+    order = OrderService(db).create_order(
+        user["id"], "标准版", "monthly", "alipay", terms_accepted=True, source="web"
+    )
+
+    response = telegram_desk_response(
+        db,
+        "810030",
+        f"付款订单 {order['order_no']}",
+        message_id=34,
+        update_id=3030,
+        photo={"file_id": "web-proof-file", "file_unique_id": "web-proof-unique"},
+    )
+
+    assert "付款申报已提交" in response.message
+    assert db.fetch_one(
+        "SELECT order_no,status FROM manual_payment_claims WHERE order_no=?", (order["order_no"],)
+    ) == {"order_no": order["order_no"], "status": "submitted"}
 
 
 def test_finance_admin_approves_rejects_and_repeated_approval_is_safe(db):
