@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
 from math import isfinite
+
+from src.apps.worker._compat import StrEnum
 
 
 class ModelState(StrEnum):

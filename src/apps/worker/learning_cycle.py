@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from enum import StrEnum
 import hashlib
 import json
 import math
 from typing import Protocol, Sequence
 
 from core.compat import UTC
+from src.apps.worker._compat import StrEnum
 from src.apps.worker.quant_learning import (
     EvaluationMetrics,
     ModelState,

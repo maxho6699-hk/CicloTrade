@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime
-from enum import StrEnum
 import hashlib
 from typing import Protocol, Sequence
 from urllib.parse import urlparse
 
 from core.compat import UTC
+from src.apps.worker._compat import StrEnum
 
 
 class SocialPlatform(StrEnum):
