@@ -496,7 +496,7 @@ export interface SystemCycleResearchStatus {
   last_heartbeat_at: string | null
   last_result_at: string | null
   last_cycle_id: string | null
-  stock_count: 13
+  stock_count: 0 | 13
   coverage_count: number
   no_data_count: number
   spool: { pending: number; claimed: number; retryable: number; delivered: number } | null
@@ -726,18 +726,19 @@ function validStatusCounts(stockCount: number, coverageCount: unknown, noDataCou
 
 export function validSystemCycleResearchStatus(value: unknown): value is SystemCycleResearchStatus {
   if (!exactKeys(value, ['available', 'state', 'research_only', 'actionable', 'last_heartbeat_at', 'last_result_at', 'last_cycle_id', 'stock_count', 'coverage_count', 'no_data_count', 'spool'])) return false
+  if (typeof value.available !== 'boolean') return false
+  const expectedStockCount = value.available ? 13 : 0
   const spool = value.spool
   const validSpool = spool === null || (exactKeys(spool, ['pending', 'claimed', 'retryable', 'delivered'])
     && Object.values(spool).every(finiteNonNegativeInteger))
-  return typeof value.available === 'boolean'
-    && ['waiting', 'healthy', 'stale', 'degraded'].includes(value.state as string)
+  return ['waiting', 'healthy', 'stale', 'degraded'].includes(value.state as string)
     && value.research_only === true
     && value.actionable === false
     && (value.last_heartbeat_at === null || validIsoTimestamp(value.last_heartbeat_at))
     && (value.last_result_at === null || validIsoTimestamp(value.last_result_at))
     && (value.last_cycle_id === null || validText(value.last_cycle_id))
-    && value.stock_count === 13
-    && validStatusCounts(value.stock_count, value.coverage_count, value.no_data_count)
+    && value.stock_count === expectedStockCount
+    && validStatusCounts(expectedStockCount, value.coverage_count, value.no_data_count)
     && validSpool
 }
 

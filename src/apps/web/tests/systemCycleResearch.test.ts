@@ -113,6 +113,20 @@ test('system cycle research decoders fail closed on unexpected fields, missing a
   assert.equal(validSystemCycleResearchStatus({ ...status, source: 'private' }), false)
   assert.equal(validSystemCycleResearchLatest({ ...latest, actionable: true }), false)
   assert.equal(validSystemCycleResearchHistory({ ...history, limit: 10 }), false)
+  assert.equal(validSystemCycleResearchStatus({
+    ...status,
+    available: false,
+    state: 'waiting',
+    last_heartbeat_at: null,
+    last_result_at: null,
+    last_cycle_id: null,
+    stock_count: 0,
+    coverage_count: 0,
+    no_data_count: 0,
+    spool: null,
+  }), true)
+  assert.equal(validSystemCycleResearchStatus({ ...status, available: false, stock_count: 13 }), false)
+  assert.equal(validSystemCycleResearchStatus({ ...status, stock_count: 0, coverage_count: 0, no_data_count: 0 }), false)
   const malformed = structuredClone(latest)
   malformed.cycle.stocks[0].target_quantity = Number.NaN
   assert.equal(validSystemCycleResearchLatest(malformed), false)
