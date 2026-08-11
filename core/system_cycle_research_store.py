@@ -175,6 +175,9 @@ class SystemCycleResearchStore:
         if not isinstance(limit, int) or not 1 <= limit <= 100:
             raise ValueError("research history limit must be between 1 and 100")
         with self.database.transaction() as connection:
+            # sqlite3 does not start a transaction for SELECT statements alone.
+            # Pin this three-query projection to one WAL read snapshot.
+            connection.execute("BEGIN")
             latest = connection.execute(
                 """SELECT * FROM system_cycle_research_receipts
                    ORDER BY json_extract(payload_json, '$.evaluated_at') DESC,

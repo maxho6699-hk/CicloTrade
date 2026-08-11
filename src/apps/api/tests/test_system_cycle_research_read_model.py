@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 import importlib
 import json
@@ -183,6 +184,32 @@ def test_fresh_heartbeat_keeps_an_old_market_cycle_healthy_until_heartbeat_stale
 
     clock.value += timedelta(minutes=10)
     assert model.status()["state"] == "stale"
+
+
+def test_read_snapshot_explicitly_begins_one_sqlite_read_transaction(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    _record(store, _result(), key="snapshot-result-20260812")
+    statements: list[str] = []
+    database = store.database
+    transaction = database.transaction
+
+    @contextmanager
+    def traced_transaction():
+        with transaction() as connection:
+            connection.set_trace_callback(statements.append)
+            yield connection
+
+    monkeypatch.setattr(database, "transaction", traced_transaction)
+    snapshot = store.research_read_snapshot(1)
+
+    assert snapshot["latest"] is not None
+    begin = next(index for index, statement in enumerate(statements) if statement == "BEGIN")
+    select_indexes = [
+        index for index, statement in enumerate(statements)
+        if statement.lstrip().upper().startswith("SELECT")
+    ]
+    assert len(select_indexes) == 3
+    assert begin < min(select_indexes)
 
 
 def test_asgi_routes_require_identity_and_return_disabled_waiting_and_healthy(browser_api, research_receiver):
