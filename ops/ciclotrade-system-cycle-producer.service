@@ -1,0 +1,31 @@
+[Unit]
+Description=CicloTrade canonical system-cycle shadow research producer
+After=local-fs.target
+RequiresMountsFor=/var/lib/ciclotrade-worker
+
+[Service]
+Type=oneshot
+User=cicloworker
+Group=cicloworker
+WorkingDirectory=/opt/ciclotrade-worker/current
+ExecStart=/opt/ciclotrade-worker/current/.venv/bin/python -m src.apps.worker.system_cycle_producer --once
+TimeoutStartSec=1200
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateNetwork=false
+ProtectHome=true
+ProtectSystem=strict
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictNamespaces=true
+LockPersonality=true
+ReadWritePaths=/var/lib/ciclotrade-worker
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryHigh=700M
+MemoryMax=950M
+CPUQuota=150%
+TasksMax=64
+LimitNOFILE=4096

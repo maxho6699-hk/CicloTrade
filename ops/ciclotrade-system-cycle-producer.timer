@@ -1,0 +1,13 @@
+[Unit]
+Description=Offer one system-cycle shadow research pass every 15 minutes
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=15min
+RandomizedDelaySec=2min
+AccuracySec=1min
+Persistent=false
+Unit=ciclotrade-system-cycle-producer.service
+
+[Install]
+WantedBy=timers.target
