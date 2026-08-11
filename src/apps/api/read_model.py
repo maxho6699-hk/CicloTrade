@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 import json
 import math
 import os
@@ -13,6 +13,7 @@ import sqlite3
 from typing import Any, Iterator
 
 from core.auth import AuthError, _decode_token
+from core.compat import UTC
 from core.broker_authorization import broker_execution_authorized
 from core.plans import CAPABILITIES, PLAN_ORDER, PLANS, can, effective_plan, plan_display_name, trading_limits
 from core.membership import membership_purchase_state, resolve_membership_snapshot
