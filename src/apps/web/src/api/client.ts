@@ -486,6 +486,85 @@ export class BrowserApiError extends Error {
   }
 }
 
+export type SystemCycleResearchState = 'waiting' | 'healthy' | 'stale' | 'degraded'
+
+export interface SystemCycleResearchStatus {
+  available: boolean
+  state: SystemCycleResearchState
+  research_only: true
+  actionable: false
+  last_heartbeat_at: string | null
+  last_result_at: string | null
+  last_cycle_id: string | null
+  stock_count: 13
+  coverage_count: number
+  no_data_count: number
+  spool: { pending: number; claimed: number; retryable: number; delivered: number } | null
+}
+
+export interface SystemCycleResearchStock {
+  market: 'US' | 'CN'
+  symbol: string
+  status: 'coverage' | 'no_data'
+  rows: number
+  dataset_end: string | null
+  selected: boolean
+  signal_state: 'long' | 'flat' | 'no_data'
+  latest_price: number | null
+  target_quantity: number
+}
+
+export interface SystemCycleResearchCycle {
+  cycle_id: string
+  evaluation_date: string
+  cycle_slot: string
+  strategy_key: string
+  strategy_name: string
+  strategy_version: string
+  evaluated_at: string
+  coverage_count: number
+  no_data_count: number
+  selected_symbols: string[]
+  stocks: SystemCycleResearchStock[]
+  evidence: {
+    universe_sha256: string
+    source_snapshot_sha256: string
+    catalog_snapshot_sha256: string
+    code_bundle_sha256: string
+    result_sha256: string
+  }
+}
+
+export interface SystemCycleResearchLatest {
+  available: boolean
+  research_only: true
+  actionable: false
+  validation_label: string
+  cycle: SystemCycleResearchCycle | null
+}
+
+export interface SystemCycleResearchHistoryItem {
+  cycle_id: string
+  evaluation_date: string
+  cycle_slot: string
+  strategy_key: string
+  strategy_name: string
+  strategy_version: string
+  evaluated_at: string
+  received_at: string
+  coverage_count: number
+  no_data_count: number
+  selected_count: number
+}
+
+export interface SystemCycleResearchHistory {
+  available: boolean
+  research_only: true
+  actionable: false
+  limit: 20
+  items: SystemCycleResearchHistoryItem[]
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   if (init.body && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json')
@@ -581,6 +660,166 @@ export async function restoreSession(): Promise<boolean> {
 
 export function fetchBootstrap(): Promise<BootstrapPayload> {
   return request<BootstrapPayload>('/api/rewrite/v1/bootstrap')
+}
+
+export async function fetchSystemCycleResearchStatus(): Promise<SystemCycleResearchStatus> {
+  const payload = await request<unknown>('/api/rewrite/v1/system-cycle-research/status')
+  if (!validSystemCycleResearchStatus(payload)) throw new BrowserApiError('影子策略研究状态响应格式无效。', 502)
+  return payload
+}
+
+export async function fetchSystemCycleResearchLatest(): Promise<SystemCycleResearchLatest> {
+  const payload = await request<unknown>('/api/rewrite/v1/system-cycle-research/latest')
+  if (!validSystemCycleResearchLatest(payload)) throw new BrowserApiError('影子策略研究最新周期响应格式无效。', 502)
+  return payload
+}
+
+export async function fetchSystemCycleResearchHistory(): Promise<SystemCycleResearchHistory> {
+  const payload = await request<unknown>('/api/rewrite/v1/system-cycle-research/history?limit=20')
+  if (!validSystemCycleResearchHistory(payload)) throw new BrowserApiError('影子策略研究历史响应格式无效。', 502)
+  return payload
+}
+
+function plainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function exactKeys(value: unknown, expected: readonly string[]): value is Record<string, unknown> {
+  return plainObject(value)
+    && Object.keys(value).length === expected.length
+    && Object.keys(value).every((key) => expected.includes(key))
+}
+
+function finiteNonNegativeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0
+}
+
+function finiteNonNegativeNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+}
+
+function validIsoDate(value: unknown): value is string {
+  return typeof value === 'string'
+    && /^\d{4}-\d{2}-\d{2}$/.test(value)
+    && Number.isFinite(Date.parse(`${value}T00:00:00Z`))
+}
+
+function validIsoTimestamp(value: unknown): value is string {
+  return typeof value === 'string'
+    && /^\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:\d{2})$/.test(value)
+    && Number.isFinite(Date.parse(value))
+}
+
+function validSha256(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
+}
+
+function validText(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 256
+}
+
+function validStatusCounts(stockCount: number, coverageCount: unknown, noDataCount: unknown) {
+  return finiteNonNegativeInteger(coverageCount)
+    && finiteNonNegativeInteger(noDataCount)
+    && coverageCount + noDataCount === stockCount
+}
+
+export function validSystemCycleResearchStatus(value: unknown): value is SystemCycleResearchStatus {
+  if (!exactKeys(value, ['available', 'state', 'research_only', 'actionable', 'last_heartbeat_at', 'last_result_at', 'last_cycle_id', 'stock_count', 'coverage_count', 'no_data_count', 'spool'])) return false
+  const spool = value.spool
+  const validSpool = spool === null || (exactKeys(spool, ['pending', 'claimed', 'retryable', 'delivered'])
+    && Object.values(spool).every(finiteNonNegativeInteger))
+  return typeof value.available === 'boolean'
+    && ['waiting', 'healthy', 'stale', 'degraded'].includes(value.state as string)
+    && value.research_only === true
+    && value.actionable === false
+    && (value.last_heartbeat_at === null || validIsoTimestamp(value.last_heartbeat_at))
+    && (value.last_result_at === null || validIsoTimestamp(value.last_result_at))
+    && (value.last_cycle_id === null || validText(value.last_cycle_id))
+    && value.stock_count === 13
+    && validStatusCounts(value.stock_count, value.coverage_count, value.no_data_count)
+    && validSpool
+}
+
+function validSystemCycleResearchStock(value: unknown): value is SystemCycleResearchStock {
+  if (!exactKeys(value, ['market', 'symbol', 'status', 'rows', 'dataset_end', 'selected', 'signal_state', 'latest_price', 'target_quantity'])) return false
+  const coverage = value.status === 'coverage'
+  const noData = value.status === 'no_data'
+  return (value.market === 'US' || value.market === 'CN')
+    && validText(value.symbol)
+    && (coverage || noData)
+    && finiteNonNegativeInteger(value.rows)
+    && typeof value.selected === 'boolean'
+    && finiteNonNegativeNumber(value.target_quantity)
+    && (coverage
+      ? validIsoDate(value.dataset_end)
+        && (value.signal_state === 'long' || value.signal_state === 'flat')
+        && typeof value.latest_price === 'number' && Number.isFinite(value.latest_price) && value.latest_price > 0
+        && value.selected === (value.signal_state === 'long' && value.target_quantity > 0)
+        && (value.signal_state !== 'flat' || value.target_quantity === 0)
+      : value.dataset_end === null
+        && value.selected === false
+        && value.signal_state === 'no_data'
+        && value.latest_price === null
+        && value.target_quantity === 0)
+}
+
+function validSystemCycleResearchCycle(value: unknown): value is SystemCycleResearchCycle {
+  if (!exactKeys(value, ['cycle_id', 'evaluation_date', 'cycle_slot', 'strategy_key', 'strategy_name', 'strategy_version', 'evaluated_at', 'coverage_count', 'no_data_count', 'selected_symbols', 'stocks', 'evidence'])) return false
+  const selectedSymbols = value.selected_symbols
+  const stocks = value.stocks
+  if (!validText(value.cycle_id) || !validIsoDate(value.evaluation_date) || !validText(value.cycle_slot)
+    || !validText(value.strategy_key) || !validText(value.strategy_name) || !validText(value.strategy_version)
+    || !validIsoTimestamp(value.evaluated_at) || !validStatusCounts(13, value.coverage_count, value.no_data_count)
+    || !Array.isArray(selectedSymbols) || !selectedSymbols.every(validText)
+    || new Set(selectedSymbols).size !== selectedSymbols.length
+    || !Array.isArray(stocks) || stocks.length !== 13 || !stocks.every(validSystemCycleResearchStock)
+    || new Set(stocks.map((stock) => `${stock.market}:${stock.symbol}`)).size !== 13) return false
+  const evidence = value.evidence
+  if (!exactKeys(evidence, ['universe_sha256', 'source_snapshot_sha256', 'catalog_snapshot_sha256', 'code_bundle_sha256', 'result_sha256'])
+    || !Object.values(evidence).every(validSha256)) return false
+  const selected = stocks.filter((stock) => stock.selected).map((stock) => stock.symbol)
+  const coverageCount = stocks.filter((stock) => stock.status === 'coverage').length
+  return coverageCount === value.coverage_count
+    && 13 - coverageCount === value.no_data_count
+    && selected.length === selectedSymbols.length
+    && selected.every((symbol, index) => symbol === selectedSymbols[index])
+}
+
+export function validSystemCycleResearchLatest(value: unknown): value is SystemCycleResearchLatest {
+  return exactKeys(value, ['available', 'research_only', 'actionable', 'validation_label', 'cycle'])
+    && typeof value.available === 'boolean'
+    && value.research_only === true
+    && value.actionable === false
+    && validText(value.validation_label)
+    && (value.cycle === null || validSystemCycleResearchCycle(value.cycle))
+}
+
+function validSystemCycleResearchHistoryItem(value: unknown): value is SystemCycleResearchHistoryItem {
+  return exactKeys(value, ['cycle_id', 'evaluation_date', 'cycle_slot', 'strategy_key', 'strategy_name', 'strategy_version', 'evaluated_at', 'received_at', 'coverage_count', 'no_data_count', 'selected_count'])
+    && validText(value.cycle_id)
+    && validIsoDate(value.evaluation_date)
+    && validText(value.cycle_slot)
+    && validText(value.strategy_key)
+    && validText(value.strategy_name)
+    && validText(value.strategy_version)
+    && validIsoTimestamp(value.evaluated_at)
+    && validIsoTimestamp(value.received_at)
+    && validStatusCounts(13, value.coverage_count, value.no_data_count)
+    && finiteNonNegativeInteger(value.selected_count)
+    && Number(value.selected_count) <= Number(value.coverage_count)
+}
+
+export function validSystemCycleResearchHistory(value: unknown): value is SystemCycleResearchHistory {
+  return exactKeys(value, ['available', 'research_only', 'actionable', 'limit', 'items'])
+    && typeof value.available === 'boolean'
+    && value.research_only === true
+    && value.actionable === false
+    && value.limit === 20
+    && Array.isArray(value.items)
+    && value.items.length <= 20
+    && value.items.every(validSystemCycleResearchHistoryItem)
+    && new Set(value.items.map((item) => item.cycle_id)).size === value.items.length
 }
 
 export async function fetchMarketStatus() {

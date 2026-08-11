@@ -4,15 +4,18 @@ import { useSearchParams } from 'react-router-dom'
 import { useWorkspace } from '../api/workspace-context'
 import { PageHeader } from '../components/PageHeader'
 import { WorkspaceState } from '../components/WorkspaceState'
+import { SystemCycleResearchPanel } from '../components/SystemCycleResearchPanel'
 import { modelReports, reportReturns } from '../data/workspace'
 import { getFormatLocale } from '../i18n/runtime'
+import { useLocale } from '../i18n/useLocale'
 import { displayDataSource } from '../domain/dataSourcePresentation'
 
-const reportViews = ['CicloTrade模拟验证结果', '系统模型验证', '模型版本'] as const
+const reportViews = ['CicloTrade模拟验证结果', '系统模型验证', '模型版本', '影子策略研究'] as const
 type ReportView = typeof reportViews[number]
 
 export function ReportsPage() {
   const workspace = useWorkspace()
+  const { locale } = useLocale()
   const [searchParams, setSearchParams] = useSearchParams()
   const requestedView = searchParams.get('view') as ReportView | null
   const view: ReportView = requestedView && reportViews.includes(requestedView) ? requestedView : reportViews[0]
@@ -28,6 +31,8 @@ export function ReportsPage() {
   const accountView = view === 'CicloTrade模拟验证结果'
   const modelView = view === '系统模型验证'
   const versionView = view === '模型版本'
+  const researchView = view === '影子策略研究'
+  const researchViewLabel = locale === 'zh-Hant' ? '影子策略研究' : '影子策略研究'
   const realReturns = snapshots.map((item) => item.total_pnl)
   const values = accountView ? (authenticated ? realReturns : demoMode ? reportReturns : []) : []
   const maximum = Math.max(...values.map((value) => Math.abs(value)), 1)
@@ -39,8 +44,9 @@ export function ReportsPage() {
     peak = Math.max(peak, item.total_equity)
     return peak > 0 ? Math.max(maximumDrawdown, (peak - item.total_equity) / peak * 100) : maximumDrawdown
   }, 0)
-  const canExport = accountView ? (authenticated ? snapshots.length > 0 : demoMode) : demoMode
+  const canExport = accountView ? (authenticated ? snapshots.length > 0 : demoMode) : !researchView && demoMode
   const exportReport = () => {
+    if (researchView) return
     const usingSnapshots = authenticated && accountView
     if (usingSnapshots && snapshots.length === 0) return
     const reportScope = accountView ? (usingSnapshots ? 'ciclotrade_system_validation' : 'demo_validation_preview') : modelView ? 'model_validation_preview' : 'model_registry_preview'
@@ -56,8 +62,8 @@ export function ReportsPage() {
   return (
     <div className="page operations-page">
       <PageHeader kicker="REPORTS / EVIDENCE" title="报告中心" description="验证收益、回撤、样本量和模型版本按口径分开查看。系统验证快照不是你的券商收益，历史结果也不保证未来。" />
-      <WorkspaceState empty={workspace.mode === 'authenticated' && snapshots.length === 0} emptyText="系统量化账本还没有权益快照；报告页不会用演示收益替代真实验证记录。" />
-      <div className="toolbar-row"><div className="segmented-control report-tabs">{reportViews.map((item) => <button className={view === item ? 'active' : ''} type="button" key={item} onClick={() => setView(item)}>{item}</button>)}</div><button className="button secondary" type="button" disabled={!canExport} onClick={exportReport}><Download size={16} /> 导出当前口径</button></div>
+      <WorkspaceState empty={accountView && workspace.mode === 'authenticated' && snapshots.length === 0} emptyText="系统量化账本还没有权益快照；报告页不会用演示收益替代真实验证记录。" />
+      <div className="toolbar-row"><div className="segmented-control report-tabs">{reportViews.map((item) => <button className={`${view === item ? 'active' : ''}${item === '影子策略研究' ? ' system-cycle-research-tab' : ''}`} type="button" key={item} onClick={() => setView(item)}>{item === '影子策略研究' ? researchViewLabel : item}</button>)}</div>{!researchView && <button className="button secondary" type="button" disabled={!canExport} onClick={exportReport}><Download size={16} /> 导出当前口径</button>}</div>
 
       {accountView && <>
       <section className="metric-grid report-metrics">
@@ -95,6 +101,8 @@ export function ReportsPage() {
         <header className="panel-heading"><div><span>MODEL REGISTRY</span><h2>模型版本登记</h2></div><span className="status-chip research"><FlaskConical size={14} /> 只显示可核对版本</span></header>
         {demoMode ? <div className="compact-list">{modelReports.map((model) => <article key={model.version}><span className={`model-state ${model.state}`}>{model.state === 'active' ? '正式运行' : model.state === 'shadow' ? '影子验证' : '已阻止'}</span><div><strong>{model.name}</strong><small>{model.version} · 样本 {model.sampleSize}</small></div><div className="list-value"><strong>{model.stability}%</strong><small>稳定性</small></div></article>)}</div> : <div className="inline-empty">真实模型版本注册表尚未开放到报告接口。</div>}
       </section>}
+
+      {researchView && <SystemCycleResearchPanel />}
     </div>
   )
 }

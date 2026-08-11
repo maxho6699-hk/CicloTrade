@@ -848,3 +848,47 @@ button:disabled,
   .login-fields { padding: 18px; }
   .login-panel > footer { align-items: flex-start; flex-direction: column; }
 }
+
+/* Shadow research remains an observability surface: it deliberately has no execution controls. */
+.system-cycle-research-tab { min-height: 44px !important; }
+.system-cycle-research-panel { display: grid; min-width: 0; gap: 12px; }
+.system-cycle-research-summary { overflow: hidden; }
+.system-cycle-research-summary .panel-heading > div { min-width: 0; }
+.system-cycle-research-summary .panel-heading h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.system-cycle-research-disclaimer { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--warning) 7%, var(--surface)); color: var(--muted); font-size: 12px; line-height: 1.55; }
+.system-cycle-research-disclaimer svg { flex: 0 0 auto; margin-top: 1px; color: var(--warning); }
+.system-cycle-research-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.system-cycle-research-metrics article { display: grid; min-width: 0; gap: 5px; padding: 13px 15px; border-right: 1px solid var(--border); }
+.system-cycle-research-metrics article:last-child { border-right: 0; }
+.system-cycle-research-metrics span { color: var(--muted); font-size: 11px; }
+.system-cycle-research-metrics strong { overflow: hidden; font: 600 14px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.system-cycle-research-state { display: inline-flex; width: fit-content; min-height: 27px; align-items: center; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 3px; color: var(--muted); font: 12px var(--mono); }
+.system-cycle-research-state.healthy { border-color: color-mix(in srgb, var(--positive) 55%, var(--border)); color: var(--positive); }
+.system-cycle-research-state.stale, .system-cycle-research-state.waiting { border-color: color-mix(in srgb, var(--warning) 55%, var(--border)); color: var(--warning); }
+.system-cycle-research-state.degraded { border-color: color-mix(in srgb, var(--negative) 55%, var(--border)); color: var(--negative); }
+.system-cycle-research-message { display: flex; min-height: 92px; align-items: center; gap: 9px; padding: 16px; color: var(--muted); font-size: 13px; line-height: 1.55; }
+.system-cycle-research-message svg { flex: 0 0 auto; color: var(--accent); }
+.system-cycle-research-message.error svg { color: var(--negative); }
+.system-cycle-research-table-panel, .system-cycle-research-history { overflow: hidden; }
+.system-cycle-research-table-panel .panel-heading small { color: var(--warning); font-size: 12px; white-space: nowrap; }
+.system-cycle-research-table th, .system-cycle-research-table td, .system-cycle-research-history-table th, .system-cycle-research-history-table td { font-variant-numeric: tabular-nums; }
+.system-cycle-research-table td:nth-child(5), .system-cycle-research-history-table td:not(:first-child) { font-family: var(--mono); }
+.system-cycle-research-signal, .system-cycle-research-not-executable { display: inline-flex; min-height: 25px; align-items: center; padding: 0 7px; border: 1px solid var(--border-strong); border-radius: 3px; font: 11px var(--mono); }
+.system-cycle-research-signal.long { border-color: color-mix(in srgb, var(--positive) 55%, var(--border)); color: var(--positive); }
+.system-cycle-research-signal.flat { color: var(--muted); }
+.system-cycle-research-signal.no_data { border-color: color-mix(in srgb, var(--warning) 48%, var(--border)); color: var(--warning); }
+.system-cycle-research-not-executable { border-color: color-mix(in srgb, var(--warning) 38%, var(--border)); color: var(--warning); }
+
+@media (max-width: 600px) {
+  .system-cycle-research-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .system-cycle-research-metrics article:nth-child(2) { border-right: 0; }
+  .system-cycle-research-metrics article:nth-child(-n + 2) { border-bottom: 1px solid var(--border); }
+  .system-cycle-research-table, .system-cycle-research-history-table { overflow: visible; }
+  .system-cycle-research-table table, .system-cycle-research-history-table table, .system-cycle-research-table tbody, .system-cycle-research-history-table tbody, .system-cycle-research-table tr, .system-cycle-research-history-table tr { display: block; }
+  .system-cycle-research-table thead, .system-cycle-research-history-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .system-cycle-research-table tr, .system-cycle-research-history-table tr { padding: 7px 13px; border-top: 1px solid var(--border); }
+  .system-cycle-research-table td, .system-cycle-research-history-table td { display: flex; min-height: 33px; align-items: center; justify-content: space-between; gap: 12px; padding: 5px 0; border: 0; white-space: normal; text-align: right; }
+  .system-cycle-research-table td::before, .system-cycle-research-history-table td::before { flex: 0 0 7em; color: var(--muted); font-family: var(--font-ui); font-size: 11px; text-align: left; content: attr(data-label); }
+  .system-cycle-research-table td strong, .system-cycle-research-history-table td strong { display: inline; }
+  .system-cycle-research-history-table td small { margin-left: 5px; }
+}
