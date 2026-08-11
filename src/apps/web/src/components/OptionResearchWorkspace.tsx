@@ -32,13 +32,12 @@ import {
 } from "../api/client";
 import {
   buildOptionTemplate,
-  describeOptionDataStatus,
   summarizeOptionCombination,
   type OptionLegSide,
   type OptionStrategyLeg,
   type OptionTemplateId,
 } from "../domain/optionResearch";
-import { displayDataSource, safeDataError } from "../domain/dataSourcePresentation";
+import { createVisibilityPolling, deliveryAllowsImmediateAction, displayDataSource, displayDeliveryDelay, displayFreshness, safeDataError } from "../domain/dataSourcePresentation";
 import { TimeframeDropdown } from "./ui/TimeframeDropdown";
 import { MarketChart, type MarketChartHandle } from "./MarketChart";
 import type {
@@ -197,6 +196,21 @@ function errorMessage(error: unknown) {
   return safeDataError();
 }
 
+function optionVisibilityStatus(metadata: {
+  delivery_delay_minutes?: number;
+  freshness: string;
+  is_realtime: boolean;
+  actionable_quote: boolean;
+}) {
+  const delay = displayDeliveryDelay(metadata.delivery_delay_minutes);
+  const access = deliveryAllowsImmediateAction(metadata)
+    ? "可核对即时行动"
+    : "仅供研究";
+  return [delay || displayFreshness(metadata.freshness), access]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 function noopHistory(_: DrawingHistoryStatus) {}
 function noop() {}
 
@@ -232,6 +246,10 @@ export function OptionResearchWorkspace({
   const [chartExpanded, setChartExpanded] = useState(false);
   const [activePane, setActivePane] = useState<OptionPane>("chain");
   const [detailPane, setDetailPane] = useState<OptionPane>("chart");
+  const chainRequestSequence = useRef(0);
+  const candleRequestSequence = useRef(0);
+  const candleKeyRef = useRef("");
+  const chainLoadedRef = useRef(false);
 
   useEffect(() => {
     const normalized = symbol.trim().toUpperCase();
@@ -240,15 +258,19 @@ export function OptionResearchWorkspace({
     setActiveSymbol(normalized);
     setExpiry("");
     setLegs([]);
+    chainLoadedRef.current = false;
   }, [activeSymbol, symbol]);
 
   useEffect(() => {
     let active = true;
-    setChainLoading(true);
+    setChainLoading((current) => current || !chainLoadedRef.current);
     setChainError("");
-    void fetchOptionChain(activeSymbol, expiry || undefined)
-      .then((payload) => {
-        if (!active) return;
+    const stopPolling = createVisibilityPolling(async () => {
+      const sequence = ++chainRequestSequence.current;
+      try {
+        const payload = await fetchOptionChain(activeSymbol, expiry || undefined);
+        if (!active || chainRequestSequence.current !== sequence) return;
+        chainLoadedRef.current = true;
         setChain(payload);
         if (!expiry) setExpiry(payload.expiry);
         setSelectedCode((current) =>
@@ -256,18 +278,19 @@ export function OptionResearchWorkspace({
             ? current
             : (payload.items[0]?.contract_code ?? ""),
         );
-      })
-      .catch((error) => {
-        if (!active) return;
+      } catch (error) {
+        if (!active || chainRequestSequence.current !== sequence) return;
+        chainLoadedRef.current = false;
         setChain(null);
         setSelectedCode("");
         setChainError(errorMessage(error));
-      })
-      .finally(() => {
-        if (active) setChainLoading(false);
-      });
+      } finally {
+        if (active && chainRequestSequence.current === sequence) setChainLoading(false);
+      }
+    }, 15_000);
     return () => {
       active = false;
+      stopPolling();
     };
   }, [activeSymbol, expiry, refreshToken]);
 
@@ -283,21 +306,26 @@ export function OptionResearchWorkspace({
       return;
     }
     let active = true;
-    setCandleLoading(true);
+    const candleKey = `${selectedCode}:${timeframe}`;
+    const changedContract = candleKeyRef.current !== candleKey;
+    candleKeyRef.current = candleKey;
+    setCandleLoading((current) => current || changedContract);
     setCandleError("");
-    setCandlePayload(null);
-    void fetchOptionCandles(selectedCode, timeframe)
-      .then((payload) => {
-        if (active) setCandlePayload(payload);
-      })
-      .catch((error) => {
-        if (active) setCandleError(errorMessage(error));
-      })
-      .finally(() => {
-        if (active) setCandleLoading(false);
-      });
+    if (changedContract) setCandlePayload(null);
+    const stopPolling = createVisibilityPolling(async () => {
+      const sequence = ++candleRequestSequence.current;
+      try {
+        const payload = await fetchOptionCandles(selectedCode, timeframe);
+        if (active && candleRequestSequence.current === sequence) setCandlePayload(payload);
+      } catch (error) {
+        if (active && candleRequestSequence.current === sequence) setCandleError(errorMessage(error));
+      } finally {
+        if (active && candleRequestSequence.current === sequence) setCandleLoading(false);
+      }
+    }, 15_000);
     return () => {
       active = false;
+      stopPolling();
     };
   }, [selectedCode, timeframe]);
 
@@ -456,12 +484,12 @@ export function OptionResearchWorkspace({
         </span>
         <strong>
           {chain
-            ? `${chain.symbol} · ${chain.expiry} · ${chain.items.length} 张合约 · ${chain.freshness}`
+            ? `${chain.symbol} · ${chain.expiry} · ${chain.items.length} 张合约 · ${optionVisibilityStatus(chain)}`
             : "等待真实数据"}
         </strong>
       </div>
 
-      {chain && (!chain.is_realtime || !chain.actionable_quote) && (
+      {chain && !deliveryAllowsImmediateAction(chain) && (
         <div className="option-research-boundary">
           <CircleAlert size={16} />
           <span>
@@ -765,10 +793,10 @@ export function OptionResearchWorkspace({
               </header>
               {candlePayload && (
                 <div
-                  className={`option-candle-source ${candlePayload.is_realtime && candlePayload.actionable_quote ? "verified" : "research"}`}
+                  className={`option-candle-source ${deliveryAllowsImmediateAction(candlePayload) ? "verified" : "research"}`}
                 >
                   <Activity size={14} />
-                  <span>{describeOptionDataStatus(candlePayload)}</span>
+                  <span>{`${displayDataSource(candlePayload.source)} · ${optionVisibilityStatus(candlePayload)}`}</span>
                 </div>
               )}
               {selectedContract && (
@@ -815,7 +843,7 @@ export function OptionResearchWorkspace({
                       timeframe={timeframe}
                       showGrid
                       showVolume
-                      dataStatus={describeOptionDataStatus(candlePayload)}
+                      dataStatus={`${displayDataSource(candlePayload.source)} · ${optionVisibilityStatus(candlePayload)}`}
                       officialActivity={null}
                       alertPrices={[]}
                       drawingActive={false}

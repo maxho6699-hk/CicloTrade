@@ -24,6 +24,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setError(null)
   }, [])
 
+  const updateMarketDataStatus = useCallback((status: Partial<BootstrapPayload['market_data']>) => {
+    setData((current) => current ? {
+      ...current,
+      market_data: { ...current.market_data, ...status },
+    } : current)
+  }, [])
+
   const applyWatchlistPayload = useCallback((payload: WatchlistPayload) => {
     setData((current) => current ? {
       ...current,
@@ -76,6 +83,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     data,
     error,
     refresh: loadBootstrap,
+    updateMarketDataStatus,
     changeWatchlist,
     changeWatchlistPin,
     login: async (email, password) => {
@@ -94,7 +102,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         setMode('demo')
       }
     },
-  }), [changeWatchlist, changeWatchlistPin, data, error, loadBootstrap, mode])
+  }), [changeWatchlist, changeWatchlistPin, data, error, loadBootstrap, mode, updateMarketDataStatus])
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>
 }

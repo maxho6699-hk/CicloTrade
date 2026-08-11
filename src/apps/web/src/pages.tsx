@@ -33,7 +33,7 @@ import { candles, candidateDecisions, instruments, primaryDecision } from './dat
 import type { Candle, Instrument } from './types'
 import { getFormatLocale } from './i18n/runtime'
 import { useLocale } from './i18n/useLocale'
-import { displayDataSource, displayFreshness, safeDataError } from './domain/dataSourcePresentation'
+import { createVisibilityPolling, deliveryAllowsImmediateAction, displayDataSource, displayDeliveryDelay, displayFreshness, safeDataError } from './domain/dataSourcePresentation'
 
 export function TodayPage() {
   const navigate = useNavigate()
@@ -92,6 +92,7 @@ export function MarketsPage() {
     : null
   const navigate = useNavigate()
   const workspace = useWorkspace()
+  const { updateMarketDataStatus } = workspace
   const { formatLocale } = useLocale()
   const [searchOpen, setSearchOpen] = useState(false)
   const [watchQuery, setWatchQuery] = useState('')
@@ -107,6 +108,8 @@ export function MarketsPage() {
   const [chartStatus, setChartStatus] = useState('')
   const [marketQuote, setMarketQuote] = useState<MarketQuotePayload | null>(null)
   const [quoteStatus, setQuoteStatus] = useState('')
+  const candleRequestSequence = useRef(0)
+  const quoteRequestSequence = useRef(0)
   const [alertPrice, setAlertPrice] = useState(0)
   const [alertStatus, setAlertStatus] = useState('')
   const [alertBusy, setAlertBusy] = useState(false)
@@ -167,16 +170,20 @@ export function MarketsPage() {
     setLiveCandles([])
     if (!marketDataEnabled) { setChartStatus(''); return () => { active = false } }
     setChartStatus('正在读取受控行情…')
-    void fetchMarketCandles(selectedBase.symbol, timeframe).then((payload) => {
-      if (!active) return
-      setLiveCandleIdentity(`${selectedBase.symbol}:${timeframe}`)
-      setLiveCandles(payload.items)
-      setChartStatus(`${displayDataSource(payload.status.display_source)} · ${displayFreshness(payload.status.freshness)}`)
-    }).catch(() => {
-      if (!active) return
-      setChartStatus(safeDataError())
-    })
-    return () => { active = false }
+    const stopPolling = createVisibilityPolling(async () => {
+      const sequence = ++candleRequestSequence.current
+      try {
+        const payload = await fetchMarketCandles(selectedBase.symbol, timeframe)
+        if (!active || candleRequestSequence.current !== sequence) return
+        setLiveCandleIdentity(`${selectedBase.symbol}:${timeframe}`)
+        setLiveCandles(payload.items)
+        const delivery = displayDeliveryDelay(payload.status.delivery_delay_minutes)
+        setChartStatus(`${displayDataSource(payload.status.display_source)} · ${delivery || displayFreshness(payload.status.freshness)}`)
+      } catch {
+        if (active && candleRequestSequence.current === sequence) setChartStatus(safeDataError())
+      }
+    }, 15_000)
+    return () => { active = false; stopPolling() }
   }, [marketDataEnabled, selectedBase.symbol, timeframe])
 
   useEffect(() => {
@@ -187,18 +194,33 @@ export function MarketsPage() {
       return () => { active = false }
     }
     setQuoteStatus('正在核对报价权限与来源…')
-    void fetchMarketQuote(selectedBase.symbol).then((payload) => {
-      if (!active) return
-      setMarketQuote(payload)
-      const access = payload.actionable_quote && payload.is_realtime ? '可核对即时行动' : '仅供研究，不用于立即交易'
-      const fallback = payload.fallback_from ? ' · 已从未满足条件的数据回退' : ''
-      setQuoteStatus(`${displayDataSource(payload.source)} · ${displayFreshness(payload.freshness)} · ${access}${fallback}`)
-    }).catch(() => {
-      if (!active) return
-      setQuoteStatus(safeDataError())
-    })
-    return () => { active = false }
-  }, [marketDataEnabled, selectedBase.symbol])
+    const stopPolling = createVisibilityPolling(async () => {
+      const sequence = ++quoteRequestSequence.current
+      try {
+        const payload = await fetchMarketQuote(selectedBase.symbol)
+        if (!active || quoteRequestSequence.current !== sequence) return
+        setMarketQuote(payload)
+        updateMarketDataStatus({
+          display_source: payload.source,
+          is_realtime: payload.is_realtime,
+          freshness: payload.freshness,
+          detail: payload.verification,
+          ...(payload.delivery_delay_minutes === undefined ? {} : {
+            delivery_delay_minutes: payload.delivery_delay_minutes,
+            visible_as_of: payload.visible_as_of,
+            observed_at: payload.observed_at,
+          }),
+        })
+        const delivery = displayDeliveryDelay(payload.delivery_delay_minutes)
+        const access = deliveryAllowsImmediateAction(payload) ? '可核对即时行动' : '仅供研究，不用于立即交易'
+        const fallback = payload.fallback_from ? ' · 已从未满足条件的数据回退' : ''
+        setQuoteStatus(`${displayDataSource(payload.source)} · ${delivery || displayFreshness(payload.freshness)} · ${access}${fallback}`)
+      } catch {
+        if (active && quoteRequestSequence.current === sequence) setQuoteStatus(safeDataError())
+      }
+    }, 5_000)
+    return () => { active = false; stopPolling() }
+  }, [marketDataEnabled, selectedBase.symbol, updateMarketDataStatus])
 
   useEffect(() => {
     let active = true
@@ -285,7 +307,7 @@ export function MarketsPage() {
       : candidate.symbol === selected.symbol && (candidate.market === selected.market || (selected.market === 'CN' && candidate.market === 'A股')))
     if (!item) return null
     const currentQuote = marketQuote?.symbol === selected.symbol ? marketQuote : null
-    const quoteOverride = currentQuote?.actionable_quote && currentQuote.is_realtime
+    const quoteOverride = currentQuote && deliveryAllowsImmediateAction(currentQuote)
       && typeof currentQuote.last === 'number' && currentQuote.quote_at
       ? { price: currentQuote.last, quoteAt: currentQuote.quote_at }
       : undefined

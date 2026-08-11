@@ -36,6 +36,7 @@ import { localeSearchText } from '../i18n/runtime'
 import { WatchlistToggle } from './WatchlistToggle'
 import type { Market } from '../types'
 import { applyTheme, readStoredTheme, type Theme } from '../theme'
+import { displayDeliveryDelay } from '../domain/dataSourcePresentation'
 
 interface AppShellProps {
   children: ReactNode
@@ -125,12 +126,13 @@ export function AppShell({ children }: AppShellProps) {
   const { locale, setLocale, syncState } = useLocale()
   const realData = workspace.mode === 'authenticated'
   const marketStatus = workspace.data?.market_data
+  const marketDelay = displayDeliveryDelay(marketStatus?.delivery_delay_minutes)
   const telegramReady = Boolean(workspace.data?.telegram.bound && workspace.data?.telegram.verified && workspace.data?.telegram.consented)
   const hasModelSnapshots = Boolean(workspace.data?.performance.items.length)
   const mobileMoreActive = [...mobileMoreItems, mobileHelpItem].some(({ to }) => pathname === to || pathname.startsWith(`${to}/`))
   const marketStatusLabel = !realData
     ? workspace.mode === 'offline' ? '离线演示' : '界面演示'
-    : marketStatus?.freshness === '已停用' ? '未连接' : marketStatus?.is_realtime ? '实时' : marketStatus?.freshness ?? '状态未知'
+    : marketStatus?.freshness === '已停用' ? '未连接' : marketDelay || (marketStatus?.is_realtime ? '实时权限已验证' : marketStatus?.freshness ?? '状态未知')
 
   useEffect(() => {
     applyTheme(theme, true)
@@ -309,7 +311,7 @@ export function AppShell({ children }: AppShellProps) {
             <kbd>Ctrl K</kbd>
           </button>
           <div className="global-status" aria-label="系统状态">
-            <span className="live-status"><i /> {realData ? marketStatus?.is_realtime ? '实时行情已连接' : '行情连接状态' : '界面演示'}</span>
+            <span className="live-status"><i /> {realData ? marketDelay || (marketStatus?.is_realtime ? '实时权限已验证' : '行情连接状态') : '界面演示'}</span>
             <span>行情 · {marketStatusLabel}</span>
             <NavLink to="/notifications"><Bot size={16} /> TG {telegramReady ? '已验证' : realData ? '未连接' : '演示'}</NavLink>
             <button className="locale-button" type="button" title={locale === 'zh-Hant' ? '切换为简体中文' : '切换为繁体中文'} aria-label={locale === 'zh-Hant' ? '切换为简体中文' : '切换为繁体中文'} onClick={() => void setLocale(locale === 'zh-Hant' ? 'zh-Hans' : 'zh-Hant')}><Languages size={17} /><span>{locale === 'zh-Hant' ? '繁' : '简'}</span></button>
@@ -329,7 +331,7 @@ export function AppShell({ children }: AppShellProps) {
         </header>
 
         <div className="status-strip" role="status" aria-live="polite">
-          <span><i className="positive-dot" /> {realData ? marketStatus?.freshness === '已停用' ? '真实行情数据未连接' : `真实行情数据已连接 · ${marketStatusLabel}` : '界面演示数据'}</span>
+          <span><i className="positive-dot" /> {realData ? marketStatus?.freshness === '已停用' ? '真实行情数据未连接' : `${marketDelay ? '受控行情已连接' : '真实行情数据已连接'} · ${marketStatusLabel}` : '界面演示数据'}</span>
           <span><ShieldCheck size={14} /> {realData ? '风控设置已载入' : '风险状态为演示'}</span>
           <span><FlaskConical size={14} /> {hasModelSnapshots ? '模型快照已载入' : '模型运行状态未提供'}</span>
           <strong>{realData ? 'MARKET DATA · VERIFIED STATUS' : 'DEMO DATA'} · 不构成投资建议</strong>

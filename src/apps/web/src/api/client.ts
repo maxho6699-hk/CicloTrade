@@ -296,7 +296,7 @@ export interface BootstrapPayload {
     is_realtime: boolean
     freshness: string
     detail: string
-  }
+  } & DeliveryVisibilityMetadata
   mode: 'compatibility'
 }
 
@@ -338,7 +338,18 @@ export interface MarketCandlePayload {
   symbol: string
   timeframe: string
   items: Array<{ time: string | number; open: number; high: number; low: number; close: number; volume: number }>
-  status: BootstrapPayload['market_data']
+  status: BootstrapPayload['market_data'] & DeliveryVisibilityMetadata
+}
+
+/**
+ * The API, rather than a data-provider entitlement, is authoritative for what
+ * this account is allowed to see.  These fields are deliberately optional
+ * while older API deployments are still rolling out.
+ */
+export interface DeliveryVisibilityMetadata {
+  delivery_delay_minutes?: number
+  visible_as_of?: string
+  observed_at?: string
 }
 
 export interface ChartDrawingPayload {
@@ -361,7 +372,7 @@ export type ChartDrawingOperation =
   | { op: 'upsert'; origin_timeframe: string; cross_timeframe: boolean; revision: number | null; drawing: Pick<ChartDrawingPayload, 'id' | 'tool' | 'points'> }
   | { op: 'delete' | 'restore'; origin_timeframe: string; cross_timeframe: boolean; revision: number; drawing_id: string }
 
-export interface MarketQuotePayload {
+export interface MarketQuotePayload extends DeliveryVisibilityMetadata {
   symbol: string
   last: number | null
   bid: number | null
@@ -408,7 +419,7 @@ export interface OptionContract {
   quote_at: string | null
 }
 
-export interface OptionChainPayload {
+export interface OptionChainPayload extends DeliveryVisibilityMetadata {
   symbol: string
   expiry: string
   expiries: string[]
@@ -427,7 +438,7 @@ export interface OptionChainPayload {
   status: 'available'
 }
 
-export interface OptionCandlePayload {
+export interface OptionCandlePayload extends DeliveryVisibilityMetadata {
   contract_code: string
   timeframe: string
   items: MarketCandlePayload['items']
@@ -563,7 +574,7 @@ export async function fetchMarketCandles(symbol: string, timeframe: string) {
   const valid = Array.isArray(payload.items) && payload.items.every((item) => (
     (typeof item.time === 'string' || typeof item.time === 'number')
     && [item.open, item.high, item.low, item.close, item.volume].every(Number.isFinite)
-  ))
+  )) && validDeliveryVisibilityMetadata(payload.status)
   if (!valid) throw new BrowserApiError('行情响应格式无效。', 502)
   return payload
 }
@@ -584,12 +595,22 @@ export async function fetchMarketQuote(symbol: string) {
     && [payload.last, payload.bid, payload.ask, payload.spread, payload.open, payload.high, payload.low, payload.prev_close, payload.volume]
       .every(nullableFinite)
     && (payload.quote_at === null || typeof payload.quote_at === 'string')
+    && validDeliveryVisibilityMetadata(payload)
   if (!valid) throw new BrowserApiError('正股快照响应格式无效。', 502)
   return payload
 }
 
 function nullableFinite(value: unknown): value is number | null {
   return value === null || (typeof value === 'number' && Number.isFinite(value))
+}
+
+function validDeliveryVisibilityMetadata(value: unknown) {
+  if (!value || typeof value !== 'object') return false
+  const metadata = value as DeliveryVisibilityMetadata
+  return (metadata.delivery_delay_minutes === undefined
+      || (Number.isSafeInteger(metadata.delivery_delay_minutes) && metadata.delivery_delay_minutes >= 0))
+    && (metadata.visible_as_of === undefined || typeof metadata.visible_as_of === 'string')
+    && (metadata.observed_at === undefined || typeof metadata.observed_at === 'string')
 }
 
 function validOptionContract(value: unknown): value is OptionContract {
@@ -633,6 +654,7 @@ export async function fetchOptionChain(symbol: string, expiry?: string) {
     && Array.isArray(payload.missing_fields)
     && payload.missing_fields.every((item) => typeof item === 'string')
     && (payload.fallback_from === undefined || typeof payload.fallback_from === 'string')
+    && validDeliveryVisibilityMetadata(payload)
   if (!arraysAreValid || !metadataIsValid || !Array.isArray(payload.expiries) || !payload.expiries.every((item) => typeof item === 'string')) {
     throw new BrowserApiError('期权链响应格式无效。', 502)
   }
@@ -656,6 +678,7 @@ export async function fetchOptionCandles(contractCode: string, timeframe: string
     && Array.isArray(payload.missing_fields)
     && payload.missing_fields.every((item) => typeof item === 'string')
     && (payload.fallback_from === undefined || typeof payload.fallback_from === 'string')
+    && validDeliveryVisibilityMetadata(payload)
   if (!valid || !metadataIsValid) throw new BrowserApiError('期权 K 线响应格式无效。', 502)
   return payload
 }

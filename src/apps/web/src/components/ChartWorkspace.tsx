@@ -27,7 +27,7 @@ import {
 import { MarketChart, type ChartCrosshairSync, type ChartTimeRange, type MarketChartHandle } from './MarketChart'
 import { WatchlistToggle } from './WatchlistToggle'
 import { TimeframeDropdown } from './ui/TimeframeDropdown'
-import { displayDataSource, displayFreshness, safeDataError } from '../domain/dataSourcePresentation'
+import { createVisibilityPolling, deliveryAllowsImmediateAction, displayDataSource, displayDeliveryDelay, displayFreshness, safeDataError } from '../domain/dataSourcePresentation'
 import {
   CHART_LAYOUTS,
   TIMEFRAME_OPTIONS,
@@ -98,8 +98,9 @@ function quoteStatusLabel(quote: MarketQuotePayload | null | undefined) {
     freshness?: string
     is_realtime?: boolean
   }
-  const freshness = displayFreshness(metadata.freshness)
-  const access = metadata.actionable_quote === false
+  const delivery = displayDeliveryDelay(metadata.delivery_delay_minutes)
+  const freshness = delivery || displayFreshness(metadata.freshness)
+  const access = !deliveryAllowsImmediateAction(metadata)
     ? '研究参考'
     : metadata.is_realtime === false && freshness !== '延迟行情'
       ? '延迟行情'
@@ -194,6 +195,8 @@ export function ChartWorkspace({
   const [drawingCommand, setDrawingCommand] = useState<DrawingCommand>({ id: 0, type: 'undo' })
   const chartRefs = useRef<Record<string, MarketChartHandle | null>>({})
   const slotCandlesRef = useRef(slotCandles)
+  const slotQuotesRef = useRef(slotQuotes)
+  const slotQuoteIdentityRef = useRef(slotQuoteIdentity)
   const layoutPickerRef = useRef<HTMLDivElement>(null)
   const timeRangeSyncLock = useRef(false)
   const focusOpenedWorkbench = useRef(false)
@@ -241,6 +244,14 @@ export function ChartWorkspace({
   }, [slotCandles])
 
   useEffect(() => {
+    slotQuotesRef.current = slotQuotes
+  }, [slotQuotes])
+
+  useEffect(() => {
+    slotQuoteIdentityRef.current = slotQuoteIdentity
+  }, [slotQuoteIdentity])
+
+  useEffect(() => {
     setSlotCandles((current) => current[primarySlotId] === candles ? current : { ...current, [primarySlotId]: candles })
     setSlotCandleIdentity((current) => ({ ...current, [primarySlotId]: candleIdentity(initial) }))
   }, [candles, initial, primarySlotId])
@@ -254,50 +265,60 @@ export function ChartWorkspace({
     if (!loadCandles) return
     let active = true
     const targets = JSON.parse(fetchSignature) as Array<Pick<ChartSlotState, 'id' | 'market' | 'symbol' | 'timeframe'>>
-    targets.forEach((slot, index) => {
-      if (index === 0 && slot.symbol === initialSymbol && slot.timeframe === initialTimeframe && slot.market === initialMarket) return
-      const sequence = (slotLoadSequence.current[slot.id] ?? 0) + 1
-      slotLoadSequence.current[slot.id] = sequence
-      const hasPreviousData = Boolean(slotCandlesRef.current[slot.id]?.length)
-      setSlotStatus((current) => ({ ...current, [slot.id]: hasPreviousData ? '正在更新，保留上一份 K 线' : '读取中…' }))
-      void loadCandles(slot.symbol, slot.timeframe, slot.market).then((next) => {
-        if (!active || slotLoadSequence.current[slot.id] !== sequence) return
-        setSlotCandleIdentity((current) => ({ ...current, [slot.id]: candleIdentity(slot) }))
-        setSlotCandles((current) => ({ ...current, [slot.id]: next }))
-        setSlotStatus((current) => ({ ...current, [slot.id]: next.length ? '已更新' : '暂无数据' }))
-      }).catch(() => {
-        if (active && slotLoadSequence.current[slot.id] === sequence) {
-          const hasPreviousData = Boolean(slotCandlesRef.current[slot.id]?.length)
-          setSlotStatus((current) => ({ ...current, [slot.id]: hasPreviousData ? '暂时无法读取，继续显示上一份 K 线' : '暂时无法读取' }))
+    const stopPolling = createVisibilityPolling(async () => {
+      await Promise.all(targets.map(async (slot, index) => {
+        if (index === 0 && slot.symbol === initialSymbol && slot.timeframe === initialTimeframe && slot.market === initialMarket) return
+        const sequence = (slotLoadSequence.current[slot.id] ?? 0) + 1
+        slotLoadSequence.current[slot.id] = sequence
+        const hasPreviousData = Boolean(slotCandlesRef.current[slot.id]?.length)
+        setSlotStatus((current) => ({ ...current, [slot.id]: hasPreviousData ? '正在更新，保留上一份 K 线' : '读取中…' }))
+        try {
+          const next = await loadCandles(slot.symbol, slot.timeframe, slot.market)
+          if (!active || slotLoadSequence.current[slot.id] !== sequence) return
+          setSlotCandleIdentity((current) => ({ ...current, [slot.id]: candleIdentity(slot) }))
+          setSlotCandles((current) => ({ ...current, [slot.id]: next }))
+          setSlotStatus((current) => ({ ...current, [slot.id]: next.length ? '已更新' : '暂无数据' }))
+        } catch {
+          if (active && slotLoadSequence.current[slot.id] === sequence) {
+            const hasPreviousData = Boolean(slotCandlesRef.current[slot.id]?.length)
+            setSlotStatus((current) => ({ ...current, [slot.id]: hasPreviousData ? '暂时无法读取，继续显示上一份 K 线' : '暂时无法读取' }))
+          }
         }
-      })
-    })
-    return () => { active = false }
+      }))
+    }, 15_000)
+    return () => { active = false; stopPolling() }
   }, [fetchSignature, initialMarket, initialSymbol, initialTimeframe, loadCandles])
 
   useEffect(() => {
     if (!loadQuote) return
     let active = true
     const targets = JSON.parse(quoteFetchSignature) as Array<Pick<ChartSlotState, 'id' | 'market' | 'symbol'>>
-    targets.forEach((slot, index) => {
-      const identity = quoteIdentity(slot)
-      if (index === 0 && slot.id === primarySlotId && slot.symbol === initialSymbol && slot.market === initialMarket && initialQuote !== undefined) return
-      const sequence = (quoteLoadSequence.current[slot.id] ?? 0) + 1
-      quoteLoadSequence.current[slot.id] = sequence
-      setSlotQuoteIdentity((current) => ({ ...current, [slot.id]: identity }))
-      setSlotQuotes((current) => ({ ...current, [slot.id]: null }))
-      setSlotQuoteStatus((current) => ({ ...current, [slot.id]: slot.market === 'US' ? '读取报价中…' : 'A 股买卖盘未接入' }))
-      void loadQuote(slot.symbol, slot.market).then((quote) => {
-        if (!active || quoteLoadSequence.current[slot.id] !== sequence) return
-        setSlotQuoteIdentity((current) => ({ ...current, [slot.id]: identity }))
-        setSlotQuotes((current) => ({ ...current, [slot.id]: quote }))
-        setSlotQuoteStatus((current) => ({ ...current, [slot.id]: quoteStatusLabel(quote) || '报价没有来源或时间' }))
-      }).catch(() => {
-        if (!active || quoteLoadSequence.current[slot.id] !== sequence) return
-        setSlotQuoteStatus((current) => ({ ...current, [slot.id]: safeDataError() }))
-      })
-    })
-    return () => { active = false }
+    const stopPolling = createVisibilityPolling(async () => {
+      await Promise.all(targets.map(async (slot, index) => {
+        const identity = quoteIdentity(slot)
+        if (index === 0 && slot.id === primarySlotId && slot.symbol === initialSymbol && slot.market === initialMarket && initialQuote !== undefined) return
+        const sequence = (quoteLoadSequence.current[slot.id] ?? 0) + 1
+        quoteLoadSequence.current[slot.id] = sequence
+        const identityChanged = slotQuoteIdentityRef.current[slot.id] !== identity
+        if (identityChanged) {
+          setSlotQuoteIdentity((current) => ({ ...current, [slot.id]: identity }))
+          setSlotQuotes((current) => ({ ...current, [slot.id]: null }))
+        }
+        const hasPreviousQuote = !identityChanged && Boolean(slotQuotesRef.current[slot.id])
+        setSlotQuoteStatus((current) => ({ ...current, [slot.id]: slot.market === 'US' ? hasPreviousQuote ? '正在更新，保留上一份报价' : '读取报价中…' : 'A 股买卖盘未接入' }))
+        try {
+          const quote = await loadQuote(slot.symbol, slot.market)
+          if (!active || quoteLoadSequence.current[slot.id] !== sequence) return
+          setSlotQuoteIdentity((current) => ({ ...current, [slot.id]: identity }))
+          setSlotQuotes((current) => ({ ...current, [slot.id]: quote }))
+          setSlotQuoteStatus((current) => ({ ...current, [slot.id]: quoteStatusLabel(quote) || '报价没有来源或时间' }))
+        } catch {
+          if (!active || quoteLoadSequence.current[slot.id] !== sequence) return
+          setSlotQuoteStatus((current) => ({ ...current, [slot.id]: safeDataError() }))
+        }
+      }))
+    }, 5_000)
+    return () => { active = false; stopPolling() }
   }, [initialMarket, initialQuote, initialSymbol, loadQuote, primarySlotId, quoteFetchSignature])
 
   useEffect(() => {
