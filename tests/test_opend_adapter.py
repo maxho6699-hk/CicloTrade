@@ -89,6 +89,18 @@ def test_opend_stock_quote_uses_runtime_entitlements_not_environment_claims(monk
     assert quote["us_realtime_entitlement"] is True
     assert quote["us_option_realtime_entitlement"] is True
     assert quote["actionable_snapshot"] is True
+    assert quote["quote_at"] == "2026-08-07T16:00:00-04:00"
+
+
+def test_opend_naive_us_bars_are_localized_to_the_exchange_timezone(monkeypatch):
+    monkeypatch.setenv("MARKET_DATA_ENABLED", "true")
+    adapter = OpenDAdapter()
+    monkeypatch.setattr(adapter, "_context", lambda: OpenD())
+
+    bars = adapter.bars("AAPL", "5d", "1d")
+
+    assert str(bars.index.tz) == "America/New_York"
+    assert bars.index[-1].isoformat() == "2026-08-07T16:00:00-04:00"
 
 
 @pytest.mark.parametrize(

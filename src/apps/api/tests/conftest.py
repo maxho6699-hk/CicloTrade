@@ -31,12 +31,16 @@ def browser_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     with api_module._MARKET_SEARCH_LOCK:
         api_module._MARKET_SEARCH_CACHE.clear()
         api_module._MARKET_SEARCH_RATE.clear()
+    with api_module._MARKET_STATUS_LOCK:
+        api_module._MARKET_STATUS_CACHE = None
     try:
         yield {"database": database, "auth": auth}
     finally:
         with api_module._MARKET_SEARCH_LOCK:
             api_module._MARKET_SEARCH_CACHE.clear()
             api_module._MARKET_SEARCH_RATE.clear()
+        with api_module._MARKET_STATUS_LOCK:
+            api_module._MARKET_STATUS_CACHE = None
         app.state.repository = previous_repository
         if previous_auth is None:
             del app.state.auth_service

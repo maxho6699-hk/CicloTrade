@@ -3,11 +3,12 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import math
 import os
 import re
 import socket
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -40,6 +41,7 @@ class OptionExpiryUnavailableError(DataSourceError):
 class OpenDAdapter(DataSource):
     name = "Futu OpenD"
     supports_realtime = True
+    _US_MARKET_TIMEZONE = ZoneInfo("America/New_York")
 
     def __init__(self) -> None:
         self.host = os.getenv("OPEND_HOST", "127.0.0.1").strip()
@@ -131,6 +133,14 @@ class OpenDAdapter(DataSource):
         if frame.empty or not required.issubset(frame.columns):
             raise DataSourceError(f"{symbol} 没有可用的 OpenD 行情。")
         frame["time_key"] = pd.to_datetime(frame["time_key"], errors="coerce")
+        # OpenD returns US market timestamps without an offset.  Treating
+        # those values as the web server's local time shifts candles for every
+        # non-US deployment, so attach the exchange timezone before exposing
+        # the index to API consumers.
+        if getattr(frame["time_key"].dt, "tz", None) is None:
+            frame["time_key"] = frame["time_key"].dt.tz_localize(self._US_MARKET_TIMEZONE)
+        else:
+            frame["time_key"] = frame["time_key"].dt.tz_convert(self._US_MARKET_TIMEZONE)
         frame = frame.dropna(subset=["time_key"]).drop_duplicates("time_key").set_index("time_key").sort_index()
         return frame.rename(
             columns={"open": "Open", "high": "High", "low": "Low", "close": "Close", "volume": "Volume"}
@@ -164,6 +174,20 @@ class OpenDAdapter(DataSource):
             return None
         text = str(value).strip()
         return text if text and text.casefold() not in {"nan", "nat", "<na>"} else None
+
+    @classmethod
+    def _us_market_timestamp(cls, value: object) -> str | None:
+        """Normalize OpenD's naive US exchange timestamp to ISO-8601."""
+        text = str(value or "").strip()
+        if not text or text.casefold() in {"nan", "nat", "<na>"}:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return text
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=cls._US_MARKET_TIMEZONE)
+        return parsed.isoformat()
 
     @staticmethod
     def _is_realtime_right(value: object) -> bool:
@@ -230,7 +254,7 @@ class OpenDAdapter(DataSource):
         row = snapshot.iloc[0]
         bid, ask = self._snapshot_number(row, "bid_price"), self._snapshot_number(row, "ask_price")
         last = self._snapshot_number(row, "last_price")
-        quote_at = self._snapshot_text(row, "update_time")
+        quote_at = self._us_market_timestamp(self._snapshot_text(row, "update_time"))
         return {
             "symbol": code.removeprefix("US."),
             "last": last,

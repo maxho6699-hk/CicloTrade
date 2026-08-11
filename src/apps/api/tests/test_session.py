@@ -21,6 +21,7 @@ from src.apps.api.app import (
     locale_preference,
     market_candles,
     market_quote,
+    market_status,
     market_search,
     opening_pause,
     option_candles,
@@ -777,6 +778,8 @@ def test_authenticated_market_candles_use_bounded_read_adapter(browser_api, monk
 
     class StubSource:
         def bars(self, symbol, period, interval):
+            if (symbol, period, interval) == ("AAPL", "5d", "1m"):
+                return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
             assert (symbol, period, interval) == ("AAPL", "6mo", "1d")
             return pd.DataFrame(
                 [{"Open": 100, "High": 102, "Low": 99, "Close": 101, "Volume": 1_000}],
@@ -797,7 +800,8 @@ def test_authenticated_market_candles_use_bounded_read_adapter(browser_api, monk
     payload = _payload(response)
 
     assert payload["items"][0]["close"] == 101.0
-    assert payload["status"]["freshness"] == "历史行情"
+    assert payload["status"]["delivery_delay_minutes"] == 15
+    assert payload["status"]["is_realtime"] is False
 
 
 def test_authenticated_market_candles_resample_real_hour_bars(browser_api, monkeypatch):
@@ -874,7 +878,9 @@ def test_market_candles_a_share_prefers_akshare_and_reports_actual_source(browse
     payload = _payload(response)
     assert calls == ["akshare"]
     assert payload["items"][0]["close"] == 1505.0
-    assert payload["status"] == {"source": "AKShare", "fallback_from": None}
+    assert payload["status"]["source"] == "AKShare"
+    assert payload["status"]["fallback_from"] is None
+    assert payload["status"]["delivery_delay_minutes"] == 15
 
 
 def test_market_candles_opend_failure_falls_back_to_yahoo_with_actual_status(browser_api, monkeypatch):
@@ -892,6 +898,8 @@ def test_market_candles_opend_failure_falls_back_to_yahoo_with_actual_status(bro
         name = "Yahoo Finance"
 
         def bars(self, symbol, period, interval):
+            if (symbol, period, interval) == ("AAPL", "5d", "1m"):
+                return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
             assert (symbol, period, interval) == ("AAPL", "6mo", "1d")
             return pd.DataFrame(
                 [{"Open": 200, "High": 203, "Low": 199, "Close": 202, "Volume": 50}],
@@ -914,7 +922,9 @@ def test_market_candles_opend_failure_falls_back_to_yahoo_with_actual_status(bro
 
     payload = _payload(response)
     assert calls == [None, "yfinance"]
-    assert payload["status"] == {"source": "Yahoo Finance", "fallback_from": "Futu OpenD"}
+    assert payload["status"]["source"] == "Yahoo Finance"
+    assert payload["status"]["fallback_from"] == "Futu OpenD"
+    assert payload["status"]["delivery_delay_minutes"] == 15
 
 
 def test_authenticated_market_quote_marks_unverified_opend_snapshot_non_actionable(browser_api, monkeypatch):
@@ -931,6 +941,10 @@ def test_authenticated_market_quote_marks_unverified_opend_snapshot_non_actionab
 
     api_module = importlib.import_module("src.apps.api.app")
     monkeypatch.setattr(api_module, "OpenDAdapter", StubOpenD)
+    browser_api["database"].execute(
+        "UPDATE users SET plan_type='高级版', subscription_expire=? WHERE email=?",
+        ("2099-01-01T00:00:00+00:00", "browser@example.com"),
+    )
     response = asyncio.run(market_quote(_request(
         "/api/rewrite/v1/market/quote", authorization=f"Bearer {_login_token()}",
         query={"symbol": "AAPL"},
@@ -961,6 +975,10 @@ def test_authenticated_market_quote_accepts_verified_opend_realtime_right(browse
     api_module = importlib.import_module("src.apps.api.app")
     monkeypatch.setattr(api_module, "OpenDAdapter", VerifiedOpenD)
     monkeypatch.setenv("MARKET_DATA_REALTIME", "true")
+    browser_api["database"].execute(
+        "UPDATE users SET plan_type='高级版', subscription_expire=? WHERE email=?",
+        ("2099-01-01T00:00:00+00:00", "browser@example.com"),
+    )
     response = asyncio.run(market_quote(_request(
         "/api/rewrite/v1/market/quote", authorization=f"Bearer {_login_token()}",
         query={"symbol": "AAPL"},
@@ -971,6 +989,178 @@ def test_authenticated_market_quote_accepts_verified_opend_realtime_right(browse
     assert payload["is_realtime"] is True and payload["actionable_quote"] is True
     assert payload["verification"] == "opend_qot_right_lv2"
     assert "LV2 实时权限已验证" in payload["freshness"]
+
+
+def test_free_market_quote_is_built_from_bars_before_the_website_delay_cutoff(browser_api, monkeypatch):
+    api_module = importlib.import_module("src.apps.api.app")
+    cutoff = datetime(2026, 8, 12, 16, 0, tzinfo=UTC)
+
+    class UnexpectedOpenD:
+        def stock_quote(self, _symbol):
+            raise AssertionError("free users must never receive a current OpenD snapshot")
+
+    class MinuteBars:
+        name = "Research Feed"
+        supports_realtime = False
+        delay_minutes = None
+
+        def bars(self, symbol, period, interval):
+            assert (symbol, period, interval) == ("AAPL", "5d", "1m")
+            return pd.DataFrame(
+                [
+                    {"Open": 100, "High": 101, "Low": 99, "Close": 100.5, "Volume": 10},
+                    {"Open": 200, "High": 201, "Low": 199, "Close": 200.5, "Volume": 20},
+                ],
+                index=pd.to_datetime([cutoff - timedelta(minutes=1), cutoff + timedelta(minutes=1)]),
+            )
+
+    monkeypatch.setattr(api_module, "OpenDAdapter", UnexpectedOpenD)
+    monkeypatch.setattr(api_module, "get_resilient_data_source", lambda *_args: MinuteBars())
+    monkeypatch.setattr(api_module, "_visible_as_of", lambda _delay, _now=None: cutoff)
+    response = asyncio.run(market_quote(_request(
+        "/api/rewrite/v1/market/quote", authorization=f"Bearer {_login_token()}", query={"symbol": "AAPL"},
+    )))
+
+    payload = _payload(response)
+    assert response.status_code == 200
+    assert payload["delivery_delay_minutes"] == 15
+    assert payload["last"] == 100.5
+    assert payload["bid"] is payload["ask"] is payload["spread"] is None
+    assert payload["actionable_quote"] is False and payload["is_realtime"] is False
+    assert payload["visible_as_of"] == cutoff.isoformat()
+
+
+def test_delayed_daily_candles_include_the_cutoff_capped_current_day(browser_api, monkeypatch):
+    api_module = importlib.import_module("src.apps.api.app")
+    cutoff = datetime(2026, 8, 12, 18, 0, tzinfo=UTC)
+
+    class DailyBars:
+        name = "Research Feed"
+        supports_realtime = False
+        delay_minutes = None
+
+        def bars(self, symbol, period, interval):
+            if (symbol, period, interval) == ("AAPL", "5d", "1m"):
+                return pd.DataFrame(
+                    [
+                        {"Open": 205, "High": 210, "Low": 204, "Close": 209, "Volume": 30},
+                        {"Open": 211, "High": 212, "Low": 208, "Close": 211, "Volume": 40},
+                    ],
+                    index=pd.to_datetime(["2026-08-12T17:44:00Z", "2026-08-12T18:01:00Z"]),
+                )
+            assert (symbol, period, interval) == ("AAPL", "6mo", "1d")
+            return pd.DataFrame(
+                [
+                    {"Open": 100, "High": 101, "Low": 99, "Close": 100, "Volume": 10},
+                    {"Open": 200, "High": 201, "Low": 199, "Close": 200, "Volume": 20},
+                ],
+                index=pd.to_datetime(["2026-08-11T00:00:00-04:00", "2026-08-12T00:00:00-04:00"]),
+            )
+
+    monkeypatch.setattr(api_module, "get_resilient_data_source", lambda *_args: DailyBars())
+    monkeypatch.setattr(api_module, "_visible_as_of", lambda _delay, _now=None: cutoff)
+    response = asyncio.run(market_candles(_request(
+        "/api/rewrite/v1/market/candles", authorization=f"Bearer {_login_token()}",
+        query={"symbol": "AAPL", "timeframe": "日线"},
+    )))
+
+    payload = _payload(response)
+    assert [item["close"] for item in payload["items"]] == [100.0, 209.0]
+    assert payload["status"]["delivery_delay_minutes"] == 15
+    assert payload["status"]["observed_at"] == "2026-08-12T17:44:00+00:00"
+
+
+@pytest.mark.parametrize(("timeframe", "period"), (("周线", "2y"), ("月线", "5y")))
+def test_delayed_coarse_candles_include_the_cutoff_capped_current_period(
+    browser_api, monkeypatch, timeframe, period
+):
+    api_module = importlib.import_module("src.apps.api.app")
+    cutoff = datetime(2026, 8, 12, 18, 0, tzinfo=UTC)
+
+    class DailyBars:
+        name = "Research Feed"
+        supports_realtime = False
+        delay_minutes = None
+
+        def bars(self, symbol, requested_period, interval):
+            if (symbol, requested_period, interval) == ("AAPL", "5d", "1m"):
+                return pd.DataFrame(
+                    [{"Open": 205, "High": 210, "Low": 204, "Close": 209, "Volume": 30}],
+                    index=pd.to_datetime(["2026-08-12T17:44:00Z"]),
+                )
+            assert (symbol, requested_period, interval) == ("AAPL", period, "1d")
+            return pd.DataFrame(
+                [
+                    {"Open": 100, "High": 101, "Low": 99, "Close": 100, "Volume": 10},
+                    {"Open": 200, "High": 201, "Low": 199, "Close": 200, "Volume": 20},
+                ],
+                index=pd.to_datetime(["2026-08-03T00:00:00-04:00", "2026-08-12T00:00:00-04:00"]),
+            )
+
+    monkeypatch.setattr(api_module, "get_resilient_data_source", lambda *_args: DailyBars())
+    monkeypatch.setattr(api_module, "_visible_as_of", lambda _delay, _now=None: cutoff)
+    payload = _payload(asyncio.run(market_candles(_request(
+        "/api/rewrite/v1/market/candles", authorization=f"Bearer {_login_token()}",
+        query={"symbol": "AAPL", "timeframe": timeframe},
+    ))))
+
+    assert payload["items"][-1]["close"] == 209.0
+    assert payload["status"]["delivery_delay_minutes"] == 15
+
+
+def test_market_status_is_vendor_neutral_cached_and_applies_the_member_boundary(browser_api, monkeypatch):
+    api_module = importlib.import_module("src.apps.api.app")
+    calls = {"available": 0, "rights": 0}
+
+    class VerifiedOpenD:
+        def available(self):
+            calls["available"] += 1
+            return True
+
+        def quote_rights(self):
+            calls["rights"] += 1
+            return {
+                "us_realtime_entitlement": True,
+                "us_option_realtime_entitlement": True,
+            }
+
+    monkeypatch.setattr(api_module, "OpenDAdapter", VerifiedOpenD)
+    monkeypatch.setenv("MARKET_DATA_REALTIME", "true")
+    monkeypatch.setattr(api_module, "_MARKET_STATUS_CACHE", None)
+    free = _payload(asyncio.run(market_status(_request(
+        "/api/rewrite/v1/market/status", authorization=f"Bearer {_login_token()}"
+    ))))
+    assert free["delivery_delay_minutes"] == 15 and free["is_realtime"] is False
+    assert "source" not in free and "Futu" not in json.dumps(free, ensure_ascii=False)
+
+    browser_api["database"].execute(
+        "UPDATE users SET plan_type='高级版', subscription_expire=? WHERE email=?",
+        ("2099-01-01T00:00:00+00:00", "browser@example.com"),
+    )
+    advanced = _payload(asyncio.run(market_status(_request(
+        "/api/rewrite/v1/market/status", authorization=f"Bearer {_login_token()}"
+    ))))
+    assert advanced["delivery_delay_minutes"] == 0 and advanced["is_realtime"] is True
+    assert calls == {"available": 1, "rights": 1}
+
+
+def test_market_status_fails_closed_when_the_upstream_probe_is_unavailable(browser_api, monkeypatch):
+    api_module = importlib.import_module("src.apps.api.app")
+
+    class UnavailableOpenD:
+        def available(self):
+            return False
+
+    monkeypatch.setattr(api_module, "OpenDAdapter", UnavailableOpenD)
+    monkeypatch.setattr(api_module, "_MARKET_STATUS_CACHE", None)
+    payload = _payload(asyncio.run(market_status(_request(
+        "/api/rewrite/v1/market/status", authorization=f"Bearer {_login_token()}"
+    ))))
+
+    assert payload["status"] == "unavailable"
+    assert payload["provider_realtime"] is False
+    assert payload["is_realtime"] is False
+    assert payload["delivery_delay_minutes"] == 15
 
 
 def test_market_quote_uses_akshare_research_quote_for_a_shares_and_yahoo_for_us_fallback(browser_api, monkeypatch):
@@ -994,6 +1184,10 @@ def test_market_quote_uses_akshare_research_quote_for_a_shares_and_yahoo_for_us_
             }
 
     api_module = importlib.import_module("src.apps.api.app")
+    browser_api["database"].execute(
+        "UPDATE users SET plan_type='高级版', subscription_expire=? WHERE email=?",
+        ("2099-01-01T00:00:00+00:00", "browser@example.com"),
+    )
     monkeypatch.setattr(api_module, "OpenDAdapter", UnexpectedOpenD)
     monkeypatch.setattr(
         api_module, "get_resilient_data_source", lambda name: AKShareResearch() if name == "akshare" else AssertionError()
@@ -1063,6 +1257,10 @@ def test_market_quote_a_share_falls_back_to_yahoo_research_without_constructing_
             }
 
     api_module = importlib.import_module("src.apps.api.app")
+    browser_api["database"].execute(
+        "UPDATE users SET plan_type='高级版', subscription_expire=? WHERE email=?",
+        ("2099-01-01T00:00:00+00:00", "browser@example.com"),
+    )
     monkeypatch.setattr(api_module, "OpenDAdapter", UnexpectedOpenD)
     monkeypatch.setattr(
         api_module,

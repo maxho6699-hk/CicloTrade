@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import hashlib
 import json
 import math
@@ -12,6 +12,9 @@ import re
 import threading
 import time
 from typing import Any
+from zoneinfo import ZoneInfo
+
+import pandas as pd
 
 from dotenv import load_dotenv
 from starlette.applications import Starlette
@@ -63,7 +66,8 @@ from core.backtest_queue import BacktestQueueError
 from core.database import DatabaseManager
 from core.official_option_sim_journal import OfficialOptionSimulationJournal
 from core.auth import AuthError, AuthService, email_verification_required
-from core.plans import can, effective_plan, plan_display_name
+from core.compat import UTC
+from core.plans import can, effective_plan, plan_display_name, web_market_data_visibility
 from notification.email_sender import send_email, smtp_configured
 from notification.templates import auth_email
 from payment.order_service import MembershipPlanConflict
@@ -657,11 +661,256 @@ _MARKET_SEARCH_RATE: dict[int, list[float]] = {}
 _MARKET_SEARCH_LOCK = threading.Lock()
 _MARKET_SEARCH_TTL_SECONDS = 300
 _MARKET_SEARCH_LIMIT_PER_MINUTE = 30
+_MARKET_STATUS_TTL_SECONDS = 8.0
+_MARKET_STATUS_LOCK = threading.Lock()
+_MARKET_STATUS_CACHE: tuple[float, dict[str, object]] | None = None
+_MARKET_TIMEZONES = {"美股": ZoneInfo("America/New_York"), "A股": ZoneInfo("Asia/Shanghai")}
 
 
 def _is_yahoo_source(source: Any) -> bool:
     """Recognize Yahoo adapters without depending on one display-name spelling."""
     return str(getattr(source, "name", "")).strip().casefold() in {"yahoo finance", "yfinance"}
+
+
+def _market_timezone(market: str) -> ZoneInfo:
+    return _MARKET_TIMEZONES.get(market, _MARKET_TIMEZONES["美股"])
+
+
+def _market_datetime(value: Any, market: str) -> datetime | None:
+    """Interpret offset-free timestamps in their exchange's timezone.
+
+    Providers commonly return a naive ``DatetimeIndex`` or OpenD's
+    ``YYYY-mm-dd HH:MM:SS`` timestamp.  Never let the API server timezone
+    decide what market time that was.
+    """
+    if hasattr(value, "to_pydatetime"):
+        value = value.to_pydatetime()
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=_market_timezone(market))
+    return value.astimezone(UTC)
+
+
+def _iso_market_datetime(value: Any, market: str) -> str | None:
+    timestamp = _market_datetime(value, market)
+    return timestamp.isoformat() if timestamp is not None else None
+
+
+def _visible_as_of(delay_minutes: int, now: datetime | None = None) -> datetime:
+    current = now or datetime.now(UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    return current.astimezone(UTC) - timedelta(minutes=max(0, int(delay_minutes)))
+
+
+def _frame_observed_at(frame: Any, market: str) -> datetime | None:
+    observed = [_market_datetime(index, market) for index in frame.index]
+    return max((value for value in observed if value is not None), default=None)
+
+
+def _clip_market_frame_for_delivery(
+    frame: Any,
+    *,
+    market: str,
+    timeframe: str,
+    delivery_delay_minutes: int,
+    now: datetime | None = None,
+) -> tuple[Any, datetime | None, datetime]:
+    """Return only bars a member may see under the website-delay contract."""
+    visible_as_of = _visible_as_of(delivery_delay_minutes, now)
+    observed_at = _frame_observed_at(frame, market)
+    if delivery_delay_minutes <= 0:
+        return frame, observed_at, visible_as_of
+
+    indexed = [_market_datetime(index, market) for index in frame.index]
+    if timeframe == "日线":
+        cutoff_day = visible_as_of.astimezone(_market_timezone(market)).date()
+        positions = [
+            position for position, timestamp in enumerate(indexed)
+            if timestamp is not None and timestamp.astimezone(_market_timezone(market)).date() < cutoff_day
+        ]
+    elif timeframe == "周线":
+        cutoff_local = visible_as_of.astimezone(_market_timezone(market))
+        cutoff_week = cutoff_local.isocalendar()[:2]
+        positions = [
+            position for position, timestamp in enumerate(indexed)
+            if timestamp is not None and timestamp.astimezone(_market_timezone(market)).isocalendar()[:2] < cutoff_week
+        ]
+    elif timeframe == "月线":
+        cutoff_local = visible_as_of.astimezone(_market_timezone(market))
+        cutoff_month = (cutoff_local.year, cutoff_local.month)
+        positions = [
+            position for position, timestamp in enumerate(indexed)
+            if timestamp is not None
+            and (timestamp.astimezone(_market_timezone(market)).year, timestamp.astimezone(_market_timezone(market)).month) < cutoff_month
+        ]
+    else:
+        positions = [
+            position for position, timestamp in enumerate(indexed)
+            if timestamp is not None and timestamp <= visible_as_of
+        ]
+    return frame.iloc[positions], observed_at, visible_as_of
+
+
+def _market_source_realtime(source: Any, market: str) -> bool:
+    """Verify upstream real-time entitlement without treating it as user access."""
+    if market != "美股" or not bool(getattr(source, "supports_realtime", False)):
+        return False
+    upstream = _upstream_market_status()
+    return bool(
+        upstream["connected"]
+        and upstream["configuration_allows_realtime"]
+        and upstream["equity_realtime_entitled"]
+    )
+
+
+def _merge_delayed_current_daily_bar(
+    frame: Any,
+    intraday: Any,
+    *,
+    market: str,
+    visible_as_of: datetime,
+) -> tuple[Any, datetime | None]:
+    """Replace an in-progress daily bar with minute data capped at delivery time."""
+    if intraday.empty:
+        return frame, None
+    timezone = _market_timezone(market)
+    current_day = visible_as_of.astimezone(timezone).date()
+    entries = [
+        (position, _market_datetime(index, market))
+        for position, index in enumerate(intraday.index)
+    ]
+    positions = [
+        position for position, timestamp in entries
+        if timestamp is not None and timestamp.astimezone(timezone).date() == current_day
+    ]
+    if not positions:
+        return frame, None
+    session = intraday.iloc[positions]
+    required = {"Open", "High", "Low", "Close", "Volume"}
+    if not required.issubset(session.columns):
+        return frame, None
+    day_start = pd.Timestamp(datetime(
+        current_day.year, current_day.month, current_day.day, tzinfo=timezone
+    ))
+    frame_timezone = getattr(frame.index, "tz", None)
+    if frame_timezone is not None:
+        day_start = day_start.tz_convert(frame_timezone)
+    else:
+        day_start = day_start.tz_localize(None)
+    existing_positions = [
+        position for position, index in enumerate(frame.index)
+        if (timestamp := _market_datetime(index, market)) is not None
+        and timestamp.astimezone(timezone).date() == current_day
+    ]
+    base = frame.drop(frame.index[existing_positions]) if existing_positions else frame
+    aggregate = pd.DataFrame(
+        [{
+            "Open": float(session["Open"].iloc[0]),
+            "High": float(session["High"].max()),
+            "Low": float(session["Low"].min()),
+            "Close": float(session["Close"].iloc[-1]),
+            "Volume": float(session["Volume"].sum()),
+        }],
+        index=pd.DatetimeIndex([day_start]),
+    )
+    observed_at = max(
+        (timestamp for _, timestamp in entries if timestamp is not None),
+        default=None,
+    )
+    return pd.concat([base, aggregate]).sort_index(), observed_at
+
+
+async def _delayed_daily_frame(
+    frame: Any,
+    *,
+    source: Any,
+    symbol: str,
+    market: str,
+    delivery_delay_minutes: int,
+) -> tuple[Any, datetime | None, datetime, bool]:
+    """Build a current daily candle from capped minute bars when available."""
+    visible_as_of = _visible_as_of(delivery_delay_minutes)
+    try:
+        intraday = await run_in_threadpool(source.bars, symbol, "5d", "1m")
+        intraday, intraday_observed, visible_as_of = await run_in_threadpool(
+            _clip_market_frame_for_delivery,
+            intraday,
+            market=market,
+            timeframe="1分",
+            delivery_delay_minutes=delivery_delay_minutes,
+        )
+    except (AttributeError, DataSourceError, TypeError, ValueError):
+        return frame, None, visible_as_of, False
+    merged, merged_observed = await run_in_threadpool(
+        _merge_delayed_current_daily_bar,
+        frame,
+        intraday,
+        market=market,
+        visible_as_of=visible_as_of,
+    )
+    return merged, merged_observed or intraday_observed, visible_as_of, merged_observed is not None
+
+
+def _final_market_status(
+    status: dict[str, object],
+    *,
+    delivery_delay_minutes: int,
+    provider_realtime: bool,
+    visible_as_of: datetime,
+    observed_at: datetime | None,
+) -> dict[str, object]:
+    """Apply the membership delivery boundary to an upstream status object."""
+    delay = max(0, int(delivery_delay_minutes))
+    realtime = bool(provider_realtime and delay == 0)
+    result = dict(status)
+    result.update({
+        "delivery_delay_minutes": delay,
+        "visible_as_of": visible_as_of.isoformat(),
+        "observed_at": observed_at.isoformat() if observed_at is not None else None,
+        "provider_realtime": bool(provider_realtime),
+        "is_realtime": realtime,
+    })
+    if delay:
+        result["freshness"] = f"延迟 {delay} 分钟"
+        result["detail"] = "会员数据延迟已生效"
+    return result
+
+
+def _upstream_market_status() -> dict[str, object]:
+    """Probe upstream quote health once per short process-local TTL window."""
+    global _MARKET_STATUS_CACHE
+    now = time.monotonic()
+    with _MARKET_STATUS_LOCK:
+        if _MARKET_STATUS_CACHE is not None and now - _MARKET_STATUS_CACHE[0] < _MARKET_STATUS_TTL_SECONDS:
+            return dict(_MARKET_STATUS_CACHE[1])
+    status: dict[str, object] = {
+        "connected": False,
+        "equity_realtime_entitled": False,
+        "option_realtime_entitled": False,
+        "configuration_allows_realtime": _enabled("MARKET_DATA_REALTIME"),
+    }
+    try:
+        adapter = OpenDAdapter()
+        status["connected"] = bool(adapter.available())
+        if status["connected"]:
+            rights = adapter.quote_rights()
+            status["equity_realtime_entitled"] = bool(rights.get("us_realtime_entitlement"))
+            status["option_realtime_entitled"] = bool(rights.get("us_option_realtime_entitlement"))
+    except Exception:
+        # This is a status probe only.  Any unexpected adapter failure must
+        # degrade to unavailable rather than make an authenticated dashboard
+        # request fail open or disclose upstream implementation details.
+        pass
+    with _MARKET_STATUS_LOCK:
+        _MARKET_STATUS_CACHE = (now, dict(status))
+    return status
 
 
 def _market_bars_with_fallback(
@@ -680,6 +929,71 @@ def _market_bars_with_fallback(
             raise
         fallback = get_resilient_data_source("yfinance")
         return fallback.bars(symbol, period, interval), fallback, str(getattr(source, "name", "市场数据"))
+
+
+async def _delayed_market_quote(
+    symbol: str,
+    *,
+    market: str,
+    delivery_delay_minutes: int,
+) -> JSONResponse:
+    """Construct a delayed quote from bars, never from a current snapshot."""
+    try:
+        frame, source, fallback_from = await run_in_threadpool(
+            _market_bars_with_fallback, symbol, market, "5d", "1m"
+        )
+        visible, observed_at, visible_as_of = await run_in_threadpool(
+            _clip_market_frame_for_delivery,
+            frame,
+            market=market,
+            timeframe="1分",
+            delivery_delay_minutes=delivery_delay_minutes,
+        )
+    except DataSourceError as exc:
+        return _opend_quote_unavailable(
+            symbol,
+            str(exc),
+            source="市场数据",
+            delivery_delay_minutes=delivery_delay_minutes,
+        )
+    required = {"Open", "High", "Low", "Close", "Volume"}
+    if visible.empty or not required.issubset(visible.columns):
+        return _opend_quote_unavailable(
+            symbol,
+            "延迟窗口内没有可用研究报价。",
+            source="市场数据",
+            delivery_delay_minutes=delivery_delay_minutes,
+            visible_as_of=visible_as_of,
+            observed_at=observed_at,
+        )
+    row = visible.iloc[-1]
+    quote_at = _iso_market_datetime(visible.index[-1], market)
+    return JSONResponse({
+        "symbol": symbol,
+        "last": float(row["Close"]),
+        "bid": None,
+        "ask": None,
+        "spread": None,
+        "open": float(row["Open"]),
+        "high": float(row["High"]),
+        "low": float(row["Low"]),
+        "prev_close": None,
+        "volume": float(row["Volume"]),
+        "quote_at": quote_at,
+        "source": str(getattr(source, "name", "市场数据")),
+        "is_realtime": False,
+        "provider_realtime": False,
+        "actionable_quote": False,
+        "freshness": f"延迟 {delivery_delay_minutes} 分钟的研究报价",
+        "verification": "plan_delayed_market_data",
+        "configuration_allows_realtime": _enabled("MARKET_DATA_REALTIME"),
+        "delivery_delay_minutes": delivery_delay_minutes,
+        "visible_as_of": visible_as_of.isoformat(),
+        "observed_at": observed_at.isoformat() if observed_at is not None else None,
+        "request_succeeded": True,
+        "fallback_from": fallback_from,
+        "status": "available",
+    })
 
 
 def _prune_market_search_state_locked(now: float) -> None:
@@ -848,7 +1162,15 @@ def _opend_unavailable(message: str, **context: Any) -> JSONResponse:
     )
 
 
-def _opend_quote_unavailable(symbol: str, message: str, source: str = "OpenD") -> JSONResponse:
+def _opend_quote_unavailable(
+    symbol: str,
+    message: str,
+    source: str = "OpenD",
+    *,
+    delivery_delay_minutes: int = 0,
+    visible_as_of: datetime | None = None,
+    observed_at: datetime | None = None,
+) -> JSONResponse:
     """Expose a complete, non-actionable shape when no research quote succeeds."""
     return JSONResponse({
         "symbol": symbol,
@@ -868,6 +1190,10 @@ def _opend_quote_unavailable(symbol: str, message: str, source: str = "OpenD") -
         "freshness": "无可用研究报价",
         "verification": "request_failed",
         "configuration_allows_realtime": bool(os.getenv("MARKET_DATA_REALTIME", "").strip().lower() in {"1", "true", "yes", "on"}),
+        "delivery_delay_minutes": max(0, int(delivery_delay_minutes)),
+        "visible_as_of": (visible_as_of or _visible_as_of(delivery_delay_minutes)).isoformat(),
+        "observed_at": observed_at.isoformat() if observed_at is not None else None,
+        "provider_realtime": False,
         "request_succeeded": False,
         "status": "unavailable",
         "error": message,
@@ -893,24 +1219,56 @@ def _resample_market_bars(frame: Any, rule: str | None) -> Any:
 
 
 async def market_candles(request: Request) -> JSONResponse:
-    _identity(request)
+    identity = _identity(request)
     symbol = _market_symbol(request)
     timeframe = request.query_params.get("timeframe", "日线")
     if timeframe not in MARKET_TIMEFRAMES:
         raise ApiError("K线周期无效。")
     period, interval, resample_rule = MARKET_TIMEFRAMES[timeframe]
     market_name = "A股" if symbol.isdigit() else "美股"
+    delivery_delay_minutes = web_market_data_visibility(
+        identity.effective_plan, "stock"
+    )["delivery_delay_minutes"]
     try:
         frame, source, fallback_from = await run_in_threadpool(
             _market_bars_with_fallback, symbol, market_name, period, interval
         )
+        assembled_daily = False
+        delayed_daily_observed_at = None
+        if (
+            delivery_delay_minutes > 0
+            and market_name == "美股"
+            and timeframe in {"日线", "周线", "月线"}
+        ):
+            frame, delayed_daily_observed_at, _, assembled_daily = await _delayed_daily_frame(
+                frame,
+                source=source,
+                symbol=symbol,
+                market=market_name,
+                delivery_delay_minutes=delivery_delay_minutes,
+            )
         frame = await run_in_threadpool(_resample_market_bars, frame, resample_rule)
+        if assembled_daily:
+            # The current day has been constructed solely from bars at or
+            # before the membership cutoff.  It is safe to retain the current
+            # daily/weekly/monthly aggregate without applying a second
+            # timestamp-based coarse-period deletion.
+            observed_at = delayed_daily_observed_at
+            visible_as_of = _visible_as_of(delivery_delay_minutes)
+        else:
+            frame, observed_at, visible_as_of = await run_in_threadpool(
+                _clip_market_frame_for_delivery,
+                frame,
+                market=market_name,
+                timeframe=timeframe,
+                delivery_delay_minutes=delivery_delay_minutes,
+            )
     except DataSourceError as exc:
         raise ApiError(str(exc), 503) from exc
     items = []
     for index, row in frame.tail(600).iterrows():
-        timestamp = index.to_pydatetime() if hasattr(index, "to_pydatetime") else index
-        if not hasattr(timestamp, "timestamp"):
+        timestamp = _market_datetime(index, market_name)
+        if timestamp is None:
             continue
         time_value = int(timestamp.timestamp())
         items.append({
@@ -923,24 +1281,42 @@ async def market_candles(request: Request) -> JSONResponse:
         })
     if not items:
         raise ApiError("行情服务没有返回可用 K 线。", 503)
+    provider_realtime = await run_in_threadpool(_market_source_realtime, source, market_name)
+    status = public_market_status(
+        market=market_name,
+        source=source,
+        request_succeeded=True,
+        realtime_verified=provider_realtime,
+        fallback_from=fallback_from,
+    )
     return JSONResponse({
         "symbol": symbol,
         "timeframe": timeframe,
         "items": items,
-        "status": public_market_status(
-            market=market_name,
-            source=source,
-            request_succeeded=True,
-            realtime_verified=False,
-            fallback_from=fallback_from,
+        "status": _final_market_status(
+            status,
+            delivery_delay_minutes=delivery_delay_minutes,
+            provider_realtime=provider_realtime,
+            visible_as_of=visible_as_of,
+            observed_at=observed_at,
         ),
     })
 
 
 async def market_quote(request: Request) -> JSONResponse:
     """Return a US quote with a truthful delayed-research fallback."""
-    _identity(request)
+    identity = _identity(request)
     symbol = _equity_quote_symbol(request)
+    market_name = "A股" if symbol.isdigit() else "美股"
+    delivery_delay_minutes = web_market_data_visibility(
+        identity.effective_plan, "stock"
+    )["delivery_delay_minutes"]
+    if delivery_delay_minutes:
+        return await _delayed_market_quote(
+            symbol,
+            market=market_name,
+            delivery_delay_minutes=delivery_delay_minutes,
+        )
     if symbol.isdigit():
         try:
             primary = get_resilient_data_source("akshare")
@@ -954,27 +1330,40 @@ async def market_quote(request: Request) -> JSONResponse:
                     symbol,
                     f"AKShare 研究报价失败：{exc}；Yahoo Finance 回退失败：{fallback_exc}",
                     source="AKShare",
+                    delivery_delay_minutes=delivery_delay_minutes,
                 )
+            quote_at = _iso_market_datetime(quote.get("quote_at"), market_name)
             return JSONResponse({
                 "symbol": symbol,
                 **quote,
+                "quote_at": quote_at,
                 "is_realtime": False,
+                "provider_realtime": False,
                 "actionable_quote": False,
                 "freshness": str(quote.get("freshness") or "约 15 分钟延迟的研究报价"),
                 "verification": str(quote.get("verification") or "delayed_research_quote"),
                 "configuration_allows_realtime": False,
+                "delivery_delay_minutes": delivery_delay_minutes,
+                "visible_as_of": _visible_as_of(delivery_delay_minutes).isoformat(),
+                "observed_at": quote_at,
                 "request_succeeded": True,
                 "fallback_from": "AKShare",
                 "status": "available",
             })
+        quote_at = _iso_market_datetime(quote.get("quote_at"), market_name)
         return JSONResponse({
             "symbol": symbol,
             **quote,
+            "quote_at": quote_at,
             "is_realtime": False,
+            "provider_realtime": False,
             "actionable_quote": False,
             "freshness": str(quote.get("freshness") or "A 股免费研究报价；实时等级未验证"),
             "verification": str(quote.get("verification") or "delayed_research_quote"),
             "configuration_allows_realtime": False,
+            "delivery_delay_minutes": delivery_delay_minutes,
+            "visible_as_of": _visible_as_of(delivery_delay_minutes).isoformat(),
+            "observed_at": quote_at,
             "request_succeeded": True,
             "status": "available",
         })
@@ -986,15 +1375,25 @@ async def market_quote(request: Request) -> JSONResponse:
             fallback = get_resilient_data_source("yfinance")
             quote = await run_in_threadpool(fallback.stock_quote, symbol)
         except DataSourceError as fallback_exc:
-            return _opend_quote_unavailable(symbol, f"{opend_error}；Yahoo Finance 回退失败：{fallback_exc}")
+            return _opend_quote_unavailable(
+                symbol,
+                f"{opend_error}；Yahoo Finance 回退失败：{fallback_exc}",
+                delivery_delay_minutes=delivery_delay_minutes,
+            )
+        quote_at = _iso_market_datetime(quote.get("quote_at"), market_name)
         return JSONResponse({
             "symbol": symbol,
             **quote,
+            "quote_at": quote_at,
             "is_realtime": False,
+            "provider_realtime": False,
             "actionable_quote": False,
             "freshness": str(quote.get("freshness") or "约 15 分钟延迟的研究报价"),
             "verification": str(quote.get("verification") or "delayed_research_quote"),
             "configuration_allows_realtime": bool(os.getenv("MARKET_DATA_REALTIME", "").strip().lower() in {"1", "true", "yes", "on"}),
+            "delivery_delay_minutes": delivery_delay_minutes,
+            "visible_as_of": _visible_as_of(delivery_delay_minutes).isoformat(),
+            "observed_at": quote_at,
             "request_succeeded": True,
             "fallback_from": "OpenD",
             "status": "available",
@@ -1013,16 +1412,49 @@ async def market_quote(request: Request) -> JSONResponse:
         freshness = f"OpenD 快照 · 美股权限 {qot_right}，仅供研究"
     else:
         freshness = "OpenD 快照已返回；实时等级未验证"
+    quote_at = _iso_market_datetime(quote.get("quote_at"), market_name)
     return JSONResponse({
         "symbol": symbol,
         **quote,
+        "quote_at": quote_at,
         "is_realtime": realtime_verified,
+        "provider_realtime": realtime_verified,
         "actionable_quote": actionable_quote,
         "freshness": freshness,
         "verification": f"opend_qot_right_{qot_right.lower()}" if right_verified else "opend_snapshot_realtime_unverified",
         "configuration_allows_realtime": configured_realtime,
+        "delivery_delay_minutes": delivery_delay_minutes,
+        "visible_as_of": _visible_as_of(delivery_delay_minutes).isoformat(),
+        "observed_at": quote_at,
         "request_succeeded": True,
         "status": "available",
+    })
+
+
+async def market_status(request: Request) -> JSONResponse:
+    """Return the authenticated, vendor-neutral website data boundary."""
+    identity = _identity(request)
+    visibility = web_market_data_visibility(identity.effective_plan, "stock")
+    upstream = await run_in_threadpool(_upstream_market_status)
+    provider_realtime = bool(
+        upstream["connected"]
+        and upstream["configuration_allows_realtime"]
+        and upstream["equity_realtime_entitled"]
+    )
+    delay = visibility["delivery_delay_minutes"]
+    now = datetime.now(UTC)
+    return JSONResponse({
+        "status": "available" if upstream["connected"] else "unavailable",
+        "upstream_connected": bool(upstream["connected"]),
+        "provider_realtime": provider_realtime,
+        "configuration_allows_realtime": bool(upstream["configuration_allows_realtime"]),
+        "equity_realtime_entitled": bool(upstream["equity_realtime_entitled"]),
+        "option_realtime_entitled": bool(upstream["option_realtime_entitled"]),
+        "delivery_delay_minutes": delay,
+        "is_realtime": provider_realtime and delay == 0,
+        "visible_as_of": _visible_as_of(delay, now).isoformat(),
+        "observed_at": now.isoformat(),
+        "refresh_after_seconds": int(_MARKET_STATUS_TTL_SECONDS),
     })
 
 
@@ -1474,6 +1906,7 @@ routes = [
     Route("/api/rewrite/v1/portfolio", portfolio, methods=["GET"]),
     Route("/api/rewrite/v1/market/candles", market_candles, methods=["GET"]),
     Route("/api/rewrite/v1/market/quote", market_quote, methods=["GET"]),
+    Route("/api/rewrite/v1/market/status", market_status, methods=["GET"]),
     Route("/api/rewrite/v1/options/chain", options_chain, methods=["GET"]),
     Route("/api/rewrite/v1/options/candles", option_candles, methods=["GET"]),
     Route("/api/rewrite/v1/market/search", market_search, methods=["GET"]),

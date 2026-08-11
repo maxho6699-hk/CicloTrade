@@ -128,6 +128,38 @@ def telegram_timeline_limits(plan: str) -> dict[str, int]:
     )
 
 
+def web_market_data_visibility(plan: str, instrument_type: str = "stock") -> dict[str, int]:
+    """Return the customer-visible website market-data delay.
+
+    This intentionally does *not* reuse ``telegram_timeline_limits``.  Telegram
+    recommendation release delays are a distribution policy, whereas this
+    contract controls the data values returned by the website API.  Keeping the
+    two policies separate prevents a change to one channel from accidentally
+    exposing a different channel's data early.
+    """
+    level = str(plan) if str(plan) in PLANS else "免费版"
+    kind = str(instrument_type).strip().lower()
+    if kind not in {"stock", "option"}:
+        raise ValueError("instrument_type must be stock or option")
+    delays = {
+        "stock": {
+            "免费版": 15,
+            "标准版": 15,
+            "高级版": 0,
+            "专业版": 0,
+            "定制版": 0,
+        },
+        "option": {
+            "免费版": 15,
+            "标准版": 15,
+            "高级版": 15,
+            "专业版": 0,
+            "定制版": 0,
+        },
+    }
+    return {"delivery_delay_minutes": delays[kind][level]}
+
+
 def trading_limits(plan: str) -> dict[str, Any]:
     """Return execution safety caps and the plan's authorized account capacity.
 
