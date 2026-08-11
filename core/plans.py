@@ -152,7 +152,7 @@ def web_market_data_visibility(plan: str, instrument_type: str = "stock") -> dic
         "option": {
             "免费版": 15,
             "标准版": 15,
-            "高级版": 15,
+            "高级版": 0,
             "专业版": 0,
             "定制版": 0,
         },

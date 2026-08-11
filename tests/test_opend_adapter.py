@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import pandas as pd
 import pytest
 
+from core.compat import UTC
 from data.datasource import DataSourceError
 from data.opend_adapter import OpenDAdapter
 from data.opend_control import OpenDStatus
 
 
 class OpenD:
+    update_time = "2026-08-07 16:00:00"
+
     def close(self):
         pass
 
@@ -47,7 +52,7 @@ class OpenD:
 
         return RET_OK, pd.DataFrame(
             {
-                "code": codes, "update_time": ["2026-08-07 16:00:00"] * len(codes),
+                "code": codes, "update_time": [self.update_time] * len(codes),
                 "last_price": [5.2] * len(codes), "bid_price": [5.1] * len(codes),
                 "ask_price": [5.3] * len(codes), "volume": [100] * len(codes),
                 "option_open_interest": [500] * len(codes), "option_implied_volatility": [0.31] * len(codes),
@@ -81,6 +86,9 @@ def test_opend_stock_quote_uses_runtime_entitlements_not_environment_claims(monk
     monkeypatch.setenv("MARKET_DATA_ENABLED", "true")
     adapter = OpenDAdapter()
     monkeypatch.setattr(adapter, "_context", lambda: OpenD())
+    monkeypatch.setattr(
+        adapter, "_utc_now", lambda: datetime(2026, 8, 7, 20, 4, tzinfo=UTC), raising=False
+    )
 
     quote = adapter.stock_quote("AAPL")
 
@@ -90,6 +98,37 @@ def test_opend_stock_quote_uses_runtime_entitlements_not_environment_claims(monk
     assert quote["us_option_realtime_entitlement"] is True
     assert quote["actionable_snapshot"] is True
     assert quote["quote_at"] == "2026-08-07T16:00:00-04:00"
+
+
+def test_opend_unparseable_quote_timestamp_fails_closed():
+    assert OpenDAdapter._us_market_timestamp("not-a-time") is None
+
+
+@pytest.mark.parametrize(
+    ("update_time", "expected_actionable"),
+    (
+        ("2026-08-07 15:56:00", True),
+        ("2026-08-07 15:54:59", False),
+        ("2026-08-07 16:00:01", True),
+        ("2026-08-07 16:01:01", False),
+        ("not-a-time", False),
+    ),
+)
+def test_opend_actionable_snapshot_allows_only_parseable_recent_time_with_60s_clock_skew(
+    monkeypatch, update_time, expected_actionable
+):
+    monkeypatch.setenv("MARKET_DATA_ENABLED", "true")
+    context = OpenD()
+    context.update_time = update_time
+    adapter = OpenDAdapter()
+    monkeypatch.setattr(adapter, "_context", lambda: context)
+    monkeypatch.setattr(
+        adapter, "_utc_now", lambda: datetime(2026, 8, 7, 20, 0, tzinfo=UTC), raising=False
+    )
+
+    quote = adapter.stock_quote("AAPL")
+
+    assert quote["actionable_snapshot"] is expected_actionable
 
 
 def test_opend_naive_us_bars_are_localized_to_the_exchange_timezone(monkeypatch):

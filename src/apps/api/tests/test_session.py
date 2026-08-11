@@ -1,8 +1,10 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 import importlib
 import json
 from http.cookies import SimpleCookie
+import threading
 from urllib.parse import urlencode
 
 import pandas as pd
@@ -848,6 +850,51 @@ def test_authenticated_market_candles_resample_real_hour_bars(browser_api, monke
     }
 
 
+@pytest.mark.parametrize(
+    ("timeframe", "period", "interval", "safe_start"),
+    (
+        ("5分", "5d", "5m", "17:40:00"),
+        ("10分", "1mo", "5m", "17:40:00"),
+        ("15分", "1mo", "15m", "17:30:00"),
+        ("30分", "1mo", "30m", "17:15:00"),
+        ("1小时", "3mo", "60m", "16:45:00"),
+    ),
+)
+def test_delayed_resampling_clips_native_bars_by_end_before_aggregation(
+    browser_api, monkeypatch, timeframe, period, interval, safe_start
+):
+    api_module = importlib.import_module("src.apps.api.app")
+    cutoff = datetime(2026, 8, 12, 17, 45, tzinfo=UTC)
+
+    class NativeBars:
+        name = "Research Feed"
+        supports_realtime = False
+        delay_minutes = None
+
+        def bars(self, symbol, requested_period, requested_interval):
+            assert (symbol, requested_period, requested_interval) == ("AAPL", period, interval)
+            return pd.DataFrame(
+                [
+                    {"Open": 100, "High": 102, "Low": 99, "Close": 101, "Volume": 10},
+                    {"Open": 101, "High": 999, "Low": 98, "Close": 999, "Volume": 20},
+                ],
+                index=pd.to_datetime([
+                    f"2026-08-12T{safe_start}Z", "2026-08-12T17:45:00Z",
+                ]),
+            )
+
+    monkeypatch.setattr(api_module, "get_resilient_data_source", lambda *_args: NativeBars())
+    monkeypatch.setattr(api_module, "_visible_as_of", lambda _delay, _now=None: cutoff)
+    payload = _payload(asyncio.run(market_candles(_request(
+        "/api/rewrite/v1/market/candles", authorization=f"Bearer {_login_token()}",
+        query={"symbol": "AAPL", "timeframe": timeframe},
+    ))))
+
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["high"] == 102.0
+    assert payload["items"][0]["close"] == 101.0
+
+
 def test_market_candles_a_share_prefers_akshare_and_reports_actual_source(browser_api, monkeypatch):
     access_token = _login_token()
     calls: list[str | None] = []
@@ -856,6 +903,8 @@ def test_market_candles_a_share_prefers_akshare_and_reports_actual_source(browse
         name = "AKShare"
 
         def bars(self, symbol, period, interval):
+            if (symbol, period, interval) == ("600519", "5d", "1m"):
+                return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
             assert (symbol, period, interval) == ("600519", "6mo", "1d")
             return pd.DataFrame(
                 [{"Open": 1500, "High": 1510, "Low": 1490, "Close": 1505, "Volume": 20}],
@@ -1016,7 +1065,11 @@ def test_free_market_quote_is_built_from_bars_before_the_website_delay_cutoff(br
 
     monkeypatch.setattr(api_module, "OpenDAdapter", UnexpectedOpenD)
     monkeypatch.setattr(api_module, "get_resilient_data_source", lambda *_args: MinuteBars())
-    monkeypatch.setattr(api_module, "_visible_as_of", lambda _delay, _now=None: cutoff)
+    def member_cutoff(delay, _now=None):
+        assert delay == 15
+        return cutoff
+
+    monkeypatch.setattr(api_module, "_visible_as_of", member_cutoff)
     response = asyncio.run(market_quote(_request(
         "/api/rewrite/v1/market/quote", authorization=f"Bearer {_login_token()}", query={"symbol": "AAPL"},
     )))
@@ -1108,6 +1161,51 @@ def test_delayed_coarse_candles_include_the_cutoff_capped_current_period(
     assert payload["status"]["delivery_delay_minutes"] == 15
 
 
+@pytest.mark.parametrize(("timeframe", "period"), (("日线", "6mo"), ("周线", "2y"), ("月线", "5y")))
+def test_a_share_delayed_coarse_candles_include_cutoff_capped_current_period(
+    browser_api, monkeypatch, timeframe, period
+):
+    api_module = importlib.import_module("src.apps.api.app")
+    cutoff = datetime(2026, 8, 12, 6, 0, tzinfo=UTC)
+
+    class AKShareBars:
+        name = "Research Feed"
+        supports_realtime = False
+        delay_minutes = None
+
+        def bars(self, symbol, requested_period, interval):
+            if (symbol, requested_period, interval) == ("600519", "5d", "1m"):
+                return pd.DataFrame(
+                    [
+                        {"Open": 1505, "High": 1510, "Low": 1500, "Close": 1509, "Volume": 30},
+                        {"Open": 1510, "High": 9999, "Low": 1490, "Close": 9999, "Volume": 40},
+                    ],
+                    index=pd.to_datetime(["2026-08-12 13:44:00", "2026-08-12 14:01:00"]),
+                )
+            assert (symbol, requested_period, interval) == ("600519", period, "1d")
+            return pd.DataFrame(
+                [
+                    {"Open": 1400, "High": 1410, "Low": 1390, "Close": 1405, "Volume": 10},
+                    {"Open": 1500, "High": 9999, "Low": 1490, "Close": 9999, "Volume": 20},
+                ],
+                index=pd.to_datetime(["2026-08-03", "2026-08-12"]),
+            )
+
+    calls = []
+    monkeypatch.setattr(
+        api_module, "get_resilient_data_source", lambda name=None: calls.append(name) or AKShareBars()
+    )
+    monkeypatch.setattr(api_module, "_visible_as_of", lambda _delay, _now=None: cutoff)
+    payload = _payload(asyncio.run(market_candles(_request(
+        "/api/rewrite/v1/market/candles", authorization=f"Bearer {_login_token()}",
+        query={"symbol": "600519", "timeframe": timeframe},
+    ))))
+
+    assert calls == ["akshare"]
+    assert payload["items"][-1]["close"] == 1509.0
+    assert payload["items"][-1]["high"] < 9999
+
+
 def test_market_status_is_vendor_neutral_cached_and_applies_the_member_boundary(browser_api, monkeypatch):
     api_module = importlib.import_module("src.apps.api.app")
     calls = {"available": 0, "rights": 0}
@@ -1161,6 +1259,40 @@ def test_market_status_fails_closed_when_the_upstream_probe_is_unavailable(brows
     assert payload["provider_realtime"] is False
     assert payload["is_realtime"] is False
     assert payload["delivery_delay_minutes"] == 15
+
+
+def test_market_status_cold_cache_is_single_flight_across_concurrent_requests(browser_api, monkeypatch):
+    api_module = importlib.import_module("src.apps.api.app")
+    entered = threading.Event()
+    release = threading.Event()
+    calls = 0
+    calls_lock = threading.Lock()
+
+    class SlowOpenD:
+        def available(self):
+            nonlocal calls
+            with calls_lock:
+                calls += 1
+            entered.set()
+            release.wait(timeout=2)
+            return True
+
+        def quote_rights(self):
+            return {
+                "us_realtime_entitlement": True,
+                "us_option_realtime_entitlement": True,
+            }
+
+    monkeypatch.setattr(api_module, "OpenDAdapter", SlowOpenD)
+    monkeypatch.setattr(api_module, "_MARKET_STATUS_CACHE", None)
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = [executor.submit(api_module._upstream_market_status) for _ in range(6)]
+        assert entered.wait(timeout=1)
+        release.set()
+        results = [future.result(timeout=2) for future in futures]
+
+    assert calls == 1
+    assert all(result["connected"] is True for result in results)
 
 
 def test_market_quote_uses_akshare_research_quote_for_a_shares_and_yahoo_for_us_fallback(browser_api, monkeypatch):

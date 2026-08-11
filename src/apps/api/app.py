@@ -665,6 +665,15 @@ _MARKET_STATUS_TTL_SECONDS = 8.0
 _MARKET_STATUS_LOCK = threading.Lock()
 _MARKET_STATUS_CACHE: tuple[float, dict[str, object]] | None = None
 _MARKET_TIMEZONES = {"美股": ZoneInfo("America/New_York"), "A股": ZoneInfo("Asia/Shanghai")}
+_MARKET_BAR_DURATIONS = {
+    "1m": timedelta(minutes=1),
+    "5m": timedelta(minutes=5),
+    "15m": timedelta(minutes=15),
+    "30m": timedelta(minutes=30),
+    "60m": timedelta(minutes=60),
+    "1h": timedelta(minutes=60),
+    "1d": timedelta(days=1),
+}
 
 
 def _is_yahoo_source(source: Any) -> bool:
@@ -714,47 +723,37 @@ def _frame_observed_at(frame: Any, market: str) -> datetime | None:
     return max((value for value in observed if value is not None), default=None)
 
 
+def _market_bar_end(timestamp: datetime, market: str, interval: str) -> datetime:
+    if interval == "1d":
+        timezone = _market_timezone(market)
+        local_day = timestamp.astimezone(timezone).date() + timedelta(days=1)
+        return datetime(
+            local_day.year, local_day.month, local_day.day, tzinfo=timezone
+        ).astimezone(UTC)
+    duration = _MARKET_BAR_DURATIONS.get(interval)
+    if duration is None:
+        raise ApiError("行情服务返回了不支持的原生 K 线周期。", 503)
+    return timestamp + duration
+
+
 def _clip_market_frame_for_delivery(
     frame: Any,
     *,
     market: str,
-    timeframe: str,
+    interval: str,
     delivery_delay_minutes: int,
     now: datetime | None = None,
 ) -> tuple[Any, datetime | None, datetime]:
-    """Return only bars a member may see under the website-delay contract."""
+    """Clip provider-native bars by their end before any aggregation."""
     visible_as_of = _visible_as_of(delivery_delay_minutes, now)
     observed_at = _frame_observed_at(frame, market)
     if delivery_delay_minutes <= 0:
         return frame, observed_at, visible_as_of
-
     indexed = [_market_datetime(index, market) for index in frame.index]
-    if timeframe == "日线":
-        cutoff_day = visible_as_of.astimezone(_market_timezone(market)).date()
-        positions = [
-            position for position, timestamp in enumerate(indexed)
-            if timestamp is not None and timestamp.astimezone(_market_timezone(market)).date() < cutoff_day
-        ]
-    elif timeframe == "周线":
-        cutoff_local = visible_as_of.astimezone(_market_timezone(market))
-        cutoff_week = cutoff_local.isocalendar()[:2]
-        positions = [
-            position for position, timestamp in enumerate(indexed)
-            if timestamp is not None and timestamp.astimezone(_market_timezone(market)).isocalendar()[:2] < cutoff_week
-        ]
-    elif timeframe == "月线":
-        cutoff_local = visible_as_of.astimezone(_market_timezone(market))
-        cutoff_month = (cutoff_local.year, cutoff_local.month)
-        positions = [
-            position for position, timestamp in enumerate(indexed)
-            if timestamp is not None
-            and (timestamp.astimezone(_market_timezone(market)).year, timestamp.astimezone(_market_timezone(market)).month) < cutoff_month
-        ]
-    else:
-        positions = [
-            position for position, timestamp in enumerate(indexed)
-            if timestamp is not None and timestamp <= visible_as_of
-        ]
+    positions = [
+        position for position, timestamp in enumerate(indexed)
+        if timestamp is not None and _market_bar_end(timestamp, market, interval) <= visible_as_of
+    ]
     return frame.iloc[positions], observed_at, visible_as_of
 
 
@@ -843,7 +842,7 @@ async def _delayed_daily_frame(
             _clip_market_frame_for_delivery,
             intraday,
             market=market,
-            timeframe="1分",
+            interval="1m",
             delivery_delay_minutes=delivery_delay_minutes,
         )
     except (AttributeError, DataSourceError, TypeError, ValueError):
@@ -884,33 +883,32 @@ def _final_market_status(
 
 
 def _upstream_market_status() -> dict[str, object]:
-    """Probe upstream quote health once per short process-local TTL window."""
+    """Probe upstream quote health with one cold-cache caller at a time."""
     global _MARKET_STATUS_CACHE
-    now = time.monotonic()
     with _MARKET_STATUS_LOCK:
+        now = time.monotonic()
         if _MARKET_STATUS_CACHE is not None and now - _MARKET_STATUS_CACHE[0] < _MARKET_STATUS_TTL_SECONDS:
             return dict(_MARKET_STATUS_CACHE[1])
-    status: dict[str, object] = {
-        "connected": False,
-        "equity_realtime_entitled": False,
-        "option_realtime_entitled": False,
-        "configuration_allows_realtime": _enabled("MARKET_DATA_REALTIME"),
-    }
-    try:
-        adapter = OpenDAdapter()
-        status["connected"] = bool(adapter.available())
-        if status["connected"]:
-            rights = adapter.quote_rights()
-            status["equity_realtime_entitled"] = bool(rights.get("us_realtime_entitlement"))
-            status["option_realtime_entitled"] = bool(rights.get("us_option_realtime_entitlement"))
-    except Exception:
-        # This is a status probe only.  Any unexpected adapter failure must
-        # degrade to unavailable rather than make an authenticated dashboard
-        # request fail open or disclose upstream implementation details.
-        pass
-    with _MARKET_STATUS_LOCK:
-        _MARKET_STATUS_CACHE = (now, dict(status))
-    return status
+        status: dict[str, object] = {
+            "connected": False,
+            "equity_realtime_entitled": False,
+            "option_realtime_entitled": False,
+            "configuration_allows_realtime": _enabled("MARKET_DATA_REALTIME"),
+        }
+        try:
+            adapter = OpenDAdapter()
+            status["connected"] = bool(adapter.available())
+            if status["connected"]:
+                rights = adapter.quote_rights()
+                status["equity_realtime_entitled"] = bool(rights.get("us_realtime_entitlement"))
+                status["option_realtime_entitled"] = bool(rights.get("us_option_realtime_entitlement"))
+        except Exception:
+            # This is a status probe only.  Any unexpected adapter failure must
+            # degrade to unavailable rather than make an authenticated dashboard
+            # request fail open or disclose upstream implementation details.
+            pass
+        _MARKET_STATUS_CACHE = (time.monotonic(), dict(status))
+        return dict(status)
 
 
 def _market_bars_with_fallback(
@@ -946,7 +944,7 @@ async def _delayed_market_quote(
             _clip_market_frame_for_delivery,
             frame,
             market=market,
-            timeframe="1分",
+            interval="1m",
             delivery_delay_minutes=delivery_delay_minutes,
         )
     except DataSourceError as exc:
@@ -1233,14 +1231,20 @@ async def market_candles(request: Request) -> JSONResponse:
         frame, source, fallback_from = await run_in_threadpool(
             _market_bars_with_fallback, symbol, market_name, period, interval
         )
+        frame, observed_at, visible_as_of = await run_in_threadpool(
+            _clip_market_frame_for_delivery,
+            frame,
+            market=market_name,
+            interval=interval,
+            delivery_delay_minutes=delivery_delay_minutes,
+        )
         assembled_daily = False
         delayed_daily_observed_at = None
         if (
             delivery_delay_minutes > 0
-            and market_name == "美股"
             and timeframe in {"日线", "周线", "月线"}
         ):
-            frame, delayed_daily_observed_at, _, assembled_daily = await _delayed_daily_frame(
+            frame, delayed_daily_observed_at, visible_as_of, assembled_daily = await _delayed_daily_frame(
                 frame,
                 source=source,
                 symbol=symbol,
@@ -1249,20 +1253,7 @@ async def market_candles(request: Request) -> JSONResponse:
             )
         frame = await run_in_threadpool(_resample_market_bars, frame, resample_rule)
         if assembled_daily:
-            # The current day has been constructed solely from bars at or
-            # before the membership cutoff.  It is safe to retain the current
-            # daily/weekly/monthly aggregate without applying a second
-            # timestamp-based coarse-period deletion.
             observed_at = delayed_daily_observed_at
-            visible_as_of = _visible_as_of(delivery_delay_minutes)
-        else:
-            frame, observed_at, visible_as_of = await run_in_threadpool(
-                _clip_market_frame_for_delivery,
-                frame,
-                market=market_name,
-                timeframe=timeframe,
-                delivery_delay_minutes=delivery_delay_minutes,
-            )
     except DataSourceError as exc:
         raise ApiError(str(exc), 503) from exc
     items = []

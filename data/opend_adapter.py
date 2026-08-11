@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from core.compat import UTC
 from data.datasource import DataSource, DataSourceError, require_market_data_enabled
 from data.opend_control import probe_opend_status
 
@@ -32,6 +33,8 @@ _PERIOD_DAYS = {
 _OPTION_CONTRACT_PATTERN = re.compile(
     r"US\.[A-Z][A-Z0-9.-]{0,11}\d{6}[CP]\d{6}"
 )
+_ACTIONABLE_QUOTE_MAX_AGE = timedelta(minutes=5)
+_ACTIONABLE_QUOTE_MAX_FUTURE_SKEW = timedelta(seconds=60)
 
 
 class OptionExpiryUnavailableError(DataSourceError):
@@ -176,18 +179,38 @@ class OpenDAdapter(DataSource):
         return text if text and text.casefold() not in {"nan", "nat", "<na>"} else None
 
     @classmethod
-    def _us_market_timestamp(cls, value: object) -> str | None:
-        """Normalize OpenD's naive US exchange timestamp to ISO-8601."""
+    def _parse_us_market_timestamp(cls, value: object) -> datetime | None:
         text = str(value or "").strip()
         if not text or text.casefold() in {"nan", "nat", "<na>"}:
             return None
         try:
             parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
         except ValueError:
-            return text
+            return None
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=cls._US_MARKET_TIMEZONE)
+        return parsed
+
+    @classmethod
+    def _us_market_timestamp(cls, value: object) -> str | None:
+        """Normalize a parseable OpenD US timestamp to offset-aware ISO-8601."""
+        parsed = cls._parse_us_market_timestamp(value)
+        if parsed is None:
+            return None
         return parsed.isoformat()
+
+    @staticmethod
+    def _utc_now() -> datetime:
+        return datetime.now(UTC)
+
+    @classmethod
+    def _quote_time_is_actionable(cls, value: object, *, now: datetime) -> bool:
+        parsed = cls._parse_us_market_timestamp(value)
+        if parsed is None:
+            return False
+        current = now if now.tzinfo is not None else now.replace(tzinfo=UTC)
+        age = current.astimezone(UTC) - parsed.astimezone(UTC)
+        return -_ACTIONABLE_QUOTE_MAX_FUTURE_SKEW <= age <= _ACTIONABLE_QUOTE_MAX_AGE
 
     @staticmethod
     def _is_realtime_right(value: object) -> bool:
@@ -254,7 +277,11 @@ class OpenDAdapter(DataSource):
         row = snapshot.iloc[0]
         bid, ask = self._snapshot_number(row, "bid_price"), self._snapshot_number(row, "ask_price")
         last = self._snapshot_number(row, "last_price")
-        quote_at = self._us_market_timestamp(self._snapshot_text(row, "update_time"))
+        raw_quote_at = self._snapshot_text(row, "update_time")
+        quote_at = self._us_market_timestamp(raw_quote_at)
+        quote_time_actionable = self._quote_time_is_actionable(
+            raw_quote_at, now=self._utc_now()
+        )
         return {
             "symbol": code.removeprefix("US."),
             "last": last,
@@ -271,7 +298,8 @@ class OpenDAdapter(DataSource):
             **rights,
             "actionable_snapshot": bool(
                 rights["us_realtime_entitlement"]
-                and last is not None and bid is not None and ask is not None and quote_at
+                and last is not None and bid is not None and ask is not None
+                and quote_time_actionable
             ),
         }
 

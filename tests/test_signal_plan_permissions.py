@@ -32,7 +32,7 @@ def test_signal_capability_matrix(plan, expected):
 
 def test_website_market_data_delay_is_independent_from_telegram_delivery_limits():
     assert [web_market_data_visibility(plan, "stock")["delivery_delay_minutes"] for plan in PLAN_ORDER] == [15, 15, 0, 0, 0]
-    assert [web_market_data_visibility(plan, "option")["delivery_delay_minutes"] for plan in PLAN_ORDER] == [15, 15, 15, 0, 0]
+    assert [web_market_data_visibility(plan, "option")["delivery_delay_minutes"] for plan in PLAN_ORDER] == [15, 15, 0, 0, 0]
     with pytest.raises(ValueError):
         web_market_data_visibility("免费版", "future")
 
