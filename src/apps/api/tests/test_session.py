@@ -1459,7 +1459,7 @@ def test_opend_stock_snapshot_normalizes_quote_fields(monkeypatch):
     )} == {
         "symbol": "AAPL", "last": 211.5, "bid": 211.4, "ask": 211.6,
         "open": 208.0, "high": 212.0, "low": 207.5, "prev_close": 209.0,
-        "volume": 1_234_567.0, "quote_at": "2026-08-11 15:59:59", "source": "OpenD",
+        "volume": 1_234_567.0, "quote_at": "2026-08-11T15:59:59-04:00", "source": "OpenD",
     }
     assert quote["spread"] == pytest.approx(0.2)
     assert quote["us_qot_right"] == "N/A" and quote["actionable_snapshot"] is False
