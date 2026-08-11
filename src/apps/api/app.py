@@ -63,11 +63,18 @@ from src.apps.api.official_option_sim_receiver import (
     official_option_sim_receiver_error,
 )
 from src.apps.api.system_cycle_receiver import (
+    SystemCycleResearchReceiver,
     SystemCycleResearchReceiverError,
     build_system_cycle_research_receiver,
     system_cycle_research_heartbeat,
     system_cycle_research_receiver_error,
     system_cycle_research_result,
+)
+from src.apps.api.system_cycle_research_read_model import (
+    DEFAULT_STALE_SECONDS,
+    MAX_STALE_SECONDS,
+    MIN_STALE_SECONDS,
+    SystemCycleResearchReadModel,
 )
 from core.backtest_queue import BacktestQueueError
 from core.database import DatabaseManager
@@ -318,6 +325,64 @@ def _bounded_int(request: Request, name: str, default: int, maximum: int) -> int
     if not 1 <= parsed <= maximum:
         raise ApiError(f"{name} 必须介于 1 与 {maximum}。")
     return parsed
+
+
+def _system_cycle_research_stale_seconds() -> int:
+    """Keep a malformed environment value from weakening browser API startup."""
+    raw = os.getenv("TRADEAI_SYSTEM_CYCLE_RESEARCH_STALE_SECONDS", str(DEFAULT_STALE_SECONDS))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_STALE_SECONDS
+    return min(MAX_STALE_SECONDS, max(MIN_STALE_SECONDS, value))
+
+
+def _system_cycle_research_read_model(request: Request) -> SystemCycleResearchReadModel | None:
+    receiver = getattr(request.app.state, "system_cycle_research_receiver", None)
+    if not isinstance(receiver, SystemCycleResearchReceiver) or not receiver.enabled:
+        return None
+    return SystemCycleResearchReadModel(
+        receiver.store,
+        stale_seconds=_system_cycle_research_stale_seconds(),
+    )
+
+
+def _system_cycle_research_headers() -> dict[str, str]:
+    return {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+
+
+async def system_cycle_research_status(request: Request) -> JSONResponse:
+    _identity(request)
+    model = _system_cycle_research_read_model(request)
+    payload = (
+        await run_in_threadpool(model.status)
+        if model is not None
+        else SystemCycleResearchReadModel.unavailable_status()
+    )
+    return JSONResponse(payload, headers=_system_cycle_research_headers())
+
+
+async def system_cycle_research_latest(request: Request) -> JSONResponse:
+    _identity(request)
+    model = _system_cycle_research_read_model(request)
+    payload = (
+        await run_in_threadpool(model.latest)
+        if model is not None
+        else SystemCycleResearchReadModel.unavailable_latest()
+    )
+    return JSONResponse(payload, headers=_system_cycle_research_headers())
+
+
+async def system_cycle_research_history(request: Request) -> JSONResponse:
+    _identity(request)
+    limit = _bounded_int(request, "limit", 20, 100)
+    model = _system_cycle_research_read_model(request)
+    payload = (
+        await run_in_threadpool(model.history, limit)
+        if model is not None
+        else SystemCycleResearchReadModel.unavailable_history(limit)
+    )
+    return JSONResponse(payload, headers=_system_cycle_research_headers())
 
 
 async def health(request: Request | None) -> JSONResponse:
@@ -1915,6 +1980,9 @@ routes = [
     Route("/api/rewrite/v1/earnings-forecasts/{event_id:str}/options/{option_id:str}", earnings_option_detail, methods=["GET"]),
     Route("/api/rewrite/v1/official-option-simulation", official_option_sim_overview, methods=["GET"]),
     Route("/api/rewrite/v1/official-option-simulation/{position_id:str}", official_option_sim_detail, methods=["GET"]),
+    Route("/api/rewrite/v1/system-cycle-research/status", system_cycle_research_status, methods=["GET"]),
+    Route("/api/rewrite/v1/system-cycle-research/latest", system_cycle_research_latest, methods=["GET"]),
+    Route("/api/rewrite/v1/system-cycle-research/history", system_cycle_research_history, methods=["GET"]),
     Route("/api/rewrite/internal/v1/official-option-simulation/receipts", official_option_sim_receipt, methods=["POST"]),
     Route("/api/rewrite/internal/v1/system-cycle-research/results", system_cycle_research_result, methods=["POST"]),
     Route("/api/rewrite/internal/v1/system-cycle-research/heartbeat", system_cycle_research_heartbeat, methods=["POST"]),

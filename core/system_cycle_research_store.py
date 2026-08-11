@@ -166,6 +166,38 @@ class SystemCycleResearchStore:
             row["payload"] = json.loads(row.pop("payload_json"))
         return row
 
+    def research_read_snapshot(self, limit: int) -> dict[str, Any]:
+        """Read the public research projection from one short SQLite snapshot.
+
+        This deliberately returns stored JSON rather than interpreting it here: the
+        API projection owns redaction, while this ledger remains append-only.
+        """
+        if not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("research history limit must be between 1 and 100")
+        with self.database.transaction() as connection:
+            latest = connection.execute(
+                """SELECT * FROM system_cycle_research_receipts
+                   ORDER BY json_extract(payload_json, '$.evaluated_at') DESC,
+                            received_at DESC, receipt_key DESC
+                   LIMIT 1"""
+            ).fetchone()
+            history = connection.execute(
+                """SELECT * FROM system_cycle_research_receipts
+                   ORDER BY json_extract(payload_json, '$.evaluated_at') DESC,
+                            received_at DESC, receipt_key DESC
+                   LIMIT ?""",
+                (limit,),
+            ).fetchall()
+            heartbeat = connection.execute(
+                """SELECT * FROM system_cycle_research_heartbeats
+                   ORDER BY heartbeat_at DESC, received_at DESC, heartbeat_key DESC LIMIT 1"""
+            ).fetchone()
+        return {
+            "latest": dict(latest) if latest else None,
+            "history": [dict(row) for row in history],
+            "heartbeat": dict(heartbeat) if heartbeat else None,
+        }
+
     def _now(self) -> str:
         value = self.clock()
         if value.tzinfo is None or value.utcoffset() is None:
