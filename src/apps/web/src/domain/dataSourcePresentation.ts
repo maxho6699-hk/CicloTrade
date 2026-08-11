@@ -28,7 +28,7 @@ export function displayDataSource(source: string | null | undefined, fallback = 
 export function displayFreshness(freshness: string | null | undefined) {
   const value = freshness?.trim() ?? ''
   if (/停用|disabled/i.test(value)) return '已停用'
-  if (/未启用|未连接|失败|failed|unavailable|error/i.test(value)) return '未启用或暂不可用'
+  if (/未启用|未连接|不可用|失败|failed|unavailable|error/i.test(value)) return '未启用或暂不可用'
   if (/延迟|delay/i.test(value)) return '延迟行情'
   if (/研究|research/i.test(value)) return '仅供研究'
   if (/历史|historic/i.test(value)) return '历史数据'

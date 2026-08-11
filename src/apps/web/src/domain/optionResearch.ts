@@ -1,5 +1,5 @@
 import type { OptionContract } from '../api/client'
-import { displayDataSource, displayFreshness } from './dataSourcePresentation.ts'
+import { deliveryAllowsImmediateAction, displayDataSource, displayDeliveryDelay, displayFreshness } from './dataSourcePresentation.ts'
 export { displayDataSource } from './dataSourcePresentation.ts'
 
 export type OptionLegSide = 'BUY' | 'SELL'
@@ -33,13 +33,14 @@ export interface OptionDataStatusMetadata {
   freshness: string
   is_realtime: boolean
   actionable_quote: boolean
+  delivery_delay_minutes?: number
 }
 
 export function describeOptionDataStatus(metadata: OptionDataStatusMetadata) {
-  const boundary = metadata.is_realtime && metadata.actionable_quote
+  const boundary = deliveryAllowsImmediateAction(metadata)
     ? '实时权限已验证'
     : '仅供研究'
-  const freshness = displayFreshness(metadata.freshness)
+  const freshness = displayDeliveryDelay(metadata.delivery_delay_minutes) || displayFreshness(metadata.freshness)
   return [displayDataSource(metadata.source), freshness, freshness === boundary ? '' : boundary].filter(Boolean).join(' · ')
 }
 

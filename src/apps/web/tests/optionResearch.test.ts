@@ -59,7 +59,18 @@ test('anonymizes delayed option providers while retaining the research boundary'
     freshness: '免费延迟期权研究数据，不用于立即交易',
     is_realtime: false,
     actionable_quote: false,
-  }), '真实数据来源 · 延迟行情 · 仅供研究')
+    delivery_delay_minutes: 15,
+  }), '真实数据来源 · 延迟 15 分钟 · 仅供研究')
+})
+
+test('account delivery delay overrides provider realtime flags', () => {
+  assert.equal(describeOptionDataStatus({
+    source: 'OpenD',
+    freshness: '美股期权 LV3 实时权限已验证',
+    is_realtime: true,
+    actionable_quote: true,
+    delivery_delay_minutes: 15,
+  }), '真实数据来源 · 延迟 15 分钟 · 仅供研究')
 })
 
 test('only describes an option source as verified when both realtime flags are true', () => {

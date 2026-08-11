@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { validMarketStatusPayload } from '../src/api/client.ts'
 import { createVisibilityPolling, deliveryAllowsImmediateAction, displayDeliveryDelay, displayFreshness, type VisibilityPollingHost } from '../src/domain/dataSourcePresentation.ts'
 
 class FakePollingClock implements VisibilityPollingHost {
@@ -104,6 +105,7 @@ test('delivery delay is an API visibility boundary, not a provider realtime righ
   assert.equal(displayDeliveryDelay(60), '延迟 1 小时')
   assert.equal(displayDeliveryDelay(0), '')
   assert.equal(displayFreshness('实时权限未启用'), '未启用或暂不可用')
+  assert.equal(displayFreshness('不可用'), '未启用或暂不可用')
   assert.equal(
     deliveryAllowsImmediateAction({ delivery_delay_minutes: 15, is_realtime: true, actionable_quote: true }),
     false,
@@ -112,4 +114,25 @@ test('delivery delay is an API visibility boundary, not a provider realtime righ
     deliveryAllowsImmediateAction({ delivery_delay_minutes: 0, is_realtime: true, actionable_quote: true }),
     true,
   )
+})
+
+test('market status decoder accepts only the vendor-neutral authenticated contract', () => {
+  const valid = {
+    status: 'available',
+    upstream_connected: true,
+    provider_realtime: true,
+    configuration_allows_realtime: true,
+    equity_realtime_entitled: true,
+    option_realtime_entitled: true,
+    delivery_delay_minutes: 15,
+    is_realtime: false,
+    visible_as_of: '2026-08-12T01:00:00+00:00',
+    observed_at: '2026-08-12T01:15:00+00:00',
+    refresh_after_seconds: 8,
+  }
+  assert.equal(validMarketStatusPayload(valid), true)
+  assert.equal(validMarketStatusPayload({ ...valid, source: 'private-provider' }), false)
+  assert.equal(validMarketStatusPayload({ ...valid, delivery_delay_minutes: -1 }), false)
+  assert.equal(validMarketStatusPayload({ ...valid, observed_at: 'not-a-time' }), false)
+  assert.equal(validMarketStatusPayload({ ...valid, upstream_connected: 'yes' }), false)
 })

@@ -23,6 +23,8 @@ const loginPageSource = readFileSync(new URL('../src/pages/LoginPage.tsx', impor
 const themeSource = readFileSync(new URL('../src/theme.ts', import.meta.url), 'utf8')
 const reportsSource = readFileSync(new URL('../src/pages/ReportsPage.tsx', import.meta.url), 'utf8')
 const professionalLabSource = readFileSync(new URL('../src/pages/ProfessionalLabPage.tsx', import.meta.url), 'utf8')
+const clientSource = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
+const workspaceContextSource = readFileSync(new URL('../src/api/WorkspaceContext.tsx', import.meta.url), 'utf8')
 
 test('Simplified and Traditional Chinese fonts are bundled locally without Google font runtime failures', () => {
   assert.match(mainSource, /@fontsource-variable\/noto-sans-tc\/wght\.css/)
@@ -152,4 +154,18 @@ test('coarse pointers retain 44px option and authentication controls without red
   assert.match(optionStyles, /@media \(pointer: coarse\) \{[\s\S]*?\.option-task-tabs button,[\s\S]*?\.option-chart-controls select \{ min-height: 44px; \}/)
   assert.match(optionStyles, /\.lab-tab-options \.option-workbench \{ grid-template-rows: 44px minmax\(0, 1fr\); \}/)
   assert.match(optionStyles, /\.lab-tab-options \.option-workbench \{ height: auto; min-height: 220px;/)
+})
+
+test('market refresh effects keep stable lifetimes and never expose raw provider freshness', () => {
+  assert.match(chartWorkspaceSource, /const primaryQuoteExternallyManaged = initialQuote !== undefined/)
+  assert.match(chartWorkspaceSource, /primaryQuoteExternallyManaged, primarySlotId, quoteFetchSignature/)
+  assert.doesNotMatch(chartWorkspaceSource, /\[initialMarket, initialQuote, initialSymbol, loadQuote/)
+  assert.match(chartWorkspaceSource, /if \(!hasPreviousQuote\) \{[\s\S]*?读取报价中/)
+  assert.match(chartWorkspaceSource, /quoteInFlightRef[\s\S]*?previousRequest\?\.identity === identity[\s\S]*?previousRequest\.request/)
+  assert.match(marketOverviewSource, /displayDeliveryDelay\(payload\.status\.delivery_delay_minutes\) \|\| displayFreshness/)
+  assert.match(appShellSource, /const marketFreshness = displayFreshness\(marketStatus\?\.freshness\)/)
+  assert.doesNotMatch(appShellSource, /marketStatus\?\.freshness\s*\?\?/)
+  assert.match(clientSource, /request<unknown>\('\/api\/rewrite\/v1\/market\/status'\)/)
+  assert.match(clientSource, /validMarketStatusPayload/)
+  assert.match(workspaceContextSource, /createVisibilityPolling\(async \(\) => \{[\s\S]*?fetchMarketStatus\(\)[\s\S]*?\}, 15_000\)/)
 })

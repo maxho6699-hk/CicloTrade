@@ -22,7 +22,7 @@ import { MarketEventCalendar } from "./MarketEventCalendar";
 import { MarketHeatmap } from "./MarketHeatmap";
 import { WatchlistToggle } from "./WatchlistToggle";
 import { SegmentedControl } from "./ui/SegmentedControl";
-import { displayDataSource, displayFreshness } from "../domain/dataSourcePresentation";
+import { displayDataSource, displayDeliveryDelay, displayFreshness } from "../domain/dataSourcePresentation";
 
 interface OverviewQuote extends Instrument {
   candles: Candle[];
@@ -221,7 +221,7 @@ export function MarketOverview({
           item.name,
           market,
           payload.items,
-          `${displayDataSource(payload.status.display_source)} · ${displayFreshness(payload.status.freshness)}`,
+          `${displayDataSource(payload.status.display_source)} · ${displayDeliveryDelay(payload.status.delivery_delay_minutes) || displayFreshness(payload.status.freshness)}`,
         );
       }),
     ).then((results) => {

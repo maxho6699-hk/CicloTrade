@@ -204,6 +204,7 @@ export function ChartWorkspace({
   const viewportTimers = useRef<Record<string, number>>({})
   const slotLoadSequence = useRef<Record<string, number>>({})
   const quoteLoadSequence = useRef<Record<string, number>>({})
+  const quoteInFlightRef = useRef<Record<string, { identity: string; request: Promise<MarketQuotePayload> }>>({})
 
   const definition = layoutDefinition(workspace.layout)
   const visibleSlots = useMemo(() => workspace.slots.slice(0, definition.count), [definition.count, workspace.slots])
@@ -218,6 +219,7 @@ export function ChartWorkspace({
     ? slotQuotes[activeSlot.id]
     : null
   const primarySlotId = workspace.slots[0]?.id ?? initial.id
+  const primaryQuoteExternallyManaged = initialQuote !== undefined
   const fetchSignature = JSON.stringify(requestedSlots.map(({ id, market, symbol, timeframe }) => ({ id, market, symbol, timeframe })))
   const quoteFetchSignature = JSON.stringify(requestedSlots.map(({ id, market, symbol }) => ({ id, market, symbol })))
 
@@ -296,7 +298,7 @@ export function ChartWorkspace({
     const stopPolling = createVisibilityPolling(async () => {
       await Promise.all(targets.map(async (slot, index) => {
         const identity = quoteIdentity(slot)
-        if (index === 0 && slot.id === primarySlotId && slot.symbol === initialSymbol && slot.market === initialMarket && initialQuote !== undefined) return
+        if (index === 0 && slot.id === primarySlotId && slot.symbol === initialSymbol && slot.market === initialMarket && primaryQuoteExternallyManaged) return
         const sequence = (quoteLoadSequence.current[slot.id] ?? 0) + 1
         quoteLoadSequence.current[slot.id] = sequence
         const identityChanged = slotQuoteIdentityRef.current[slot.id] !== identity
@@ -305,9 +307,16 @@ export function ChartWorkspace({
           setSlotQuotes((current) => ({ ...current, [slot.id]: null }))
         }
         const hasPreviousQuote = !identityChanged && Boolean(slotQuotesRef.current[slot.id])
-        setSlotQuoteStatus((current) => ({ ...current, [slot.id]: slot.market === 'US' ? hasPreviousQuote ? '正在更新，保留上一份报价' : '读取报价中…' : 'A 股买卖盘未接入' }))
+        if (!hasPreviousQuote) {
+          setSlotQuoteStatus((current) => ({ ...current, [slot.id]: slot.market === 'US' ? '读取报价中…' : 'A 股买卖盘未接入' }))
+        }
+        const previousRequest = quoteInFlightRef.current[slot.id]
+        const request = previousRequest?.identity === identity
+          ? previousRequest.request
+          : Promise.resolve().then(() => loadQuote(slot.symbol, slot.market))
+        if (previousRequest?.identity !== identity) quoteInFlightRef.current[slot.id] = { identity, request }
         try {
-          const quote = await loadQuote(slot.symbol, slot.market)
+          const quote = await request
           if (!active || quoteLoadSequence.current[slot.id] !== sequence) return
           setSlotQuoteIdentity((current) => ({ ...current, [slot.id]: identity }))
           setSlotQuotes((current) => ({ ...current, [slot.id]: quote }))
@@ -315,11 +324,13 @@ export function ChartWorkspace({
         } catch {
           if (!active || quoteLoadSequence.current[slot.id] !== sequence) return
           setSlotQuoteStatus((current) => ({ ...current, [slot.id]: safeDataError() }))
+        } finally {
+          if (quoteInFlightRef.current[slot.id]?.request === request) delete quoteInFlightRef.current[slot.id]
         }
       }))
     }, 5_000)
     return () => { active = false; stopPolling() }
-  }, [initialMarket, initialQuote, initialSymbol, loadQuote, primarySlotId, quoteFetchSignature])
+  }, [initialMarket, initialSymbol, loadQuote, primaryQuoteExternallyManaged, primarySlotId, quoteFetchSignature])
 
   useEffect(() => {
     const query = window.matchMedia(NARROW_CHART_QUERY)

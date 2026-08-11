@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   fetchBootstrap,
+  fetchMarketStatus,
   login as apiLogin,
   logout as apiLogout,
   restoreSession,
@@ -11,6 +12,7 @@ import {
 } from './client'
 import { WorkspaceContext, type WorkspaceContextValue, type WorkspaceMode } from './workspace-context'
 import type { Market } from '../types'
+import { createVisibilityPolling } from '../domain/dataSourcePresentation'
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [mode, setMode] = useState<WorkspaceMode>('loading')
@@ -25,10 +27,16 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const updateMarketDataStatus = useCallback((status: Partial<BootstrapPayload['market_data']>) => {
-    setData((current) => current ? {
-      ...current,
-      market_data: { ...current.market_data, ...status },
-    } : current)
+    const definedStatus = Object.fromEntries(
+      Object.entries(status).filter(([, value]) => value !== undefined),
+    ) as Partial<BootstrapPayload['market_data']>
+    setData((current) => {
+      if (!current) return current
+      const unchanged = Object.entries(definedStatus)
+        .every(([key, value]) => Object.is(current.market_data[key as keyof BootstrapPayload['market_data']], value))
+      if (unchanged) return current
+      return { ...current, market_data: { ...current.market_data, ...definedStatus } }
+    })
   }, [])
 
   const applyWatchlistPayload = useCallback((payload: WatchlistPayload) => {
@@ -76,6 +84,30 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     void restore()
     return () => { active = false }
   }, [loadBootstrap])
+
+  useEffect(() => {
+    if (mode !== 'authenticated') return
+    let active = true
+    const stopPolling = createVisibilityPolling(async () => {
+      const status = await fetchMarketStatus()
+      if (!active) return
+      const available = status.status === 'available' && status.upstream_connected
+      updateMarketDataStatus({
+        display_source: '真实数据来源',
+        is_realtime: status.is_realtime,
+        freshness: !available
+          ? '不可用'
+          : status.delivery_delay_minutes > 0
+            ? '延迟行情'
+            : status.is_realtime ? '实时' : '仅供研究',
+        detail: available ? '账户行情可见性状态已核对' : '行情服务暂不可用',
+        delivery_delay_minutes: status.delivery_delay_minutes,
+        visible_as_of: status.visible_as_of,
+        observed_at: status.observed_at,
+      })
+    }, 15_000)
+    return () => { active = false; stopPolling() }
+  }, [mode, updateMarketDataStatus])
 
   const value = useMemo<WorkspaceContextValue>(() => ({
     mode,

@@ -201,10 +201,14 @@ export function MarketsPage() {
         if (!active || quoteRequestSequence.current !== sequence) return
         setMarketQuote(payload)
         updateMarketDataStatus({
-          display_source: payload.source,
+          display_source: '真实数据来源',
           is_realtime: payload.is_realtime,
-          freshness: payload.freshness,
-          detail: payload.verification,
+          freshness: payload.delivery_delay_minutes === undefined
+            ? displayFreshness(payload.freshness)
+            : payload.delivery_delay_minutes > 0
+              ? '延迟行情'
+              : payload.is_realtime ? '实时' : '仅供研究',
+          detail: '当前股票报价状态已核对',
           ...(payload.delivery_delay_minutes === undefined ? {} : {
             delivery_delay_minutes: payload.delivery_delay_minutes,
             visible_as_of: payload.visible_as_of,

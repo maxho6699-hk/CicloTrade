@@ -352,6 +352,20 @@ export interface DeliveryVisibilityMetadata {
   observed_at?: string
 }
 
+export interface MarketStatusPayload {
+  status: 'available' | 'unavailable'
+  upstream_connected: boolean
+  provider_realtime: boolean
+  configuration_allows_realtime: boolean
+  equity_realtime_entitled: boolean
+  option_realtime_entitled: boolean
+  delivery_delay_minutes: number
+  is_realtime: boolean
+  visible_as_of: string
+  observed_at: string
+  refresh_after_seconds: number
+}
+
 export interface ChartDrawingPayload {
   id: string
   tool: string
@@ -569,6 +583,12 @@ export function fetchBootstrap(): Promise<BootstrapPayload> {
   return request<BootstrapPayload>('/api/rewrite/v1/bootstrap')
 }
 
+export async function fetchMarketStatus() {
+  const payload = await request<unknown>('/api/rewrite/v1/market/status')
+  if (!validMarketStatusPayload(payload)) throw new BrowserApiError('行情状态响应格式无效。', 502)
+  return payload
+}
+
 export async function fetchMarketCandles(symbol: string, timeframe: string) {
   const payload = await request<MarketCandlePayload>(`/api/rewrite/v1/market/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`)
   const valid = Array.isArray(payload.items) && payload.items.every((item) => (
@@ -611,6 +631,43 @@ function validDeliveryVisibilityMetadata(value: unknown) {
       || (Number.isSafeInteger(metadata.delivery_delay_minutes) && metadata.delivery_delay_minutes >= 0))
     && (metadata.visible_as_of === undefined || typeof metadata.visible_as_of === 'string')
     && (metadata.observed_at === undefined || typeof metadata.observed_at === 'string')
+}
+
+export function validMarketStatusPayload(value: unknown): value is MarketStatusPayload {
+  if (!value || typeof value !== 'object') return false
+  const payload = value as Partial<MarketStatusPayload>
+  const expectedFields = new Set([
+    'status',
+    'upstream_connected',
+    'provider_realtime',
+    'configuration_allows_realtime',
+    'equity_realtime_entitled',
+    'option_realtime_entitled',
+    'delivery_delay_minutes',
+    'is_realtime',
+    'visible_as_of',
+    'observed_at',
+    'refresh_after_seconds',
+  ])
+  if (Object.keys(payload).length !== expectedFields.size || Object.keys(payload).some((key) => !expectedFields.has(key))) return false
+  const booleans = [
+    payload.upstream_connected,
+    payload.provider_realtime,
+    payload.configuration_allows_realtime,
+    payload.equity_realtime_entitled,
+    payload.option_realtime_entitled,
+    payload.is_realtime,
+  ]
+  return (payload.status === 'available' || payload.status === 'unavailable')
+    && booleans.every((item) => typeof item === 'boolean')
+    && Number.isSafeInteger(payload.delivery_delay_minutes)
+    && Number(payload.delivery_delay_minutes) >= 0
+    && typeof payload.visible_as_of === 'string'
+    && Number.isFinite(Date.parse(payload.visible_as_of))
+    && typeof payload.observed_at === 'string'
+    && Number.isFinite(Date.parse(payload.observed_at))
+    && Number.isSafeInteger(payload.refresh_after_seconds)
+    && Number(payload.refresh_after_seconds) > 0
 }
 
 function validOptionContract(value: unknown): value is OptionContract {
