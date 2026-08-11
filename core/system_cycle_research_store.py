@@ -53,6 +53,22 @@ class SystemCycleResearchStore:
                 if existing["result_sha256"] != digest or existing["payload_json"].encode("utf-8") != body:
                     raise SystemCycleResearchConflict("receipt idempotency key was reused with different content")
                 return {**dict(existing), "created": False}
+            existing_cycle = connection.execute(
+                """SELECT * FROM system_cycle_research_receipts
+                   WHERE worker_id=? AND cycle_id=?""",
+                (worker_id, result["cycle_id"]),
+            ).fetchone()
+            if existing_cycle is not None:
+                if (
+                    existing_cycle["result_sha256"] == digest
+                    and existing_cycle["payload_json"].encode("utf-8") == body
+                ):
+                    raise SystemCycleResearchConflict(
+                        "system cycle result was already recorded under a different idempotency key"
+                    )
+                raise SystemCycleResearchConflict(
+                    "system cycle result is immutable and cannot be revised for the same worker and cycle"
+                )
             self._advance_fence(connection, worker_id, fencing_epoch, now)
             connection.execute(
                 """INSERT INTO system_cycle_research_receipts

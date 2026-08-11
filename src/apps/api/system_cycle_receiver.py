@@ -157,12 +157,30 @@ def build_system_cycle_research_receiver() -> SystemCycleResearchReceiver | None
     enabled = os.getenv("TRADEAI_SYSTEM_CYCLE_RESEARCH_RECEIVER_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
     if not enabled:
         return None
-    database_path = Path(os.getenv("TRADEAI_SYSTEM_CYCLE_RESEARCH_DATABASE", ""))
+    database_path = Path(os.getenv("TRADEAI_SYSTEM_CYCLE_RESEARCH_DATABASE", "")).expanduser()
     if not database_path.is_absolute():
         raise RuntimeError("TRADEAI_SYSTEM_CYCLE_RESEARCH_DATABASE must be an absolute path")
+    database_path = database_path.resolve()
+    for name in ("DATABASE_URL", "TRADEAI_BACKTEST_DATABASE_URL"):
+        protected = _sqlite_path(os.getenv(name, ""))
+        if protected is not None and protected == database_path:
+            raise RuntimeError(
+                f"TRADEAI_SYSTEM_CYCLE_RESEARCH_DATABASE must be isolated from {name}"
+            )
     secret = os.getenv("TRADEAI_SYSTEM_CYCLE_RESEARCH_SHARED_SECRET", "")
     store = SystemCycleResearchStore(BacktestQueueDatabase(database_path))
     return SystemCycleResearchReceiver(store, shared_secret=secret, enabled=True)
+
+
+def _sqlite_path(value: str) -> Path | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("sqlite:///"):
+        raw = raw[10:]
+    elif "://" in raw:
+        return None
+    return Path(raw).expanduser().resolve()
 
 
 async def system_cycle_research_result(request: Request) -> Response:

@@ -153,7 +153,10 @@ def test_spool_expiry_retry_and_delivery_are_recoverable(tmp_path):
     delivered = spool.complete(retry["id"], "spool-uploader", retry["lease_token"], 3, receipt)
     assert delivered["state"] == "delivered"
     assert spool.complete(retry["id"], "spool-uploader", retry["lease_token"], 3, receipt)["state"] == "delivered"
-    assert spool.counts() == {"pending": 0, "claimed": 0, "retryable": 0, "delivered": 1}
+    assert spool.counts() == {
+        "pending": 0, "claimed": 0, "sending": 0, "retryable": 0,
+        "delivered": 1, "dead": 0, "uncertain": 0,
+    }
 
 
 def test_spool_rejects_an_idempotency_key_that_cannot_be_signed(tmp_path):

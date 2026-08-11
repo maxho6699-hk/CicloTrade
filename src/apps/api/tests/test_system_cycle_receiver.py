@@ -136,6 +136,26 @@ def test_receiver_rejects_bad_expired_hash_stale_and_variant_requests(tmp_path):
     assert conflict.value.status == 409
 
 
+def test_receiver_rejects_an_alternate_key_or_revision_for_an_existing_worker_cycle(tmp_path):
+    service, database = receiver(tmp_path)
+    value = result(epoch=1)
+    body = canonical_json(value)
+    service.accept_result(body, result_headers(value, key="cycle-result-original"))
+
+    with pytest.raises(SystemCycleResearchReceiverError) as duplicate_key:
+        service.accept_result(body, result_headers(value, key="cycle-result-alternate"))
+    assert duplicate_key.value.status == 409
+
+    revision = json.loads(body)
+    revision["stocks"][0]["latest_price"] = 999.0
+    with pytest.raises(SystemCycleResearchReceiverError) as changed_cycle:
+        service.accept_result(
+            canonical_json(revision), result_headers(revision, key="cycle-result-revision")
+        )
+    assert changed_cycle.value.status == 409
+    assert database.fetch_one("SELECT count(*) total FROM system_cycle_research_receipts")["total"] == 1
+
+
 def test_signed_heartbeat_advances_fence_and_api_routes_return_no_store(tmp_path):
     service, database = receiver(tmp_path)
     heartbeat = build_system_cycle_heartbeat(
@@ -175,6 +195,22 @@ def test_receiver_builder_is_disabled_by_default(monkeypatch):
     monkeypatch.delenv("TRADEAI_SYSTEM_CYCLE_RESEARCH_SHARED_SECRET", raising=False)
 
     assert build_system_cycle_research_receiver() is None
+
+
+@pytest.mark.parametrize("protected_name", ["DATABASE_URL", "TRADEAI_BACKTEST_DATABASE_URL"])
+def test_receiver_database_must_not_alias_product_or_backtest_database(
+    tmp_path, monkeypatch, protected_name
+):
+    database_path = (tmp_path / "shared.db").resolve()
+    monkeypatch.setenv("TRADEAI_SYSTEM_CYCLE_RESEARCH_RECEIVER_ENABLED", "true")
+    monkeypatch.setenv("TRADEAI_SYSTEM_CYCLE_RESEARCH_DATABASE", str(database_path))
+    monkeypatch.setenv("TRADEAI_SYSTEM_CYCLE_RESEARCH_SHARED_SECRET", "s" * 32)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("TRADEAI_BACKTEST_DATABASE_URL", raising=False)
+    monkeypatch.setenv(protected_name, f"sqlite:///{database_path}")
+
+    with pytest.raises(RuntimeError, match="isolated"):
+        build_system_cycle_research_receiver()
 
 
 def _request(path: str, body: bytes, headers: dict[str, str], app) -> Request:

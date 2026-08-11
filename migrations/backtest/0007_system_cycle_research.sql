@@ -3,6 +3,12 @@
 CREATE TABLE IF NOT EXISTS system_cycle_research_spool_workers (
     worker_id TEXT PRIMARY KEY,
     highest_epoch INTEGER NOT NULL DEFAULT 0 CHECK(highest_epoch >= 0),
+    heartbeat_delivery_state TEXT NOT NULL DEFAULT 'ready'
+        CHECK(heartbeat_delivery_state IN ('ready','retryable','dead','uncertain')),
+    heartbeat_retry_at TEXT,
+    heartbeat_last_error TEXT,
+    heartbeat_last_http_status INTEGER
+        CHECK(heartbeat_last_http_status IS NULL OR heartbeat_last_http_status BETWEEN 100 AND 599),
     updated_at TEXT NOT NULL
 );
 
@@ -11,7 +17,7 @@ CREATE TABLE IF NOT EXISTS system_cycle_research_spool (
     idempotency_key TEXT NOT NULL UNIQUE CHECK(length(idempotency_key) BETWEEN 8 AND 128),
     payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
     result_sha256 TEXT NOT NULL CHECK(length(result_sha256)=64 AND result_sha256 NOT GLOB '*[^0-9a-f]*'),
-    state TEXT NOT NULL CHECK(state IN ('pending','claimed','failed','delivered')),
+    state TEXT NOT NULL CHECK(state IN ('pending','claimed','sending','failed','delivered','dead','uncertain')),
     attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
     worker_id TEXT,
     fencing_epoch INTEGER CHECK(fencing_epoch IS NULL OR fencing_epoch >= 1),
@@ -20,11 +26,14 @@ CREATE TABLE IF NOT EXISTS system_cycle_research_spool (
     heartbeat_at TEXT,
     retry_at TEXT NOT NULL,
     last_error TEXT,
+    last_http_status INTEGER CHECK(last_http_status IS NULL OR last_http_status BETWEEN 100 AND 599),
     delivery_receipt_json TEXT CHECK(delivery_receipt_json IS NULL OR json_valid(delivery_receipt_json)),
     delivery_receipt_sha256 TEXT CHECK(delivery_receipt_sha256 IS NULL OR (length(delivery_receipt_sha256)=64 AND delivery_receipt_sha256 NOT GLOB '*[^0-9a-f]*')),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    delivered_at TEXT
+    delivered_at TEXT,
+    terminal_at TEXT,
+    uncertain_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_system_cycle_research_spool_claim
@@ -47,7 +56,7 @@ CREATE TABLE IF NOT EXISTS system_cycle_research_receipts (
     cycle_id TEXT NOT NULL,
     universe_sha256 TEXT NOT NULL CHECK(length(universe_sha256)=64 AND universe_sha256 NOT GLOB '*[^0-9a-f]*'),
     received_at TEXT NOT NULL,
-    UNIQUE(worker_id,cycle_id,result_sha256)
+    UNIQUE(worker_id,cycle_id)
 );
 
 CREATE TABLE IF NOT EXISTS system_cycle_research_heartbeats (
