@@ -20,6 +20,7 @@ from core.official_option_sim_journal import OfficialOptionSimulationJournal
 
 _WORKER = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _EPOCH = re.compile(r"^[1-9][0-9]{0,9}$")
+MAX_RECEIPT_BODY_BYTES = 128 * 1024
 
 
 class OfficialOptionSimulationReceiverError(RuntimeError):
@@ -48,7 +49,9 @@ class OfficialOptionSimulationReceiver:
         if not self.enabled:
             raise OfficialOptionSimulationReceiverError("官方模拟接收端尚未启用。", 404)
         supplied = str(headers.get("x-ciclotrade-simulation-signature", ""))
-        if len(raw) > 128 * 1024 or not supplied or not hmac.compare_digest(self._signature(raw), supplied):
+        if len(raw) > MAX_RECEIPT_BODY_BYTES:
+            raise OfficialOptionSimulationReceiverError("模拟收据超过 128 KiB 限制。", 413)
+        if not supplied or not hmac.compare_digest(self._signature(raw), supplied):
             raise OfficialOptionSimulationReceiverError("模拟 Worker 签名验证失败。", 401)
         try:
             payload = json.loads(raw)
@@ -82,8 +85,12 @@ def _receiver(request: Request) -> OfficialOptionSimulationReceiver:
 
 
 async def official_option_sim_receipt(request: Request) -> Response:
-    raw = await request.body()
-    receipt = await run_in_threadpool(_receiver(request).accept, raw, request.headers)
+    raw = bytearray()
+    async for chunk in request.stream():
+        if len(raw) + len(chunk) > MAX_RECEIPT_BODY_BYTES:
+            raise OfficialOptionSimulationReceiverError("模拟收据超过 128 KiB 限制。", 413)
+        raw.extend(chunk)
+    receipt = await run_in_threadpool(_receiver(request).accept, bytes(raw), request.headers)
     return JSONResponse({
         "status": receipt["lifecycle_state"], "event_type": receipt["event_type"],
         "recorded": True, "account_mode": "official_simulation", "broker_execution": False,

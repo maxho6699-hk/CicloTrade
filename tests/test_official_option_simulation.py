@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 import hashlib
 import hmac
 import json
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,7 +15,12 @@ from core.official_option_sim_contracts import OfficialOptionSimulationError
 from core.official_option_sim_journal import OfficialOptionSimulationJournal
 from scheduler.official_option_simulation import OfficialOptionSimulationScheduler, seal_simulation_task
 from src.apps.api.official_option_sim_read_model import OfficialOptionSimulationReadModel
-from src.apps.api.official_option_sim_receiver import OfficialOptionSimulationReceiver, OfficialOptionSimulationReceiverError
+from src.apps.api.official_option_sim_receiver import (
+    MAX_RECEIPT_BODY_BYTES,
+    OfficialOptionSimulationReceiver,
+    OfficialOptionSimulationReceiverError,
+    official_option_sim_receipt,
+)
 from src.apps.api.earnings_read_model import OpaqueIdCodec
 
 
@@ -134,6 +141,34 @@ def test_signed_receiver_requires_enable_signature_and_header_binding(journal):
     bad = dict(headers, **{"x-ciclotrade-fencing-epoch": "2"})
     with pytest.raises(OfficialOptionSimulationReceiverError, match="围栏"):
         receiver.accept(raw, bad)
+
+
+def test_signed_receiver_rejects_oversized_receipts_with_413_before_signature_check(journal):
+    receiver = OfficialOptionSimulationReceiver(journal, shared_secret=b"x" * 32, enabled=True)
+
+    with pytest.raises(OfficialOptionSimulationReceiverError, match="128 KiB") as error:
+        receiver.accept(b"x" * (MAX_RECEIPT_BODY_BYTES + 1), {})
+
+    assert error.value.status == 413
+
+
+def test_receipt_endpoint_stops_streaming_at_the_128_kib_limit(journal):
+    receiver = OfficialOptionSimulationReceiver(journal, shared_secret=b"x" * 32, enabled=True)
+
+    class StreamingRequest:
+        headers = {}
+        app = SimpleNamespace(
+            state=SimpleNamespace(official_option_sim_receiver=receiver)
+        )
+
+        async def stream(self):
+            yield b"x" * MAX_RECEIPT_BODY_BYTES
+            yield b"x"
+
+    with pytest.raises(OfficialOptionSimulationReceiverError, match="128 KiB") as error:
+        asyncio.run(official_option_sim_receipt(StreamingRequest()))
+
+    assert error.value.status == 413
 
 
 def test_scheduler_is_paper_only_and_idempotently_sealed():

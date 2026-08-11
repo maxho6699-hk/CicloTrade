@@ -545,8 +545,11 @@ class EarningsForecastReadModel:
                      WHERE option.id=? AND forecast.event_revision_id=?"""
             params: list[Any] = [option_id, event_id]
             if cutoff:
-                sql += " AND option.decision_at<=?"
-                params.append(cutoff)
+                sql += """ AND option.decision_at<=?
+                            AND option.recorded_at<=?
+                            AND forecast.decision_at<=?
+                            AND forecast.recorded_at<=?"""
+                params.extend((cutoff, cutoff, cutoff, cutoff))
             row = connection.execute(sql, params).fetchone()
         if row is None:
             raise EarningsResearchNotFound(_NOT_FOUND)

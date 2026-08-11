@@ -174,6 +174,7 @@ class EarningsForecastJournal:
         logical_run_key = sha256_json({
             "event_revision_id": value["event_revision_id"],
             "countdown_day": value["countdown_day"],
+            "model_id": value["model_id"],
             "model_version": value["model_version"],
             "input_manifest_sha256": value["input_manifest_sha256"],
         })
@@ -193,8 +194,12 @@ class EarningsForecastJournal:
                 raise EarningsContractError("superseded events cannot receive new forecasts")
             duplicate = connection.execute(
                 """SELECT payload_sha256 FROM earnings_forecast_snapshots
-                   WHERE event_revision_id=? AND countdown_day=? AND model_version=?""",
-                (value["event_revision_id"], value["countdown_day"], value["model_version"]),
+                   WHERE event_revision_id=? AND countdown_day=?
+                     AND model_id=? AND model_version=?""",
+                (
+                    value["event_revision_id"], value["countdown_day"],
+                    value["model_id"], value["model_version"],
+                ),
             ).fetchone()
             if duplicate:
                 raise IdempotencyConflict("forecast day already has a sealed model snapshot")
@@ -309,6 +314,14 @@ class EarningsForecastJournal:
                 "put_zero_coverage": value["put_zero_coverage"],
                 "terminal_sample_size": value["terminal_sample_size"],
             }
+            recorded_at = timestamp(
+                max(
+                    datetime.now(UTC),
+                    parse_timestamp(forecast["decision_at"], "forecast decision_at"),
+                    parse_timestamp(forecast["recorded_at"], "forecast recorded_at"),
+                ),
+                "option_recorded_at",
+            )
             cursor = connection.execute(
                 """INSERT INTO earnings_option_research_snapshots
                    (idempotency_key,forecast_snapshot_id,structure_type,evidence_mode,
@@ -317,8 +330,8 @@ class EarningsForecastJournal:
                     slippage_cost,
                     lower_breakeven,upper_breakeven,required_move_pct,model_expected_move_pct,
                     iv_implied_move_pct,probability_outside_breakeven,expected_value_net_costs,
-                    one_leg_coverage_json,iv_crush_json,decision_at,payload_sha256)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    one_leg_coverage_json,iv_crush_json,decision_at,recorded_at,payload_sha256)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     idempotency_key, forecast_snapshot_id, value["structure_type"],
                     value["evidence_mode"], 0, 1, 0, 0, canonical_json(value["contracts"]),
@@ -327,7 +340,8 @@ class EarningsForecastJournal:
                     value["required_move_pct"], value["model_expected_move_pct"],
                     value["iv_implied_move_pct"], value["probability_outside_breakeven"],
                     value["expected_value_net_costs"], canonical_json(coverage),
-                    canonical_json(value["iv_crush_scenarios"]), value["decision_at"], payload_hash,
+                    canonical_json(value["iv_crush_scenarios"]), value["decision_at"], recorded_at,
+                    payload_hash,
                 ),
             )
             return dict(connection.execute(

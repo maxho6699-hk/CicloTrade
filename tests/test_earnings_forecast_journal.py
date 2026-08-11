@@ -15,6 +15,11 @@ from core.earnings_forecast_contracts import (
 )
 from core.earnings_forecast_journal import EarningsForecastJournal
 from core.earnings_option_research import OptionLegQuote, evaluate_defined_risk_structure
+from src.apps.api.earnings_read_model import (
+    EarningsForecastReadModel,
+    EarningsResearchNotFound,
+    OpaqueIdCodec,
+)
 
 
 def _event_payload() -> dict:
@@ -191,6 +196,74 @@ def test_event_and_forecast_are_idempotent_and_conflicts_fail_closed(journal):
         journal.record_forecast(_forecast_payload(event["id"]), idempotency_key="")
 
 
+def test_forecast_identity_allows_distinct_models_but_not_duplicate_model_revisions(journal):
+    event = journal.record_event_revision(_event_payload(), idempotency_key="model-identity-event")
+    first = journal.record_forecast(
+        _forecast_payload(event["id"]), idempotency_key="model-identity-first"
+    )
+    other_model = {
+        **_forecast_payload(event["id"]),
+        "model_id": "earnings-direction-alternate",
+        "model_artifact_sha256": "d" * 64,
+    }
+    second = journal.record_forecast(other_model, idempotency_key="model-identity-second")
+
+    assert second["id"] != first["id"]
+    assert journal.database.fetch_one(
+        "SELECT COUNT(*) count FROM earnings_forecast_snapshots WHERE event_revision_id=?",
+        (event["id"],),
+    )["count"] == 2
+
+    duplicate_model = {
+        **_forecast_payload(event["id"]),
+        "p_up": 0.6,
+        "p_down": 0.2,
+    }
+    with pytest.raises(IdempotencyConflict, match="sealed model snapshot"):
+        journal.record_forecast(duplicate_model, idempotency_key="model-identity-duplicate")
+
+
+def test_option_detail_hides_forecast_and_option_records_after_the_requested_point_in_time(journal):
+    event = journal.record_event_revision(_event_payload(), idempotency_key="option-pit-event")
+    forecast = journal.record_forecast(
+        {**_forecast_payload(event["id"]), "recorded_at": "2026-08-12T00:05:00Z"},
+        idempotency_key="option-pit-forecast",
+    )
+    with journal.database.transaction() as connection:
+        option_id = connection.execute(
+            """INSERT INTO earnings_option_research_snapshots
+               (idempotency_key,forecast_snapshot_id,structure_type,evidence_mode,
+                historical_oos_validated,research_only,execution_eligible,automatic_ordering,
+                contracts_json,total_premium,commission_cost,spread_cost,slippage_cost,max_loss,
+                lower_breakeven,upper_breakeven,required_move_pct,model_expected_move_pct,
+                iv_implied_move_pct,probability_outside_breakeven,expected_value_net_costs,
+                one_leg_coverage_json,iv_crush_json,decision_at,recorded_at,payload_sha256)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                "option-pit", forecast["id"], "LONG_CALL",
+                "current_snapshot_research_estimate", 0, 1, 0, 0,
+                '[{"quote_at":"2026-08-12T00:00:00Z"}]', 5.0, 0.0, 0.0, 0.0, 5.0,
+                205.0, None, 2.5, 3.0, 2.0, 0.5, 0.0,
+                '{"call_zero_coverage":false,"put_zero_coverage":true,"terminal_sample_size":100}',
+                '[]', forecast["decision_at"], "2026-08-12T00:10:00Z", "c" * 64,
+            ),
+        ).lastrowid
+    codec = OpaqueIdCodec(b"p" * 32)
+    read_model = EarningsForecastReadModel(journal.database._db_path, codec)
+    arguments = {
+        "has_forecast_capability": True,
+        "has_option_capability": True,
+        "opaque_event_id": codec.encode("event", event["id"]),
+        "opaque_option_id": codec.encode("option", option_id),
+    }
+
+    with pytest.raises(EarningsResearchNotFound):
+        read_model.option_detail(**arguments, as_of="2026-08-12T00:00:00Z")
+    with pytest.raises(EarningsResearchNotFound):
+        read_model.option_detail(**arguments, as_of="2026-08-12T00:05:00Z")
+    assert read_model.option_detail(**arguments, as_of="2026-08-12T00:10:00Z")["state"] == "research"
+
+
 def test_database_triggers_make_the_complete_journal_append_only(journal):
     event = journal.record_event_revision(_event_payload(), idempotency_key="event-immutable")
     forecast = journal.record_forecast(
@@ -312,6 +385,7 @@ def test_defined_risk_multileg_option_snapshot_is_sealed_with_real_quote_times(j
     assert stored["historical_oos_validated"] == 0
     assert stored["execution_eligible"] == 0
     assert stored["automatic_ordering"] == 0
+    assert stored["recorded_at"] >= forecast["recorded_at"]
     assert journal.record_option_research(
         forecast["id"], result, idempotency_key="options-straddle-v1"
     )["id"] == stored["id"]
