@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from datetime import date, datetime
 import json
 import os
@@ -17,6 +18,7 @@ from core.backtest_queue_database import BacktestQueueDatabase
 from core.compat import UTC
 from core.strategy_evaluation import SYSTEM_UNIVERSE
 from core.system_cycle_research_contracts import SystemCycleResearchConflict
+from data.datasource import DataSourceError
 from data.yfinance_adapter import YFinanceAdapter
 from src.apps.worker.system_cycle_evaluator import DEFAULT_CATALOG, evaluate_system_cycle
 from src.apps.worker.system_cycle_research import build_system_cycle_research_result
@@ -26,6 +28,43 @@ from src.apps.worker.system_cycle_spool import PersistentSystemCycleSpool
 NEW_YORK = ZoneInfo("America/New_York")
 WORKER_ID = "system-cycle-producer"
 DEFAULT_SPOOL_PATH = "/var/lib/ciclotrade-worker/system-cycle-spool.db"
+
+
+class SystemCycleProducerError(RuntimeError):
+    """Raised when one shadow research pass cannot safely be produced."""
+
+
+@dataclass(frozen=True)
+class ProducerSettings:
+    """Explicit deployment settings; the producer is off unless opted in."""
+
+    enabled: bool
+    spool_path: Path | None
+
+    @classmethod
+    def from_environment(cls, *, spool_path: str | None = None) -> "ProducerSettings":
+        enabled = _environment_flag("TRADEAI_SYSTEM_CYCLE_PRODUCER_ENABLED", default=False)
+        if not enabled:
+            return cls(enabled=False, spool_path=None)
+        raw_path = spool_path or os.getenv("TRADEAI_SYSTEM_CYCLE_SPOOL_DB", DEFAULT_SPOOL_PATH)
+        path = Path(raw_path)
+        if not path.is_absolute():
+            raise SystemCycleProducerError("system cycle spool path must be absolute")
+        if not _environment_flag("MARKET_DATA_ENABLED", default=False):
+            raise SystemCycleProducerError("MARKET_DATA_ENABLED must be enabled in producer.env")
+        return cls(enabled=True, spool_path=path)
+
+
+def _environment_flag(name: str, *, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise SystemCycleProducerError(f"{name} must be an explicit boolean")
 
 
 def cycle_slot_at(moment: datetime) -> str:
@@ -81,14 +120,14 @@ def produce_once(
     symbols = tuple(symbol for market in ("US", "CN") for symbol in SYSTEM_UNIVERSE[market])
     try:
         closes, _volumes = source.history(symbols, period="3y", interval="1d")
-    except Exception:
-        # The evaluator truthfully converts a completely unavailable source to
-        # thirteen no_data records.  In production YFinanceAdapter itself is
-        # fail-closed through MARKET_DATA_ENABLED.
-        closes = pd.DataFrame()
+    except (DataSourceError, OSError, TimeoutError) as exc:
+        raise SystemCycleProducerError(f"system cycle market data is unavailable: {exc}") from exc
     if not isinstance(closes, pd.DataFrame):
-        closes = pd.DataFrame()
+        raise SystemCycleProducerError("system cycle market data must return a pandas DataFrame")
     evaluated = evaluate_system_cycle(closes, evaluation_date=evaluation_date, catalog_path=catalog_path)
+    coverage = sum(item.get("status") == "coverage" for item in evaluated["stock_results"].values())
+    if coverage == 0:
+        raise SystemCycleProducerError("system cycle market data has no valid canonical stock coverage")
     epoch = spool.allocate_fencing_epoch(worker_id)
     result = build_system_cycle_research_result(
         worker_id=worker_id,
@@ -120,15 +159,21 @@ def produce_once(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Canonical system-cycle shadow research producer")
     parser.add_argument("--once", action="store_true", help="generate and enqueue at most one New York cycle slot")
-    parser.add_argument("--spool-db", default=os.getenv("TRADEAI_SYSTEM_CYCLE_SPOOL_DB", DEFAULT_SPOOL_PATH))
+    parser.add_argument("--spool-db")
     args = parser.parse_args(argv)
     if not args.once:
         parser.error("--once is required")
     try:
-        spool = PersistentSystemCycleSpool(BacktestQueueDatabase(args.spool_db))
+        settings = ProducerSettings.from_environment(spool_path=args.spool_db)
+        if not settings.enabled:
+            print(json.dumps({"created": False, "state": "disabled"}, sort_keys=True, separators=(",", ":")))
+            return 0
+        if settings.spool_path is None:  # pragma: no cover - frozen settings invariant
+            raise SystemCycleProducerError("enabled producer is missing its spool path")
+        spool = PersistentSystemCycleSpool(BacktestQueueDatabase(settings.spool_path))
         print(json.dumps(produce_once(spool=spool), sort_keys=True, separators=(",", ":"), allow_nan=False))
         return 0
-    except (OSError, ValueError, RuntimeError) as exc:
+    except (OSError, ValueError, SystemCycleProducerError) as exc:
         print(f"system cycle producer refused: {exc}", file=sys.stderr)
         return 2
 
