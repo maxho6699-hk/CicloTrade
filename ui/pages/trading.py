@@ -86,7 +86,7 @@ def _set_live_auto(enabled: bool) -> None:
 
 @st.dialog("确认开启实盘自动交易")
 def _confirm_live_auto_enable() -> None:
-    st.warning("开启后仍受平台总开关、会员权限、白名单、风险限制和逐单确认保护；但满足全部条件时会产生真实资金风险。")
+    st.warning("开启后仍受平台总开关、个人券商授权、风险限制和逐单确认保护；但满足全部条件时会产生真实资金风险。会员订阅不会自动授予实盘权限。")
     confirmed = st.checkbox("我确认只连接自己的券商账户，并理解自动交易可能造成真实亏损")
     if st.button(
         "开启我的实盘自动交易",
@@ -165,7 +165,7 @@ def render() -> None:
     page_heading(
         "EXECUTION / ORDERS",
         "交易执行",
-        "模拟盘用于验证订单与风控流程。实盘必须具备套餐权限、老虎凭证、额外签约与总开关。",
+        "此为旧版内部执行工具。实盘服务与会员订阅分开，必须使用个人券商授权、风险开关与逐单确认。",
         "RISK FIRST · NO FAKE FILLS",
     )
     market = st.segmented_control("市场", ["美股", "A股"], default="美股", key="trading_market", required=True)
@@ -179,13 +179,9 @@ def render() -> None:
     user_live_enabled = user_settings.get("live_auto_enabled") is True
     platform_suspended = user_settings.get("live_auto_platform_suspended") is True
     platform_auto_trading_open = user_auto_trading_open(db)
-    contract_users = {value.strip() for value in os.getenv("TRADEAI_STOCK_AUTO_CONTRACT_USER_IDS", "").split(",") if value.strip()}
     operator_id = os.getenv("TRADEAI_LIVE_OPERATOR_USER_ID", "").strip()
     live_entitled = (
         bool(user.get("is_admin"))
-        and
-        can(plan, "real_trade")
-        and str(user["id"]) in contract_users
         and str(user["id"]) == operator_id
     )
     live_enabled = (
@@ -204,7 +200,7 @@ def render() -> None:
         st.caption("完整交易功能会持续展示；平台关闭时只锁定券商资料登记、个人开关和实盘提交，模拟盘不受影响。")
         if not platform_auto_trading_open:
             st.info(
-                "自动交易目前由管理员统一关闭。需要评估券商账户隔离、会员资格和风控配置后开通，"
+                "自动交易目前由管理员统一关闭。需要确认个人券商账户隔离、授权和风控配置后开通，"
                 "请联系专属顾问。",
                 icon=":material/support_agent:",
             )
@@ -227,21 +223,19 @@ def render() -> None:
                 )
             if st.button("开启我的实盘自动交易", icon=":material/verified_user:", width="stretch"):
                 _confirm_live_auto_enable()
-        elif can(plan, "real_trade"):
+        else:
             st.info(
-                "你的会员包含受控实盘申请资格，但个人券商凭证隔离尚未完成。请联系管理员评估；"
+                "实盘服务不随会员等级自动开通。请先连接并授权自己的券商账户，确认账户权限和风险设置；"
                 "系统不会把平台共享账户用于你的交易。",
                 icon=":material/support_agent:",
             )
             st.link_button(
-                "联系管理员评估",
+                "查看个人券商接入流程",
                 "https://t.me/Maxooo8",
                 icon=":material/support_agent:",
                 type="primary",
                 width="stretch",
             )
-        else:
-            st.info("当前会员等级不包含实盘自动交易；模拟盘可继续使用。", icon=":material/lock:")
     if mode == "live" and not platform_auto_trading_open:
         st.info(
             "实盘界面保留供你查看流程；平台自动交易总开关当前关闭，提交和券商资料登记均不会执行。",
@@ -249,7 +243,7 @@ def render() -> None:
         )
     elif mode == "live" and not live_enabled:
         st.error(
-            "实盘暂未对用户开放；当前仅平台管理员可联调。高阶会员请联系客服了解开放条件。",
+            "实盘当前未满足连接、授权、风险开关或环境条件，订单未发送。",
             icon=":material/lock:",
         )
     if mode == "live" and market == "A股":
@@ -326,23 +320,17 @@ def render() -> None:
         st.info("尚无订单。建议先用模拟盘验证订单与风控。", icon=":material/receipt_long:")
     limits = trading_limits(plan)
     account_limit = limits["brokers"]
-    allowed_providers = {
-        "免费版": [],
-        "标准版": ["Tiger"],
-        "高级版": ["Tiger", "Alpaca"],
-        "专业版": ["Tiger", "Alpaca", "IBKR"],
-        "定制版": ["Tiger", "Alpaca", "IBKR", "Futu", "QMT", "PTrade"],
-    }[plan]
+    allowed_providers = ["Tiger", "Alpaca", "IBKR", "Futu", "QMT", "PTrade"]
     section_label(
         "券商账户",
         "完整接入能力保留；账户资料不会在服务关闭时从浏览器提交",
     )
     accounts = db.fetch_all("SELECT * FROM broker_accounts WHERE user_id=? ORDER BY created_at DESC", (user["id"],))
     with st.container(border=True):
-        providers = "、".join(allowed_providers) if allowed_providers else "升级后开放"
+        providers = "、".join(allowed_providers)
         st.caption(
-            f"当前方案：{plan} · 支持券商：{providers} · "
-            + ("账户数量不限" if account_limit is None else f"最多 {account_limit or 0} 家券商")
+            f"独立实盘接入服务 · 支持券商：{providers} · "
+            + ("账户数量不限" if account_limit is None else f"最多 {account_limit} 家券商")
         )
         if not platform_auto_trading_open:
             st.info(
@@ -357,8 +345,6 @@ def render() -> None:
                 type="primary",
                 width="stretch",
             )
-        elif account_limit == 0:
-            st.info("当前会员等级不包含券商连接；可先使用模拟盘，升级后再申请接入。", icon=":material/lock:")
         else:
             st.caption("这里只登记非敏感账户标识；不要输入券商密码、API Key、Token 或私钥。")
             with st.form("broker_account"):

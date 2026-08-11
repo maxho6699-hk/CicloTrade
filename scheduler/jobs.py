@@ -12,6 +12,7 @@ import pandas as pd
 
 from core.alerts import AlertService
 from core.database import get_database
+from core.membership import authoritative_membership_user, resolve_membership
 from core.plans import TELEGRAM_CHANNEL_NAMES, can, effective_plan, plan_display_name
 from core.quant_journal import QuantJournal
 from core.user_settings import load_user_settings
@@ -19,6 +20,12 @@ from core.strategy_evaluation import run_system_quant_cycle, update_saved_strate
 from core.user_profiles import UserProfileService
 from data.datasource import get_resilient_data_source
 from notification.email_sender import send_email, smtp_configured
+from notification.channel_content import (
+    RecommendationChange,
+    classify_recommendation_change,
+    normalize_recommendation_revision,
+    recommendation_from_event,
+)
 from notification.templates import (
     email_message,
     telegram_daily_summary,
@@ -38,6 +45,14 @@ from notification.telegram_bot import (
 from notification.telegram_outbox import (
     dispatch_telegram_service_outbox as dispatch_telegram_service_outbox,
 )
+
+
+class NoMaterialRecommendationChange(RuntimeError):
+    """The event changed timestamps or bookkeeping only, so no channel message is due."""
+
+
+FREE_GROUP_SIGNAL_DELAY_MINUTES = {"stock": 60, "option": 15}
+FREE_GROUP_MAX_DELAY_MINUTES = max(FREE_GROUP_SIGNAL_DELAY_MINUTES.values())
 
 
 def _settings_json(value) -> dict:
@@ -102,7 +117,9 @@ def enqueue_quant_signal_deliveries(database=None) -> int:
     )
     if not event_targets:
         return 0
-    users = db.fetch_all(
+    users = [
+        authoritative_membership_user(db, user)
+        for user in db.fetch_all(
         """SELECT u.id,u.plan_type,u.subscription_expire,u.created_at,s.settings_json,
                   s.updated_at settings_updated_at,
                   (SELECT MAX(o.paid_at) FROM subscription_orders o
@@ -113,7 +130,8 @@ def enqueue_quant_signal_deliveries(database=None) -> int:
                      AND json_extract(CASE WHEN json_valid(l.details) THEN l.details ELSE '{}' END,
                                       '$.user_id')=u.id) admin_plan_at
            FROM users u LEFT JOIN user_settings s ON s.user_id=u.id WHERE u.is_active=1"""
-    )
+        )
+    ]
     now = datetime.now(UTC).isoformat(timespec="seconds")
     queued = 0
     with db.transaction() as conn:
@@ -142,6 +160,54 @@ def enqueue_quant_signal_deliveries(database=None) -> int:
     return queued
 
 
+def _recommendation_identity(metadata: dict) -> str | None:
+    value = (
+        metadata.get("recommendation_id")
+        or metadata.get("opportunity_id")
+        or metadata.get("decision_id")
+    )
+    cleaned = str(value or "").strip()
+    return cleaned or None
+
+
+def _previous_recommendation_content(
+    journal: QuantJournal,
+    event: dict,
+    leg: dict,
+    metadata: dict,
+):
+    instrument_key = str(leg.get("instrument_key") or "")
+    if not instrument_key:
+        return None
+    events = journal.list_events(str(event["ledger_key"]))
+    if event.get("event_type") in {"correction", "reversal"} and event.get("corrects_event_id"):
+        candidates = [
+            item for item in events
+            if int(item["id"]) == int(event["corrects_event_id"])
+        ]
+    else:
+        identity = _recommendation_identity(metadata)
+        if not identity:
+            return None
+        candidates = [
+            item for item in events
+            if int(item["id"]) < int(event["id"])
+            and _recommendation_identity(item.get("metadata") or {}) == identity
+        ]
+    for previous in reversed(candidates):
+        try:
+            previous_legs = journal.execution_legs(int(previous["id"]))
+        except (KeyError, TypeError, ValueError, RuntimeError):
+            continue
+        previous_leg = next(
+            (item for item in previous_legs if str(item.get("instrument_key") or "") == instrument_key),
+            None,
+        )
+        if previous_leg is not None:
+            return recommendation_from_event(previous, previous_leg, previous.get("metadata") or {})
+    return None
+
+
 def _quant_message(
     database,
     delivery: dict,
@@ -151,7 +217,7 @@ def _quant_message(
 ) -> str:
     event = database.fetch_one(
         """SELECT id,ledger_key,source,event_type,strategy_name,strategy_version,corrects_event_id,
-                  occurred_at,metadata_json FROM quant_events WHERE id=?""",
+                  occurred_at,recorded_at,metadata_json FROM quant_events WHERE id=?""",
         (delivery["event_id"],),
     )
     if not event:
@@ -176,33 +242,46 @@ def _quant_message(
     if not legs:
         raise RuntimeError("量化事件没有匹配的交易腿")
     metadata = _settings_json(event["metadata_json"])
-    risk_levels: dict = {}
-    for item in journal.list_events(event["ledger_key"]):
-        if not item.get("active") or not isinstance(item.get("metadata"), dict):
+    changed_legs: list[dict] = []
+    change_kinds: dict[str, RecommendationChange] = {}
+    contents = {}
+    for leg in legs:
+        current_content = recommendation_from_event(event, leg, metadata)
+        previous_content = _previous_recommendation_content(journal, event, leg, metadata)
+        current_content = normalize_recommendation_revision(previous_content, current_content)
+        change = classify_recommendation_change(previous_content, current_content)
+        if change is None:
             continue
-        values = item["metadata"].get("risk_levels")
-        if isinstance(values, dict):
-            risk_levels.update(values)
-    values = metadata.get("risk_levels")
-    if isinstance(values, dict):
-        risk_levels.update(values)
-    metadata["risk_levels"] = risk_levels
+        changed_legs.append(leg)
+        instrument_key = str(leg.get("instrument_key") or "")
+        change_kinds[instrument_key] = change
+        contents[instrument_key] = current_content
+    if not changed_legs:
+        raise NoMaterialRecommendationChange("no_material_change")
     positions = [
         position for position in journal.replay(event["ledger_key"])["positions"].values()
         if position["instrument_type"] in allowed_types
         and (audience is not None or position["symbol"] == delivery["symbol"])
     ]
-    source_label = "Tiger 券商模擬帳戶" if str(event["source"]).startswith("tiger") else "CicloTrade 系統模擬帳戶"
+    source_label = (
+        "CicloTrade 官方模擬帳戶（Tiger）"
+        if str(event["source"]).startswith("tiger")
+        else "CicloTrade 官方模擬帳戶"
+    )
     delay_note = None
     if delay_minutes:
         delay_note = "期權建議延遲 15 分鐘" if delivery["instrument_type"] == "option" else "正股建議延遲 1 小時"
     return telegram_quant_message(
         event,
-        legs,
+        changed_legs,
         metadata,
         positions=positions,
         delay_note=delay_note,
         source_label=source_label,
+        change_kinds=change_kinds,
+        contents=contents,
+        delivery_delay_minutes=int(delay_minutes or 0),
+        immediate_action_allowed=not bool(delay_minutes),
     )
 
 
@@ -211,23 +290,23 @@ def _send_quant_card(message: str, target: str, *, upgrade: bool = False) -> Non
     buttons = (
         [
             [
-                {"text": "📈 今日建議", "url": f"{base}/recommendations"},
-                {"text": "💼 目前持倉", "url": f"{base}/dashboard"},
+                {"text": "📈 今日建議", "url": f"{base}/opportunities"},
+                {"text": "💼 官方模擬持倉", "url": f"{base}/portfolio"},
             ],
             [
-                {"text": "📊 市場行情", "url": f"{base}/terminal"},
-                {"text": "⚙️ 網站設定", "url": f"{base}/settings"},
+                {"text": "📊 市場行情", "url": f"{base}/markets"},
+                {"text": "🔔 通知設定", "url": f"{base}/notifications"},
             ],
         ]
         if not upgrade
         else [
             [
-                {"text": "📈 延遲建議", "url": f"{base}/recommendations"},
-                {"text": "💎 升級會員", "url": f"{base}/subscription"},
+                {"text": "📈 延遲建議", "url": f"{base}/opportunities"},
+                {"text": "💎 升級會員", "url": f"{base}/membership"},
             ],
             [
-                {"text": "📊 市場行情", "url": f"{base}/terminal"},
-                {"text": "❓ 方案說明", "url": f"{base}/subscription"},
+                {"text": "📊 市場行情", "url": f"{base}/markets"},
+                {"text": "❓ 方案說明", "url": f"{base}/membership"},
             ],
         ]
     )
@@ -247,7 +326,8 @@ def dispatch_quant_signal_deliveries(database=None, limit: int = 100) -> int:
     due = now.isoformat(timespec="seconds")
     deliveries = db.fetch_all(
         """SELECT * FROM quant_event_deliveries
-           WHERE status IN ('pending','failed','sending') AND next_attempt_at<=?
+           WHERE channel='telegram'
+             AND status IN ('pending','failed','sending') AND next_attempt_at<=?
            ORDER BY id LIMIT ?""",
         (due, max(1, min(int(limit), 500))),
     )
@@ -257,7 +337,8 @@ def dispatch_quant_signal_deliveries(database=None, limit: int = 100) -> int:
         claimed = db.execute(
             """UPDATE quant_event_deliveries
                SET status='sending',attempts=attempts+1,next_attempt_at=?,updated_at=?
-               WHERE id=? AND status IN ('pending','failed','sending') AND next_attempt_at<=?""",
+               WHERE id=? AND channel='telegram'
+                 AND status IN ('pending','failed','sending') AND next_attempt_at<=?""",
             (lease_until, due, delivery["id"], due),
         )
         if not claimed:
@@ -265,6 +346,8 @@ def dispatch_quant_signal_deliveries(database=None, limit: int = 100) -> int:
         user = db.fetch_one(
             "SELECT id,is_active,plan_type,subscription_expire FROM users WHERE id=?", (delivery["user_id"],)
         )
+        if user:
+            user = authoritative_membership_user(db, user)
         settings = load_user_settings(delivery["user_id"], db) if user else {}
         capability, event_name = _signal_capability(delivery["instrument_type"])
         target = entitled_user_target(user, settings, event_name)
@@ -286,6 +369,13 @@ def dispatch_quant_signal_deliveries(database=None, limit: int = 100) -> int:
             if not telegram_configured(target):
                 raise RuntimeError("Telegram Bot 尚未配置")
             _send_quant_card(_quant_message(db, delivery), target)
+        except NoMaterialRecommendationChange:
+            db.execute(
+                """UPDATE quant_event_deliveries SET status='skipped',last_error='no_material_change',
+                   updated_at=? WHERE id=? AND status='sending'""",
+                (due, delivery["id"]),
+            )
+            continue
         except TelegramDeliveryUncertain as exc:
             db.execute(
                 """UPDATE quant_event_deliveries SET status='skipped',last_error=?,updated_at=?
@@ -406,6 +496,12 @@ def dispatch_quant_group_deliveries(database=None, limit: int = 100) -> int:
             if not telegram_configured(target):
                 raise RuntimeError("Telegram 群组通知尚未启用")
             _send_quant_card(_quant_message(db, delivery, audience=delivery["group_name"]), target)
+        except NoMaterialRecommendationChange:
+            db.execute(
+                "UPDATE telegram_group_deliveries SET status='skipped',last_error='no_material_change',updated_at=? WHERE id=?",
+                (due, delivery["id"]),
+            )
+            continue
         except TelegramDeliveryUncertain as exc:
             db.execute(
                 "UPDATE telegram_group_deliveries SET status='skipped',last_error=?,updated_at=? WHERE id=?",
@@ -454,7 +550,9 @@ def enqueue_delayed_free_group_deliveries(database=None) -> int:
     queued = 0
     with db.transaction() as conn:
         for row in rows:
-            delay = 15 if row["instrument_type"] == "option" else 60
+            delay = FREE_GROUP_SIGNAL_DELAY_MINUTES.get(
+                str(row["instrument_type"]), FREE_GROUP_MAX_DELAY_MINUTES
+            )
             recorded = datetime.fromisoformat(str(row["recorded_at"]).replace("Z", "+00:00"))
             if recorded.tzinfo is None:
                 recorded = recorded.replace(tzinfo=UTC)
@@ -506,6 +604,12 @@ def dispatch_delayed_free_group_deliveries(database=None, limit: int = 100) -> i
                 delay_minutes=int(delivery["delay_minutes"]),
             )
             _send_quant_card(message, delivery["chat_id"], upgrade=True)
+        except NoMaterialRecommendationChange:
+            db.execute(
+                "UPDATE telegram_delayed_group_deliveries SET status='skipped',last_error='no_material_change',updated_at=? WHERE id=?",
+                (due, delivery["id"]),
+            )
+            continue
         except TelegramDeliveryUncertain as exc:
             db.execute(
                 "UPDATE telegram_delayed_group_deliveries SET status='skipped',last_error=?,updated_at=? WHERE id=?",
@@ -557,6 +661,8 @@ def dispatch_price_alert_deliveries(database=None, limit: int = 100) -> int:
             "SELECT id,plan_type,subscription_expire,is_active FROM users WHERE id=?",
             (delivery["user_id"],),
         )
+        if user:
+            user = authoritative_membership_user(db, user)
         settings = load_user_settings(delivery["user_id"], db) if user else {}
         target = entitled_user_target(user or {}, settings, "price_alert")
         if not user or not user["is_active"] or not target:
@@ -690,7 +796,8 @@ def scan_price_alerts(database=None, data_source=None) -> int:
 
 def downgrade_expired_subscriptions(database=None) -> int:
     db = database or get_database()
-    now = datetime.now(UTC).isoformat(timespec="seconds")
+    moment = datetime.now(UTC)
+    now = moment.isoformat(timespec="seconds")
     users = db.fetch_all(
         """SELECT id,email,display_name,plan_type,subscription_expire FROM users
            WHERE plan_type!='免费版' AND subscription_expire IS NOT NULL AND subscription_expire<=?""",
@@ -698,38 +805,80 @@ def downgrade_expired_subscriptions(database=None) -> int:
     )
     if not users:
         return 0
+    transitions = []
     with db.transaction() as conn:
         for user in users:
-            conn.execute(
-                "UPDATE users SET plan_type='免费版',subscription_expire=NULL WHERE id=?",
-                (user["id"],),
+            resolved = resolve_membership(
+                conn, int(user["id"]), moment, sync_cache=True
+            )
+            new_plan = str(resolved["plan_type"])
+            action = (
+                "SUBSCRIPTION_EXPIRED"
+                if new_plan == "免费版"
+                else "SUBSCRIPTION_TIER_FALLBACK"
             )
             conn.execute(
                 "INSERT INTO user_action_logs(user_id,action_type,details,created_at) VALUES (?,?,?,?)",
-                (user["id"], "SUBSCRIPTION_EXPIRED", f"plan={user['plan_type']};expiry={user['subscription_expire']}", now),
+                (
+                    user["id"],
+                    action,
+                    json.dumps(
+                        {
+                            "previous_plan": user["plan_type"],
+                            "previous_expiry": user["subscription_expire"],
+                            "effective_plan": new_plan,
+                            "effective_expiry": resolved["subscription_expire"],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    now,
+                ),
+            )
+            transitions.append(
+                {
+                    **user,
+                    "effective_plan": new_plan,
+                    "effective_expiry": resolved["subscription_expire"],
+                }
             )
     membership_sync = os.getenv("TELEGRAM_MEMBERSHIP_SYNC_ENABLED", "false").strip().lower() == "true"
-    for user in users:
+    for user in transitions:
         settings = load_user_settings(user["id"], db)
         telegram_user = verified_user_target(settings)
         if membership_sync and telegram_user:
-            groups = (
+            previous_groups = set(
                 ("advanced", "professional")
                 if user["plan_type"] in {"专业版", "定制版"}
                 else ("advanced",) if user["plan_type"] == "高级版" else ()
             )
-            for group in groups:
+            effective_groups = set(
+                ("advanced", "professional")
+                if user["effective_plan"] in {"专业版", "定制版"}
+                else ("advanced",) if user["effective_plan"] == "高级版" else ()
+            )
+            for group in sorted(previous_groups - effective_groups):
                 if target := telegram_group(group):
                     try:
                         remove_group_member(target, telegram_user)
                     except RuntimeError as exc:
                         db.log_system_event("WARN", "TELEGRAM", "会员到期群组移除失败", f"user={user['id']};group={group};{str(exc)[:180]}")
         if smtp_configured():
+            fell_back = user["effective_plan"] != "免费版"
+            member_message = (
+                f"{user.get('display_name') or '您好'}，你的 {plan_display_name(user['plan_type'])} 已到期，"
+                f"现已回落为 {plan_display_name(user['effective_plan'])}。"
+                if fell_back
+                else f"{user.get('display_name') or '您好'}，你的 {plan_display_name(user['plan_type'])} 已到期并自动转为免费会员。"
+            )
             subject, text, html = email_message(
-                "CicloTrade 會員已到期",
-                "會員權益已到期",
-                f"{user.get('display_name') or '您好'}，你的 {plan_display_name(user['plan_type'])} 已到期並自動降級為免費會員。",
-                (f"到期时间：{user['subscription_expire']}", "已保存的研究记录不会删除。"),
+                "CicloTrade 會員等級已更新" if fell_back else "CicloTrade 會員已到期",
+                "會員等級已回落" if fell_back else "會員權益已到期",
+                member_message,
+                (
+                    f"原等级到期时间：{user['subscription_expire']}",
+                    f"当前等级有效期：{user['effective_expiry'] or '免费版长期有效'}",
+                    "已保存的研究记录不会删除。",
+                ),
                 action_url=os.getenv("APP_BASE_URL", "https://ciclotrade.com"),
             )
             notices = (
@@ -739,8 +888,13 @@ def downgrade_expired_subscriptions(database=None) -> int:
                     email_message(
                         f"CicloTrade 会员到期 · 用户 #{user['id']}",
                         "会员到期处理完成",
-                        "系统已自动降级用户权益；请核对付费群成员状态。",
-                        (f"用户 ID：{user['id']}", f"原方案：{user['plan_type']}", f"到期时间：{user['subscription_expire']}"),
+                        "系统已重新计算用户权益；请核对付费群成员状态。",
+                        (
+                            f"用户 ID：{user['id']}",
+                            f"原方案：{user['plan_type']}",
+                            f"当前方案：{user['effective_plan']}",
+                            f"原到期时间：{user['subscription_expire']}",
+                        ),
                     ),
                 ),
             )
@@ -749,7 +903,7 @@ def downgrade_expired_subscriptions(database=None) -> int:
                     send_email(recipient, *message)
                 except RuntimeError:
                     db.log_system_event("WARN", "EMAIL", "会员到期邮件发送失败", f"user={user['id']};recipient={recipient}")
-    return len(users)
+    return len(transitions)
 
 
 def notify_expiring_subscriptions(database=None) -> int:
@@ -851,6 +1005,46 @@ def _daily_summary_payload(database, ledger_key: str, snapshots: list[dict]) -> 
     }
 
 
+def _free_summary_release_at(database, ledger_key: str, snapshots: list[dict]) -> datetime | None:
+    """Return the latest safe release time for every datum exposed by a free summary."""
+    release_times: list[datetime] = []
+    for snapshot in snapshots:
+        try:
+            captured_at = datetime.fromisoformat(
+                str(snapshot["captured_at"]).replace("Z", "+00:00")
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+        if captured_at.tzinfo is None:
+            return None
+        release_times.append(
+            captured_at.astimezone(UTC)
+            + timedelta(minutes=FREE_GROUP_MAX_DELAY_MINUTES)
+        )
+    event_rows = database.fetch_all(
+        """SELECT e.recorded_at,l.instrument_type
+           FROM quant_events e JOIN quant_event_legs l ON l.event_id=e.id
+           WHERE e.ledger_key=?""",
+        (ledger_key,),
+    )
+    for row in event_rows:
+        try:
+            recorded_at = datetime.fromisoformat(
+                str(row["recorded_at"]).replace("Z", "+00:00")
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+        if recorded_at.tzinfo is None:
+            return None
+        delay = FREE_GROUP_SIGNAL_DELAY_MINUTES.get(
+            str(row["instrument_type"]), FREE_GROUP_MAX_DELAY_MINUTES
+        )
+        release_times.append(
+            recorded_at.astimezone(UTC) + timedelta(minutes=delay)
+        )
+    return max(release_times) if release_times else None
+
+
 def publish_daily_group_summary(database=None, *, free_group: bool = False) -> int:
     """Publish entitlement-specific summaries from the immutable simulation ledger."""
     if os.getenv("TELEGRAM_DAILY_SUMMARY_ENABLED", "false").strip().lower() != "true":
@@ -866,6 +1060,10 @@ def publish_daily_group_summary(database=None, *, free_group: bool = False) -> i
     )
     if not snapshots:
         return 0
+    if free_group:
+        release_at = _free_summary_release_at(db, ledger_key, snapshots)
+        if release_at is None or datetime.now(UTC) < release_at:
+            return 0
     snapshot_marker = ",".join(str(row["id"]) for row in snapshots)
     payload = _daily_summary_payload(db, ledger_key, snapshots)
     routes = (("daily", TELEGRAM_CHANNEL_NAMES["daily"], {"stock", "option"}, "正股建議延遲 1 小時 · 期權建議延遲 15 分鐘", True),) if free_group else (

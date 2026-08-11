@@ -20,7 +20,7 @@ DEFAULT_CATALOG = Path(__file__).resolve().parents[1] / "strategies" / "catalog.
 _KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,63}$")
 _FAMILIES = {"option", "equity"}
 _RISK_LEVELS = {"low", "medium", "high"}
-_FREE_STRATEGY_KEYS = frozenset({"option_long_call"})
+_FREE_STRATEGY_KEYS = frozenset({"template_dual_ma"})
 
 
 def _utc_now() -> str:
@@ -213,9 +213,19 @@ class StrategyRegistry:
     def list_for_plan(self, plan: str, *, family: str | None = None) -> list[dict[str, Any]]:
         """Return active strategies available to a subscription plan."""
         items = self.list(family=family)
-        if can(plan, "strategy_all"):
-            return items
-        return [item for item in items if item["key"] in _FREE_STRATEGY_KEYS]
+        visible: list[dict[str, Any]] = []
+        for item in items:
+            if item["family"] == "option":
+                if not can(plan, "option_strategy"):
+                    continue
+                leg_count = int(item.get("rules", {}).get("leg_count", 1) or 1)
+                if leg_count > 1 and not can(plan, "option_strategy_multi_leg"):
+                    continue
+                visible.append(item)
+                continue
+            if can(plan, "strategy_all") or item["key"] in _FREE_STRATEGY_KEYS:
+                visible.append(item)
+        return visible
 
     def check_plan_access(self, plan: str, name: str) -> bool | None:
         """Return access for a registered strategy; None means manual/legacy name."""

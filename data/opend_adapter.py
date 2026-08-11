@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+import math
 import os
+import re
 import socket
 
 import pandas as pd
@@ -25,6 +27,14 @@ _PERIOD_DAYS = {
     "10y": 3_700,
     "max": 7_500,
 }
+
+_OPTION_CONTRACT_PATTERN = re.compile(
+    r"US\.[A-Z][A-Z0-9.-]{0,11}\d{6}[CP]\d{6}"
+)
+
+
+class OptionExpiryUnavailableError(DataSourceError):
+    """The requested, syntactically valid expiry is absent from OpenD's chain."""
 
 
 class OpenDAdapter(DataSource):
@@ -139,6 +149,108 @@ class OpenDAdapter(DataSource):
         require_market_data_enabled()
         return self._bars(symbol, period, interval)
 
+    @staticmethod
+    def _snapshot_number(row: pd.Series, column: str) -> float | None:
+        try:
+            value = float(row.get(column))
+        except (TypeError, ValueError):
+            return None
+        return value if math.isfinite(value) else None
+
+    @staticmethod
+    def _snapshot_text(row: pd.Series, column: str) -> str | None:
+        value = row.get(column)
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text if text and text.casefold() not in {"nan", "nat", "<na>"} else None
+
+    @staticmethod
+    def _is_realtime_right(value: object) -> bool:
+        return str(value or "").strip().upper() in {"LV1", "LV2", "LV3"}
+
+    @staticmethod
+    def _unknown_quote_rights() -> dict[str, object]:
+        return {
+            "us_qot_right": "N/A",
+            "us_option_qot_right": "N/A",
+            "us_realtime_entitlement": False,
+            "us_option_realtime_entitlement": False,
+        }
+
+    @staticmethod
+    def _quote_rights_from_context(context: object) -> dict[str, object]:
+        """Ask OpenD for the account's actual quote entitlements.
+
+        Environment flags only enable a feature; they never prove that the
+        logged-in Futu account owns a real-time market-data right.
+        """
+        from futu import RET_OK, UserInfoField
+
+        ret, data = context.get_user_info([UserInfoField.QOTRIGHT])
+        if ret != RET_OK or not isinstance(data, dict):
+            raise DataSourceError(f"OpenD 行情权限查询失败：{str(data)[:240]}")
+        us_right = str(data.get("us_qot_right") or "N/A").strip().upper()
+        option_right = str(data.get("us_option_qot_right") or "N/A").strip().upper()
+        return {
+            "us_qot_right": us_right,
+            "us_option_qot_right": option_right,
+            "us_realtime_entitlement": OpenDAdapter._is_realtime_right(us_right),
+            "us_option_realtime_entitlement": OpenDAdapter._is_realtime_right(option_right),
+        }
+
+    def quote_rights(self) -> dict[str, object]:
+        """Read server-side OpenD quote rights without returning user identity."""
+        require_market_data_enabled()
+        context = self._context()
+        try:
+            return self._quote_rights_from_context(context)
+        finally:
+            context.close()
+
+    def stock_quote(self, symbol: str) -> dict[str, object]:
+        """Read and normalize one US equity snapshot directly from OpenD."""
+        require_market_data_enabled()
+        from futu import RET_OK
+
+        code = self._code(symbol)
+        context = self._context()
+        try:
+            try:
+                rights = self._quote_rights_from_context(context)
+            except (AttributeError, DataSourceError, TypeError, ValueError):
+                # A permissions probe must fail closed without discarding an
+                # otherwise usable research snapshot from an older OpenD SDK.
+                rights = self._unknown_quote_rights()
+            ret, snapshot = context.get_market_snapshot([code])
+        finally:
+            context.close()
+        if ret != RET_OK or snapshot.empty:
+            raise DataSourceError(f"OpenD 正股快照请求失败：{str(snapshot)[:240]}")
+        row = snapshot.iloc[0]
+        bid, ask = self._snapshot_number(row, "bid_price"), self._snapshot_number(row, "ask_price")
+        last = self._snapshot_number(row, "last_price")
+        quote_at = self._snapshot_text(row, "update_time")
+        return {
+            "symbol": code.removeprefix("US."),
+            "last": last,
+            "bid": bid,
+            "ask": ask,
+            "spread": ask - bid if bid is not None and ask is not None else None,
+            "open": self._snapshot_number(row, "open_price"),
+            "high": self._snapshot_number(row, "high_price"),
+            "low": self._snapshot_number(row, "low_price"),
+            "prev_close": self._snapshot_number(row, "prev_close_price"),
+            "volume": self._snapshot_number(row, "volume"),
+            "quote_at": quote_at,
+            "source": "OpenD",
+            **rights,
+            "actionable_snapshot": bool(
+                rights["us_realtime_entitlement"]
+                and last is not None and bid is not None and ask is not None and quote_at
+            ),
+        }
+
     def search(self, query: str, market: str = "美股", max_results: int = 8) -> list[dict[str, str]]:
         require_market_data_enabled()
         if market != "美股" or not query.strip():
@@ -165,17 +277,30 @@ class OpenDAdapter(DataSource):
         return [item[2] for item in matches[: max(1, min(int(max_results), 50))]]
 
     def option_chain(self, symbol: str, expiry: str | None = None) -> tuple[str, pd.DataFrame, pd.DataFrame]:
+        """Compatibility wrapper for callers that do not need the expiry picker."""
+        selected, _, calls, puts = self.option_chain_with_expiries(symbol, expiry)
+        return selected, calls, puts
+
+    def option_chain_with_expiries(
+        self, symbol: str, expiry: str | None = None
+    ) -> tuple[str, list[str], pd.DataFrame, pd.DataFrame]:
+        """Fetch all available expiries and one selected option chain from OpenD."""
         require_market_data_enabled()
         from futu import RET_OK
 
         context = self._context()
         try:
-            kwargs = {"start": expiry, "end": expiry} if expiry else {}
-            ret, chain = context.get_option_chain(self._code(symbol), **kwargs)
+            # Do not filter at the provider: we must expose every expiry and
+            # reject a valid-looking but unavailable request truthfully.
+            ret, chain = context.get_option_chain(self._code(symbol))
             if ret != RET_OK or chain.empty:
                 raise DataSourceError(f"OpenD 期权链请求失败：{str(chain)[:240]}")
             expiries = sorted(str(value) for value in chain["strike_time"].dropna().unique())
-            selected = expiry if expiry in expiries else expiries[0]
+            if not expiries:
+                raise DataSourceError("OpenD 没有返回可用的期权到期日。")
+            if expiry is not None and expiry not in expiries:
+                raise OptionExpiryUnavailableError("请求的期权到期日不在 OpenD 可用列表中。")
+            selected = expiry or expiries[0]
             chain = chain[chain["strike_time"].astype(str) == selected].copy()
             snapshots = []
             codes = chain["code"].astype(str).tolist()
@@ -213,4 +338,17 @@ class OpenDAdapter(DataSource):
             if column not in renamed:
                 renamed[column] = pd.NA
         option_type = renamed["option_type"].astype(str).str.upper()
-        return selected, renamed.loc[option_type == "CALL", columns].reset_index(drop=True), renamed.loc[option_type == "PUT", columns].reset_index(drop=True)
+        return (
+            selected,
+            expiries,
+            renamed.loc[option_type == "CALL", columns].reset_index(drop=True),
+            renamed.loc[option_type == "PUT", columns].reset_index(drop=True),
+        )
+
+    def option_bars(self, contract_code: str, period: str, interval: str) -> pd.DataFrame:
+        """Read historical bars for one US option contract without any fallback feed."""
+        require_market_data_enabled()
+        code = str(contract_code).strip().upper()
+        if not _OPTION_CONTRACT_PATTERN.fullmatch(code):
+            raise DataSourceError("OpenD 期权合约代码无效。")
+        return self._bars(code, period, interval)

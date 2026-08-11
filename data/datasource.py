@@ -36,6 +36,9 @@ class DataSource(ABC):
     def bars(self, symbol: str, period: str, interval: str) -> pd.DataFrame:
         raise DataSourceError(f"{self.name} 当前不支持 {interval} K 线。")
 
+    def stock_quote(self, symbol: str) -> dict[str, object]:
+        raise DataSourceError(f"{self.name} 当前不支持正股研究报价。")
+
 
 def _env_flag(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
@@ -46,14 +49,21 @@ def require_market_data_enabled() -> None:
         raise DataSourceError("行情資料模組已停用；僅能由平台管理員啟用外部行情。")
 
 
-def market_data_status(name: str | None = None) -> dict[str, object]:
+def market_data_status(
+    name: str | None = None,
+    *,
+    source: DataSource | None = None,
+    request_succeeded: bool | None = None,
+    realtime_verified: bool | None = None,
+    fallback_from: str | None = None,
+) -> dict[str, object]:
     """Describe freshness from the selected adapter without making a request.
 
     A provider is shown as real-time only when both the adapter and deployment
     explicitly opt in.  This keeps UI copy correct while a commercial feed is
     being wired in and avoids treating a fast page refresh as live data.
     """
-    source = get_data_source(name)
+    source = source or get_data_source(name)
     if not _env_flag("MARKET_DATA_ENABLED"):
         return {
             "source": source.name,
@@ -62,10 +72,13 @@ def market_data_status(name: str | None = None) -> dict[str, object]:
             "freshness": "已停用",
             "detail": "外部行情访问已由平台关闭",
         }
-    try:
-        available = bool(getattr(source, "available", lambda: True)())
-    except Exception:
-        available = False
+    if request_succeeded is None:
+        try:
+            available = bool(getattr(source, "available", lambda: True)())
+        except Exception:
+            available = False
+    else:
+        available = request_succeeded
     if not available:
         fallback = get_data_source("yfinance")
         return {
@@ -75,34 +88,53 @@ def market_data_status(name: str | None = None) -> dict[str, object]:
             "is_realtime": False,
             "freshness": f"约 {fallback.delay_minutes} 分钟延迟",
             "detail": "实时通道暂不可用 · 已自动使用延迟行情",
+            "verification": "request_failed",
         }
-    realtime = bool(source.supports_realtime and _env_flag("MARKET_DATA_REALTIME"))
+    configured_realtime = bool(source.supports_realtime and _env_flag("MARKET_DATA_REALTIME"))
+    realtime = configured_realtime if realtime_verified is None else bool(configured_realtime and realtime_verified)
+    verification = (
+        "verified_realtime" if realtime else "unverified_realtime"
+        if source.supports_realtime and request_succeeded else "delayed_research"
+    )
     if realtime:
-        return {
+        result: dict[str, object] = {
             "source": source.name,
             "display_source": "美国实时市场数据",
             "is_realtime": True,
             "freshness": "实时",
             "detail": "授权实时行情 · 页面不主动延迟",
+            "verification": verification,
         }
-    if source.delay_minutes:
-        freshness = f"约 {source.delay_minutes} 分钟延迟"
-        detail = "研究级行情 · 供应商可能延迟"
     else:
-        freshness = "历史行情"
-        detail = "当前适配器未声明实时能力"
-    return {
-        "source": source.name,
-        "display_source": "美国延迟市场数据" if source.delay_minutes else "历史研究数据",
-        "is_realtime": False,
-        "freshness": freshness,
-        "detail": detail,
-    }
+        if source.delay_minutes:
+            freshness = f"约 {source.delay_minutes} 分钟延迟"
+            detail = "研究级行情 · 供应商可能延迟"
+        else:
+            freshness = "历史行情"
+            detail = "当前适配器未声明实时能力"
+        result = {
+            "source": source.name,
+            "display_source": "美国延迟市场数据" if source.delay_minutes else "历史研究数据",
+            "is_realtime": False,
+            "freshness": freshness,
+            "detail": detail,
+            "verification": verification,
+        }
+    result["configuration_allows_realtime"] = configured_realtime
+    if request_succeeded is not None:
+        result["request_succeeded"] = request_succeeded
+    if fallback_from:
+        result["fallback_from"] = fallback_from
+    return result
 
 
-def public_market_status(name: str | None = None, market: str = "美股") -> dict[str, object]:
+def public_market_status(
+    name: str | None = None,
+    market: str = "美股",
+    **status_context: object,
+) -> dict[str, object]:
     """Return truthful customer-facing freshness without vendor disclosure."""
-    status = dict(market_data_status(name))
+    status = dict(market_data_status(name, **status_context))
     if market == "A股":
         status["display_source"] = "A 股日线市场数据"
     return status
@@ -114,6 +146,10 @@ def get_data_source(name: str | None = None) -> DataSource:
         from data.yfinance_adapter import YFinanceAdapter
 
         return YFinanceAdapter()
+    if selected in {"akshare", "ak"}:
+        from data.akshare_adapter import AKShareAdapter
+
+        return AKShareAdapter()
     if selected == "polygon":
         from data.polygon_adapter import PolygonAdapter
 

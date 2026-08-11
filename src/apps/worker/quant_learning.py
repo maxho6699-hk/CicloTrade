@@ -42,8 +42,9 @@ class PromotionPolicy:
 
 
 @dataclass(frozen=True)
-class PromotionDecision:
-    approved: bool
+class PromotionProposal:
+    eligible_for_human_review: bool
+    requires_human_approval: bool
     next_state: ModelState
     reasons: tuple[str, ...]
 
@@ -71,16 +72,15 @@ def evaluate_for_promotion(
     state: ModelState,
     metrics: EvaluationMetrics,
     *,
-    independently_approved: bool,
     policy: PromotionPolicy | None = None,
-) -> PromotionDecision:
-    """Return a decision; this function never activates a model or performs I/O."""
+) -> PromotionProposal:
+    """Build a review proposal; Worker code can never approve or activate a model."""
     _validate_metrics(metrics)
     active_policy = policy or PromotionPolicy()
     reasons: list[str] = []
 
-    if state not in {ModelState.SHADOW, ModelState.PAPER_QUALIFIED}:
-        reasons.append("only shadow or paper-qualified challengers may be reviewed")
+    if state is not ModelState.SHADOW:
+        reasons.append("only shadow challengers may produce a review proposal")
     if metrics.sample_size < active_policy.minimum_sample_size:
         reasons.append("insufficient evaluated trades")
     if metrics.out_of_sample_ratio < active_policy.minimum_out_of_sample_ratio:
@@ -99,11 +99,9 @@ def evaluate_for_promotion(
         reasons.append("survivorship-bias check failed")
     if not metrics.current_data_passed:
         reasons.append("inputs are stale, incomplete, or unlicensed")
-    if not independently_approved:
-        reasons.append("independent promotion approval is required")
-
-    return PromotionDecision(
-        approved=not reasons,
-        next_state=ModelState.APPROVED if not reasons else ModelState.SHADOW,
+    return PromotionProposal(
+        eligible_for_human_review=not reasons,
+        requires_human_approval=True,
+        next_state=ModelState.SHADOW,
         reasons=tuple(reasons),
     )

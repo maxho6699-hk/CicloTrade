@@ -494,7 +494,7 @@ def _render_option_candidate(
         return
     if not can(plan, "option_chain"):
         st.info(
-            "期权结构与真实期权链复核从高级版开放；期权买卖 Telegram 推送从专业版开放。",
+            "期权结构、真实期权链、报价 K 线、Greeks、IV 与组合研究仅对专业版开放。",
             icon=":material/lock:",
         )
         return

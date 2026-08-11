@@ -10,6 +10,7 @@ from typing import Any
 from core.alerts import AlertService
 from core.compat import UTC
 from core.database import DatabaseManager, get_database
+from core.membership import assert_plan_not_lower
 from core.plans import can
 from core.user_settings import load_user_settings, merge_user_settings
 from payment.order_service import (
@@ -23,6 +24,7 @@ from src.apps.api.watchlists import (
     WATCHLIST_LIMIT,
     WATCHLIST_MARKETS,
     normalize_watchlist_symbol,
+    normalize_watchlist_pins,
     normalize_watchlists,
 )
 
@@ -60,10 +62,12 @@ class BrowserWriteService:
 
     def settings(self, identity: BrowserIdentity) -> dict[str, Any]:
         stored = load_user_settings(identity.id, self.db)
+        watchlists = normalize_watchlists(stored)
         return {
             "risk": stored.get("risk") if isinstance(stored.get("risk"), dict) else {},
             "telegram_events": stored.get("tg_events") if isinstance(stored.get("tg_events"), dict) else {},
-            "watchlists": normalize_watchlists(stored),
+            "watchlists": watchlists,
+            "watchlist_pins": normalize_watchlist_pins(stored, watchlists),
             "ui_locale": stored.get("ui_locale") if stored.get("ui_locale") in {"zh-Hant", "zh-Hans"} else None,
         }
 
@@ -73,6 +77,26 @@ class BrowserWriteService:
         locale = str(payload["locale"])
         merge_user_settings(identity.id, {"ui_locale": locale}, self.db)
         return locale
+
+    def resume_opening(self, identity: BrowserIdentity) -> bool:
+        """Clear only the user's pause flag and return whether it changed."""
+        now = datetime.now(UTC).isoformat(timespec="seconds")
+        with self.db.transaction() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT opening_paused FROM user_controls WHERE user_id=?", (identity.id,)
+            ).fetchone()
+            changed = bool(row and int(row["opening_paused"]))
+            if changed:
+                connection.execute(
+                    "UPDATE user_controls SET opening_paused=0,updated_at=? WHERE user_id=?",
+                    (now, identity.id),
+                )
+                connection.execute(
+                    "INSERT INTO user_action_logs (user_id,action_type,details,created_at) VALUES (?,?,?,?)",
+                    (identity.id, "USER_RESUME_OPENING", "账户页重新认证后清除个人新开仓暂停", now),
+                )
+        return changed
 
     def update_watchlist(
         self, identity: BrowserIdentity, payload: dict[str, Any], *, remove: bool = False
@@ -94,16 +118,19 @@ class BrowserWriteService:
                 stored = {}
             stored = stored if isinstance(stored, dict) else {}
             watchlists = normalize_watchlists(stored)
+            pins = normalize_watchlist_pins(stored, watchlists)
             key = WATCHLIST_MARKETS[market]
             values = list(watchlists[key])
             if remove:
                 values = [item for item in values if item != symbol]
+                pins[key] = [item for item in pins[key] if item != symbol]
             elif symbol not in values:
                 if len(values) >= WATCHLIST_LIMIT:
                     raise ValueError(f"每个市场最多保存 {WATCHLIST_LIMIT} 个自选标的。")
                 values.append(symbol)
             watchlists[key] = values
             stored["watchlists"] = watchlists
+            stored["watchlist_pins"] = pins
             connection.execute(
                 """INSERT INTO user_settings (user_id,settings_json,updated_at) VALUES (?,?,?)
                    ON CONFLICT(user_id) DO UPDATE SET
@@ -115,6 +142,50 @@ class BrowserWriteService:
                 ),
             )
         return watchlists
+
+    def update_watchlist_pin(
+        self, identity: BrowserIdentity, payload: dict[str, Any]
+    ) -> dict[str, list[str]]:
+        if set(payload) != {"market", "symbol", "pinned"}:
+            raise ValueError("置顶请求字段不完整或包含未知字段。")
+        market = str(payload.get("market", "")).upper()
+        if market not in WATCHLIST_MARKETS:
+            raise ValueError("自选市场必须是 US 或 CN。")
+        if not isinstance(payload.get("pinned"), bool):
+            raise ValueError("置顶状态必须是 true 或 false。")
+        symbol = normalize_watchlist_symbol(payload.get("symbol"), market)
+        with self.db.transaction() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT settings_json FROM user_settings WHERE user_id=?", (identity.id,)
+            ).fetchone()
+            try:
+                stored = json.loads(row["settings_json"]) if row else {}
+            except (TypeError, ValueError, json.JSONDecodeError):
+                stored = {}
+            stored = stored if isinstance(stored, dict) else {}
+            watchlists = normalize_watchlists(stored)
+            pins = normalize_watchlist_pins(stored, watchlists)
+            key = WATCHLIST_MARKETS[market]
+            if symbol not in watchlists[key]:
+                raise ValueError("该标的尚未加入自选，请先添加。")
+            if payload["pinned"] and symbol not in pins[key]:
+                pins[key].append(symbol)
+            elif not payload["pinned"]:
+                pins[key] = [item for item in pins[key] if item != symbol]
+            stored["watchlists"] = watchlists
+            stored["watchlist_pins"] = pins
+            connection.execute(
+                """INSERT INTO user_settings (user_id,settings_json,updated_at) VALUES (?,?,?)
+                   ON CONFLICT(user_id) DO UPDATE SET
+                     settings_json=excluded.settings_json,updated_at=excluded.updated_at""",
+                (
+                    identity.id,
+                    json.dumps(stored, ensure_ascii=False),
+                    datetime.now(UTC).isoformat(timespec="seconds"),
+                ),
+            )
+        return self.settings(identity)["watchlist_pins"]
 
     def update_risk(self, identity: BrowserIdentity, payload: dict[str, Any]) -> dict[str, Any]:
         if set(payload) != set(RISK_LIMITS):
@@ -156,70 +227,68 @@ class BrowserWriteService:
         return AlertService(self.db).list(identity.id)
 
     def create_alert(self, identity: BrowserIdentity, payload: dict[str, Any]) -> list[dict[str, Any]]:
-        allowed = {"symbol", "conditions", "logic"}
+        allowed = {
+            "symbol", "conditions", "logic", "trigger_mode", "repeat_mode", "expires_at",
+            "channels", "notify_channels", "notify_only", "operator", "target", "target_price", "value",
+        }
         if set(payload) - allowed or not isinstance(payload.get("symbol"), str):
             raise ValueError("预警请求字段无效。")
         conditions = payload.get("conditions")
+        if conditions is None:
+            # Compatibility with the original {symbol, operator, value} payload.
+            legacy_operator = payload.get("operator", ">=")
+            legacy_value = payload.get("value", payload.get("target", payload.get("target_price")))
+            if legacy_value is None:
+                raise ValueError("conditions 必须是条件数组，或提供 value/target_price。")
+            conditions = [{"type": "price", "operator": legacy_operator, "value": legacy_value}]
         if not isinstance(conditions, list):
             raise ValueError("conditions 必须是条件数组。")
+        channels = payload.get("channels", payload.get("notify_channels"))
+        if payload.get("notify_only", True) is not True:
+            raise ValueError("预警只负责提醒，不会自动下单。")
         AlertService(self.db).create(
             identity.id,
             identity.effective_plan,
             payload["symbol"],
             conditions=conditions,
             logic=str(payload.get("logic", "AND")),
+            trigger_mode=payload.get("trigger_mode"),
+            repeat_mode=payload.get("repeat_mode", "once"),
+            expires_at=payload.get("expires_at"),
+            channels=channels,
         )
         return self.list_alerts(identity)
 
-    def create_paper_order(self, identity: BrowserIdentity, payload: dict[str, Any]) -> dict[str, Any]:
-        allowed = {"symbol", "side", "quantity", "price", "instrument_type"}
-        if set(payload) - allowed:
-            raise ValueError("模拟订单包含未知字段。")
-        quantity, price = payload.get("quantity"), payload.get("price")
-        if isinstance(quantity, bool) or not isinstance(quantity, int):
-            raise ValueError("quantity 必须是正整数。")
-        if isinstance(price, bool) or not isinstance(price, (int, float)):
-            raise ValueError("price 必须是正数。")
-        settings = self.settings(identity)
-        risk = {
-            "max_position_per_symbol": 5_000,
-            "max_total_position": 50_000,
-            "max_daily_loss": 2_000,
-            "max_position_per_symbol_cny": 35_000,
-            "max_total_position_cny": 350_000,
-            "max_daily_loss_cny": 14_000,
-            "cooldown_minutes": 30,
-            "consecutive_loss_limit": 3,
-            **settings["risk"],
-        }
-        user_control = self.db.fetch_one(
-            "SELECT opening_paused FROM user_controls WHERE user_id=?", (identity.id,)
-        ) or {}
-        platform_control = self.db.fetch_one(
-            "SELECT control_value FROM platform_controls WHERE control_key='opening_paused'"
-        ) or {}
-        paused = bool(user_control.get("opening_paused")) or str(
-            platform_control.get("control_value", "0")
-        ).lower() in {"1", "true", "yes", "on"}
-        from trading.order_manager import OrderManager
-
-        order = OrderManager(self.db).submit(
-            user_id=identity.id,
-            symbol=str(payload.get("symbol", "")),
-            side=str(payload.get("side", "")),
-            quantity=quantity,
-            price=float(price),
-            strategy="WEB-PAPER",
-            mode="paper",
-            risk_config=risk,
-            paused=paused,
-            live_confirmed=False,
-            instrument_type=str(payload.get("instrument_type", "stock")),
-        )
-        return {
-            key: order.get(key)
-            for key in ("order_id", "symbol", "side", "quantity", "price", "status", "account_mode", "created_at")
-        }
+    def deactivate_alert(self, identity: BrowserIdentity, alert_id: int) -> list[dict[str, Any]]:
+        if isinstance(alert_id, bool) or not isinstance(alert_id, int) or alert_id <= 0:
+            raise ValueError("预警编号无效。")
+        now = datetime.now(UTC).isoformat(timespec="seconds")
+        with self.db.transaction() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT id,is_active FROM price_alerts WHERE id=? AND user_id=?",
+                (alert_id, identity.id),
+            ).fetchone()
+            if not existing:
+                raise ValueError("找不到这条预警，或你没有操作权限。")
+            updated = connection.execute(
+                "UPDATE price_alerts SET is_active=0 WHERE id=? AND user_id=? AND is_active=1",
+                (alert_id, identity.id),
+            ).rowcount
+            if updated:
+                connection.execute(
+                    """INSERT INTO strategy_action_logs
+                       (user_id,strategy_name,action,params,result,created_at) VALUES (?,?,?,?,?,?)""",
+                    (
+                        identity.id,
+                        "价格预警",
+                        "ALERT_DEACTIVATE",
+                        json.dumps({"alert_id": alert_id}, ensure_ascii=False),
+                        "success",
+                        now,
+                    ),
+                )
+        return self.list_alerts(identity)
 
     def create_membership_order(
         self, identity: BrowserIdentity, payload: dict[str, Any], idempotency_key: str
@@ -250,6 +319,8 @@ class BrowserWriteService:
         return response
 
     def membership_payment_qr(self, identity: BrowserIdentity, order_no: str) -> bytes:
+        order = OrderService(self.db).get_order_for_user(identity.id, str(order_no).strip())
+        assert_plan_not_lower(identity.effective_plan, str(order["plan_type"]))
         return ReceivingProfileService(self.db).qr_for_order(
             str(order_no).strip(), identity.id, pending_only=True
         )
@@ -268,6 +339,7 @@ class BrowserWriteService:
         )
         if existing:
             return _payment_claim_response(existing)
+        assert_plan_not_lower(identity.effective_plan, str(order["plan_type"]))
         OrderService(self.db).require_payment_claim_capacity(identity.id)
         if len(content) > MAX_PAYMENT_PROOF_BYTES:
             raise ValueError("付款凭证图片必须小于 4 MB。")

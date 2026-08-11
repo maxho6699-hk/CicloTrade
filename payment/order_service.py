@@ -13,7 +13,14 @@ import secrets
 from typing import Any
 
 from core.database import DatabaseManager, get_database
-from core.plans import PLANS
+from core.membership import (
+    MembershipPlanConflict,
+    add_membership_entitlement,
+    assert_plan_not_lower,
+    resolve_membership,
+    revoke_membership_entitlement,
+)
+from core.plans import PLAN_ORDER, PLANS
 
 
 CYCLE_DAYS = {"monthly": 30, "quarterly": 90, "yearly": 365}
@@ -66,38 +73,34 @@ def grant_subscription_days(
     days: int,
     fallback_plan: str,
     now: datetime | None = None,
+    *,
+    source_kind: str = "membership_grant",
+    source_ref: str | None = None,
 ) -> str:
-    """Extend a user's current plan, or activate the supplied paid plan."""
+    """Extend one effective plan through the canonical entitlement ledger."""
     days = int(days)
     if days < 1 or fallback_plan not in PLANS or fallback_plan == "免费版":
         raise ValueError("奖励订阅权益无效。")
-    user = conn.execute(
-        "SELECT plan_type,subscription_expire FROM users WHERE id=?", (user_id,)
-    ).fetchone()
-    if not user:
-        raise ValueError("奖励关联用户不存在。")
     base = now or datetime.now(UTC)
     if base.tzinfo is None:
         base = base.replace(tzinfo=UTC)
-    plan = str(user["plan_type"] or "")
-    active_expiry: datetime | None = None
-    if user["subscription_expire"]:
-        try:
-            expiry = datetime.fromisoformat(user["subscription_expire"])
-            if expiry.tzinfo is None:
-                expiry = expiry.replace(tzinfo=UTC)
-            if expiry > base:
-                active_expiry = expiry
-            base = max(base, expiry)
-        except (TypeError, ValueError):
-            pass
-    if plan not in PLANS or plan == "免费版" or active_expiry is None:
+    current = resolve_membership(conn, user_id, base, sync_cache=True)
+    plan = str(current["plan_type"])
+    if plan == "免费版":
         plan = fallback_plan
-    expiry = _iso(base + timedelta(days=days))
-    conn.execute(
-        "UPDATE users SET plan_type=?,subscription_expire=? WHERE id=?",
-        (plan, expiry, user_id),
+    state = add_membership_entitlement(
+        conn,
+        user_id,
+        plan,
+        days,
+        source_kind=source_kind,
+        source_ref=source_ref
+        or f"grant:{int(user_id)}:{_iso(base)}:{secrets.token_hex(8)}",
+        now=base,
     )
+    expiry = state["subscription_expire"]
+    if not expiry:
+        raise ValueError("奖励订阅权益未能生效。")
     return expiry
 
 
@@ -165,9 +168,14 @@ class OrderService:
         now = datetime.now(UTC)
         with self.db.transaction() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            user = conn.execute("SELECT is_active FROM users WHERE id=?", (user_id,)).fetchone()
+            user = conn.execute(
+                "SELECT is_active,plan_type,subscription_expire FROM users WHERE id=?",
+                (user_id,),
+            ).fetchone()
             if not user or not user["is_active"]:
                 raise PermissionError("账户不存在或已停用。")
+            current = resolve_membership(conn, user_id, now, sync_cache=True)
+            assert_plan_not_lower(str(current["plan_type"]), plan)
             if method in MANUAL_PAYMENT_METHODS:
                 placeholders = ",".join("?" for _ in MANUAL_PAYMENT_METHODS)
                 conn.execute(
@@ -381,6 +389,14 @@ class OrderService:
                     if str(exc) == "订单已过期，请重新建立订单。":
                         raise
                     raise ValueError("订单过期时间无效。") from exc
+            existing = conn.execute(
+                "SELECT * FROM manual_payment_claims WHERE order_no=? AND status='submitted'",
+                (order_no,),
+            ).fetchone()
+            if existing:
+                return dict(existing)
+            current = resolve_membership(conn, user_id, now, sync_cache=True)
+            assert_plan_not_lower(str(current["plan_type"]), str(order["plan_type"]))
             if proof_sha256:
                 duplicate_evidence = conn.execute(
                     """SELECT order_no FROM manual_payment_claims
@@ -390,11 +406,6 @@ class OrderService:
                 ).fetchone()
                 if duplicate_evidence:
                     raise ValueError("这张付款凭证已经用于其他订单。")
-            existing = conn.execute(
-                "SELECT * FROM manual_payment_claims WHERE order_no=? AND status='submitted'", (order_no,)
-            ).fetchone()
-            if existing:
-                return dict(existing)
             recent = conn.execute(
                 "SELECT COUNT(*) FROM manual_payment_claims WHERE user_id=? AND datetime(created_at)>=datetime(?)",
                 (user_id, _iso(now - timedelta(hours=1))),
@@ -446,11 +457,10 @@ class OrderService:
         conn: Any, order: dict[str, Any], now: datetime, capture_id: str | None = None
     ) -> bool:
         """Mark one pending order paid and apply its entitlement in this transaction."""
-        current = conn.execute(
-            "SELECT plan_type,subscription_expire FROM users WHERE id=?", (order["user_id"],)
-        ).fetchone()
-        if not current:
-            raise ValueError("支付订单关联用户不存在。")
+        current = resolve_membership(
+            conn, int(order["user_id"]), now, sync_cache=True
+        )
+        assert_plan_not_lower(str(current["plan_type"]), str(order["plan_type"]))
         changed = conn.execute(
             """UPDATE subscription_orders
                SET status='paid',paid_at=?,previous_plan_type=?,previous_subscription_expire=?,
@@ -460,20 +470,31 @@ class OrderService:
         )
         if changed.rowcount != 1:
             return False
-        base = now
-        if current["subscription_expire"]:
-            try:
-                expiry = datetime.fromisoformat(current["subscription_expire"])
-                if expiry.tzinfo is None:
-                    expiry = expiry.replace(tzinfo=UTC)
-                base = max(now, expiry)
-            except ValueError:
-                base = now
         days = int(order.get("entitlement_days") or CYCLE_DAYS.get(order["billing_cycle"], 3650))
-        conn.execute(
-            "UPDATE users SET plan_type=?,subscription_expire=? WHERE id=?",
-            (order["plan_type"], _iso(base + timedelta(days=days)), order["user_id"]),
+        state = add_membership_entitlement(
+            conn,
+            int(order["user_id"]),
+            str(order["plan_type"]),
+            days,
+            source_kind="payment_order",
+            source_ref=str(order["order_no"]),
+            now=now,
         )
+        current_rank = PLAN_ORDER.index(str(state["plan_type"]))
+        lower_plans = PLAN_ORDER[:current_rank]
+        if lower_plans:
+            placeholders = ",".join("?" for _ in lower_plans)
+            conn.execute(
+                f"""UPDATE subscription_orders SET status='cancelled'
+                    WHERE user_id=? AND order_no<>? AND status='pending'
+                      AND plan_type IN ({placeholders})
+                      AND NOT EXISTS (
+                          SELECT 1 FROM manual_payment_claims c
+                          WHERE c.order_no=subscription_orders.order_no
+                            AND c.status='submitted'
+                      )""",
+                (int(order["user_id"]), str(order["order_no"]), *lower_plans),
+            )
         referral = conn.execute(
             "SELECT * FROM referrals WHERE referee_id=? AND status='registered'", (order["user_id"],)
         ).fetchone()
@@ -494,7 +515,13 @@ class OrderService:
                 )
                 if inserted_reward.rowcount:
                     reward_expiry = grant_subscription_days(
-                        conn, referral["referrer_id"], reward_days, order["plan_type"], now
+                        conn,
+                        referral["referrer_id"],
+                        reward_days,
+                        order["plan_type"],
+                        now,
+                        source_kind="referral_reward",
+                        source_ref=f"reward:{inserted_reward.lastrowid}",
                     )
                     conn.execute(
                         "INSERT INTO user_action_logs (user_id,action_type,details,created_at) VALUES (?,?,?,?)",
@@ -569,6 +596,112 @@ class OrderService:
 
     @staticmethod
     def _reverse_entitlements(conn: Any, order: dict[str, Any], now: datetime) -> None:
+        ledger_entitlement = conn.execute(
+            """SELECT id FROM membership_entitlements
+               WHERE user_id=? AND source_kind='payment_order' AND source_ref=?""",
+            (order["user_id"], order["order_no"]),
+        ).fetchone()
+        if ledger_entitlement:
+            revoke_membership_entitlement(
+                conn,
+                int(order["user_id"]),
+                source_kind="payment_order",
+                source_ref=str(order["order_no"]),
+                now=now,
+            )
+            referral = conn.execute(
+                "SELECT * FROM referrals WHERE referee_id=? AND status='qualified'",
+                (order["user_id"],),
+            ).fetchone()
+            reward = conn.execute(
+                """SELECT * FROM rewards
+                   WHERE source_order_no=? AND reward_type='REFERRAL_30'""",
+                (order["order_no"],),
+            ).fetchone()
+            if referral and reward:
+                revoke_membership_entitlement(
+                    conn,
+                    int(reward["user_id"]),
+                    source_kind="referral_reward",
+                    source_ref=f"reward:{reward['id']}",
+                    now=now,
+                )
+                conn.execute("DELETE FROM rewards WHERE id=?", (reward["id"],))
+                conn.execute(
+                    "UPDATE referrals SET status='registered' WHERE id=? AND status='qualified'",
+                    (referral["id"],),
+                )
+                conn.execute(
+                    "INSERT INTO user_action_logs (user_id,action_type,details,created_at) VALUES (?,?,?,?)",
+                    (
+                        reward["user_id"],
+                        "REFERRAL_REWARD_REVOKED",
+                        json.dumps(
+                            {
+                                "order_no": order["order_no"],
+                                "referee_id": order["user_id"],
+                                "days": reward["days"],
+                            },
+                            ensure_ascii=False,
+                        ),
+                        _iso(now),
+                    ),
+                )
+                replacement_row = conn.execute(
+                    """SELECT * FROM subscription_orders
+                       WHERE user_id=? AND status='paid'
+                       ORDER BY paid_at,id LIMIT 1""",
+                    (order["user_id"],),
+                ).fetchone()
+                if replacement_row:
+                    replacement = dict(replacement_row)
+                    replacement_days = int(
+                        replacement.get("entitlement_days")
+                        or CYCLE_DAYS.get(replacement["billing_cycle"], 3650)
+                    )
+                    reward_days = max(
+                        1, replacement_days * REFERRAL_REWARD_PERCENT // 100
+                    )
+                    inserted = conn.execute(
+                        """INSERT OR IGNORE INTO rewards
+                           (user_id,reward_type,days,reference,source_order_no,created_at)
+                           VALUES (?,?,?,?,?,?)""",
+                        (
+                            referral["referrer_id"],
+                            "REFERRAL_30",
+                            reward_days,
+                            f"referral:{referral['id']}",
+                            replacement["order_no"],
+                            _iso(now),
+                        ),
+                    )
+                    if inserted.rowcount:
+                        grant_subscription_days(
+                            conn,
+                            referral["referrer_id"],
+                            reward_days,
+                            replacement["plan_type"],
+                            now,
+                            source_kind="referral_reward",
+                            source_ref=f"reward:{inserted.lastrowid}",
+                        )
+                        conn.execute(
+                            "UPDATE referrals SET status='qualified' WHERE id=? AND status='registered'",
+                            (referral["id"],),
+                        )
+            return
+
+        legacy_snapshot = conn.execute(
+            """SELECT 1 FROM membership_entitlements
+               WHERE user_id=? AND source_kind='legacy_cache' AND status='active'
+               LIMIT 1""",
+            (order["user_id"],),
+        ).fetchone()
+        if legacy_snapshot:
+            raise ValueError(
+                "历史会员权益缺少可核对的订单来源，不能自动冲正；请转人工核销。"
+            )
+
         later_paid = conn.execute(
             """SELECT id,paid_at,plan_type,billing_cycle,entitlement_days FROM subscription_orders
                WHERE user_id=? AND status='paid' AND
@@ -769,6 +902,8 @@ class OrderService:
                     reward_days,
                     replacement["plan_type"],
                     now,
+                    source_kind="referral_reward",
+                    source_ref=f"reward:{inserted.lastrowid}",
                 )
                 conn.execute(
                     "UPDATE referrals SET status='qualified' WHERE id=? AND status='registered'",

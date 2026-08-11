@@ -5,6 +5,16 @@ __pycache__/
 .pytest_cache/
 .pytest-temp-*/
 .pytest-codex-*/
+.pytest-*/
+.agents/
+.claude/
+.claude-flow/
+.codex/
+.swarm/
+**/.claude/
+**/.claude-flow/
+agentdb.rvf*
+ruvector.db*
 .streamlit/secrets.toml
 .playwright-cli/
 .exe/

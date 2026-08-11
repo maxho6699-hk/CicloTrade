@@ -38,7 +38,7 @@ const activity = {
 }
 
 test('snaps visible executions and builds one complete interval', () => {
-  const view = buildChartTradeView(candles, activity, 'AAPL')
+  const view = buildChartTradeView(candles, activity, 'US', 'AAPL')
   assert.deepEqual(view.executions.map((item) => item.chartTime), ['2026-08-01', '2026-08-03'])
   assert.equal(view.intervals.length, 1)
   assert.equal(view.intervals[0].startTime, '2026-08-01')
@@ -47,7 +47,31 @@ test('snaps visible executions and builds one complete interval', () => {
 })
 
 test('does not draw a closed interval when its opening execution is outside the chart', () => {
-  const view = buildChartTradeView(candles.slice(1), activity, 'AAPL')
+  const view = buildChartTradeView(candles.slice(1), activity, 'US', 'AAPL')
   assert.equal(view.intervals.length, 0)
   assert.deepEqual(view.executions.map((item) => item.execution_id), ['sell'])
+})
+
+test('isolates equal symbols from other markets', () => {
+  const cnInterval = {
+    ...interval,
+    interval_id: 'AAPL-CN-LONG-1',
+    market: 'CN' as const,
+    currency: 'CNY' as const,
+    execution_ids: ['cn-buy', 'cn-sell'],
+  }
+  const crossMarketActivity = {
+    ...activity,
+    intervals: [interval, cnInterval],
+    executions: [
+      ...activity.executions,
+      { ...activity.executions[0], execution_id: 'cn-buy', interval_id: cnInterval.interval_id, market: 'CN' as const, currency: 'CNY' as const },
+      { ...activity.executions[1], execution_id: 'cn-sell', interval_id: cnInterval.interval_id, market: 'CN' as const, currency: 'CNY' as const },
+    ],
+  }
+
+  const view = buildChartTradeView(candles, crossMarketActivity, 'US', 'AAPL')
+
+  assert.deepEqual(view.executions.map((item) => item.execution_id), ['buy', 'sell'])
+  assert.deepEqual(view.intervals.map((item) => item.interval.interval_id), [interval.interval_id])
 })

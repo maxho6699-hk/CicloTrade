@@ -14,6 +14,7 @@ from notification.telegram_bot import (
     update_notification_preference,
     verified_user_target,
 )
+from notification.telegram_timeline import _cycle_block, _plan_visible_cycles
 from core.user_settings import load_user_settings, merge_user_settings
 
 
@@ -87,6 +88,32 @@ def test_private_telegram_target_rechecks_plan_entitlement():
     assert entitled_user_target({"plan_type": "高级版", "subscription_expire": future}, settings, "price_alert") == "123456789"
     assert entitled_user_target({"plan_type": "高级版", "subscription_expire": future}, settings, "option_signal") is None
     assert entitled_user_target({"plan_type": "专业版", "subscription_expire": future}, settings, "option_signal") == "123456789"
+
+
+def test_delayed_timeline_hides_actionable_stock_contract_fields():
+    cycle = {
+        "sequence": 7,
+        "symbol": "SECRET",
+        "instrument_type": "stock",
+        "direction": "short",
+        "opened_at": "2026-01-01T00:00:00+00:00",
+        "recorded_at": "2026-01-01T00:00:00+00:00",
+        "average_cost": 123.45,
+        "current_quantity": -20,
+        "closed_at": None,
+        "currency": "USD",
+    }
+
+    visible, delay = _plan_visible_cycles([cycle], "免费版", "stock")
+    rendered = _cycle_block(visible[0])
+
+    assert delay == 60
+    assert visible[0]["entitlement_redacted"] is True
+    assert "SECRET" not in rendered
+    assert "做空" not in rendered
+    assert "123.45" not in rendered
+    assert "20" not in rendered
+    assert "止盈與止損已隱藏" in rendered
 
 
 def test_telegram_verification_requires_consent_and_is_one_time(tmp_path):

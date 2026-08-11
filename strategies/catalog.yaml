@@ -8,7 +8,7 @@ strategies:
     risk: high
     core: true
     parameters: {dte: 45, strike_shift: 0, quantity: 1}
-    rules: {option_strategy_name: 买入 Call}
+    rules: {option_strategy_name: 买入 Call, leg_count: 1}
   - key: option_long_put
     name: 买入 Put
     family: option
@@ -18,7 +18,7 @@ strategies:
     risk: high
     core: true
     parameters: {dte: 45, strike_shift: 0, quantity: 1}
-    rules: {option_strategy_name: 买入 Put}
+    rules: {option_strategy_name: 买入 Put, leg_count: 1}
   - key: option_bull_spread
     name: 牛市价差
     family: option
@@ -28,7 +28,7 @@ strategies:
     risk: medium
     core: true
     parameters: {dte: 45, strike_shift: 0, quantity: 1}
-    rules: {option_strategy_name: 牛市价差}
+    rules: {option_strategy_name: 牛市价差, leg_count: 2}
   - key: option_bear_spread
     name: 熊市价差
     family: option
@@ -38,7 +38,7 @@ strategies:
     risk: medium
     core: true
     parameters: {dte: 45, strike_shift: 0, quantity: 1}
-    rules: {option_strategy_name: 熊市价差}
+    rules: {option_strategy_name: 熊市价差, leg_count: 2}
   - key: option_long_straddle
     name: 买入跨式
     family: option
@@ -48,7 +48,7 @@ strategies:
     risk: high
     core: true
     parameters: {dte: 45, strike_shift: 0, quantity: 1}
-    rules: {option_strategy_name: 买入跨式}
+    rules: {option_strategy_name: 买入跨式, leg_count: 2}
   - key: option_butterfly
     name: 蝶式
     family: option
@@ -58,7 +58,7 @@ strategies:
     risk: medium
     core: true
     parameters: {dte: 45, strike_shift: 0, quantity: 1}
-    rules: {option_strategy_name: 蝶式}
+    rules: {option_strategy_name: 蝶式, leg_count: 3}
   - key: option_covered_call
     name: 备兑看涨
     family: option
@@ -68,7 +68,7 @@ strategies:
     risk: medium
     core: true
     parameters: {dte: 45, strike_shift: 5, quantity: 1}
-    rules: {option_strategy_name: 备兑看涨}
+    rules: {option_strategy_name: 备兑看涨, leg_count: 1, requires_underlying: true}
   - key: option_cash_secured_put
     name: 现金担保看跌
     family: option
@@ -78,7 +78,7 @@ strategies:
     risk: medium
     core: true
     parameters: {dte: 45, strike_shift: -5, quantity: 1}
-    rules: {option_strategy_name: 现金担保看跌}
+    rules: {option_strategy_name: 现金担保看跌, leg_count: 1, requires_cash_collateral: true}
   - key: template_dual_ma
     name: 双均线策略
     family: equity

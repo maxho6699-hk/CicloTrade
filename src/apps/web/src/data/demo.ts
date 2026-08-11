@@ -29,6 +29,21 @@ export const primaryDecision: Decision = {
   eventId: 'QE-20260809-0142',
   modelVersion: 'equity-stability-shadow-v3',
   updatedAt: '2026-08-09 14:32:18 TPE',
+  actionable: false,
+  currentInstruction: '界面演示，不可交易',
+  currentPrice: '界面演示 213.45',
+  quantityHint: '0 股（界面演示）',
+  quoteUpdatedAt: '没有真实报价时间',
+  quoteFreshness: 'missing',
+  actionBlockReason: '界面演示不是真实交易建议',
+  plainLanguage: {
+    reason: '这只股票前面跌得比较多，卖压开始变小，价格已经出现回弹。',
+    setup: '超卖从 8 月 5 日开始，连续 3 天低于平常水平。',
+    rebound: '从低点 204.20 美元反弹到 213.45 美元，回弹 9.25 美元（约 4.5%）。',
+    reboundSince: '8 月 7 日开始回弹',
+    takeProfit: '如果继续站稳 214 美元，先看 228 美元附近；到达后先锁定部分利润。',
+    quantityHint: '新手先用 1–5 股验证，不要一次买满。',
+  },
 }
 
 export const candidateDecisions: Decision[] = [
@@ -46,6 +61,12 @@ export const candidateDecisions: Decision[] = [
     confidence: '研究候选',
     eventId: 'SHADOW-8841',
     modelVersion: 'equity-stability-challenger-v7',
+    plainLanguage: {
+      reason: '趋势仍然向上，但现在的价格离风险线太远，追进去容易买贵。',
+      setup: '等价格回到 176–179 美元附近，并重新站稳后再评估。',
+      rebound: '暂未确认新的反弹起点。',
+      quantityHint: '新手先等确认，不要因为涨幅追单。',
+    },
   },
   {
     ...primaryDecision,
@@ -61,6 +82,13 @@ export const candidateDecisions: Decision[] = [
     confidence: '低 · 证据冲突',
     eventId: 'SHADOW-8840',
     modelVersion: 'equity-stability-challenger-v7',
+    plainLanguage: {
+      reason: '价格波动变大，回撤也在扩大，当前不适合新建仓位。',
+      setup: '从最近一次风险升高开始，系统连续观察到反向证据。',
+      rebound: '反弹尚未形成可以跟随的确认。',
+      takeProfit: '不适用，等待重新评估。',
+      quantityHint: '已有仓位才考虑减仓；空仓先不参与。',
+    },
   },
 ]
 

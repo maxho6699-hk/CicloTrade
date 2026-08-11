@@ -1,77 +1,94 @@
-import { AlertTriangle, Calculator, CheckCircle2, LockKeyhole, ShieldCheck } from 'lucide-react'
-import { useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import {
+  ArrowRight,
+  Building2,
+  Cable,
+  CheckCircle2,
+  CircleDollarSign,
+  FileCheck2,
+  HelpCircle,
+  LockKeyhole,
+  ShieldCheck,
+  Unplug,
+  WalletCards,
+} from 'lucide-react'
+import { useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useWorkspace } from '../api/workspace-context'
-import { BrowserApiError, createPaperOrder } from '../api/client'
 import { PageHeader } from '../components/PageHeader'
-import { getFormatLocale } from '../i18n/runtime'
+import { SegmentedControl } from '../components/ui/SegmentedControl'
+
+type BrokerMarket = 'US' | 'HK' | 'CN'
+
+const marketDetails: Record<BrokerMarket, {
+  label: string
+  currency: string
+  execution: string
+  shorting: string
+}> = {
+  US: {
+    label: '美股',
+    currency: 'USD',
+    execution: '支持正股买卖与券商允许的订单类型。成交能力以已连接账户为准。',
+    shorting: '可以做空，不需要 CicloTrade 额外审核；券商仍会检查保证金、可借券和账户权限。',
+  },
+  HK: {
+    label: '港股',
+    currency: 'HKD',
+    execution: '港股资金和持仓必须与 USD、CNY 分开显示。当前网页尚未接入港股账户数据。',
+    shorting: '是否可卖空取决于券商、标的与当地市场规则，CicloTrade 不伪造可借券状态。',
+  },
+  CN: {
+    label: 'A股',
+    currency: 'CNY',
+    execution: '支持已连接券商账户的普通买卖；当前网页尚未接入实盘订单通道。',
+    shorting: '普通 A 股账户不提供裸卖空。页面不会把卖出数量穿过空仓。',
+  },
+}
+
+const marketOptions = [
+  { value: 'US', label: '美股' },
+  { value: 'HK', label: '港股' },
+  { value: 'CN', label: 'A股' },
+] satisfies Array<{ value: BrokerMarket; label: string }>
 
 export function TradePage() {
+  const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const workspace = useWorkspace()
-  const symbol = searchParams.get('symbol') ?? 'AAPL'
-  const [side, setSide] = useState<'BUY' | 'SELL'>('BUY')
-  const [quantity, setQuantity] = useState(10)
-  const [price, setPrice] = useState(213.45)
-  const [submitted, setSubmitted] = useState('')
-  const [error, setError] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-  const [confirmOpen, setConfirmOpen] = useState(false)
-  const estimated = useMemo(() => Math.max(0, quantity) * Math.max(0, price), [quantity, price])
-  const positionLimit = workspace.data?.settings.risk.max_position_per_symbol ?? 5_000
-  const totalLimit = workspace.data?.settings.risk.max_total_position ?? 50_000
-  const positionUsage = positionLimit ? estimated / positionLimit * 100 : 0
+  const [market, setMarket] = useState<BrokerMarket>('US')
+  const symbol = searchParams.get('symbol')?.toUpperCase()
+  const eventId = searchParams.get('event_id')
+  const detail = marketDetails[market]
+  const authenticated = workspace.mode === 'authenticated'
 
   return (
-    <div className="page operations-page">
-      <PageHeader kicker="TRADE / CONTROLLED EXECUTION" title="受控交易" description="模拟盘默认开启。每笔订单先计算金额并经过仓位、亏损与冷却期检查。" />
-      <div className="mode-banner"><div><span>当前账户</span><strong>模拟交易 PAPER</strong></div><span className="status-chip official"><ShieldCheck size={14} /> 不会发送到真实券商</span><button className="button secondary" type="button" disabled><LockKeyhole size={15} /> 实盘需独立开通</button></div>
+    <div className="page operations-page brokerage-page">
+      <PageHeader kicker="BROKERAGE / LIVE SERVICE" title="券商实盘连接" description="CicloTrade 提供实盘连接服务。会员订阅与券商连接是两条独立流程；只有你主动连接并授权个人券商后，系统才可能进入真实执行。" />
 
-      <div className="trade-layout">
-        <section className="trade-ticket data-panel">
-          <header className="panel-heading"><div><span>ORDER TICKET</span><h2>{symbol} · 模拟订单</h2></div><strong className="quote-value">{price.toFixed(2)} <small className="positive-text">参考价</small></strong></header>
-          <div className="segmented-control" aria-label="订单方向"><button className={side === 'BUY' ? 'active buy' : ''} type="button" onClick={() => setSide('BUY')}>买入</button><button className={side === 'SELL' ? 'active sell' : ''} type="button" onClick={() => setSide('SELL')}>卖出</button></div>
-          <div className="ticket-fields">
-            <label><span>订单类型</span><div className="inline-options"><button className="active" type="button">限价</button><button type="button" disabled title="等待实时行情源接入">市价</button><button type="button" disabled title="等待条件单服务接入">止损限价</button></div></label>
-            <label><span>数量（股）</span><div className="stepper"><button type="button" aria-label="减少数量" onClick={() => setQuantity((value) => Math.max(1, value - 1))}>−</button><input aria-label="数量" min="1" type="number" value={quantity} onChange={(event) => setQuantity(Number(event.target.value))} /><button type="button" aria-label="增加数量" onClick={() => setQuantity((value) => value + 1)}>+</button></div></label>
-            <label><span>限价（USD）</span><input min="0.01" step="0.01" type="number" value={price} onChange={(event) => setPrice(Number(event.target.value))} /></label>
-          </div>
-          <dl className="order-estimate"><div><dt>预计金额</dt><dd>USD {estimated.toLocaleString(getFormatLocale(), { maximumFractionDigits: 2 })}</dd></div><div><dt>单标的限额占用</dt><dd>{positionUsage.toFixed(2)}%</dd></div><div><dt>订单有效期</dt><dd>当日有效</dd></div></dl>
-          {!confirmOpen && <button className={`button wide ${side === 'BUY' ? 'primary' : 'danger'}`} type="button" disabled={submitting || quantity < 1 || price <= 0} onClick={() => {
-            setError('')
-            if (workspace.mode !== 'authenticated') {
-              setError('请先登录，模拟订单才会写入你的账户。')
-              return
-            }
-            setConfirmOpen(true)
-          }}>{side === 'BUY' ? '复核模拟买入' : '复核模拟卖出'}</button>}
-          {confirmOpen && <div className="order-confirmation" role="group" aria-label="模拟订单最终确认"><span><strong>最终确认</strong><small>{side === 'BUY' ? '买入' : '卖出'} {symbol} · {quantity} 股 · 限价 {price.toFixed(2)} · 预计 USD {estimated.toLocaleString(getFormatLocale())}</small></span><div><button className="button secondary" type="button" disabled={submitting} onClick={() => setConfirmOpen(false)}>返回修改</button><button className={`button ${side === 'BUY' ? 'primary' : 'danger'}`} type="button" disabled={submitting} onClick={async () => {
-            setSubmitting(true)
-            try {
-              const order = await createPaperOrder({ symbol, side, quantity, price })
-              setSubmitted(order.order_id)
-              setConfirmOpen(false)
-              try {
-                await workspace.refresh()
-              } catch {
-                setError('模拟订单已提交，但账户列表刷新失败；请稍后重新打开组合页。')
-              }
-            } catch (caught) {
-              setError(caught instanceof BrowserApiError ? caught.message : '模拟订单提交失败。')
-            } finally {
-              setSubmitting(false)
-            }
-          }}>{submitting ? '风控检查中…' : '确认并提交'}</button></div></div>}
-          {error && <p className="form-error trade-error" role="alert">{error}</p>}
-          {submitted && <div className="inline-success" role="status"><CheckCircle2 size={18} /><span><strong>模拟订单已成交</strong><small>{submitted} · 已写入模拟持仓，不会发送到真实券商。</small></span><button type="button" onClick={() => setSubmitted('')}>关闭</button></div>}
-        </section>
+      <section className="brokerage-status-band" aria-label="券商连接状态">
+        <span className="brokerage-status-icon"><Unplug size={21} /></span>
+        <div><span>当前账户</span><strong>{authenticated ? workspace.user?.display_name : '尚未登录'} · 未连接券商</strong><small>网页未读取、保存或发送任何券商凭据与订单。</small></div>
+        <span className="status-chip research"><ShieldCheck size={14} /> 服务可提供 · 尚未接入</span>
+        <button className="button primary" type="button" onClick={() => navigate('/help')}><Cable size={16} /> 联系接入服务</button>
+      </section>
 
-        <aside className="risk-check-panel data-panel">
-          <header className="panel-heading"><div><span>PRE-TRADE RISK</span><h2>下单前检查</h2></div><Calculator size={20} /></header>
-          <ul className="check-list"><li><CheckCircle2 /><span><strong>单标的仓位</strong><small>本单占当前限额 {positionUsage.toFixed(1)}%，上限 USD {positionLimit.toLocaleString(getFormatLocale())}</small></span></li><li><CheckCircle2 /><span><strong>账户总风险</strong><small>总仓位上限 USD {totalLimit.toLocaleString(getFormatLocale())}，提交时重新核验</small></span></li><li><CheckCircle2 /><span><strong>连续亏损冷却</strong><small>提交时读取账户最新冷却状态</small></span></li><li><AlertTriangle className="warning-text" /><span><strong>行情新鲜度</strong><small>当前价格由用户输入，不是实时行情报价</small></span></li></ul>
-          <div className="risk-verdict"><span>风控结论</span><strong><ShieldCheck size={18} /> 允许模拟验证</strong><small>最终结果以提交瞬间的真实仓位和行情为准</small></div>
-        </aside>
-      </div>
+      {(symbol || eventId) && <section className="brokerage-context-note"><FileCheck2 size={17} /><span><strong>你从一条研究或验证记录来到这里</strong><small>{symbol ? `${symbol} · ` : ''}{eventId ? `事件 QE-${eventId} · ` : ''}本页不会把它转换成模拟订单或自动发送到券商。</small></span><button className="button tertiary" type="button" onClick={() => navigate('/portfolio')}>查看模拟验证结果</button></section>}
+
+      <section className="brokerage-market-panel data-panel">
+        <header className="panel-heading"><div><span>MARKET CAPABILITY</span><h2>市场与账户能力</h2></div><Building2 size={20} /></header>
+        <div className="brokerage-market-controls"><SegmentedControl ariaLabel="选择券商市场" value={market} options={marketOptions} onChange={setMarket} /><span>{detail.currency} 独立账户视图</span></div>
+        <div className="brokerage-capability-grid">
+          <article><CircleDollarSign size={18} /><span><strong>{detail.label}执行范围</strong><small>{detail.execution}</small></span></article>
+          <article><ShieldCheck size={18} /><span><strong>做空规则</strong><small>{detail.shorting}</small></span></article>
+          <article><LockKeyhole size={18} /><span><strong>权限来源</strong><small>会员只决定研究、数据、提醒与回测权益；真实交易权限来自你的券商账户。</small></span></article>
+        </div>
+      </section>
+
+      <section className="brokerage-workflow">
+        <article className="data-panel brokerage-steps"><header className="panel-heading"><div><span>CONNECTION WORKFLOW</span><h2>接入流程</h2></div><Cable size={20} /></header><ol><li><span>01</span><div><strong>选择个人券商账户</strong><small>确认市场、币种、保证金账户和 API/终端支持范围。</small></div></li><li><span>02</span><div><strong>由你主动授权连接</strong><small>凭据不通过会员付款自动获得，也不会从本机应用静默读取。</small></div></li><li><span>03</span><div><strong>先完成权限与风险核对</strong><small>检查账户状态、订单权限、可借券、数量、价格和最大风险。</small></div></li><li><span>04</span><div><strong>明确确认后才进入真实执行</strong><small>正式接入后仍需逐笔确认或使用你明确配置的受控规则。</small></div></li></ol></article>
+
+        <aside className="data-panel brokerage-boundary"><header className="panel-heading"><div><span>WHAT YOU CAN DO NOW</span><h2>当前可用入口</h2></div><CheckCircle2 size={20} /></header><div className="brokerage-link-list"><button type="button" onClick={() => navigate('/portfolio')}><WalletCards size={17} /><span><strong>CicloTrade模拟持仓及建议</strong><small>只读查看官方模拟记录、当前持仓与已平仓结果。</small></span><ArrowRight size={16} /></button><button type="button" onClick={() => navigate('/reports')}><FileCheck2 size={17} /><span><strong>CicloTrade模拟验证结果</strong><small>查看报告、假设、数据来源和验证状态。</small></span><ArrowRight size={16} /></button><button type="button" onClick={() => navigate('/help')}><HelpCircle size={17} /><span><strong>实盘接入服务</strong><small>确认支持范围、接入方式、时间与风险边界。</small></span><ArrowRight size={16} /></button></div></aside>
+      </section>
     </div>
   )
 }

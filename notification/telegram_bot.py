@@ -18,6 +18,7 @@ from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 
 from core.config_loader import get_config
+from core.membership import authoritative_membership_user
 from core.plans import can, effective_plan
 from core.user_settings import load_user_settings, merge_user_settings
 
@@ -102,7 +103,7 @@ _CALLBACK_DATA = {"menu:home", "menu:settings"} | {
 }
 _CALLBACK_PATTERNS = (
     re.compile(
-        r"^desk:(?:home|queries|pnl|membership|timeline|actions|portfolio|market|plans|orders|settings|help|account|receiving)$"
+        r"^desk:(?:home|queries|pnl|membership|timeline|actions|portfolio|market|plans|orders|settings|help|account|pause_opening|receiving)$"
     ),
     re.compile(r"^timeline:(?:choose|custom):(?:stock|option)$"),
     re.compile(r"^timeline:show:(?:stock|option):[1-9][0-9]{0,2}:(?:0|[1-9][0-9]{0,2})$"),
@@ -246,7 +247,7 @@ def verified_account_for_chat(database, chat_id: str) -> dict[str, Any] | None:
         (target,),
     )
     if row:
-        return row
+        return authoritative_membership_user(database, row)
     legacy = database.fetch_all(
         """SELECT u.id,u.email,u.display_name,u.plan_type,u.subscription_expire,u.is_admin
            FROM users u JOIN user_settings s ON s.user_id=u.id
@@ -258,23 +259,25 @@ def verified_account_for_chat(database, chat_id: str) -> dict[str, Any] | None:
     )
     if len(legacy) != 1:
         return None
-    existing = database.fetch_one(
-        "SELECT 1 FROM telegram_accounts WHERE chat_id=? OR user_id=?",
-        (target, int(legacy[0]["id"])),
-    )
-    if existing:
-        return None
     now = datetime.now(UTC).isoformat(timespec="seconds")
     try:
         database.execute(
-            """INSERT INTO telegram_accounts
+            """INSERT OR IGNORE INTO telegram_accounts
                (user_id,chat_id,is_active,revoked_at,created_at,updated_at)
                VALUES (?,?,1,NULL,?,?)""",
             (int(legacy[0]["id"]), target, now, now),
         )
     except Exception:
-        return None
-    return legacy[0]
+        pass
+    row = database.fetch_one(
+        """SELECT u.id,u.email,u.display_name,u.plan_type,u.subscription_expire,u.is_admin
+           FROM telegram_accounts t
+           JOIN users u ON u.id=t.user_id
+           WHERE u.is_active=1 AND t.is_active=1 AND t.revoked_at IS NULL
+             AND t.chat_id=? AND t.user_id=?""",
+        (target, int(legacy[0]["id"])),
+    )
+    return authoritative_membership_user(database, row) if row else None
 
 
 def _notification_account(database, target: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
@@ -302,12 +305,12 @@ def telegram_notification_keyboard(database, chat_id: str) -> TelegramKeyboard:
                 }
             )
         else:
-            buttons.append({"text": f"🔒 {label}", "url": _app_url("subscription")})
+            buttons.append({"text": f"🔒 {label}", "url": _app_url("membership")})
     rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
     rows.append(
         [
             {"text": "⬅️ 主選單", "callback_data": "menu:home"},
-            {"text": "網站設定", "url": _app_url("settings")},
+            {"text": "網站通知設定", "url": _app_url("notifications")},
         ]
     )
     return rows

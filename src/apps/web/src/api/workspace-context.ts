@@ -1,5 +1,6 @@
 import { createContext, useContext } from 'react'
-import type { BootstrapPayload, SessionUser } from './client'
+import type { BootstrapPayload, SessionUser, WatchlistPayload } from './client'
+import type { Market } from '../types'
 
 export type WorkspaceMode = 'loading' | 'demo' | 'authenticated' | 'offline'
 
@@ -9,6 +10,8 @@ export interface WorkspaceContextValue {
   data: BootstrapPayload | null
   error: string | null
   refresh: () => Promise<void>
+  changeWatchlist: (market: Market, symbol: string, remove: boolean) => Promise<WatchlistPayload>
+  changeWatchlistPin: (market: Market, symbol: string, pinned: boolean) => Promise<WatchlistPayload>
   login: (email: string, password: string) => Promise<void>
   logout: () => Promise<void>
 }

@@ -29,37 +29,39 @@ TELEGRAM_SUGGESTION_NAMES = {
 PLANS: dict[str, dict[str, Any]] = {
     "免费版": {
         "prices": {"monthly": 0, "quarterly": 0, "yearly": 0},
-        "summary": "先完成第一次策略研究",
-        "features": ("1 种基础策略", "模板结构示例", "1 条单条件价格预警", "近 1 年回测", "延迟 15 分钟行情"),
+        "summary": "先看懂基础策略与风险边界",
+        "features": ("1 种基础策略", "模板结构示例", "1 条单条件价格预警", "近 1 年历史样本范围", "回测参数草稿（引擎接入后计算）", "延迟 15 分钟行情"),
     },
     "标准版": {
         "prices": {"monthly": 298, "quarterly": 850, "yearly": 2_980},
-        "summary": "完整策略研究与 3 年回测",
-        "features": ("包含免费版全部权益", "全部 8 种策略", "一句话策略每日 3 次", "全部策略模板", "10 条预警（最多 3 个组合条件）", "近 3 年回测", "网页正式操作与量化交易日志"),
+        "summary": "完整策略研究与近 3 年历史样本范围",
+        "features": ("包含免费版全部权益", "全部 8 种策略", "一句话策略每日 3 次", "全部策略模板", "10 条预警（最多 3 个组合条件）", "近 3 年历史样本范围与参数草稿", "网页正式建议与量化事件日志"),
     },
     "高级版": {
         "prices": {"monthly": 698, "quarterly": 1_980, "yearly": 6_980},
-        "summary": "深度回测、期权链与自动化研究",
-        "features": ("包含标准版全部权益", "不限预警（最多 5 个组合条件）", "一句话策略每日 10 次", "近 10 年回测与参数优化", "期权链研究", "CSV 导入与策略绩效追踪", "Telegram 即時正股建議", "玄学娱乐参考", "正股实盘（需另行签约）"),
+        "summary": "正股即时提醒、历史样本研究与受控账号治理",
+        "features": ("包含标准版全部权益", "不限预警（最多 5 个组合条件）", "一句话策略每日 10 次", "近 10 年历史样本范围与参数草稿", "CSV 导入与策略绩效追踪", "Telegram 即時正股建議", "美股多空策略研究与官方验证", "1 个自动交易控制账号名额（仍需主动授权券商）"),
     },
     "专业版": {
         "prices": {"monthly": 2_980, "quarterly": 8_500, "yearly": 29_800},
-        "summary": "多账户、API 与受控交易",
-        "features": ("包含高级版全部权益", "不限次一句话策略与复杂条件", "代码与 API 信号导入", "Telegram 即時正股與期權建議", "专业 API", "正股实盘（套餐内含，仍需券商与风控配置）", "最多 50 个券商账户", "团队协作", "99.9% SLA 与专业报告"),
+        "summary": "完整期权研究、多账户、API 与受控交易",
+        "features": ("包含高级版全部权益", "期权链、期权报价 K 线、Greeks 与 IV", "单腿与多腿期权组合研究", "未来 7 天业绩预测、量化区间与有限亏损期权研究", "官方模拟账户自动期权组合", "真实期权自动交易资格（仍需券商授权、风险门禁与独立启用）", "不限次一句话策略与复杂条件", "代码与 API 信号导入", "Telegram 即時正股與期權建議", "专业 API", "美股做空与多空策略研究", "最多 5 个自动交易控制账号名额（仍需主动授权券商）", "团队协作", "99.9% SLA 与专业报告"),
     },
     "定制版": {
         "prices": {"project": 30_000},
         "summary": "专属实施与私有化方案",
-        "features": ("包含专业版全部权益", "不限券商账户", "策略保存为模板", "期权自动交易（即将上线）", "私有云或本地部署（即将上线）", "专属实施支持"),
+        "features": ("包含专业版全部权益", "不限研究工作区", "策略保存为模板", "继承专业版受控期权自动交易资格", "私有云或本地部署（即将上线）", "专属实施支持"),
     },
 }
 
 CAPABILITIES: dict[str, set[str]] = {
     "免费版": {"dashboard", "strategy_basic", "strategy_templates_view", "alert_basic", "backtest_1y"},
     "标准版": {"strategy_basic", "strategy_all", "payoff", "alerts_10", "backtest_3y", "signal_web", "tg_system", "strategy_generate", "strategy_templates_use"},
-    "高级版": {"strategy_basic", "alerts_unlimited", "backtest_10y", "option_chain", "mystic", "real_trade", "tg_stock_signal", "csv_import", "strategy_tracking", "strategy_template_parameters"},
-    "专业版": {"strategy_basic", "reports", "api_access", "multi_account", "tg_option_signal", "code_import", "api_signal_import", "team_collaboration", "strategy_generate_complex"},
-    "定制版": {"strategy_basic", "option_auto", "private_deploy", "liquidate_all", "strategy_template_save"},
+    # 订阅只授予研究与内容权益。实盘连接、保证金、可借券和逐单授权
+    # 属于用户自己的券商账户状态，不应从会员等级推导。
+    "高级版": {"strategy_basic", "alerts_unlimited", "backtest_10y", "mystic", "short_research", "tg_stock_signal", "csv_import", "strategy_tracking", "strategy_template_parameters", "auto_control_account_1"},
+    "专业版": {"strategy_basic", "reports", "api_access", "multi_account", "short_research", "tg_option_signal", "code_import", "api_signal_import", "team_collaboration", "strategy_generate_complex", "option_chain", "option_quote_chart", "option_greeks", "option_iv", "option_strategy", "option_strategy_multi_leg", "earnings_forecast", "earnings_option_defined_risk", "option_auto_paper_official", "option_auto_live", "auto_control_account_5"},
+    "定制版": {"strategy_basic", "private_deploy", "liquidate_all", "strategy_template_save"},
 }
 
 # Existing callers use these names. Keep one canonical matrix while accepting
@@ -69,6 +71,10 @@ CAPABILITY_ALIASES = {
     "stock_auto": "real_trade",
     "stock_signal_telegram": "tg_stock_signal",
     "option_signal_telegram": "tg_option_signal",
+    # Legacy callers used one ambiguous option_auto flag. Keep compatibility,
+    # while the product contract distinguishes official paper automation from
+    # separately gated live broker execution.
+    "option_auto": "option_auto_live",
 }
 
 
@@ -123,14 +129,28 @@ def telegram_timeline_limits(plan: str) -> dict[str, int]:
 
 
 def trading_limits(plan: str) -> dict[str, Any]:
-    """Return conservative live-broker limits for the effective plan."""
+    """Return execution safety caps and the plan's authorized account capacity.
+
+    Membership only defines how many user-authorized broker accounts CicloTrade
+    may control. It never connects a broker, grants margin, or grants short
+    eligibility by itself. Those permissions still come from the user's broker.
+    """
+    auto_control_accounts = {
+        "高级版": 1,
+        "专业版": 5,
+        "定制版": 5,
+    }.get(str(plan), 0)
     return {
-        "免费版": {"brokers": 0, "broker_accounts": 0, "daily_orders": 0, "single_notional": 0, "daily_notional": 0, "api_per_minute": 0, "instruments": ("view",)},
-        "标准版": {"brokers": 1, "broker_accounts": 1, "daily_orders": 5, "single_notional": 10_000, "daily_notional": 50_000, "api_per_minute": 10, "instruments": ("stock",)},
-        "高级版": {"brokers": 1, "broker_accounts": 1, "daily_orders": 20, "single_notional": 50_000, "daily_notional": 200_000, "api_per_minute": 30, "instruments": ("stock", "etf")},
-        "专业版": {"brokers": 3, "broker_accounts": 50, "daily_orders": 100, "single_notional": 500_000, "daily_notional": 2_000_000, "api_per_minute": 100, "instruments": ("stock", "etf", "option")},
-        "定制版": {"brokers": None, "broker_accounts": None, "daily_orders": None, "single_notional": None, "daily_notional": None, "api_per_minute": None, "instruments": ("all",)},
-    }.get(plan, {"brokers": 0, "broker_accounts": 0, "daily_orders": 0, "single_notional": 0, "daily_notional": 0, "api_per_minute": 0, "instruments": ("view",)})
+        "brokers": auto_control_accounts,
+        # Compatibility key used by the existing broker-account service.
+        "broker_accounts": auto_control_accounts,
+        "auto_control_accounts": auto_control_accounts,
+        "daily_orders": 100,
+        "single_notional": 500_000,
+        "daily_notional": 2_000_000,
+        "api_per_minute": 100,
+        "instruments": ("stock", "option") if can(str(plan), "option_auto_live") else ("stock",),
+    }
 
 
 def alert_limit(plan: str) -> int | None:

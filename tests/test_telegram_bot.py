@@ -19,6 +19,7 @@ from notification.telegram_bot import (
     send_telegram_photo,
     telegram_bot_response,
     telegram_callback_allowed,
+    telegram_notification_keyboard,
 )
 
 
@@ -79,7 +80,7 @@ def test_send_telegram_accepts_native_keyboard_and_rejects_untrusted_actions(mon
     send_telegram(
         "menu",
         chat_id="123456789",
-        buttons=[[{"text": "設定", "callback_data": "menu:settings"}, {"text": "網站", "url": "https://ciclotrade.com/settings"}]],
+        buttons=[[{"text": "設定", "callback_data": "menu:settings"}, {"text": "網站", "url": "https://ciclotrade.com/notifications"}]],
         protect_content=True,
     )
 
@@ -128,6 +129,32 @@ def test_start_returns_chat_id_and_main_menu_without_binding(tmp_path):
     assert "Chat ID" in reply and "123456789" in reply
     assert any(button.get("callback_data") == "desk:settings" for row in keyboard for button in row)
     assert telegram_callback_allowed("notify:stock:toggle")
+
+
+def test_notification_keyboard_uses_current_website_routes(tmp_path):
+    db = DatabaseManager(str(tmp_path / "notification-routes.db"))
+    user = AuthService(db).register("routes@example.com", "CorrectHorse123", "Routes", True)
+    merge_user_settings(
+        user["id"],
+        {
+            "telegram": {"chat_id": "123456789", "consent": True, "verified": True},
+            "tg_events": {},
+        },
+        db,
+    )
+
+    keyboard = telegram_notification_keyboard(db, "123456789")
+    urls = [button["url"] for row in keyboard for button in row if button.get("url")]
+
+    assert any(url.endswith("/membership") for url in urls)
+    assert any(url.endswith("/notifications") for url in urls)
+    assert all(
+        not url.endswith(("/recommendations", "/dashboard", "/terminal", "/settings", "/subscription"))
+        for url in urls
+    )
+    assert telegram_callback_allowed("desk:settings")
+    assert telegram_callback_allowed("desk:account")
+    assert telegram_callback_allowed("desk:pause_opening")
     assert telegram_callback_allowed("timeline:show:stock:30:2")
     assert telegram_callback_allowed("timeline:pnl:7d:0")
     assert not telegram_callback_allowed("timeline:show:stock:1000:0")

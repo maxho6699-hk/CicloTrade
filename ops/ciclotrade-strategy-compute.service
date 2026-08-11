@@ -1,0 +1,33 @@
+[Unit]
+Description=CicloTrade bounded local strategy Compute Gate
+After=local-fs.target
+RequiresMountsFor=/var/lib/ciclotrade-worker
+ConditionPathIsDirectory=/var/lib/ciclotrade-worker/inbox
+
+[Service]
+Type=oneshot
+User=cicloworker
+Group=cicloworker
+WorkingDirectory=/opt/ciclotrade-worker/current
+EnvironmentFile=/etc/ciclotrade-worker/worker.env
+ExecStart=/opt/ciclotrade-worker/current/.venv/bin/python -m src.apps.worker.compute_gate --once --execute-one
+TimeoutStartSec=1200
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateNetwork=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictNamespaces=true
+LockPersonality=true
+ReadWritePaths=/var/lib/ciclotrade-worker /var/log/ciclotrade-worker
+RestrictAddressFamilies=AF_UNIX
+MemoryHigh=700M
+MemoryMax=950M
+CPUQuota=150%
+TasksMax=64
+LimitNOFILE=4096

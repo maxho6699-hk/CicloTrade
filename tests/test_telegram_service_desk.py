@@ -509,7 +509,8 @@ def test_compact_menu_routes_to_queries_membership_and_delayed_timeline(db, monk
     assert any("專業會員" in button["text"] for row in home.keyboard for button in row)
     result = telegram_desk_response(db, "810020", "timeline:show:stock:10:0", callback=True)
     assert "正股建議" in result.message and "延遲 1 小時" in result.message
-    assert "AAPL" in result.message and "交易回報" in result.message
+    assert "延遲研究記錄" in result.message
+    assert "AAPL" not in result.message and "交易回報" not in result.message
 
     option = telegram_desk_response(db, "810020", "timeline:choose:option", callback=True)
     assert "需要升級會員" in option.message
@@ -681,7 +682,13 @@ def test_service_outbox_retries_definite_failure_and_is_idempotent(db, monkeypat
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("temporary network failure")),
     )
     assert dispatch_telegram_service_outbox(db) == 0
-    assert db.fetch_one("SELECT status FROM telegram_service_outbox")["status"] == "failed"
+    failed = db.fetch_one(
+        "SELECT status,attempts,next_attempt_at,updated_at FROM telegram_service_outbox"
+    )
+    assert failed["status"] == "failed" and failed["attempts"] == 1
+    assert datetime.fromisoformat(failed["next_attempt_at"]) - datetime.fromisoformat(
+        failed["updated_at"]
+    ) == timedelta(minutes=2)
     db.execute("UPDATE telegram_service_outbox SET next_attempt_at='2000-01-01T00:00:00+00:00'")
     sent = []
     monkeypatch.setattr(

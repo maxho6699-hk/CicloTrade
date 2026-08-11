@@ -6,7 +6,112 @@ from __future__ import annotations
 from datetime import datetime
 from core.compat import UTC
 import os
-from typing import Any
+import threading
+from typing import Any, Callable
+
+
+class TigerAPIRejected(RuntimeError):
+    """The broker explicitly rejected the request before accepting an order."""
+
+
+class TigerSubmissionUnknown(RuntimeError):
+    """The request may have reached the broker and must not be retried blindly."""
+
+
+_SEND_CLAIM_PROOF = object()
+
+
+class TigerSendClaim:
+    """In-process one-shot capability used to prevent accidental bypass and replay."""
+
+    __slots__ = (
+        "account_id",
+        "intent_id",
+        "user_id",
+        "symbol",
+        "side",
+        "quantity",
+        "price",
+        "_lock",
+        "_proof",
+        "_used",
+    )
+
+    def __init__(
+        self,
+        account_id: str,
+        intent_id: str,
+        user_id: int,
+        symbol: str,
+        side: str,
+        quantity: int,
+        price: float,
+        proof: object,
+    ) -> None:
+        if proof is not _SEND_CLAIM_PROOF:
+            raise TypeError("TigerSendClaim cannot be created directly.")
+        self.account_id = str(account_id)
+        self.intent_id = str(intent_id)
+        self.user_id = int(user_id)
+        self.symbol = str(symbol)
+        self.side = str(side).upper()
+        self.quantity = int(quantity)
+        self.price = float(price)
+        self._lock = threading.Lock()
+        self._proof = proof
+        self._used = False
+
+
+def _new_tiger_send_claim(
+    account_id: str,
+    intent_id: str,
+    *,
+    user_id: int,
+    symbol: str,
+    side: str,
+    quantity: int,
+    price: float,
+) -> TigerSendClaim:
+    return TigerSendClaim(
+        account_id,
+        intent_id,
+        user_id,
+        symbol,
+        side,
+        quantity,
+        price,
+        _SEND_CLAIM_PROOF,
+    )
+
+
+def _valid_tiger_send_claim(
+    claim: Any,
+    account_id: str,
+    intent_id: str,
+    *,
+    user_id: int,
+    symbol: str,
+    side: str,
+    quantity: int,
+    price: float,
+) -> bool:
+    if not isinstance(claim, TigerSendClaim):
+        return False
+    with claim._lock:
+        valid = bool(
+            not claim._used
+            and claim._proof is _SEND_CLAIM_PROOF
+            and claim.account_id == str(account_id)
+            and claim.intent_id == str(intent_id)
+            and claim.user_id == int(user_id)
+            and claim.symbol == str(symbol)
+            and claim.side == str(side).upper()
+            and claim.quantity == int(quantity)
+            and claim.price == float(price)
+        )
+        if valid:
+            claim._used = True
+        return valid
 
 
 def _value(record: Any, name: str, default: Any = None) -> Any:
@@ -147,7 +252,15 @@ class TigerAPI:
         )
 
     def place_stock_limit(
-        self, symbol: str, side: str, quantity: int, price: float, *, user_id: int
+        self,
+        symbol: str,
+        side: str,
+        quantity: int,
+        price: float,
+        *,
+        user_id: int,
+        intent_id: str | None = None,
+        pre_send_check: Callable[[str], TigerSendClaim] | None = None,
     ):
         operator_id = os.getenv("TRADEAI_LIVE_OPERATOR_USER_ID", "").strip()
         if not operator_id or str(user_id) != operator_id:
@@ -156,11 +269,46 @@ class TigerAPI:
             raise RuntimeError("Tiger 当前不是 live 环境，订单未发送。")
         if os.getenv("TIGER_REAL_TRADING_ENABLED", "false").lower() != "true":
             raise RuntimeError("实盘下单总开关未启用。请先完成老虎模拟盘联调。")
+        if pre_send_check is None:
+            raise RuntimeError("Tiger 实盘订单必须通过受控发送前授权复验。")
+        if not intent_id:
+            raise RuntimeError("Tiger 实盘订单缺少内部幂等意图编号。")
         client = self._client or self.connect()
         from tigeropen.common.util.contract_utils import stock_contract
         from tigeropen.common.util.order_utils import limit_order
 
         contract = stock_contract(symbol=symbol, currency="USD")
         order = limit_order(self.account, contract, side.upper(), quantity, limit_price=price)
-        client.place_order(order)
+        order.user_mark = str(intent_id)
+        claim = pre_send_check(str(self.account))
+        if not _valid_tiger_send_claim(
+            claim,
+            str(self.account),
+            str(intent_id),
+            user_id=user_id,
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            price=price,
+        ):
+            raise TigerAPIRejected("Tiger 发送前复验未返回有效的一次性执行权证。")
+        operator_id = os.getenv("TRADEAI_LIVE_OPERATOR_USER_ID", "").strip()
+        if not operator_id or str(user_id) != operator_id:
+            raise TigerAPIRejected("共享 Tiger 账户只允许已配置的实盘操作员下单。")
+        if os.getenv("TIGER_ENV", "paper").strip().lower() != "live":
+            raise TigerAPIRejected("Tiger 当前不是 live 环境，订单未发送。")
+        if os.getenv("TIGER_REAL_TRADING_ENABLED", "false").lower() != "true":
+            raise TigerAPIRejected("实盘下单总开关未启用。请先完成老虎模拟盘联调。")
+        try:
+            submission_id = client.place_order(order)
+        except Exception as exc:
+            try:
+                from tigeropen.common.exceptions import ApiException
+            except ImportError:
+                ApiException = ()  # type: ignore[assignment,misc]
+            if isinstance(exc, ApiException):
+                raise TigerAPIRejected(str(exc)) from exc
+            raise TigerSubmissionUnknown("Tiger 提交结果未知，禁止重试并等待订单对账。") from exc
+        if submission_id is None:
+            raise TigerSubmissionUnknown("Tiger 未返回明确提交编号，禁止重试并等待订单对账。")
         return order

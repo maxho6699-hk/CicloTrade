@@ -14,7 +14,7 @@ from src.apps.worker._compat import StrEnum
 from src.apps.worker.quant_learning import (
     EvaluationMetrics,
     ModelState,
-    PromotionDecision,
+    PromotionProposal,
     PromotionPolicy,
     evaluate_for_promotion,
 )
@@ -109,9 +109,8 @@ class LearningCycleReceipt:
     fold_count: int
     slippage_multiplier: float
     metrics: EvaluationMetrics
-    promotion: PromotionDecision
+    promotion_proposal: PromotionProposal
     created_at: str
-    independent_approver_id: str | None = None
 
 
 def validate_point_in_time_samples(
@@ -185,7 +184,6 @@ def run_learning_cycle(
     decision = evaluate_for_promotion(
         ModelState.SHADOW,
         result.metrics(),
-        independently_approved=False,
         policy=policy,
     )
     created_at = datetime.now(UTC).isoformat(timespec="seconds")
@@ -205,31 +203,6 @@ def run_learning_cycle(
         fold_count=result.fold_count,
         slippage_multiplier=result.slippage_multiplier,
         metrics=result.metrics(),
-        promotion=decision,
+        promotion_proposal=decision,
         created_at=created_at,
-    )
-
-
-def independently_review_cycle(
-    receipt: LearningCycleReceipt,
-    *,
-    approver_id: str,
-    policy: PromotionPolicy | None = None,
-) -> LearningCycleReceipt:
-    if not approver_id.strip() or approver_id == receipt.model_id:
-        raise ValueError("an independent approver identity is required")
-    decision = evaluate_for_promotion(
-        ModelState.PAPER_QUALIFIED,
-        receipt.metrics,
-        independently_approved=True,
-        policy=policy,
-    )
-    return LearningCycleReceipt(
-        **{
-            **asdict(receipt),
-            "asset_class": receipt.asset_class,
-            "metrics": receipt.metrics,
-            "promotion": decision,
-            "independent_approver_id": approver_id,
-        }
     )

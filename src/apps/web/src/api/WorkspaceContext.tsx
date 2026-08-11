@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { fetchBootstrap, login as apiLogin, logout as apiLogout, restoreSession, type BootstrapPayload } from './client'
+import {
+  fetchBootstrap,
+  login as apiLogin,
+  logout as apiLogout,
+  restoreSession,
+  updateWatchlist as apiUpdateWatchlist,
+  updateWatchlistPin as apiUpdateWatchlistPin,
+  type BootstrapPayload,
+  type WatchlistPayload,
+} from './client'
 import { WorkspaceContext, type WorkspaceContextValue, type WorkspaceMode } from './workspace-context'
+import type { Market } from '../types'
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [mode, setMode] = useState<WorkspaceMode>('loading')
@@ -13,6 +23,29 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setMode('authenticated')
     setError(null)
   }, [])
+
+  const applyWatchlistPayload = useCallback((payload: WatchlistPayload) => {
+    setData((current) => current ? {
+      ...current,
+      settings: {
+        ...current.settings,
+        watchlists: payload.watchlists,
+        watchlist_pins: payload.pins,
+      },
+    } : current)
+  }, [])
+
+  const changeWatchlist = useCallback(async (market: Market, symbol: string, remove: boolean) => {
+    const payload = await apiUpdateWatchlist(market, symbol, remove)
+    applyWatchlistPayload(payload)
+    return payload
+  }, [applyWatchlistPayload])
+
+  const changeWatchlistPin = useCallback(async (market: Market, symbol: string, pinned: boolean) => {
+    const payload = await apiUpdateWatchlistPin(market, symbol, pinned)
+    applyWatchlistPayload(payload)
+    return payload
+  }, [applyWatchlistPayload])
 
   useEffect(() => {
     let active = true
@@ -43,17 +76,25 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     data,
     error,
     refresh: loadBootstrap,
+    changeWatchlist,
+    changeWatchlistPin,
     login: async (email, password) => {
       setError(null)
       await apiLogin(email, password)
       await loadBootstrap()
     },
     logout: async () => {
-      await apiLogout()
-      setData(null)
-      setMode('demo')
+      try {
+        await apiLogout()
+        setError(null)
+      } catch {
+        setError('本机登录状态已清除；服务器会话可能需要稍后自动失效。')
+      } finally {
+        setData(null)
+        setMode('demo')
+      }
     },
-  }), [data, error, loadBootstrap, mode])
+  }), [changeWatchlist, changeWatchlistPin, data, error, loadBootstrap, mode])
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>
 }

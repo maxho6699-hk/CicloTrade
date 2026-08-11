@@ -84,13 +84,19 @@ def test_catalog_sync_and_database_registration_are_dynamic_and_preserve_admin_s
 def test_plan_strategy_catalog_is_progressive_and_honors_admin_state(registry):
     free = registry.list_for_plan("免费版", family="option")
     standard = registry.list_for_plan("标准版", family="option")
+    advanced = registry.list_for_plan("高级版", family="option")
+    professional = registry.list_for_plan("专业版", family="option")
 
-    assert {item["key"] for item in free} == {"option_long_call"}
-    assert {item["key"] for item in free} <= {item["key"] for item in standard}
+    assert free == []
+    assert standard == []
+    assert advanced == []
+    assert len(professional) == 8
+    assert {item["rules"]["leg_count"] for item in professional} == {1, 2, 3}
+    assert {item["key"] for item in registry.list_for_plan("免费版", family="equity")} == {"template_dual_ma"}
 
     registry.set_active("option_long_call", False)
     assert registry.list_for_plan("免费版", family="option") == []
-    assert all(item["key"] != "option_long_call" for item in registry.list_for_plan("标准版", family="option"))
+    assert all(item["key"] != "option_long_call" for item in registry.list_for_plan("专业版", family="option"))
 
 
 def test_five_dimension_scoring_selects_top_three_and_is_idempotent(registry, db):

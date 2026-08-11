@@ -30,6 +30,8 @@ def test_rewrite_capabilities_forbid_external_side_effects():
     assert "quant_timeline" in payload["compatibility_reads"]
     assert "watchlist" in payload["protected_writes"]
     assert "ui_locale" in payload["protected_writes"]
+    assert "paper_orders" not in payload["protected_writes"]
+    assert "/api/rewrite/v1/paper/orders" not in {route.path for route in api_module.routes}
 
 
 def test_market_search_state_prunes_expired_cache_and_rate_entries():

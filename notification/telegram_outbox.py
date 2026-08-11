@@ -52,7 +52,7 @@ def enqueue_telegram_outbound(database, item: TelegramOutbound, dedupe_key: str)
 
 
 def _retry(database, row: dict[str, Any], now: datetime, error: str) -> None:
-    attempts = int(row["attempts"]) + 1
+    attempts = max(1, int(row["attempts"]))
     retry_at = _iso(now + timedelta(minutes=min(2 ** min(attempts, 6), 60)))
     token = telegram_token()
     detail = error.replace(token, "[redacted]") if token else error

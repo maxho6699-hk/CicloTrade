@@ -46,17 +46,20 @@ function nearestCandleTime(candles: Candle[], value: string): Candle['time'] | n
 export function buildChartTradeView(
   candles: Candle[],
   activity: PortfolioActivity | null | undefined,
+  market: 'US' | 'CN',
   symbol: string,
 ): ChartTradeView {
   if (!candles.length || !activity) return { executions: [], intervals: [], hiddenExecutionCount: 0 }
-  const symbolExecutions = activity.executions.filter((execution) => execution.symbol === symbol)
+  const symbolExecutions = activity.executions.filter(
+    (execution) => execution.market === market && execution.symbol === symbol,
+  )
   const executions = symbolExecutions.flatMap((execution) => {
     const chartTime = nearestCandleTime(candles, execution.executed_at)
     return chartTime === null ? [] : [{ ...execution, chartTime }]
   })
   const byId = new Map(executions.map((execution) => [execution.execution_id, execution]))
   const intervals = activity.intervals.flatMap((interval) => {
-    if (interval.symbol !== symbol) return []
+    if (interval.market !== market || interval.symbol !== symbol) return []
     const visible = interval.execution_ids.flatMap((id) => byId.get(id) ?? [])
     const opened = visible.find((execution) => execution.effect === 'OPEN')
     const closed = visible.findLast((execution) => execution.effect === 'CLOSE')

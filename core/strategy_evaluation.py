@@ -15,6 +15,7 @@ import pandas as pd
 
 from backtest.engine import BacktestEngine
 from core.database import DatabaseManager, get_database
+from core.membership import authoritative_membership_user
 from core.quant_journal import QuantJournal
 from core.strategy_registry import StrategyRegistry
 from core.strategy_scoring import StrategyScorer
@@ -512,6 +513,7 @@ def update_saved_strategy_performance(
     )
     completed = skipped = 0
     for row in rows:
+        row = authoritative_membership_user(db, row)
         if not can(effective_plan(row), "strategy_tracking"):
             skipped += 1
             continue

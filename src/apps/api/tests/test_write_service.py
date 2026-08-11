@@ -12,8 +12,9 @@ from core.auth import AuthService
 from core.compat import UTC
 from core.database import DatabaseManager
 from src.apps.api.app import ApiError, app as api_application, membership_order_proof
-from src.apps.api.read_model import ReadOnlyLegacyRepository
+from src.apps.api.read_model import BrowserIdentity, ReadOnlyLegacyRepository
 from src.apps.api.write_service import BrowserWriteService
+from core.alerts import AlertService
 from payment.proof_storage import payment_proof_root
 from payment.receiver_storage import (
     read_receiver_qr,
@@ -79,6 +80,27 @@ def test_risk_settings_reject_unknown_or_inverted_limits(write_context):
         service.update_risk(identity, inverted)
 
 
+def test_resume_opening_is_user_scoped_idempotent_and_audited(write_context):
+    database, identity, service = write_context
+    database.execute("UPDATE user_controls SET opening_paused=1 WHERE user_id=?", (identity.id,))
+    database.execute(
+        """INSERT INTO platform_controls(control_key,control_value,updated_at)
+           VALUES ('opening_paused','1',datetime('now'))
+           ON CONFLICT(control_key) DO UPDATE SET control_value='1',updated_at=datetime('now')"""
+    )
+
+    assert service.resume_opening(identity) is True
+    assert service.resume_opening(identity) is False
+    assert database.fetch_one("SELECT opening_paused FROM user_controls WHERE user_id=?", (identity.id,))["opening_paused"] == 0
+    assert database.fetch_one(
+        "SELECT control_value FROM platform_controls WHERE control_key='opening_paused'"
+    )["control_value"] == "1"
+    assert database.fetch_one(
+        "SELECT COUNT(*) count FROM user_action_logs WHERE user_id=? AND action_type='USER_RESUME_OPENING'",
+        (identity.id,),
+    )["count"] == 1
+
+
 def test_telegram_preferences_enforce_membership_entitlements(write_context):
     database, identity, service = write_context
 
@@ -128,6 +150,34 @@ def test_watchlist_rejects_invalid_market_symbol_and_unknown_fields(write_contex
         service.update_watchlist(identity, {"market": "US", "symbol": "PLTR", "admin": True})
 
 
+def test_watchlist_pins_are_ordered_idempotent_and_removed_with_symbol(write_context):
+    _, identity, service = write_context
+    service.update_watchlist(identity, {"market": "US", "symbol": "PLTR"})
+    service.update_watchlist(identity, {"market": "US", "symbol": "AAPL"})
+
+    first_pin = service.update_watchlist_pin(
+        identity, {"market": "US", "symbol": "AAPL", "pinned": True}
+    )
+    repeated_pin = service.update_watchlist_pin(
+        identity, {"market": "US", "symbol": "AAPL", "pinned": True}
+    )
+
+    assert first_pin == repeated_pin == {"us": ["AAPL"], "a_share": []}
+    assert service.settings(identity)["watchlists"]["us"] == ["AAPL", "PLTR"]
+
+    service.update_watchlist(identity, {"market": "US", "symbol": "AAPL"}, remove=True)
+    assert service.settings(identity)["watchlist_pins"] == {"us": [], "a_share": []}
+
+    with pytest.raises(ValueError, match="代码无效"):
+        service.update_watchlist_pin(
+            identity, {"market": "US", "symbol": "USD=X", "pinned": True}
+        )
+    with pytest.raises(ValueError, match="尚未加入"):
+        service.update_watchlist_pin(
+            identity, {"market": "US", "symbol": "MSFT", "pinned": True}
+        )
+
+
 def test_watchlist_allows_100_symbols_and_rejects_101st_without_mutation(write_context):
     _, identity, service = write_context
     for index in range(100):
@@ -156,37 +206,98 @@ def test_alert_creation_uses_legacy_plan_and_condition_rules(write_context):
     assert alerts[0]["conditions_list"][0]["value"] == 220
 
 
-def test_paper_order_passes_risk_gate_and_never_creates_live_order(write_context):
+def test_alert_metadata_validates_cross_repeat_expiry_channels_and_deduplicates(write_context):
     database, identity, service = write_context
-    service.update_risk(identity, valid_risk())
+    expires = (datetime.now(UTC) + timedelta(days=3)).isoformat()
+    payload = {
+        "symbol": "AAPL",
+        "conditions": [{"type": "price", "operator": ">=", "value": 220}],
+        "trigger_mode": "crosses_above",
+        "repeat_mode": "repeat",
+        "expires_at": expires,
+        "channels": ["website"],
+        "notify_only": True,
+    }
+    first = service.create_alert(identity, payload)
+    repeated = service.create_alert(identity, payload)
 
-    order = service.create_paper_order(identity, {
-        "symbol": "AAPL", "side": "BUY", "quantity": 5, "price": 200,
-        "instrument_type": "stock",
-    })
+    assert len(first) == len(repeated) == 1
+    assert database.fetch_one("SELECT COUNT(*) count FROM price_alerts WHERE user_id=?", (identity.id,))["count"] == 1
+    item = first[0]
+    assert item["trigger_mode"] == "crosses_above"
+    assert item["repeat_mode"] == "repeat"
+    assert item["channels"] == ["website"]
+    assert item["notify_only"] is True
 
-    assert order["status"] == "FILLED"
-    assert order["account_mode"] == "paper"
-    assert database.fetch_one("SELECT COUNT(*) count FROM orders WHERE account_mode='live'")["count"] == 0
+    with pytest.raises(ValueError, match="跌破"):
+        service.create_alert(identity, {
+            "symbol": "MSFT",
+            "conditions": [{"type": "price", "operator": ">=", "value": 100}],
+            "trigger_mode": "crosses_below",
+            "channels": ["website"],
+        })
+    database.execute("UPDATE users SET plan_type='免费版',subscription_expire=NULL WHERE id=?", (identity.id,))
+    with pytest.raises(ValueError, match="Telegram"):
+        service.create_alert(identity, {
+            "symbol": "TSLA",
+            "conditions": [{"type": "price", "operator": ">=", "value": 100}],
+            "channels": ["telegram"],
+        })
 
 
-def test_paper_order_honors_platform_pause_and_records_risk_rejection(write_context):
+def test_crossing_repeat_alert_requires_crossing_and_can_trigger_again(write_context):
     database, identity, service = write_context
-    database.execute(
-        """INSERT INTO platform_controls(control_key,control_value,updated_at)
-           VALUES ('opening_paused','1',?)
-           ON CONFLICT(control_key) DO UPDATE SET control_value='1'""",
-        (datetime.now(UTC).isoformat(),),
+    item = service.create_alert(identity, {
+        "symbol": "AAPL",
+        "conditions": [{"type": "price", "operator": ">=", "value": 220}],
+        "trigger_mode": "crosses_above",
+        "repeat_mode": "repeat",
+        "channels": ["website"],
+    })[0]
+    alerts = AlertService(database)
+
+    assert alerts.evaluate(identity.id, {"AAPL": 221}) == []
+    assert len(alerts.evaluate(identity.id, {"AAPL": 219})) == 0
+    assert len(alerts.evaluate(identity.id, {"AAPL": 220})) == 1
+    assert alerts.list(identity.id)[0]["is_active"] == 1
+    assert len(alerts.evaluate(identity.id, {"AAPL": 221})) == 0
+    assert len(alerts.evaluate(identity.id, {"AAPL": 219})) == 0
+    assert len(alerts.evaluate(identity.id, {"AAPL": 221})) == 1
+    assert database.fetch_one("SELECT COUNT(*) count FROM price_alerts WHERE id=?", (item["id"],))["count"] == 1
+    assert database.fetch_one("SELECT COUNT(*) count FROM notifications")["count"] == 2
+
+
+def test_alert_deactivation_is_user_scoped_idempotent_and_audited(write_context):
+    database, identity, service = write_context
+    alert = service.create_alert(identity, {
+        "symbol": "AAPL",
+        "conditions": [{"type": "price", "operator": ">=", "value": 220}],
+    })[0]
+    other = BrowserIdentity(
+        id=identity.id + 10_000,
+        display_name="Other",
+        plan_type="免费版",
+        subscription_expire=None,
     )
 
-    with pytest.raises(ValueError, match="暂停"):
-        service.create_paper_order(identity, {
-            "symbol": "MSFT", "side": "BUY", "quantity": 1, "price": 300,
-            "instrument_type": "stock",
-        })
+    with pytest.raises(ValueError, match="找不到"):
+        service.deactivate_alert(other, int(alert["id"]))
+    assert database.fetch_one("SELECT is_active FROM price_alerts WHERE id=?", (alert["id"],))["is_active"] == 1
+
+    first = service.deactivate_alert(identity, int(alert["id"]))
+    second = service.deactivate_alert(identity, int(alert["id"]))
+
+    assert first[0]["is_active"] == second[0]["is_active"] == 0
+    assert database.fetch_one("SELECT COUNT(*) count FROM price_alerts WHERE id=?", (alert["id"],))["count"] == 1
     assert database.fetch_one(
-        "SELECT event_type FROM risk_log WHERE user_id=? ORDER BY id DESC", (identity.id,)
-    )["event_type"] == "OPENING_PAUSED"
+        "SELECT COUNT(*) count FROM strategy_action_logs WHERE user_id=? AND action='ALERT_DEACTIVATE'",
+        (identity.id,),
+    )["count"] == 1
+
+
+def test_browser_write_service_does_not_expose_personal_paper_orders(write_context):
+    _, _, service = write_context
+    assert not hasattr(service, "create_paper_order")
 
 
 @pytest.mark.parametrize("method", ["fps", "alipay", "wechat"])
@@ -213,7 +324,7 @@ def test_membership_payment_instructions_normalize_escaped_newlines(write_contex
 
     order = service.create_membership_order(
         identity,
-        {"plan": "标准版", "cycle": "monthly", "method": "fps", "terms_accepted": True},
+        {"plan": "高级版", "cycle": "monthly", "method": "fps", "terms_accepted": True},
         "membership-instruction-lines",
     )
 
@@ -236,7 +347,7 @@ def test_tg_admin_receiver_qr_is_bound_to_order_and_enforces_owner_status(write_
 
     order = service.create_membership_order(
         identity,
-        {"plan": "标准版", "cycle": "monthly", "method": "alipay", "terms_accepted": True},
+        {"plan": "高级版", "cycle": "monthly", "method": "alipay", "terms_accepted": True},
         "membership-receiver-qr",
     )
     assert order["payment_instructions"] == "Alipay receiver 123"
@@ -320,7 +431,7 @@ def test_browser_membership_proof_rejects_non_image_without_storing(write_contex
     database, identity, service = write_context
     order = service.create_membership_order(
         identity,
-        {"plan": "标准版", "cycle": "monthly", "method": "wechat", "terms_accepted": True},
+        {"plan": "高级版", "cycle": "monthly", "method": "wechat", "terms_accepted": True},
         "membership-invalid-proof",
     )
 

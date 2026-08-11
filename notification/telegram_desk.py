@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from core.compat import UTC
 from html import escape
 import os
 import threading
@@ -16,6 +18,7 @@ from core.plans import (
     effective_plan,
     plan_display_name,
     telegram_suggestion_name,
+    telegram_timeline_limits,
 )
 from core.quant_journal import QuantJournal
 from notification.telegram_bot import (
@@ -90,6 +93,19 @@ def _money(currency: object, value: object) -> str:
     return f"{symbol}{amount:,.2f}"
 
 
+def _delay_label(minutes: object) -> str:
+    """Render a plan-owned delay without duplicating the membership matrix."""
+    value = max(0, int(minutes or 0))
+    if value == 0:
+        return "即時"
+    hours, remainder = divmod(value, 60)
+    if hours and remainder:
+        return f"{hours} 小時 {remainder} 分鐘"
+    if hours:
+        return f"{hours} 小時"
+    return f"{remainder} 分鐘"
+
+
 def _home_card(chat_id: str, account: dict[str, Any] | None) -> str:
     if account:
         plan = effective_plan(account)
@@ -103,16 +119,43 @@ def _home_card(chat_id: str, account: dict[str, Any] | None) -> str:
     )
 
 
-def _account_card(chat_id: str, account: dict[str, Any] | None) -> tuple[str, TelegramKeyboard]:
+def _opening_paused(database, user_id: int) -> bool:
+    row = database.fetch_one(
+        "SELECT opening_paused FROM user_controls WHERE user_id=?",
+        (int(user_id),),
+    )
+    return bool(row and row.get("opening_paused"))
+
+
+def _platform_opening_paused(database) -> bool:
+    row = database.fetch_one(
+        "SELECT control_value FROM platform_controls WHERE control_key='opening_paused'"
+    )
+    return bool(
+        row
+        and str(row.get("control_value") or "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+
+
+def _account_card(database, chat_id: str, account: dict[str, Any] | None) -> tuple[str, TelegramKeyboard]:
     if account:
         plan = effective_plan(account)
+        paused = _opening_paused(database, int(account["id"])) or _platform_opening_paused(database)
         message = (
             "🔗 <b>CicloTrade · 账户状态</b>\n\n"
             f"<blockquote>已验证 Chat ID：<code>{escape(str(chat_id))}</code>\n"
-            f"账户：{escape(str(account['email']))}\n会员：{escape(plan_display_name(plan))}</blockquote>\n"
-            "网站与 Bot 使用同一份会员权限和通知设置。"
+            f"账户：{escape(str(account['email']))}\n会员：{escape(plan_display_name(plan))}\n"
+            f"新开仓：{'已暂停' if paused else '风控允许'}</blockquote>\n"
+            "网站与 Bot 使用同一份会员权限和通知设置。\n"
+            "TG 只能暂停新开仓；恢复自动交易、提高风险或授权券商必须回网站重新验证。"
         )
-        return message, [_home_row()]
+        buttons: TelegramKeyboard = []
+        if not paused:
+            buttons.append([{"text": "⛔ 一鍵暫停新開倉", "callback_data": "desk:pause_opening"}])
+        buttons.append([{"text": "🔐 前往網站帳戶頁", "url": _app_url("account")}])
+        buttons.append(_home_row())
+        return message, buttons
     message = (
         "🔗 <b>CicloTrade · 绑定账户</b>\n\n"
         f"<blockquote>你的 Chat ID：<code>{escape(str(chat_id))}</code></blockquote>\n"
@@ -123,6 +166,31 @@ def _account_card(chat_id: str, account: dict[str, Any] | None) -> tuple[str, Te
         [{"text": "🔐 安全绑定", "url": _app_url("account")}],
         _home_row(),
     ]
+
+
+def _pause_opening(database, chat_id: str, account: dict[str, Any] | None) -> tuple[str, TelegramKeyboard]:
+    if not account:
+        return _account_card(database, chat_id, None)
+    user_id = int(account["id"])
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    with database.transaction() as conn:
+        claimed = conn.execute(
+            """INSERT INTO user_controls(user_id,opening_paused,updated_at) VALUES (?,1,?)
+               ON CONFLICT(user_id) DO UPDATE SET opening_paused=1,updated_at=excluded.updated_at
+               WHERE COALESCE(user_controls.opening_paused,0)=0""",
+            (user_id, now),
+        ).rowcount
+        if claimed == 1:
+            conn.execute(
+                "INSERT INTO user_action_logs(user_id,action_type,details,created_at) VALUES (?,?,?,?)",
+                (user_id, "PAUSE_OPENING", "opening_paused=True;source=telegram", now),
+            )
+    return (
+        "⛔ <b>CicloTrade · 新开仓已暂停</b>\n\n"
+        "<blockquote>新的正股或期权仓位会被风控拒绝；减仓、退出、行情监控与审计继续运行。</blockquote>\n"
+        "TG 不提供恢复按钮。恢复自动交易、提高风险或授权券商，请回到账户页重新验证并明确确认。",
+        [[{"text": "🔐 前往網站帳戶頁", "url": _app_url("account")}], _home_row()],
+    )
 
 
 def _plans_card(account: dict[str, Any] | None) -> tuple[str, TelegramKeyboard]:
@@ -179,7 +247,7 @@ def _cycle_card(database, slug: str, cycle: str, account: dict[str, Any] | None)
         raise ValueError("此方案不支持该付款周期。")
     amount = float(PLANS[name]["prices"][cycle])
     if not account:
-        message, buttons = _account_card("--", None)
+        message, buttons = _account_card(database, "--", None)
         return message, buttons
     availability = ReceivingProfileService(database).availability()
     methods = [
@@ -229,7 +297,7 @@ def _method_card(database, slug: str, cycle: str, method: str) -> tuple[str, Tel
 
 def _orders_card(database, account: dict[str, Any] | None) -> tuple[str, TelegramKeyboard]:
     if not account:
-        return _account_card("--", None)
+        return _account_card(database, "--", None)
     orders = OrderService(database).list_orders(int(account["id"]))[:6]
     lines = ["🧾 <b>CicloTrade · 我的订单</b>", ""]
     if not orders:
@@ -262,15 +330,16 @@ def _membership_card(account: dict[str, Any] | None) -> tuple[str, TelegramKeybo
             ],
         )
     plan = effective_plan(account)
-    if plan in {"免费版", "标准版"}:
-        channel = TELEGRAM_CHANNEL_NAMES["daily"]
-        access = "正股建議延遲 1 小時\n期權建議延遲 15 分鐘"
-    elif plan == "高级版":
-        channel = TELEGRAM_CHANNEL_NAMES["advanced"]
-        access = "即時正股建議\n期權建議需升級專業會員"
-    else:
+    if can(plan, "tg_option_signal"):
         channel = TELEGRAM_CHANNEL_NAMES["professional"]
         access = "即時正股建議\n即時期權建議"
+    elif can(plan, "tg_stock_signal"):
+        channel = TELEGRAM_CHANNEL_NAMES["advanced"]
+        access = "即時正股建議\n期權建議需具備專業權限"
+    else:
+        channel = TELEGRAM_CHANNEL_NAMES["daily"]
+        stock_delay = _delay_label(telegram_timeline_limits(plan).get("stock_delay_minutes"))
+        access = f"私人即時建議未開放\n正股建議延遲 {stock_delay}"
     return (
         "💎 <b>CicloTrade · 會員與訂單</b>\n\n"
         f"<blockquote>會員　{escape(plan_display_name(plan))}\n"
@@ -470,7 +539,9 @@ def telegram_desk_response(
             if is_billing_admin(database, account):
                 keyboard.insert(-1, [{"text": "🏦 收款资料管理", "callback_data": "desk:receiving"}])
         elif command == "desk:account":
-            message, keyboard = _account_card(chat_id, account)
+            message, keyboard = _account_card(database, chat_id, account)
+        elif command == "desk:pause_opening":
+            message, keyboard = _pause_opening(database, chat_id, account)
         elif command == "desk:plans":
             message, keyboard = _plans_card(account)
         elif command == "desk:membership":

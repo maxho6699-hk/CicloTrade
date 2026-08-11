@@ -104,6 +104,15 @@ def test_signal_outbox_enforces_tiers_and_is_idempotent(tmp_path, monkeypatch):
     assert dispatch_quant_signal_deliveries(db) == 0
     assert {target for _, target, _ in sent} == {"10002", "10003"}
     assert all("#1" in message and kwargs["parse_mode"] == "HTML" for message, _, kwargs in sent)
+    urls = [button["url"] for _, _, kwargs in sent for row in kwargs["buttons"] for button in row]
+    assert any(url.endswith("/opportunities") for url in urls)
+    assert any(url.endswith("/portfolio") for url in urls)
+    assert any(url.endswith("/markets") for url in urls)
+    assert any(url.endswith("/notifications") for url in urls)
+    assert all(
+        not url.endswith(("/recommendations", "/dashboard", "/terminal", "/settings", "/subscription"))
+        for url in urls
+    )
 
 
 def test_delivery_rechecks_watchlist_and_subscription_before_sending(tmp_path, monkeypatch):
@@ -127,6 +136,29 @@ def test_delivery_rechecks_watchlist_and_subscription_before_sending(tmp_path, m
     assert db.fetch_one(
         "SELECT COUNT(*) count FROM quant_event_deliveries WHERE status='skipped'"
     )["count"] == 3
+
+
+def test_telegram_dispatcher_does_not_claim_future_discord_rows(tmp_path, monkeypatch):
+    db = DatabaseManager(str(tmp_path / "quant-channel-isolation.db"))
+    user = _paid_user(db, "channel-isolation", "高级版", "20003")
+    event = _event(db)
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    with db.transaction() as conn:
+        conn.execute("PRAGMA ignore_check_constraints=ON")
+        conn.execute(
+            """INSERT INTO quant_event_deliveries
+               (event_id,user_id,channel,instrument_type,symbol,status,attempts,
+                next_attempt_at,last_error,created_at,updated_at,sent_at)
+               VALUES (?,?,'discord','stock','AAPL','pending',0,?,NULL,?,?,NULL)""",
+            (event["id"], user["id"], now, now, now),
+        )
+    sent = []
+    monkeypatch.setattr("scheduler.jobs.send_telegram", lambda *args, **kwargs: sent.append((args, kwargs)))
+
+    assert dispatch_quant_signal_deliveries(db) == 0
+    assert not sent
+    row = db.fetch_one("SELECT channel,status,attempts FROM quant_event_deliveries")
+    assert row == {"channel": "discord", "status": "pending", "attempts": 0}
 
 
 def test_failed_delivery_is_persisted_for_retry(tmp_path, monkeypatch):
@@ -182,10 +214,72 @@ def test_correction_notifies_adjustment_and_removed_symbol(tmp_path, monkeypatch
 
     assert enqueue_quant_signal_deliveries(db) == 2
     assert dispatch_quant_signal_deliveries(db) == 2
-    assert any("平倉" in message and "美股 AAPL" in message and "現持　0 股" in message for message in sent)
-    assert any("開倉" in message and "美股 MSFT" in message and "現持　5 股" in message for message in sent)
+    assert any("建议已失效 · 做多" in message and "美股 AAPL" in message and "數量　10 股" in message for message in sent)
+    assert any("推荐入场 · 做多" in message and "美股 MSFT" in message and "數量　5 股" in message for message in sent)
     assert all("US:STOCK" not in message and "catalog" not in message.lower() for message in sent)
     assert enqueue_quant_signal_deliveries(db) == 0
+
+
+def test_noop_correction_is_skipped_as_no_material_change(tmp_path, monkeypatch):
+    db = DatabaseManager(str(tmp_path / "quant-noop-correction.db"))
+    _paid_user(db, "noop-correction", "高级版", "40002")
+    original = _event(db)
+    assert enqueue_quant_signal_deliveries(db) == 1
+
+    sent = []
+    monkeypatch.setattr("scheduler.jobs.telegram_configured", lambda *_: True)
+    monkeypatch.setattr(
+        "scheduler.jobs.send_telegram",
+        lambda message, chat_id=None, **kwargs: sent.append((message, chat_id, kwargs)),
+    )
+    assert dispatch_quant_signal_deliveries(db) == 1
+    sent.clear()
+
+    QuantJournal(db).append_event(
+        ledger_key="tradeai-system",
+        source="pytest",
+        external_event_id="mixed-signal-noop-correction",
+        event_type="correction",
+        corrects_event_id=original["id"],
+        strategy_name="趋势交叉",
+        strategy_version="v1",
+        occurred_at="2026-08-06T02:00:00+00:00",
+        metadata={
+            "risk_levels": {
+                "US:STOCK:AAPL": {"stop_loss": 180, "target_price": 240},
+                "US:OPTION:AAPL:2026-09-18:CALL:210": {"stop_loss": 3.5, "target_price": 8},
+            }
+        },
+        legs=[
+            {
+                "market": "US",
+                "instrument_type": "stock",
+                "symbol": "AAPL",
+                "target_quantity": 10,
+                "quantity_delta": 10,
+                "price": 200,
+            },
+            {
+                "market": "US",
+                "instrument_type": "option",
+                "symbol": "AAPL",
+                "option_expiry": "2026-09-18",
+                "option_right": "CALL",
+                "option_strike": 210,
+                "target_quantity": 1,
+                "quantity_delta": 1,
+                "price": 5,
+            },
+        ],
+    )
+
+    assert enqueue_quant_signal_deliveries(db) == 1
+    assert dispatch_quant_signal_deliveries(db) == 0
+    assert not sent
+    latest = db.fetch_one(
+        "SELECT status,last_error FROM quant_event_deliveries ORDER BY id DESC LIMIT 1"
+    )
+    assert latest == {"status": "skipped", "last_error": "no_material_change"}
 
 
 def test_new_eligibility_only_receives_events_recorded_after_activation(tmp_path):
@@ -334,7 +428,18 @@ def test_free_group_signals_are_queued_with_stock_and_option_delays(tmp_path, mo
 
 def test_daily_group_summary_requires_new_persisted_snapshot(tmp_path, monkeypatch):
     db = DatabaseManager(str(tmp_path / "quant-daily-summary.db"))
-    _event(db)
+    event = _event(db)
+    event_recorded_at = datetime.fromisoformat(
+        str(event["recorded_at"]).replace("Z", "+00:00")
+    )
+
+    class SummaryClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = event_recorded_at + timedelta(hours=2)
+            return value if tz is None else value.astimezone(tz)
+
+    monkeypatch.setattr("scheduler.jobs.datetime", SummaryClock)
     journal = QuantJournal(db)
     journal.append_equity_snapshot(
         ledger_key="tradeai-system", source="pytest", external_snapshot_id="usd-1",
@@ -368,3 +473,30 @@ def test_daily_group_summary_requires_new_persisted_snapshot(tmp_path, monkeypat
     assert "正股建議延遲 1 小時" in free and "期權建議延遲 15 分鐘" in free and "升級會員" in free
     assert all(kwargs["protect_content"] is True for _, _, kwargs in sent)
     assert all(kwargs["parse_mode"] == "HTML" for _, _, kwargs in sent)
+
+
+def test_free_daily_summary_waits_for_latest_snapshot_release_time(tmp_path, monkeypatch):
+    db = DatabaseManager(str(tmp_path / "quant-daily-summary-release-gate.db"))
+    _event(db)
+    QuantJournal(db).append_equity_snapshot(
+        ledger_key="tradeai-system",
+        source="pytest",
+        external_snapshot_id="fresh-usd-1",
+        currency="USD",
+        initial_cash=100_000,
+        cash=100_000,
+        market_value=0,
+        realized_pnl=0,
+        unrealized_pnl=0,
+        captured_at=datetime.now(UTC).isoformat(timespec="seconds"),
+    )
+    monkeypatch.setenv("TELEGRAM_DAILY_SUMMARY_ENABLED", "true")
+    monkeypatch.setattr("scheduler.jobs.telegram_configured", lambda *_: True)
+    sent = []
+    monkeypatch.setattr(
+        "scheduler.jobs.send_telegram",
+        lambda message, chat_id=None, **kwargs: sent.append((message, chat_id, kwargs)),
+    )
+
+    assert publish_free_daily_group_summary(db) == 0
+    assert sent == []

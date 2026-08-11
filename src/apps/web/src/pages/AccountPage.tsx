@@ -1,29 +1,66 @@
-import { CheckCircle2, KeyRound, Languages, Laptop, LogOut, ShieldCheck, Smartphone, UserRound } from 'lucide-react'
+import { CheckCircle2, CircleAlert, KeyRound, Languages, Laptop, Link2, LogOut, PauseCircle, PlayCircle, ShieldCheck, Smartphone, UserRound } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { PageHeader } from '../components/PageHeader'
 import { WorkspaceState } from '../components/WorkspaceState'
 import { riskSettings } from '../data/workspace'
 import { useWorkspace } from '../api/workspace-context'
-import { BrowserApiError, saveRiskSettings } from '../api/client'
+import { BrowserApiError, resumeOpeningPause, saveRiskSettings } from '../api/client'
 import { useLocale } from '../i18n/useLocale'
 
 export function AccountPage() {
   const workspace = useWorkspace()
   const { locale, formatLocale, setLocale, syncState } = useLocale()
   const [risk, setRisk] = useState(riskSettings)
+  const [riskPreset, setRiskPreset] = useState<'conservative' | 'balanced' | 'custom'>('balanced')
   const [saveState, setSaveState] = useState('')
   const [accountNotice, setAccountNotice] = useState('')
+  const [resumePassword, setResumePassword] = useState('')
+  const [resumeConfirmation, setResumeConfirmation] = useState('')
+  const [resumeState, setResumeState] = useState('')
+  const brokerage = workspace.data?.membership.brokerage
+  const execution = workspace.data?.execution_control
+  const autoControlAccountLimit = brokerage?.auto_control_account_limit ?? 0
+  const accountsUsed = brokerage?.accounts_used ?? 0
+  const authorizedAccounts = brokerage?.accounts.filter((account) => account.authorized) ?? []
 
   useEffect(() => {
-    if (workspace.data?.settings.risk) setRisk({ ...riskSettings, ...workspace.data.settings.risk })
+    if (workspace.data?.settings.risk) {
+      const next = { ...riskSettings, ...workspace.data.settings.risk }
+      setRisk(next)
+      setRiskPreset(next.max_total_position === riskSettings.max_total_position && next.max_total_position_cny === riskSettings.max_total_position_cny ? 'balanced' : 'custom')
+    }
   }, [workspace.data])
+
+  const applyRiskPreset = (preset: 'conservative' | 'balanced') => {
+    const ratio = preset === 'conservative' ? 0.5 : 1
+    setRisk({ ...risk, max_position_per_symbol: riskSettings.max_position_per_symbol * ratio, max_total_position: riskSettings.max_total_position * ratio, max_daily_loss: riskSettings.max_daily_loss * ratio, max_position_per_symbol_cny: riskSettings.max_position_per_symbol_cny * ratio, max_total_position_cny: riskSettings.max_total_position_cny * ratio, max_daily_loss_cny: riskSettings.max_daily_loss_cny * ratio, cooldown_minutes: preset === 'conservative' ? 60 : riskSettings.cooldown_minutes, consecutive_loss_limit: preset === 'conservative' ? 2 : riskSettings.consecutive_loss_limit })
+    setRiskPreset(preset)
+  }
+
+  const resumeOpening = async () => {
+    if (workspace.mode !== 'authenticated') {
+      setResumeState('请先登录后恢复个人新开仓。')
+      return
+    }
+    try {
+      const result = await resumeOpeningPause(resumePassword, resumeConfirmation)
+      setResumePassword('')
+      setResumeConfirmation('')
+      setResumeState(result.execution_control.effective_opening_paused
+        ? '个人暂停已清除，但平台仍处于全局暂停，新开仓暂未恢复。'
+        : '个人新开仓暂停已解除。')
+      await workspace.refresh()
+    } catch (caught) {
+      setResumeState(caught instanceof BrowserApiError ? caught.message : '恢复失败，请稍后重试。')
+    }
+  }
 
   return (
     <div className="page operations-page">
       <PageHeader kicker="ACCOUNT / SECURITY" title="账户与安全" description="身份、会员、风控偏好、会话和券商连接集中管理。高风险开关不会默认开启。" />
       <WorkspaceState />
       <section className="profile-strip data-panel">
-        <span className="profile-avatar"><UserRound size={26} /></span><div><span>当前账户</span>{workspace.user ? <h2 data-no-localize>{workspace.user.display_name}</h2> : <h2>演示账户</h2>}<p>{workspace.user ? `${workspace.user.plan_display_name} · ${workspace.user.subscription_expire ?? '长期有效'}` : '登录后读取真实会员与风控设置'}</p></div><span className={`status-chip ${workspace.user ? 'official' : 'research'}`}><ShieldCheck size={14} /> {workspace.user ? '真实会话' : '演示模式'}</span><button className="button secondary" type="button" onClick={() => workspace.user ? void workspace.logout() : location.assign('/login')}>{workspace.user ? '退出登录' : '登录账户'}</button>
+        <span className="profile-avatar"><UserRound size={26} /></span><div><span>当前账户</span>{workspace.user ? <h2 data-no-localize>{workspace.user.display_name}</h2> : <h2>演示账户</h2>}<p>{workspace.user ? `${workspace.user.plan_display_name} · ${workspace.user.subscription_expire ?? '长期有效'}` : '登录后读取真实会员与风控设置'}</p></div><span className={`status-chip ${workspace.user ? 'official' : 'research'}`}><ShieldCheck size={14} /> {workspace.user ? '真实会话' : '演示模式'}</span><button className="button secondary" type="button" onClick={() => workspace.user ? void workspace.logout().then(() => location.assign('/')) : location.assign('/login')}>{workspace.user ? '退出登录' : '登录账户'}</button>
       </section>
 
       <section className="language-preference data-panel">
@@ -38,9 +75,10 @@ export function AccountPage() {
       <div className="account-layout">
         <section className="data-panel">
           <header className="panel-heading"><div><span>RISK PREFERENCES</span><h2>风险偏好</h2></div><ShieldCheck size={20} /></header>
-          <div className="range-settings">
-            <label><span><strong>美股单标的上限</strong><small>任何新订单都不能让单一美股超过此金额</small></span><output>USD {risk.max_position_per_symbol.toLocaleString(formatLocale)}</output><input type="range" min="1000" max="50000" step="1000" value={risk.max_position_per_symbol} onChange={(event) => setRisk({ ...risk, max_position_per_symbol: Number(event.target.value) })} /></label>
-            <label><span><strong>美股账户总仓位</strong><small>全部美股模拟仓位的金额上限</small></span><output>USD {risk.max_total_position.toLocaleString(formatLocale)}</output><input type="range" min="5000" max="500000" step="5000" value={risk.max_total_position} onChange={(event) => setRisk({ ...risk, max_total_position: Number(event.target.value) })} /></label>
+          <div className="risk-presets" role="group" aria-label="风险预设"><button className={riskPreset === 'conservative' ? 'active' : ''} type="button" onClick={() => applyRiskPreset('conservative')}><strong>保守</strong><small>单笔和总仓位减半，连续亏损后冷却更久</small></button><button className={riskPreset === 'balanced' ? 'active' : ''} type="button" onClick={() => applyRiskPreset('balanced')}><strong>平衡</strong><small>使用平台建议的默认上限</small></button><button className={riskPreset === 'custom' ? 'active' : ''} type="button" onClick={() => setRiskPreset('custom')}><strong>自定义</strong><small>自行调整下方金额，保存前请确认风险</small></button></div>
+          <div className={`range-settings ${riskPreset !== 'custom' ? 'preset-locked' : ''}`} onInput={() => setRiskPreset('custom')}>
+            <label><span><strong>美股单标的上限</strong><small>任何新订单都不能让单一美股超过此金额</small></span><output>USD {risk.max_position_per_symbol.toLocaleString(formatLocale)}</output><input type="range" min="1000" max="50000" step="1000" value={risk.max_position_per_symbol} onChange={(event) => { setRiskPreset('custom'); setRisk({ ...risk, max_position_per_symbol: Number(event.target.value) }) }} /></label>
+            <label><span><strong>美股账户总仓位</strong><small>全部美股模拟仓位的金额上限</small></span><output>USD {risk.max_total_position.toLocaleString(formatLocale)}</output><input type="range" min="5000" max="500000" step="5000" value={risk.max_total_position} onChange={(event) => { setRiskPreset('custom'); setRisk({ ...risk, max_total_position: Number(event.target.value) }) }} /></label>
             <label><span><strong>美股单日最大亏损</strong><small>达到阈值后自动暂停新开仓</small></span><output>USD {risk.max_daily_loss.toLocaleString(formatLocale)}</output><input type="range" min="500" max="50000" step="500" value={risk.max_daily_loss} onChange={(event) => setRisk({ ...risk, max_daily_loss: Number(event.target.value) })} /></label>
             <label><span><strong>A股单标的上限</strong><small>使用人民币独立计算，不与美股敞口混合</small></span><output>CNY {risk.max_position_per_symbol_cny.toLocaleString(formatLocale)}</output><input type="range" min="5000" max="350000" step="5000" value={risk.max_position_per_symbol_cny} onChange={(event) => setRisk({ ...risk, max_position_per_symbol_cny: Number(event.target.value) })} /></label>
             <label><span><strong>A股账户总仓位</strong><small>全部A股模拟仓位的金额上限</small></span><output>CNY {risk.max_total_position_cny.toLocaleString(formatLocale)}</output><input type="range" min="10000" max="3500000" step="10000" value={risk.max_total_position_cny} onChange={(event) => setRisk({ ...risk, max_total_position_cny: Number(event.target.value) })} /></label>
@@ -65,9 +103,17 @@ export function AccountPage() {
       </div>
 
       <section className="data-panel broker-panel">
-        <header className="panel-heading"><div><span>BROKER & EXECUTION</span><h2>券商与交易权限</h2></div><span className="status-chip research">仅登记 · 凭据未配置</span></header>
-        <div className="broker-row"><div><strong>Tiger Brokers</strong><small>模拟账户 · PAPER · 新界面未读取券商凭据</small></div><span className="warning-text">待配置</span><button className="button secondary" type="button" onClick={() => setAccountNotice('券商管理尚未迁移。当前新界面只能提交模拟订单，不会连接或修改真实券商账户。')}>管理</button></div>
-        <div className="danger-setting"><div><strong>允许实盘自动交易</strong><small>当前版本永久关闭；未来仍需平台开关、签约白名单和逐单确认。</small></div><button className="toggle" type="button" role="switch" aria-checked="false" aria-label="实盘自动交易已关闭" disabled><i /></button></div>
+        <header className="panel-heading"><div><span>BROKER & EXECUTION</span><h2>券商与交易权限</h2></div><span className={`status-chip ${execution?.can_increase_exposure ? 'official' : 'research'}`}>{execution?.can_increase_exposure ? <PlayCircle size={14} /> : <PauseCircle size={14} />} {execution?.can_increase_exposure ? '具备新增敞口条件' : '新增敞口未开放'}</span></header>
+        <div className="broker-row"><Link2 size={19} /><div><strong>自动交易控制账号名额</strong><small>{autoControlAccountLimit > 0 ? `当前会员最多可登记 ${autoControlAccountLimit} 个受控账号；每个账号仍需主动完成券商授权。` : '当前会员没有受控账号名额；高级会员 1 个，专业会员最多 5 个。'}</small></div><span className={autoControlAccountLimit > 0 ? 'positive-text' : 'warning-text'}>{accountsUsed} / {autoControlAccountLimit}</span><button className="button tertiary" type="button" onClick={() => location.assign('/membership')}>查看会员</button></div>
+        <div className="broker-row"><ShieldCheck size={19} /><div><strong>个人券商连接</strong><small>{authorizedAccounts.length ? `${authorizedAccounts.length} 个账户已标记为授权可用；页面不会显示外部账号 ID 或券商凭据。` : '尚未发现已授权可用的个人券商账户。'}</small></div><span className={authorizedAccounts.length ? 'positive-text' : 'warning-text'}>{authorizedAccounts.length ? '已授权' : '未连接'}</span><button className="button secondary" type="button" onClick={() => setAccountNotice('CicloTrade 提供实盘连接服务，但不会因会员付款自动连接。美股做空仍由券商保证金、可借券及账户权限决定；A 股不支持做空。')}>查看说明</button></div>
+        {brokerage?.accounts.map((account) => <article className="broker-account-summary" key={account.id}><span className={account.authorized ? 'positive-text' : 'warning-text'}>{account.authorized ? <CheckCircle2 size={16} /> : <CircleAlert size={16} />}</span><div><strong>{account.alias}</strong><small>{account.provider} · {account.mode === 'live' ? '实盘' : '模拟'} · {account.status}</small></div><span>{account.last_checked ? `检查于 ${new Date(account.last_checked).toLocaleString(formatLocale, { hour12: false })}` : '尚未检查'}</span></article>)}
+        <section className={`execution-control-card ${execution?.effective_opening_paused ? 'paused' : 'ready'}`}>
+          <div className="execution-control-heading"><span>{execution?.effective_opening_paused ? <PauseCircle size={20} /> : <PlayCircle size={20} />}</span><div><strong>{execution?.effective_opening_paused ? '新开仓当前暂停' : '新开仓安全状态正常'}</strong><small>暂停只针对开多、加多、开空、加空和反手增加的敞口；已授权通道仍应保留减仓和平仓能力。</small></div></div>
+          <dl><div><dt>平台总开关</dt><dd>{execution?.auto_trading_service_enabled ? '服务开放' : '服务暂停'}</dd></div><div><dt>平台新开仓</dt><dd>{execution?.global_opening_paused ? '全局暂停' : '未暂停'}</dd></div><div><dt>个人新开仓</dt><dd>{execution?.user_opening_paused ? '个人暂停' : '未暂停'}</dd></div><div><dt>退出风险</dt><dd>{execution?.can_reduce_exposure ? '保留减仓/平仓' : '暂无授权执行通道'}</dd></div></dl>
+          {!!execution?.block_reasons.length && <ul>{execution.block_reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>}
+          {execution?.user_opening_paused && <div className="opening-resume-form"><div><strong>恢复个人新开仓</strong><small>需要重新输入当前密码，并完整输入“恢复新开仓”。这不会解除平台全局暂停或替你授权券商。</small></div><label>当前密码<input type="password" value={resumePassword} autoComplete="current-password" onChange={(event) => setResumePassword(event.target.value)} /></label><label>确认文字<input value={resumeConfirmation} autoComplete="off" placeholder="恢复新开仓" onChange={(event) => setResumeConfirmation(event.target.value)} /></label><button className="button primary" type="button" disabled={!resumePassword || resumeConfirmation !== '恢复新开仓'} onClick={() => void resumeOpening()}>验证并恢复</button></div>}
+          {resumeState && <p className="execution-resume-state" role="status">{resumeState}</p>}
+        </section>
         {accountNotice && <div className="inline-warning account-notice" role="status"><ShieldCheck size={17} /><span>{accountNotice}</span><button className="button tertiary" type="button" onClick={() => setAccountNotice('')}>关闭</button></div>}
       </section>
 

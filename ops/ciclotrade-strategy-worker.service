@@ -1,0 +1,28 @@
+[Unit]
+Description=CicloTrade local research backtest worker
+After=local-fs.target
+ConditionPathExists=/etc/ciclotrade-worker/enable-resident-worker.after-publish-gate
+
+[Service]
+Type=simple
+User=cicloworker
+Group=cicloworker
+WorkingDirectory=/opt/ciclotrade-worker/current
+EnvironmentFile=/etc/ciclotrade-worker/worker.env
+ExecStart=/opt/ciclotrade-worker/current/.venv/bin/python -m src.apps.worker.backtest_runtime
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateNetwork=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/ciclotrade-worker /var/log/ciclotrade-worker
+RestrictAddressFamilies=AF_UNIX
+MemoryHigh=700M
+MemoryMax=950M
+CPUQuota=150%
+TasksMax=64
+LimitNOFILE=4096

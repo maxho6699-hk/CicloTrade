@@ -17,6 +17,7 @@ import yaml
 
 from core.auth import AuthError, AuthService, email_verification_required
 from core.database import get_database
+from core.membership import authoritative_membership_user
 from core.plans import effective_plan
 from notification.email_sender import send_email, smtp_configured
 from notification.templates import auth_email, email_message
@@ -347,13 +348,24 @@ if not _restore_user(auth_service):
     _auth_screen(auth_service)
     st.stop()
 
-user = st.session_state.user
+database = get_database()
+try:
+    session_user = dict(st.session_state.user)
+    user = (
+        session_user
+        if session_user.get("is_admin")
+        else authoritative_membership_user(database, session_user)
+    )
+except Exception:
+    st.error("会员权限暂时无法核验，请稍后重新登录。", icon=":material/error:")
+    st.stop()
+st.session_state.user = user
 plan = effective_plan(user)
 st.session_state.current_plan = plan
-control = get_database().fetch_one("SELECT opening_paused FROM user_controls WHERE user_id=?", (user["id"],))
+control = database.fetch_one("SELECT opening_paused FROM user_controls WHERE user_id=?", (user["id"],))
 st.session_state.paused = bool(control and control["opening_paused"])
 if st.session_state.get("settings_loaded_for") != user["id"]:
-    saved = get_database().fetch_one("SELECT settings_json FROM user_settings WHERE user_id=?", (user["id"],))
+    saved = database.fetch_one("SELECT settings_json FROM user_settings WHERE user_id=?", (user["id"],))
     if saved:
         values = json.loads(saved["settings_json"])
         st.session_state.risk = values.get("risk", st.session_state.risk)

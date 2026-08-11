@@ -84,7 +84,7 @@ def render() -> None:
                 st.rerun()
         else:
             st.markdown(
-                "1. 点击下方按钮打开 **@Tradeai8_bot**。\n"
+                "1. 点击下方按钮打开 **CicloTrade Telegram Bot**。\n"
                 "2. 点击 **Start / 开始**，再发送 `/id`。\n"
                 "3. Bot 会回复一串纯数字，这就是你的 **Chat ID**。\n"
                 "4. 把数字粘贴到下方，勾选同意并点击 **发送验证码**。\n"
@@ -104,7 +104,7 @@ def render() -> None:
                     value=str(channel.get("chat_id") or ""),
                     autocomplete="off",
                     placeholder="例如 123456789…",
-                    help="在 @Tradeai8_bot 私聊发送 /id 即可取得。",
+                    help="在 CicloTrade Telegram Bot 私聊发送 /id 即可取得。",
                 )
                 request = st.form_submit_button("发送验证码", type="primary", icon=":material/send:")
             if request:

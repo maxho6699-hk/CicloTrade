@@ -28,6 +28,7 @@ from starlette.routing import Route
 from core.alerts import AlertService
 from core.auth import AuthError, AuthService
 from core.database import get_database
+from core.membership import authoritative_membership_user
 from core.plans import can, effective_plan, trading_limits
 from core.quant_journal import QuantJournal
 from core.signal_imports import SignalImportService
@@ -96,6 +97,11 @@ STREAMLIT_PAGE_PREFIXES = {
 }
 
 
+def _legacy_flag_enabled(name: str) -> bool:
+    """Require an explicit opt-in before exposing a legacy write/UI surface."""
+    return os.getenv(name, "false").strip().lower() == "true"
+
+
 def _trusted_hosts() -> list[str]:
     if os.getenv("APP_ENV", "development").strip().lower() != "production":
         return ["*"]
@@ -127,6 +133,12 @@ class StreamlitDeepLinkMiddleware:
     async def __call__(self, scope, receive, send):
         if scope["type"] in {"http", "websocket"}:
             first, separator, tail = scope.get("path", "").lstrip("/").partition("/")
+            if first == "trading" and not _legacy_flag_enabled("TRADEAI_LEGACY_TRADING_UI_ENABLED"):
+                if scope["type"] == "http":
+                    await JSONResponse({"error": "Legacy trading UI is disabled."}, status_code=404)(scope, receive, send)
+                else:
+                    await send({"type": "websocket.close", "code": 1008})
+                return
             headers = {
                 key.decode("latin-1").lower(): value.decode("latin-1")
                 for key, value in scope.get("headers", ())
@@ -189,10 +201,15 @@ def _api_user(request):
     authorization = request.headers.get("authorization", "")
     if not authorization.startswith("Bearer ") or len(authorization) > 4096:
         raise ApiError("缺少 Bearer Access Token。", 401)
+    database = get_database()
     try:
-        user = AuthService().verify(authorization.removeprefix("Bearer ").strip())
+        user = AuthService(database).verify(authorization.removeprefix("Bearer ").strip())
     except AuthError as exc:
         raise ApiError(str(exc), 401) from exc
+    try:
+        user = authoritative_membership_user(database, user)
+    except Exception as exc:
+        raise ApiError("会员权限暂时无法核验，请稍后重试。", 503) from exc
     if not can(effective_plan(user), "api"):
         raise ApiError("API 读写仅限专业版与定制版。", 403)
     return user
@@ -321,6 +338,8 @@ async def api_alerts(request):
 
 
 async def api_orders(request):
+    if request.method == "POST" and not _legacy_flag_enabled("TRADEAI_LEGACY_ORDER_WRITE_ENABLED"):
+        raise ApiError("Legacy order writes are disabled.", 503)
     user = _api_user(request)
     _consume_api_quota(user)
     if request.method == "GET":

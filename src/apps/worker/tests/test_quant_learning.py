@@ -23,28 +23,21 @@ def qualified_metrics(**overrides):
     return EvaluationMetrics(**values)
 
 
-def test_challenger_cannot_self_promote_without_independent_approval():
-    decision = evaluate_for_promotion(
-        ModelState.SHADOW,
-        qualified_metrics(),
-        independently_approved=False,
-    )
+def test_challenger_can_only_propose_human_review():
+    decision = evaluate_for_promotion(ModelState.SHADOW, qualified_metrics())
 
-    assert decision.approved is False
+    assert decision.eligible_for_human_review is True
+    assert decision.requires_human_approval is True
     assert decision.next_state is ModelState.SHADOW
-    assert "independent promotion approval is required" in decision.reasons
-
-
-def test_qualified_independently_reviewed_challenger_reaches_approved_only():
-    decision = evaluate_for_promotion(
-        ModelState.PAPER_QUALIFIED,
-        qualified_metrics(),
-        independently_approved=True,
-    )
-
-    assert decision.approved is True
-    assert decision.next_state is ModelState.APPROVED
     assert decision.reasons == ()
+
+
+def test_worker_cannot_turn_a_paper_candidate_into_approved():
+    decision = evaluate_for_promotion(ModelState.PAPER_QUALIFIED, qualified_metrics())
+
+    assert decision.eligible_for_human_review is False
+    assert decision.next_state is ModelState.SHADOW
+    assert "only shadow challengers may produce a review proposal" in decision.reasons
 
 
 @pytest.mark.parametrize(
@@ -59,21 +52,13 @@ def test_qualified_independently_reviewed_challenger_reaches_approved_only():
     ],
 )
 def test_failed_quality_gate_keeps_model_in_shadow(overrides, reason):
-    decision = evaluate_for_promotion(
-        ModelState.SHADOW,
-        qualified_metrics(**overrides),
-        independently_approved=True,
-    )
+    decision = evaluate_for_promotion(ModelState.SHADOW, qualified_metrics(**overrides))
 
-    assert decision.approved is False
+    assert decision.eligible_for_human_review is False
     assert decision.next_state is ModelState.SHADOW
     assert reason in decision.reasons
 
 
 def test_non_finite_metrics_are_rejected():
     with pytest.raises(ValueError, match="finite"):
-        evaluate_for_promotion(
-            ModelState.SHADOW,
-            qualified_metrics(stress_expectancy=float("nan")),
-            independently_approved=True,
-        )
+        evaluate_for_promotion(ModelState.SHADOW, qualified_metrics(stress_expectancy=float("nan")))

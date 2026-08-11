@@ -4,7 +4,19 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/brand/ciclotrade-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0b0e12" />
+    <meta name="theme-color" content="#0b0d0c" />
+    <script>
+      (function () {
+        var theme = 'dark'
+        try {
+          theme = localStorage.getItem('ciclotrade.theme') === 'light' ? 'light' : 'dark'
+        } catch (_) {}
+        var root = document.documentElement
+        root.dataset.theme = theme
+        var themeColor = document.querySelector('meta[name="theme-color"]')
+        if (themeColor) themeColor.setAttribute('content', theme === 'light' ? '#e9ede4' : '#0b0d0c')
+      })()
+    </script>
     <meta name="description" content="CicloTrade 專業投資決策終端" />
     <title>CicloTrade · 決策終端</title>
   </head>

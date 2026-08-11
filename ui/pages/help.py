@@ -39,7 +39,7 @@ def render() -> None:
         st.write("在账户与安全页面输入自己的 Chat ID，完成一次性验证码验证后，系统只向已验证的个人目的地发送有权限的事件。")
         st.caption("公开频道与会员群组需要管理员在环境变量中配置邀请链接；未配置时不会显示虚假链接。")
     section_label("风险边界", "所有策略、回测和玄学内容均为参考")
-    st.error("历史表现不代表未来结果。CicloTrade 不保证收益，不替代持牌投资顾问，也不会在未完成额外签约与人工确认时自动下单。", icon=":material/gpp_maybe:")
+    st.error("历史表现不代表未来结果。CicloTrade 不保证收益，不替代持牌投资顾问，也不会在未连接并授权个人券商、完成风险核对与人工确认时自动下单。", icon=":material/gpp_maybe:")
     db = get_database()
     status = db.fetch_all("SELECT event_type,component,message,created_at FROM system_events ORDER BY created_at DESC LIMIT 5")
     if status:

@@ -1,3 +1,5 @@
+import type { DrawingTime } from '../data/chartDrawings'
+
 export interface SessionUser {
   id: number
   display_name: string
@@ -6,10 +8,14 @@ export interface SessionUser {
   subscription_expire: string | null
 }
 
+export type MembershipPlanKey = '免费版' | '标准版' | '高级版' | '专业版' | '定制版'
+export type MembershipBillingCycle = 'monthly' | 'quarterly' | 'yearly' | 'project'
+export type MembershipPurchaseAction = 'unavailable' | 'covered' | 'renew' | 'upgrade'
+
 export interface MembershipOrder {
   order_no: string
-  plan_type: string
-  billing_cycle: string
+  plan_type: MembershipPlanKey
+  billing_cycle: MembershipBillingCycle
   amount: number
   currency: string
   status: string
@@ -21,18 +27,33 @@ export interface MembershipOrder {
   proof_status: 'submitted' | 'approved' | 'rejected' | null
   payment_instructions?: string
   payment_qr_available?: boolean
+  can_purchase: boolean
+  purchase_action: MembershipPurchaseAction
+  can_submit_proof: boolean
+  blocked_reason: string | null
 }
 
 export interface MembershipPlan {
-  key: string
+  key: MembershipPlanKey
   display_name: string
-  prices: Record<string, number>
+  prices: Partial<Record<MembershipBillingCycle, number>>
   summary: string
   features: string[]
+  can_purchase: boolean
+  purchase_action: MembershipPurchaseAction
+  blocked_reason: string | null
 }
 
 export interface PortfolioPosition {
   symbol: string
+  market: 'US' | 'CN'
+  currency: 'USD' | 'CNY'
+  instrument_type: 'stock' | 'option'
+  instrument_key: string
+  option_expiry?: string | null
+  option_right?: 'CALL' | 'PUT' | null
+  option_strike?: number | null
+  multiplier: number
   quantity: number
   average_price: number
   last_trade_price: number
@@ -43,12 +64,29 @@ export interface PortfolioPosition {
 export interface PortfolioOrder {
   order_id: string
   symbol: string
+  market: 'US' | 'CN'
+  currency: 'USD' | 'CNY'
+  instrument_type: 'stock' | 'option'
   side: 'BUY' | 'SELL'
   quantity: number
   price: number
   status: string
-  account_mode: 'paper'
+  account_mode: 'official'
   created_at: string
+}
+
+export interface PortfolioAccount {
+  market: 'US' | 'CN' | 'HK'
+  currency: 'USD' | 'CNY' | 'HKD'
+  status: 'recorded' | 'not_recorded' | 'not_connected'
+  captured_at: string | null
+  initial_cash: number | null
+  cash: number | null
+  market_value: number | null
+  realized_pnl: number | null
+  unrealized_pnl: number | null
+  total_equity: number | null
+  total_pnl: number | null
 }
 
 export interface PortfolioExecution {
@@ -59,6 +97,7 @@ export interface PortfolioExecution {
   symbol: string
   market: 'US' | 'CN'
   currency: 'USD' | 'CNY'
+  instrument_type: 'stock' | 'option'
   side: 'BUY' | 'SELL'
   effect: 'OPEN' | 'ADD' | 'REDUCE' | 'CLOSE'
   quantity: number
@@ -70,9 +109,15 @@ export interface PortfolioExecution {
 
 export interface PortfolioInterval {
   interval_id: string
+  instrument_key: string
+  instrument_type: 'stock' | 'option'
   symbol: string
   market: 'US' | 'CN'
   currency: 'USD' | 'CNY'
+  option_expiry?: string | null
+  option_right?: 'CALL' | 'PUT' | null
+  option_strike?: number | null
+  multiplier: number
   direction: 'LONG' | 'SHORT'
   opened_at: string
   closed_at: string | null
@@ -100,6 +145,8 @@ export interface PortfolioActivity {
   pnl_net_of_commission: true
   executions: PortfolioExecution[]
   intervals: PortfolioInterval[]
+  execution_counts_by_market?: Partial<Record<'US' | 'CN' | 'HK', number>>
+  execution_previews_by_market?: Partial<Record<'US' | 'CN' | 'HK', PortfolioExecution[]>>
   returned_execution_limit: number
   truncated: boolean
 }
@@ -107,12 +154,35 @@ export interface PortfolioActivity {
 export interface RecommendationItem {
   event_id: number
   state: 'official' | 'locked'
-  action?: 'BUY' | 'REDUCE' | 'EXIT'
+  action?: 'BUY' | 'REDUCE' | 'EXIT' | 'SHORT' | 'COVER'
+  position_action?: 'open_long' | 'add_long' | 'reduce_long' | 'close_long' | 'open_short' | 'add_short' | 'reduce_short' | 'close_short' | 'reverse_to_long' | 'reverse_to_short'
   market?: string
   instrument_type: 'stock' | 'option'
   symbol?: string
   currency?: string
   reference_price?: number | null
+  current_price?: number | null
+  quantity_hint?: number | null
+  quantity_delta?: number | null
+  target_quantity?: number | null
+  option_expiry?: string | null
+  option_right?: 'CALL' | 'PUT' | null
+  option_strike?: number | null
+  multiplier?: number | null
+  bid?: number | null
+  ask?: number | null
+  spread?: number | null
+  implied_volatility?: number | null
+  volume?: number | null
+  open_interest?: number | null
+  quote_at?: string | null
+  actionable?: boolean
+  contract_status?: 'complete' | 'incomplete'
+  missing_fields?: string[]
+  stop_price?: number | null
+  target_price?: number | null
+  max_loss?: number | null
+  rationale?: string | null
   strategy_name: string
   strategy_version: string
   occurred_at: string
@@ -137,7 +207,23 @@ export interface PriceAlert {
   id?: number
   symbol: string
   conditions?: unknown[]
+  logic?: 'AND' | 'OR' | string
+  trigger_mode?: 'at_or_above' | 'at_or_below' | 'crosses_above' | 'crosses_below' | string
+  repeat_mode?: 'once' | 'repeat' | string
+  expires_at?: string | null
+  channels?: Array<'website' | 'telegram' | string>
+  notify_only?: true
+  metadata?: {
+    trigger_mode: string
+    repeat_mode: string
+    expires_at: string | null
+    channels: string[]
+    notify_only: true
+  }
   enabled?: boolean
+  is_active?: boolean
+  operator?: string
+  target_price?: number | null
   created_at?: string
 }
 
@@ -156,11 +242,27 @@ export interface BootstrapPayload {
   me: SessionUser
   membership: {
     auto_renewal: false
+    annual_bonus_enabled?: boolean
     capabilities: string[]
     plans: MembershipPlan[]
     orders: MembershipOrder[]
     payment_methods: Record<'fps' | 'alipay' | 'wechat', { available: boolean; has_text: boolean; has_qr: boolean }>
+    brokerage: {
+      auto_control_account_limit: number
+      accounts_used: number
+      accounts: BrokerAccountSummary[]
+      requires_user_authorization: true
+      short_eligibility_source: 'broker'
+      subscription_auto_connects_broker?: false
+      us_short?: {
+        requires_ciclotrade_manual_approval: false
+        requires_broker_authorization: true
+        requires_margin: true
+        requires_borrowability: true
+      }
+    }
   }
+  execution_control: ExecutionControl
   telegram: {
     bound: boolean
     verified: boolean
@@ -170,20 +272,22 @@ export interface BootstrapPayload {
     updated_at?: string | null
   }
   portfolio: {
-    account_mode: 'paper'
+    account_mode: 'official'
+    scope: 'ciclotrade_system_validation'
     positions: PortfolioPosition[]
     orders: PortfolioOrder[]
-    realized_pnl: number
+    accounts: Record<'US' | 'CN' | 'HK', PortfolioAccount>
     fresh_marks: false
     mark_source: string
     activity?: PortfolioActivity
   }
   recommendations: { items: RecommendationItem[]; source: string; fresh_marks: false }
-  performance: { items: PerformanceSnapshot[]; fresh_marks: false; mark_source: string }
+  performance: { items: PerformanceSnapshot[]; fresh_marks: false; mark_source: string; scope?: 'system_model_validation' | string; user_id?: number }
   settings: {
     risk: Partial<RiskSettings>
     telegram_events: Record<string, boolean>
     watchlists: { us: string[]; a_share: string[] }
+    watchlist_pins: { us: string[]; a_share: string[] }
     ui_locale: 'zh-Hant' | 'zh-Hans' | null
   }
   alerts: { items: PriceAlert[] }
@@ -194,6 +298,32 @@ export interface BootstrapPayload {
     detail: string
   }
   mode: 'compatibility'
+}
+
+export interface BrokerAccountSummary {
+  id: number
+  provider: string
+  alias: string
+  mode: string
+  status: string
+  authorized: boolean
+  active: boolean
+  last_checked: string | null
+}
+
+export interface ExecutionControl {
+  global_opening_paused: boolean
+  user_opening_paused: boolean
+  effective_opening_paused: boolean
+  auto_trading_service_enabled: boolean
+  has_authorized_broker_account: boolean
+  can_register_broker_account: boolean
+  can_increase_exposure: boolean
+  can_reduce_exposure: boolean
+  account_limit: number
+  accounts_used: number
+  accounts: BrokerAccountSummary[]
+  block_reasons: string[]
 }
 
 export interface MarketSearchItem {
@@ -209,6 +339,108 @@ export interface MarketCandlePayload {
   timeframe: string
   items: Array<{ time: string | number; open: number; high: number; low: number; close: number; volume: number }>
   status: BootstrapPayload['market_data']
+}
+
+export interface ChartDrawingPayload {
+  id: string
+  tool: string
+  points: Array<{ time: DrawingTime; price: number }>
+  origin_timeframe: string
+  cross_timeframe: boolean
+  revision: number
+}
+
+export interface ChartDrawingTombstonePayload {
+  drawing_id: string
+  origin_timeframe: string
+  cross_timeframe: boolean
+  revision: number
+}
+
+export type ChartDrawingOperation =
+  | { op: 'upsert'; origin_timeframe: string; cross_timeframe: boolean; revision: number | null; drawing: Pick<ChartDrawingPayload, 'id' | 'tool' | 'points'> }
+  | { op: 'delete' | 'restore'; origin_timeframe: string; cross_timeframe: boolean; revision: number; drawing_id: string }
+
+export interface MarketQuotePayload {
+  symbol: string
+  last: number | null
+  bid: number | null
+  ask: number | null
+  spread: number | null
+  open: number | null
+  high: number | null
+  low: number | null
+  prev_close: number | null
+  volume: number | null
+  quote_at: string | null
+  source: string
+  is_realtime: boolean
+  actionable_quote: boolean
+  freshness: string
+  verification: string
+  configuration_allows_realtime: boolean
+  request_succeeded: boolean
+  fallback_from?: string
+  status: 'available'
+}
+
+export interface OptionGreeks {
+  delta: number | null
+  gamma: number | null
+  theta: number | null
+  vega: number | null
+  rho: number | null
+}
+
+export interface OptionContract {
+  expiry: string
+  option_type: 'CALL' | 'PUT'
+  contract_code: string
+  strike: number
+  last: number | null
+  bid: number | null
+  ask: number | null
+  spread: number | null
+  volume: number | null
+  open_interest: number | null
+  implied_volatility: number | null
+  greeks: OptionGreeks
+  quote_at: string | null
+}
+
+export interface OptionChainPayload {
+  symbol: string
+  expiry: string
+  expiries: string[]
+  calls: OptionContract[]
+  puts: OptionContract[]
+  items: OptionContract[]
+  source: string
+  is_realtime: boolean
+  actionable_quote: boolean
+  freshness: string
+  verification: string
+  configuration_allows_realtime: boolean
+  qot_right: string
+  missing_fields: string[]
+  fallback_from?: string
+  status: 'available'
+}
+
+export interface OptionCandlePayload {
+  contract_code: string
+  timeframe: string
+  items: MarketCandlePayload['items']
+  source: string
+  is_realtime: boolean
+  actionable_quote: boolean
+  freshness: string
+  verification: string
+  configuration_allows_realtime: boolean
+  qot_right: string
+  missing_fields: string[]
+  fallback_from?: string
+  status: 'available'
 }
 
 interface SessionResponse {
@@ -239,6 +471,13 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return payload as T
 }
 
+export async function authenticatedJsonRequest<T>(
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  return request<T>(path, init)
+}
+
 export async function login(email: string, password: string): Promise<SessionResponse> {
   const session = await request<SessionResponse>('/api/rewrite/v1/session', {
     method: 'POST',
@@ -246,6 +485,53 @@ export async function login(email: string, password: string): Promise<SessionRes
   })
   accessToken = session.access_token
   return session
+}
+
+export interface RegistrationResponse {
+  accepted: boolean
+  verification_required: boolean
+  message: string
+}
+
+export async function registerAccount(payload: {
+  email: string
+  password: string
+  display_name: string
+  terms_accepted: boolean
+  referral?: string
+}): Promise<RegistrationResponse> {
+  return request<RegistrationResponse>('/api/rewrite/v1/session/register', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function requestEmailVerification(email: string): Promise<{ message?: string }> {
+  return request<{ message?: string }>('/api/rewrite/v1/session/verification', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  })
+}
+
+export async function verifyEmailToken(token: string): Promise<{ verified: boolean }> {
+  return request<{ verified: boolean }>('/api/rewrite/v1/session/verify-email', {
+    method: 'POST',
+    body: JSON.stringify({ token }),
+  })
+}
+
+export async function requestPasswordReset(email: string): Promise<{ message?: string }> {
+  return request<{ message?: string }>('/api/rewrite/v1/session/password-reset', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  })
+}
+
+export async function confirmPasswordReset(token: string, password: string): Promise<{ reset: boolean }> {
+  return request<{ reset: boolean }>('/api/rewrite/v1/session/password-reset/confirm', {
+    method: 'POST',
+    body: JSON.stringify({ token, password }),
+  })
 }
 
 export async function restoreSession(): Promise<boolean> {
@@ -282,14 +568,146 @@ export async function fetchMarketCandles(symbol: string, timeframe: string) {
   return payload
 }
 
+export async function fetchMarketQuote(symbol: string) {
+  const payload = await request<MarketQuotePayload>(`/api/rewrite/v1/market/quote?symbol=${encodeURIComponent(symbol)}`)
+  const valid = payload.status === 'available'
+    && typeof payload.symbol === 'string'
+    && typeof payload.source === 'string'
+    && payload.source.length > 0
+    && typeof payload.is_realtime === 'boolean'
+    && typeof payload.actionable_quote === 'boolean'
+    && typeof payload.freshness === 'string'
+    && typeof payload.verification === 'string'
+    && typeof payload.configuration_allows_realtime === 'boolean'
+    && typeof payload.request_succeeded === 'boolean'
+    && (payload.fallback_from === undefined || typeof payload.fallback_from === 'string')
+    && [payload.last, payload.bid, payload.ask, payload.spread, payload.open, payload.high, payload.low, payload.prev_close, payload.volume]
+      .every(nullableFinite)
+    && (payload.quote_at === null || typeof payload.quote_at === 'string')
+  if (!valid) throw new BrowserApiError('正股快照响应格式无效。', 502)
+  return payload
+}
+
+function nullableFinite(value: unknown): value is number | null {
+  return value === null || (typeof value === 'number' && Number.isFinite(value))
+}
+
+function validOptionContract(value: unknown): value is OptionContract {
+  if (!value || typeof value !== 'object') return false
+  const item = value as Partial<OptionContract>
+  const greeks = item.greeks as Partial<OptionGreeks> | undefined
+  return typeof item.expiry === 'string'
+    && (item.option_type === 'CALL' || item.option_type === 'PUT')
+    && typeof item.contract_code === 'string'
+    && typeof item.strike === 'number'
+    && Number.isFinite(item.strike)
+    && nullableFinite(item.last)
+    && nullableFinite(item.bid)
+    && nullableFinite(item.ask)
+    && nullableFinite(item.spread)
+    && nullableFinite(item.volume)
+    && nullableFinite(item.open_interest)
+    && nullableFinite(item.implied_volatility)
+    && (item.quote_at === null || typeof item.quote_at === 'string')
+    && Boolean(greeks)
+    && nullableFinite(greeks?.delta)
+    && nullableFinite(greeks?.gamma)
+    && nullableFinite(greeks?.theta)
+    && nullableFinite(greeks?.vega)
+    && nullableFinite(greeks?.rho)
+}
+
+export async function fetchOptionChain(symbol: string, expiry?: string) {
+  const params = new URLSearchParams({ symbol })
+  if (expiry) params.set('expiry', expiry)
+  const payload = await request<OptionChainPayload>(`/api/rewrite/v1/options/chain?${params}`)
+  const arraysAreValid = [payload.calls, payload.puts, payload.items]
+    .every((items) => Array.isArray(items) && items.every(validOptionContract))
+  const metadataIsValid = typeof payload.source === 'string'
+    && typeof payload.is_realtime === 'boolean'
+    && typeof payload.actionable_quote === 'boolean'
+    && typeof payload.freshness === 'string'
+    && typeof payload.verification === 'string'
+    && typeof payload.configuration_allows_realtime === 'boolean'
+    && typeof payload.qot_right === 'string'
+    && Array.isArray(payload.missing_fields)
+    && payload.missing_fields.every((item) => typeof item === 'string')
+    && (payload.fallback_from === undefined || typeof payload.fallback_from === 'string')
+  if (!arraysAreValid || !metadataIsValid || !Array.isArray(payload.expiries) || !payload.expiries.every((item) => typeof item === 'string')) {
+    throw new BrowserApiError('期权链响应格式无效。', 502)
+  }
+  return payload
+}
+
+export async function fetchOptionCandles(contractCode: string, timeframe: string) {
+  const params = new URLSearchParams({ contract_code: contractCode, timeframe })
+  const payload = await request<OptionCandlePayload>(`/api/rewrite/v1/options/candles?${params}`)
+  const valid = Array.isArray(payload.items) && payload.items.every((item) => (
+    (typeof item.time === 'string' || typeof item.time === 'number')
+    && [item.open, item.high, item.low, item.close, item.volume].every(Number.isFinite)
+  ))
+  const metadataIsValid = typeof payload.source === 'string'
+    && typeof payload.is_realtime === 'boolean'
+    && typeof payload.actionable_quote === 'boolean'
+    && typeof payload.freshness === 'string'
+    && typeof payload.verification === 'string'
+    && typeof payload.configuration_allows_realtime === 'boolean'
+    && typeof payload.qot_right === 'string'
+    && Array.isArray(payload.missing_fields)
+    && payload.missing_fields.every((item) => typeof item === 'string')
+    && (payload.fallback_from === undefined || typeof payload.fallback_from === 'string')
+  if (!valid || !metadataIsValid) throw new BrowserApiError('期权 K 线响应格式无效。', 502)
+  return payload
+}
+
+export async function resumeOpeningPause(password: string, confirmation: string) {
+  return request<{ execution_control: ExecutionControl; resumed: boolean }>(
+    '/api/rewrite/v1/settings/opening-pause',
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paused: false, confirmation, password }),
+    },
+  )
+}
+
+export function getChartDrawings(market: 'US' | 'CN', symbol: string, timeframe: string, crossTimeframe: boolean) {
+  const params = new URLSearchParams({ market, symbol, timeframe, cross_timeframe: String(crossTimeframe) })
+  return request<{
+    items: ChartDrawingPayload[]
+    truncated: boolean
+    tombstones: ChartDrawingTombstonePayload[]
+    tombstones_truncated: boolean
+  }>(`/api/rewrite/v1/chart-drawings?${params}`)
+}
+
+export function syncChartDrawings(scope: { market: 'US' | 'CN'; symbol: string }, operations: ChartDrawingOperation[]) {
+  return request<{ items: Array<{ drawing_id: string; origin_timeframe: string; cross_timeframe: boolean; revision: number; deleted: boolean }> }>('/api/rewrite/v1/chart-drawings/batch', {
+    method: 'POST',
+    body: JSON.stringify({ market: scope.market, symbol: scope.symbol, operations }),
+  })
+}
+
 export function searchMarket(query: string, market: '美股' | 'A股' | '全部') {
   return request<{ items: MarketSearchItem[] }>(`/api/rewrite/v1/market/search?q=${encodeURIComponent(query)}&market=${encodeURIComponent(market)}`)
 }
 
+export interface WatchlistPayload {
+  watchlists: { us: string[]; a_share: string[] }
+  pins: { us: string[]; a_share: string[] }
+}
+
 export function updateWatchlist(market: 'US' | 'CN', symbol: string, remove = false) {
-  return request<{ watchlists: { us: string[]; a_share: string[] } }>('/api/rewrite/v1/watchlist', {
+  return request<WatchlistPayload>('/api/rewrite/v1/watchlist', {
     method: remove ? 'DELETE' : 'POST',
     body: JSON.stringify({ market, symbol }),
+  })
+}
+
+export function updateWatchlistPin(market: 'US' | 'CN', symbol: string, pinned: boolean) {
+  return request<WatchlistPayload>('/api/rewrite/v1/watchlist', {
+    method: 'PATCH',
+    body: JSON.stringify({ market, symbol, pinned }),
   })
 }
 
@@ -322,22 +740,52 @@ export function saveTelegramEvents(events: Record<string, boolean>) {
   })
 }
 
-export function createPriceAlert(symbol: string, value: number) {
+export interface PriceAlertOptions {
+  triggerMode?: 'at_or_above' | 'at_or_below' | 'crosses_above' | 'crosses_below'
+  repeatMode?: 'once' | 'repeat'
+  expiresAt?: string | null
+  channels?: Array<'website' | 'telegram'>
+}
+
+export function createPriceAlert(symbol: string, value: number, options: PriceAlertOptions = {}) {
   return request<{ items: PriceAlert[] }>('/api/rewrite/v1/alerts', {
     method: 'POST',
-    body: JSON.stringify({ symbol, conditions: [{ type: 'price', operator: '>=', value }], logic: 'AND' }),
+    body: JSON.stringify({
+      symbol,
+      conditions: [{ type: 'price', operator: options.triggerMode === 'at_or_below' || options.triggerMode === 'crosses_below' ? '<=' : '>=', value }],
+      logic: 'AND',
+      ...(options.triggerMode ? { trigger_mode: options.triggerMode } : {}),
+      ...(options.repeatMode ? { repeat_mode: options.repeatMode } : {}),
+      ...(options.expiresAt !== undefined ? { expires_at: options.expiresAt } : {}),
+      ...(options.channels ? { channels: options.channels } : {}),
+      notify_only: true,
+    }),
   })
 }
 
-export function createPaperOrder(payload: { symbol: string; side: 'BUY' | 'SELL'; quantity: number; price: number }) {
-  return request<{ order_id: string; status: string }>('/api/rewrite/v1/paper/orders', {
+export function createAlert(payload: {
+  symbol: string
+  conditions?: Array<Record<string, unknown>>
+  logic?: 'AND' | 'OR'
+  trigger_mode?: string
+  repeat_mode?: 'once' | 'repeat'
+  expires_at?: string | null
+  channels?: Array<'website' | 'telegram'>
+}) {
+  return request<{ items: PriceAlert[] }>('/api/rewrite/v1/alerts', {
     method: 'POST',
-    body: JSON.stringify({ ...payload, instrument_type: 'stock' }),
+    body: JSON.stringify({ ...payload, notify_only: true }),
+  })
+}
+
+export function deactivatePriceAlert(alertId: number) {
+  return request<{ items: PriceAlert[] }>(`/api/rewrite/v1/alerts/${encodeURIComponent(alertId)}`, {
+    method: 'DELETE',
   })
 }
 
 export function createMembershipOrder(
-  payload: { plan: string; cycle: string; method: string; terms_accepted: boolean },
+  payload: { plan: MembershipPlanKey; cycle: MembershipBillingCycle; method: string; terms_accepted: boolean },
   idempotencyKey: string,
 ) {
   return request<{ order_no: string; status: string; amount: number; currency: string; payment_instructions: string; payment_qr_available: boolean }>(

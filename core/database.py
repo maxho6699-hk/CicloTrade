@@ -168,6 +168,25 @@ CREATE TABLE IF NOT EXISTS subscription_orders (
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
+CREATE TABLE IF NOT EXISTS membership_entitlements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    plan_type TEXT NOT NULL,
+    starts_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    duration_days INTEGER CHECK (duration_days IS NULL OR duration_days > 0),
+    source_kind TEXT NOT NULL,
+    source_ref TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','revoked')),
+    created_at TEXT NOT NULL,
+    revoked_at TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    UNIQUE (source_kind, source_ref)
+);
+
+CREATE INDEX IF NOT EXISTS idx_membership_entitlements_user_active
+ON membership_entitlements(user_id,status,starts_at,expires_at);
+
 CREATE TABLE IF NOT EXISTS payment_callbacks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id TEXT UNIQUE NOT NULL,
@@ -338,6 +357,13 @@ CREATE TABLE IF NOT EXISTS platform_controls (
     updated_at TEXT NOT NULL,
     FOREIGN KEY (updated_by) REFERENCES users(id)
 );
+
+CREATE TRIGGER IF NOT EXISTS trg_admin_default_user_control
+AFTER INSERT ON users
+BEGIN
+    INSERT OR IGNORE INTO user_controls (user_id,opening_paused,updated_at)
+    VALUES (NEW.id,0,strftime('%Y-%m-%dT%H:%M:%SZ','now'));
+END;
 
 CREATE TABLE IF NOT EXISTS broker_accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -650,6 +676,17 @@ class DatabaseManager:
                     for name, definition in (("status", "TEXT NOT NULL DEFAULT 'not_configured'"), ("last_checked", "TEXT"), ("metadata_json", "TEXT")):
                         if name not in broker_columns:
                             conn.execute(f"ALTER TABLE broker_accounts ADD COLUMN {name} {definition}")
+                    conn.executescript(
+                        """
+                        DROP TRIGGER IF EXISTS trg_admin_default_user_control;
+                        CREATE TRIGGER trg_admin_default_user_control
+                        AFTER INSERT ON users
+                        BEGIN
+                            INSERT OR IGNORE INTO user_controls (user_id,opening_paused,updated_at)
+                            VALUES (NEW.id,0,strftime('%Y-%m-%dT%H:%M:%SZ','now'));
+                        END;
+                        """
+                    )
                     conn.execute("CREATE INDEX IF NOT EXISTS idx_membership_logs_user ON user_membership_logs(user_id,created_at)")
                     conn.execute("CREATE INDEX IF NOT EXISTS idx_roadmap_sort ON roadmap_items(sort_order,quarter)")
                     conn.execute("CREATE INDEX IF NOT EXISTS idx_telegram_verifications_user ON telegram_verifications(user_id,created_at)")

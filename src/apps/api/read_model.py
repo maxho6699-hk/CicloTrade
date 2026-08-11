@@ -4,17 +4,22 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 import json
+import math
 import os
 from pathlib import Path
 import sqlite3
 from typing import Any, Iterator
 
 from core.auth import AuthError, _decode_token
-from core.plans import CAPABILITIES, PLAN_ORDER, PLANS, can, effective_plan, plan_display_name
+from core.broker_authorization import broker_execution_authorized
+from core.plans import CAPABILITIES, PLAN_ORDER, PLANS, can, effective_plan, plan_display_name, trading_limits
+from core.membership import membership_purchase_state, resolve_membership_snapshot
+from core.quant_journal import QuantJournal
 from core.trade_timeline import project_trade_cycles
 from payment.receiving_profile import ReceivingProfileService, payment_profile_public
-from src.apps.api.watchlists import normalize_watchlists
+from src.apps.api.watchlists import normalize_watchlist_pins, normalize_watchlists
 
 
 _PAPER_INTERVAL_LIMIT = 200
@@ -48,55 +53,88 @@ def _json_object(value: Any) -> dict[str, Any]:
     return decoded if isinstance(decoded, dict) else {}
 
 
+def _optional_number(*values: Any) -> float | None:
+    for value in values:
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number):
+            return number
+    return None
+
+
+def _recommendation_contract(metadata: dict[str, Any], leg: dict[str, Any]) -> dict[str, Any]:
+    contracts = metadata.get("contracts") if isinstance(metadata.get("contracts"), dict) else {}
+    specific = contracts.get(str(leg.get("instrument_key"))) or contracts.get(str(leg.get("symbol")))
+    action_contract = metadata.get("action_contract")
+    candidates = [
+        value for value in (specific, action_contract, metadata)
+        if isinstance(value, dict)
+    ]
+
+    def first(key: str) -> Any:
+        return next((candidate[key] for candidate in candidates if key in candidate), None)
+
+    rationale = first("rationale") or first("reason")
+    if not isinstance(rationale, str) or not rationale.strip():
+        rationale = None
+    else:
+        rationale = rationale.strip()[:500]
+    return {
+        "stop_price": _optional_number(first("stop_price"), first("stop")),
+        "target_price": _optional_number(first("target_price"), first("target"), first("take_profit")),
+        "max_loss": _optional_number(first("max_loss"), first("risk_amount")),
+        "rationale": rationale,
+        "bid": _optional_number(first("bid")),
+        "ask": _optional_number(first("ask")),
+        "implied_volatility": _optional_number(first("implied_volatility"), first("iv")),
+        "volume": _optional_number(first("volume")),
+        "open_interest": _optional_number(first("open_interest"), first("oi")),
+        "current_price": _optional_number(first("current_price"), first("last_price")),
+        "quote_at": str(first("quote_at") or first("data_time") or "").strip() or None,
+    }
+
+
+def _quote_is_fresh(value: Any, *, now: datetime | None = None) -> bool:
+    if not value:
+        return False
+    try:
+        quoted_at = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if quoted_at.tzinfo is None:
+        quoted_at = quoted_at.replace(tzinfo=UTC)
+    age = (now or datetime.now(UTC)) - quoted_at.astimezone(UTC)
+    return -timedelta(minutes=1) <= age <= timedelta(minutes=15)
+
+
 def _mask_identifier(value: str) -> str:
     cleaned = str(value or "")
     return f"···· {cleaned[-4:]}" if cleaned else ""
 
 
-def _paper_market(symbol: str) -> str:
-    return "CN" if symbol.isdigit() and len(symbol) == 6 else "US"
-
-
-def _paper_activity(rows: list[sqlite3.Row]) -> dict[str, Any]:
-    events: list[dict[str, Any]] = []
-    sources: dict[int, dict[str, Any]] = {}
-    marks: dict[str, float] = {}
-    for raw in rows:
-        row = dict(raw)
-        trade_id = int(row["id"])
-        symbol = str(row["symbol"]).upper()
-        market = _paper_market(symbol)
-        currency = "CNY" if market == "CN" else "USD"
-        side = str(row["side"]).upper()
-        quantity = float(row["quantity"])
-        price = float(row["price"])
-        instrument_key = f"{market}:stock:{symbol}"
-        sources[trade_id] = row
-        marks[instrument_key] = price
-        events.append({
-            "id": trade_id,
-            "active": True,
-            "occurred_at": str(row["trade_time"]),
-            "recorded_at": str(row["trade_time"]),
-            "strategy_name": str(row.get("strategy_name") or "WEB-PAPER"),
-            "legs": [{
-                "instrument_key": instrument_key,
-                "market": market,
-                "instrument_type": "stock",
-                "symbol": symbol,
-                "currency": currency,
-                "quantity_delta": quantity if side == "BUY" else -quantity,
-                "price": price,
-                "multiplier": 1,
-                "commission": float(row["commission"] or 0),
-            }],
-        })
-
-    projected = project_trade_cycles(events, "stock", marks=marks)
+def _project_activity(
+    events: list[dict[str, Any]],
+    sources: dict[tuple[int, str], dict[str, Any]],
+) -> dict[str, Any]:
+    marks = {
+        str(leg["instrument_key"]): float(leg["price"])
+        for event in events
+        if event.get("active") is True
+        for leg in event.get("legs") or ()
+    }
+    projected = [
+        cycle
+        for instrument_type in ("stock", "option")
+        for cycle in project_trade_cycles(events, instrument_type, marks=marks)
+    ]
     intervals: list[dict[str, Any]] = []
     executions: list[dict[str, Any]] = []
     for cycle in projected:
-        interval_id = f"{cycle['symbol']}-{str(cycle['direction']).upper()}-{cycle['sequence']}"
+        interval_id = f"{cycle['instrument_key']}-{str(cycle['direction']).upper()}-{cycle['sequence']}"
         closed = bool(cycle.get("closed_at"))
         if closed:
             pnl = float(cycle.get("realized_pnl") or 0)
@@ -117,7 +155,7 @@ def _paper_activity(rows: list[sqlite3.Row]) -> dict[str, Any]:
         interval_execution_ids: list[str] = []
         for index, execution in enumerate(cycle["executions"]):
             source_id = execution.get("event_id")
-            source = sources.get(source_id) if isinstance(source_id, int) else None
+            source = sources.get((source_id, str(cycle["instrument_key"]))) if isinstance(source_id, int) else None
             if source is None:
                 continue
             execution_id = f"{source['trade_id']}:{cycle['sequence']}:{index}"
@@ -130,6 +168,7 @@ def _paper_activity(rows: list[sqlite3.Row]) -> dict[str, Any]:
                 "symbol": str(cycle["symbol"]),
                 "market": str(cycle["market"]),
                 "currency": str(cycle["currency"]),
+                "instrument_type": str(cycle["instrument_type"]),
                 "side": str(source["side"]).upper(),
                 "effect": str(execution["role"]).upper(),
                 "quantity": float(execution["quantity"]),
@@ -140,19 +179,28 @@ def _paper_activity(rows: list[sqlite3.Row]) -> dict[str, Any]:
             })
         opened_quantity = float(cycle["opened_quantity"])
         closed_quantity = float(cycle["closed_quantity"])
+        multiplier = float(cycle["multiplier"])
         intervals.append({
             "interval_id": interval_id,
+            "instrument_key": str(cycle["instrument_key"]),
+            "instrument_type": str(cycle["instrument_type"]),
             "symbol": str(cycle["symbol"]),
             "market": str(cycle["market"]),
             "currency": str(cycle["currency"]),
+            "option_expiry": cycle.get("option_expiry"),
+            "option_right": cycle.get("option_right"),
+            "option_strike": cycle.get("option_strike"),
+            "multiplier": multiplier,
             "direction": str(cycle["direction"]).upper(),
             "opened_at": str(cycle["opened_at"]),
             "closed_at": str(cycle["closed_at"]) if cycle.get("closed_at") else None,
             "average_entry_price": (
-                float(cycle["entry_notional"]) / opened_quantity if opened_quantity else 0
+                float(cycle["entry_notional"]) / (opened_quantity * multiplier)
+                if opened_quantity and multiplier else 0
             ),
             "average_exit_price": (
-                float(cycle["exit_notional"]) / closed_quantity if closed_quantity else None
+                float(cycle["exit_notional"]) / (closed_quantity * multiplier)
+                if closed_quantity and multiplier else None
             ),
             "average_cost": float(cycle["average_cost"]),
             "opened_quantity": opened_quantity,
@@ -172,15 +220,55 @@ def _paper_activity(rows: list[sqlite3.Row]) -> dict[str, Any]:
         })
 
     executions.sort(key=lambda item: (str(item["executed_at"]), str(item["execution_id"])), reverse=True)
+    intervals.sort(key=lambda item: (str(item["opened_at"]), str(item["interval_id"])), reverse=True)
+    execution_counts_by_market = {
+        market: sum(1 for execution in executions if execution["market"] == market)
+        for market in ("US", "CN", "HK")
+    }
+    execution_previews_by_market = {
+        market: [
+            execution for execution in executions if execution["market"] == market
+        ][:_PAPER_EXECUTION_LIMIT]
+        for market in ("US", "CN", "HK")
+    }
     truncated = len(intervals) > _PAPER_INTERVAL_LIMIT or len(executions) > _PAPER_EXECUTION_LIMIT
     return {
         "pnl_method": "weighted_average",
         "pnl_net_of_commission": True,
         "executions": executions[:_PAPER_EXECUTION_LIMIT],
         "intervals": intervals[:_PAPER_INTERVAL_LIMIT],
+        # This is deliberately computed before the public execution preview is
+        # capped, so a UI never mistakes its preview length for the total.
+        "execution_counts_by_market": execution_counts_by_market,
+        "execution_previews_by_market": execution_previews_by_market,
         "returned_execution_limit": _PAPER_EXECUTION_LIMIT,
         "truncated": truncated,
     }
+
+
+def _official_activity(events: list[dict[str, Any]]) -> dict[str, Any]:
+    sources: dict[tuple[int, str], dict[str, Any]] = {}
+    for event in events:
+        if event.get("active") is not True:
+            continue
+        for leg_index, leg in enumerate(event.get("legs") or ()):
+            event_id = int(event["id"])
+            instrument_key = str(leg["instrument_key"])
+            record_id = f"QE-{event_id}-{leg_index}"
+            sources[(event_id, instrument_key)] = {
+                "trade_id": record_id,
+                "order_id": record_id,
+                "side": "BUY" if float(leg["quantity_delta"]) > 0 else "SELL",
+            }
+    return _project_activity(events, sources)
+
+
+class _ReadOnlyJournalAdapter:
+    def __init__(self, connection: sqlite3.Connection):
+        self.connection = connection
+
+    def fetch_all(self, query: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+        return [dict(row) for row in self.connection.execute(query, params).fetchall()]
 
 
 @dataclass(frozen=True)
@@ -221,12 +309,108 @@ class ReadOnlyLegacyRepository:
             "users", "user_sessions", "quant_events", "quant_event_legs",
             "quant_equity_snapshots", "subscription_orders", "telegram_accounts",
             "user_settings", "orders", "trades", "risk_log", "broker_accounts", "price_alerts",
+            "price_alert_metadata", "user_controls", "platform_controls",
+            "membership_entitlements",
         }
         if table not in allowed:
             raise ReadModelError("table is not part of the compatibility allowlist")
         return connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
         ).fetchone() is not None
+
+    def _execution_snapshot(
+        self, connection: sqlite3.Connection, identity: BrowserIdentity
+    ) -> dict[str, Any]:
+        limits = trading_limits(identity.effective_plan)
+        account_limit = int(limits["auto_control_accounts"])
+        global_opening_paused = True
+        auto_trading_service_enabled = False
+        if self._table_exists(connection, "platform_controls"):
+            controls = {
+                str(row["control_key"]): str(row["control_value"]).strip().lower()
+                for row in connection.execute(
+                    "SELECT control_key,control_value FROM platform_controls "
+                    "WHERE control_key IN ('opening_paused','user_auto_trading_enabled')"
+                ).fetchall()
+            }
+            global_opening_paused = controls.get("opening_paused", "1") in {"1", "true", "yes", "on"}
+            auto_trading_service_enabled = controls.get("user_auto_trading_enabled", "0") in {
+                "1", "true", "yes", "on",
+            }
+
+        user_opening_paused = False
+        if self._table_exists(connection, "user_controls"):
+            row = connection.execute(
+                "SELECT opening_paused FROM user_controls WHERE user_id=?", (identity.id,)
+            ).fetchone()
+            user_opening_paused = bool(row and int(row["opening_paused"]))
+
+        accounts: list[dict[str, Any]] = []
+        if self._table_exists(connection, "broker_accounts"):
+            rows = connection.execute(
+                """SELECT id,provider,account_alias,external_account_id,mode,is_active,status,
+                          last_checked,metadata_json
+                   FROM broker_accounts WHERE user_id=? ORDER BY created_at,id""",
+                (identity.id,),
+            ).fetchall()
+            for row in rows:
+                status = str(row["status"] or "not_configured")
+                active = bool(row["is_active"])
+                accounts.append({
+                    "id": int(row["id"]),
+                    "provider": str(row["provider"]),
+                    "alias": str(row["account_alias"]),
+                    "mode": str(row["mode"]),
+                    "status": status,
+                    "authorized": broker_execution_authorized(row),
+                    "active": active,
+                    # Display-only diagnostic; authorization freshness comes from
+                    # the shared helper's private metadata proof and is not exposed.
+                    "last_checked": row["last_checked"],
+                })
+
+        accounts_used = sum(1 for account in accounts if account["active"])
+        has_authorized_broker_account = any(account["authorized"] for account in accounts)
+        effective_opening_paused = global_opening_paused or user_opening_paused
+        can_register_broker_account = (
+            auto_trading_service_enabled and account_limit > 0 and accounts_used < account_limit
+        )
+        can_increase_exposure = (
+            account_limit > 0
+            and auto_trading_service_enabled
+            and has_authorized_broker_account
+            and not effective_opening_paused
+        )
+        can_reduce_exposure = has_authorized_broker_account
+        block_reasons: list[str] = []
+        if account_limit <= 0:
+            block_reasons.append("当前会员没有自动交易控制账号名额")
+        if not auto_trading_service_enabled:
+            block_reasons.append("平台自动交易服务当前暂停")
+        if not has_authorized_broker_account:
+            block_reasons.append("尚未授权可用的个人券商账户")
+        if global_opening_paused:
+            block_reasons.append("平台已暂停全部新开仓")
+        if user_opening_paused:
+            block_reasons.append("当前账户已暂停新开仓")
+        return {
+            "global_opening_paused": global_opening_paused,
+            "user_opening_paused": user_opening_paused,
+            "effective_opening_paused": effective_opening_paused,
+            "auto_trading_service_enabled": auto_trading_service_enabled,
+            "has_authorized_broker_account": has_authorized_broker_account,
+            "can_register_broker_account": can_register_broker_account,
+            "can_increase_exposure": can_increase_exposure,
+            "can_reduce_exposure": can_reduce_exposure,
+            "account_limit": account_limit,
+            "accounts_used": accounts_used,
+            "accounts": accounts,
+            "block_reasons": block_reasons,
+        }
+
+    def execution_control(self, identity: BrowserIdentity) -> dict[str, Any]:
+        with self.connection() as connection:
+            return self._execution_snapshot(connection, identity)
 
     def authenticate(self, bearer_token: str) -> BrowserIdentity:
         try:
@@ -242,13 +426,27 @@ class ReadOnlyLegacyRepository:
                    WHERE u.id=? AND u.is_active=1 AND s.session_token=? AND s.is_active=1""",
                 (int(payload["sub"]), payload["sid"]),
             ).fetchone()
+            resolved = None
+            if row is not None:
+                resolved = (
+                    resolve_membership_snapshot(
+                        connection,
+                        int(row["id"]),
+                        cached_plan=str(row["plan_type"] or "免费版"),
+                        cached_expiry=row["subscription_expire"],
+                    )
+                    if self._table_exists(connection, "membership_entitlements")
+                    else {"plan_type": "免费版", "subscription_expire": None}
+                )
         if row is None:
             raise ReadModelAuthError("账户会话已失效，请重新登录。")
         return BrowserIdentity(
             id=int(row["id"]),
-            display_name=str(row["display_name"] or "TradeAI 用户"),
-            plan_type=str(row["plan_type"] or "免费版"),
-            subscription_expire=row["subscription_expire"],
+            display_name=str(row["display_name"] or "CicloTrade 用户"),
+            plan_type=str((resolved or {}).get("plan_type") or row["plan_type"] or "免费版"),
+            subscription_expire=(resolved or {}).get("subscription_expire")
+            if resolved is not None
+            else row["subscription_expire"],
         )
 
     def me(self, identity: BrowserIdentity) -> dict[str, Any]:
@@ -267,6 +465,7 @@ class ReadOnlyLegacyRepository:
                     "risk": {},
                     "telegram_events": {},
                     "watchlists": {"us": [], "a_share": []},
+                    "watchlist_pins": {"us": [], "a_share": []},
                     "ui_locale": None,
                 }
             row = connection.execute(
@@ -280,6 +479,7 @@ class ReadOnlyLegacyRepository:
             "risk": {str(key): value for key, value in risk.items() if isinstance(value, (int, float)) and not isinstance(value, bool)},
             "telegram_events": {str(key): value is True for key, value in events.items()},
             "watchlists": watchlists,
+            "watchlist_pins": normalize_watchlist_pins(settings, watchlists),
             "ui_locale": settings.get("ui_locale") if settings.get("ui_locale") in {"zh-Hant", "zh-Hans"} else None,
         }
 
@@ -287,10 +487,13 @@ class ReadOnlyLegacyRepository:
         with self.connection() as connection:
             if not self._table_exists(connection, "price_alerts"):
                 return []
-            rows = connection.execute(
-                "SELECT id,symbol,operator,target_price,conditions,logic,is_active,created_at,last_triggered "
-                "FROM price_alerts WHERE user_id=? ORDER BY created_at DESC LIMIT 100", (identity.id,)
-            ).fetchall()
+            has_metadata = self._table_exists(connection, "price_alert_metadata")
+            query = ("SELECT a.id,a.symbol,a.operator,a.target_price,a.conditions,a.logic,a.is_active,a.created_at,a.last_triggered, "
+                     "m.trigger_mode,m.repeat_mode,m.expires_at,m.channels,m.notify_only "
+                     "FROM price_alerts a LEFT JOIN price_alert_metadata m ON m.alert_id=a.id " if has_metadata else
+                     "SELECT id,symbol,operator,target_price,conditions,logic,is_active,created_at,last_triggered, "
+                     "NULL trigger_mode,NULL repeat_mode,NULL expires_at,NULL channels,NULL notify_only FROM price_alerts ")
+            rows = connection.execute(query + "WHERE a.user_id=? ORDER BY a.created_at DESC LIMIT 100" if has_metadata else query + "WHERE user_id=? ORDER BY created_at DESC LIMIT 100", (identity.id,)).fetchall()
         items = []
         for row in rows:
             item = dict(row)
@@ -299,17 +502,35 @@ class ReadOnlyLegacyRepository:
                 item["conditions"] = json.loads(item["conditions"] or "[]")
             except (TypeError, ValueError, json.JSONDecodeError):
                 item["conditions"] = []
+            if item.get("channels"):
+                try:
+                    item["channels"] = json.loads(item["channels"])
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    item["channels"] = ["website"]
+            else:
+                item["channels"] = ["website"]
+            item["notify_only"] = True
             items.append(item)
         return items
 
     def membership(self, identity: BrowserIdentity) -> dict[str, Any]:
         plan = identity.effective_plan
-        capabilities = sorted(
+        capabilities = sorted({
             capability
             for level in PLAN_ORDER[: PLAN_ORDER.index(plan) + 1]
             for capability in CAPABILITIES[level]
-        )
+        })
+        limits = trading_limits(plan)
         with self.connection() as connection:
+            annual_bonus_enabled = True
+            if self._table_exists(connection, "platform_controls"):
+                annual_bonus = connection.execute(
+                    "SELECT control_value FROM platform_controls WHERE control_key='annual_bonus_enabled'"
+                ).fetchone()
+                if annual_bonus:
+                    annual_bonus_enabled = str(annual_bonus["control_value"]).strip().lower() in {
+                        "1", "true", "yes", "on"
+                    }
             payment_methods = {}
             for method in ("fps", "alipay", "wechat"):
                 profile = ReceivingProfileService.current_from_connection(connection, method)
@@ -331,7 +552,24 @@ class ReadOnlyLegacyRepository:
             orders = []
             for row in rows:
                 item = dict(row)
-                if item["status"] == "pending" and str(item.get("pay_method")) in {"fps", "alipay", "wechat"}:
+                purchase_state = membership_purchase_state(plan, str(item["plan_type"]))
+                item.update(
+                    {
+                        "can_purchase": purchase_state["can_purchase"],
+                        "purchase_action": purchase_state["purchase_action"],
+                        "can_submit_proof": bool(
+                            item["status"] == "pending"
+                            and item.get("proof_status") != "submitted"
+                            and purchase_state["can_purchase"]
+                        ),
+                        "blocked_reason": purchase_state["blocked_reason"],
+                    }
+                )
+                if (
+                    item["status"] == "pending"
+                    and item["can_submit_proof"]
+                    and str(item.get("pay_method")) in {"fps", "alipay", "wechat"}
+                ):
                     snapshot = connection.execute(
                         "SELECT * FROM subscription_order_payment_receivers WHERE order_no=?",
                         (item["order_no"],),
@@ -344,6 +582,7 @@ class ReadOnlyLegacyRepository:
                     item["payment_instructions"] = ""
                     item["payment_qr_available"] = False
                 orders.append(item)
+            execution = self._execution_snapshot(connection, identity)
         return {
             "current": self.me(identity),
             "capabilities": capabilities,
@@ -351,15 +590,31 @@ class ReadOnlyLegacyRepository:
                 {
                     "key": key,
                     "display_name": plan_display_name(key),
-                    "prices": value["prices"],
-                    "summary": value["summary"],
-                    "features": list(value["features"]),
+                    "prices": dict(PLANS[key]["prices"]),
+                    "summary": PLANS[key]["summary"],
+                    "features": list(PLANS[key]["features"]),
+                    **membership_purchase_state(plan, key),
                 }
-                for key, value in PLANS.items()
+                for key in PLAN_ORDER
             ],
             "orders": orders,
             "payment_methods": payment_methods,
+            "brokerage": {
+                "auto_control_account_limit": int(limits["auto_control_accounts"]),
+                "accounts_used": execution["accounts_used"],
+                "accounts": execution["accounts"],
+                "requires_user_authorization": True,
+                "short_eligibility_source": "broker",
+                "subscription_auto_connects_broker": False,
+                "us_short": {
+                    "requires_ciclotrade_manual_approval": False,
+                    "requires_broker_authorization": True,
+                    "requires_margin": True,
+                    "requires_borrowability": True,
+                },
+            },
             "auto_renewal": False,
+            "annual_bonus_enabled": annual_bonus_enabled,
         }
 
     def telegram_status(self, identity: BrowserIdentity) -> dict[str, Any]:
@@ -449,6 +704,19 @@ class ReadOnlyLegacyRepository:
 
     def recommendations(self, identity: BrowserIdentity, *, limit: int = 20) -> dict[str, Any]:
         timeline = self.timeline(identity, limit=min(max(limit * 3, limit), 100))
+        event_ids = [int(event["id"]) for event in timeline["items"]]
+        metadata_by_event: dict[int, dict[str, Any]] = {}
+        if event_ids:
+            placeholders = ",".join("?" for _ in event_ids)
+            with self.connection() as connection:
+                rows = connection.execute(
+                    f"SELECT id,metadata_json FROM quant_events WHERE id IN ({placeholders})",
+                    tuple(event_ids),
+                ).fetchall()
+            metadata_by_event = {
+                int(row["id"]): _json_object(row["metadata_json"])
+                for row in rows
+            }
         items = []
         for event in timeline["items"]:
             if not event["active"]:
@@ -470,11 +738,65 @@ class ReadOnlyLegacyRepository:
             for leg in visible_legs:
                 delta = float(leg["quantity_delta"])
                 target = float(leg["target_quantity"])
-                action = "BUY" if delta > 0 else "EXIT" if target == 0 else "REDUCE"
+                previous = target - delta
+                if previous < 0 < target:
+                    position_action = "reverse_to_long"
+                elif previous > 0 > target:
+                    position_action = "reverse_to_short"
+                elif target > 0:
+                    position_action = "add_long" if delta > 0 and previous > 0 else "open_long" if delta > 0 else "reduce_long"
+                elif target < 0:
+                    position_action = "add_short" if delta < 0 and previous < 0 else "open_short" if delta < 0 else "reduce_short"
+                elif previous < 0:
+                    position_action = "close_short"
+                else:
+                    position_action = "close_long"
+                action = (
+                    "SHORT" if position_action in {"open_short", "add_short", "reverse_to_short"}
+                    else "COVER" if position_action in {"reduce_short", "close_short"}
+                    else "BUY" if position_action in {"open_long", "add_long", "reverse_to_long"}
+                    else "EXIT" if position_action == "close_long"
+                    else "REDUCE"
+                )
+                contract = _recommendation_contract(
+                    metadata_by_event.get(int(event["id"]), {}), leg
+                )
+                required_fields = {
+                    "stop_price": contract["stop_price"],
+                    "target_price": contract["target_price"],
+                    "max_loss": contract["max_loss"],
+                    "rationale": contract["rationale"],
+                    "current_price": contract["current_price"] if (contract["current_price"] or 0) > 0 else None,
+                    "quote_at": contract["quote_at"] if _quote_is_fresh(contract["quote_at"]) else None,
+                }
+                if leg["instrument_type"] == "option":
+                    required_fields.update({
+                        "option_expiry": leg.get("option_expiry"),
+                        "option_right": leg.get("option_right"),
+                        "option_strike": leg.get("option_strike"),
+                        "bid": contract["bid"] if (contract["bid"] or 0) > 0 else None,
+                        "ask": contract["ask"] if (contract["ask"] or 0) >= (contract["bid"] or float("inf")) else None,
+                        "implied_volatility": contract["implied_volatility"] if (contract["implied_volatility"] or 0) > 0 else None,
+                        "volume": contract["volume"] if (contract["volume"] or 0) > 0 else None,
+                        "open_interest": contract["open_interest"] if (contract["open_interest"] or 0) > 0 else None,
+                    })
+                missing_fields = [name for name, value in required_fields.items() if value is None]
                 items.append({
                     "event_id": event["id"], "state": "official", "action": action,
                     "market": leg["market"], "instrument_type": leg["instrument_type"],
                     "symbol": leg["symbol"], "currency": leg["currency"], "reference_price": leg["price"],
+                    "quantity_hint": abs(delta), "quantity_delta": delta, "target_quantity": target,
+                    "position_action": position_action,
+                    "option_expiry": leg.get("option_expiry"), "option_right": leg.get("option_right"),
+                    "option_strike": leg.get("option_strike"), "multiplier": leg.get("multiplier"),
+                    "spread": (
+                        contract["ask"] - contract["bid"]
+                        if contract["ask"] is not None and contract["bid"] is not None else None
+                    ),
+                    "actionable": not missing_fields,
+                    "contract_status": "complete" if not missing_fields else "incomplete",
+                    "missing_fields": missing_fields,
+                    **contract,
                     "strategy_name": event["strategy_name"], "strategy_version": event["strategy_version"],
                     "occurred_at": event["occurred_at"], "recorded_at": event["recorded_at"],
                 })
@@ -483,7 +805,6 @@ class ReadOnlyLegacyRepository:
         return {"items": items[:limit], "source": "immutable_quant_journal", "fresh_marks": False}
 
     def performance(self, identity: BrowserIdentity, *, limit: int = 200) -> dict[str, Any]:
-        del identity
         bounded = max(1, min(int(limit), 500))
         ledger_key = os.getenv("TRADEAI_SYSTEM_LEDGER_KEY", "tradeai-system")
         with self.connection() as connection:
@@ -495,56 +816,92 @@ class ReadOnlyLegacyRepository:
                 (ledger_key, bounded),
             ).fetchall()
         items = [dict(row) for row in reversed(rows)]
-        return {"items": items, "fresh_marks": False, "mark_source": "recorded_snapshot"}
+        # System snapshots are model-validation evidence, never a user's personal return.
+        return {"items": items, "fresh_marks": False, "mark_source": "recorded_system_snapshot", "scope": "system_model_validation", "user_id": identity.id}
 
     def portfolio(self, identity: BrowserIdentity) -> dict[str, Any]:
-        reason = f"user={identity.id}"
+        del identity
+        ledger_key = os.getenv("TRADEAI_SYSTEM_LEDGER_KEY", "tradeai-system")
         with self.connection() as connection:
-            trades = connection.execute(
-                """SELECT t.id,t.trade_id,t.order_id,t.symbol,t.side,t.quantity,t.price,
-                          t.commission,t.trade_time,o.strategy_name
-                   FROM trades t JOIN orders o ON o.order_id=t.order_id
-                   WHERE o.reason=? AND o.account_mode='paper' ORDER BY t.trade_time,t.id""",
-                (reason,),
+            journal = QuantJournal(_ReadOnlyJournalAdapter(connection))
+            events = journal.list_events(ledger_key)
+            replay = journal.replay(ledger_key)
+            snapshots = connection.execute(
+                """SELECT s.* FROM quant_equity_snapshots s
+                   JOIN (SELECT currency,MAX(id) id FROM quant_equity_snapshots
+                         WHERE ledger_key=? GROUP BY currency) latest ON latest.id=s.id
+                   ORDER BY s.currency""",
+                (ledger_key,),
             ).fetchall()
-            orders = connection.execute(
-                """SELECT order_id,symbol,side,quantity,price,status,account_mode,created_at
-                   FROM orders WHERE reason=? AND account_mode='paper'
-                   ORDER BY created_at DESC LIMIT 100""",
-                (reason,),
-            ).fetchall()
-        positions: dict[str, dict[str, float | str]] = {}
-        realized = 0.0
-        for row in trades:
-            symbol, side = str(row["symbol"]), str(row["side"]).upper()
-            signed = float(row["quantity"]) * (1 if side == "BUY" else -1)
-            price = float(row["price"])
-            position = positions.setdefault(symbol, {"symbol": symbol, "quantity": 0.0, "average_price": 0.0, "last_trade_price": price})
-            quantity = float(position["quantity"])
-            average = float(position["average_price"])
-            if quantity == 0 or quantity * signed > 0:
-                next_quantity = quantity + signed
-                position["average_price"] = (abs(quantity) * average + abs(signed) * price) / abs(next_quantity)
-            else:
-                closed = min(abs(quantity), abs(signed))
-                realized += closed * (price - average) * (1 if quantity > 0 else -1)
-                next_quantity = quantity + signed
-                if not next_quantity:
-                    position["average_price"] = 0.0
-                elif quantity * next_quantity < 0:
-                    position["average_price"] = price
-            position["quantity"] = next_quantity
-            position["last_trade_price"] = price
-        active = []
-        for position in positions.values():
-            quantity = float(position["quantity"])
-            if abs(quantity) < 1e-12:
-                continue
-            price = float(position["last_trade_price"])
-            average = float(position["average_price"])
-            active.append({**position, "market_value": quantity * price, "unrealized_pnl": quantity * (price - average)})
+
+        positions = [{
+            "symbol": position["symbol"],
+            "market": position["market"],
+            "currency": position["currency"],
+            "instrument_type": position["instrument_type"],
+            "instrument_key": instrument_key,
+            "option_expiry": position.get("option_expiry"),
+            "option_right": position.get("option_right"),
+            "option_strike": position.get("option_strike"),
+            "multiplier": position["multiplier"],
+            "quantity": position["quantity"],
+            "average_price": position["average_cost"],
+            "last_trade_price": position["last_price"],
+            "market_value": position["market_value"],
+            "unrealized_pnl": position["unrealized_pnl"],
+        } for instrument_key, position in replay["positions"].items()]
+
+        activity = _official_activity(events)
+        orders = [{
+            "order_id": execution["order_id"],
+            "symbol": execution["symbol"],
+            "market": execution["market"],
+            "currency": execution["currency"],
+            "instrument_type": execution["instrument_type"],
+            "side": execution["side"],
+            "quantity": execution["quantity"],
+            "price": execution["price"],
+            "status": "VERIFIED",
+            "account_mode": "official",
+            "created_at": execution["executed_at"],
+        } for execution in activity["executions"][:100]]
+
+        latest = {str(row["currency"]): dict(row) for row in snapshots}
+        currency_totals = replay.get("currencies", {})
+
+        def account(market: str, currency: str) -> dict[str, Any]:
+            snapshot = latest.get(currency)
+            replay_total = currency_totals.get(currency, {})
+            return {
+                "market": market,
+                "currency": currency,
+                "status": "recorded" if snapshot else "not_recorded",
+                "captured_at": snapshot.get("captured_at") if snapshot else None,
+                "initial_cash": snapshot.get("initial_cash") if snapshot else None,
+                "cash": snapshot.get("cash") if snapshot else None,
+                "market_value": snapshot.get("market_value") if snapshot else replay_total.get("market_value"),
+                "realized_pnl": snapshot.get("realized_pnl") if snapshot else replay_total.get("realized_pnl"),
+                "unrealized_pnl": snapshot.get("unrealized_pnl") if snapshot else replay_total.get("unrealized_pnl"),
+                "total_equity": snapshot.get("total_equity") if snapshot else None,
+                "total_pnl": snapshot.get("total_pnl") if snapshot else replay_total.get("total_pnl"),
+            }
+
         return {
-            "account_mode": "paper", "positions": active, "orders": [dict(row) for row in orders],
-            "realized_pnl": realized, "fresh_marks": False, "mark_source": "last_recorded_trade",
-            "activity": _paper_activity(trades),
+            "account_mode": "official",
+            "scope": "ciclotrade_system_validation",
+            "positions": positions,
+            "orders": orders,
+            "accounts": {
+                "US": account("US", "USD"),
+                "CN": account("CN", "CNY"),
+                "HK": {
+                    "market": "HK", "currency": "HKD", "status": "not_connected",
+                    "captured_at": None, "initial_cash": None, "cash": None,
+                    "market_value": None, "realized_pnl": None, "unrealized_pnl": None,
+                    "total_equity": None, "total_pnl": None,
+                },
+            },
+            "fresh_marks": False,
+            "mark_source": "immutable_quant_journal_last_recorded_price",
+            "activity": activity,
         }

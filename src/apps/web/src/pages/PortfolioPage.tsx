@@ -1,66 +1,194 @@
-import { ArrowDownRight, ArrowUpRight, Clock3, Plus, ShieldCheck, WalletCards } from 'lucide-react'
-import { useMemo } from 'react'
+import { ArrowDownRight, ArrowUpRight, ChevronDown, Clock3, History, ListChecks, ShieldCheck, WalletCards } from 'lucide-react'
+import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useWorkspace } from '../api/workspace-context'
 import { PageHeader } from '../components/PageHeader'
 import { WorkspaceState } from '../components/WorkspaceState'
-import { apiOrderToOrder, apiPositionToPosition } from '../data/adapters'
-import { orders, portfolioSummary, positions } from '../data/workspace'
+import { apiPositionToPosition, formatTime } from '../data/adapters'
 import { getFormatLocale } from '../i18n/runtime'
 import { useLocale } from '../i18n/useLocale'
+import type { Market, Position } from '../types'
 
-const actionLabels = { buy: '买入', hold: '持有', reduce: '减仓', exit: '退出', wait: '等待' }
+const actionLabels = { buy: '买入', hold: '持有', reduce: '减仓', exit: '退出', short: '空头', cover: '回补', wait: '等待' }
+const marketLabels: Record<Market | 'HK', string> = { US: '美股', CN: 'A股', HK: '港股' }
+type AccountMarket = Market | 'HK'
+
+type ClosedOrder = {
+  id: string
+  symbol: string
+  market: AccountMarket
+  currency: 'USD' | 'CNY' | 'HKD'
+  instrumentType: 'stock' | 'option'
+  direction: 'LONG' | 'SHORT'
+  openedAt: string
+  closedAt: string
+  quantity: number
+  entry: number
+  exit: number
+  pnl: number
+}
+
+type TimelineItem = {
+  id: string
+  symbol: string
+  market: Market
+  instrumentType: 'stock' | 'option'
+  action: string
+  quantity: number
+  price: number
+  createdAt: string
+  status: 'verified' | 'pending' | 'rejected'
+  side: 'BUY' | 'SELL'
+}
+
+function formatAmount(value: number | null | undefined, currency: string, signed = false) {
+  if (value == null) return '未记录'
+  const sign = signed && value > 0 ? '+' : ''
+  return `${sign}${new Intl.NumberFormat(getFormatLocale(), { maximumFractionDigits: 2 }).format(value)} ${currency}`
+}
+
+function PositionRow({ position }: { position: Position }) {
+  const [expanded, setExpanded] = useState(false)
+  const unit = position.instrumentType === 'option' ? '张' : '股'
+  return <article className={`account-position-row ${expanded ? 'is-expanded' : ''}`}>
+    <div className="account-symbol"><strong>{position.symbol}</strong><small>{position.name} · {marketLabels[position.market]}</small></div>
+    <div><span>数量</span><strong>{position.quantity} {unit}</strong></div>
+    <div><span>成本 / 记录价</span><strong>{position.averagePrice.toFixed(2)} / {position.lastPrice.toFixed(2)}</strong></div>
+    <div><span>未实现盈亏</span><strong className={position.unrealizedPnl >= 0 ? 'positive-text' : 'negative-text'}>{position.unrealizedPnl >= 0 ? <ArrowUpRight size={13} /> : <ArrowDownRight size={13} />}{position.unrealizedPnl.toFixed(2)} <small>{position.unrealizedPnlPct.toFixed(2)}%</small></strong></div>
+    <span className={`action-pill ${position.action}`}>{actionLabels[position.action]}</span>
+    <button className="account-position-expand icon-button" type="button" aria-expanded={expanded} aria-label={`${expanded ? '收起' : '展开'} ${position.symbol} 持仓详情`} title={expanded ? '收起持仓详情' : '展开持仓详情'} onClick={() => setExpanded((current) => !current)}><ChevronDown size={16} /></button>
+  </article>
+}
 
 export function PortfolioPage() {
   const workspace = useWorkspace()
   const { formatLocale } = useLocale()
   const navigate = useNavigate()
-  const usingReal = workspace.mode === 'authenticated'
-  const shownPositions = useMemo(() => usingReal ? (workspace.data?.portfolio.positions ?? []).map(apiPositionToPosition) : positions, [usingReal, workspace.data])
-  const shownOrders = useMemo(() => usingReal ? (workspace.data?.portfolio.orders ?? []).map((item) => apiOrderToOrder(item, formatLocale)) : orders, [formatLocale, usingReal, workspace.data])
-  const marketValue = shownPositions.reduce((total, item) => total + item.marketValue, 0)
-  const unrealized = shownPositions.reduce((total, item) => total + item.unrealizedPnl, 0)
-  const realized = usingReal ? workspace.data?.portfolio.realized_pnl ?? 0 : portfolioSummary.totalPnl
-  return (
-    <div className="page operations-page">
-      <PageHeader kicker="PORTFOLIO / RISK" title="组合与仓位" description="先看账户风险，再处理需要行动的仓位。模拟账户与实盘账户始终明确分开。" />
-      <WorkspaceState empty={usingReal && shownPositions.length === 0} emptyText="当前账户还没有模拟成交仓位；可前往交易页建立第一笔模拟订单。" />
-      <div className="account-source-bar">
-        <span><WalletCards size={18} /> 模拟账户</span>
-        <strong><i className="positive-dot" /> {usingReal ? '历史成交已同步' : '演示数据'}</strong>
-        <small><Clock3 size={14} /> {usingReal ? '估值来自最后记录成交，不是实时行情' : portfolioSummary.freshness}</small>
-      </div>
-
-      <section className="metric-grid portfolio-metrics" aria-label="账户摘要">
-        <article><span>记录持仓市值</span><strong>USD {marketValue.toLocaleString(getFormatLocale(), { maximumFractionDigits: 2 })}</strong><small>按最后成交价估算</small></article>
-        <article><span>未实现盈亏</span><strong className={unrealized >= 0 ? 'positive-text' : 'negative-text'}>{unrealized >= 0 ? '+' : ''}{unrealized.toLocaleString(getFormatLocale(), { maximumFractionDigits: 2 })}</strong><small>不是实时盯市</small></article>
-        <article><span>已实现盈亏</span><strong className={realized >= 0 ? 'positive-text' : 'negative-text'}>{realized >= 0 ? '+' : ''}{realized.toLocaleString(getFormatLocale(), { maximumFractionDigits: 2 })}</strong><small>来自模拟成交记录</small></article>
-        <article><span>模拟订单</span><strong>{shownOrders.length}</strong><small>{shownPositions.length} 个当前仓位</small></article>
-      </section>
-
-      <section className="data-panel">
-        <header className="panel-heading"><div><span>POSITIONS</span><h2>当前仓位与建议</h2></div><span className="status-chip official"><ShieldCheck size={14} /> 风险闸门正常</span></header>
-        <div className="responsive-table">
-          <table>
-            <thead><tr><th>标的</th><th>数量</th><th>成本</th><th>现价</th><th>市值</th><th>未实现盈亏</th><th>当前建议</th></tr></thead>
-            <tbody>{shownPositions.map((position) => <tr key={position.symbol}>
-              <td><strong>{position.symbol}</strong><small>{position.name} · {position.market === 'US' ? '美股' : 'A股'}</small></td>
-              <td>{position.quantity}</td><td>{position.averagePrice.toFixed(2)}</td><td>{position.lastPrice.toFixed(2)}</td><td>{position.marketValue.toLocaleString(getFormatLocale())}</td>
-              <td className={position.unrealizedPnl >= 0 ? 'positive-text' : 'negative-text'}>{position.unrealizedPnl >= 0 ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />}{position.unrealizedPnl.toFixed(2)} <small>{position.unrealizedPnlPct.toFixed(2)}%</small></td>
-              <td><span className={`action-pill ${position.action}`}>{actionLabels[position.action]}</span></td>
-            </tr>)}</tbody>
-          </table>
-        </div>
-      </section>
-
-      <section className="data-panel">
-        <header className="panel-heading"><div><span>ORDER ACTIVITY</span><h2>最近模拟订单</h2></div><button className="button tertiary" type="button" onClick={() => navigate('/trade')}><Plus size={15} /> 新建模拟订单</button></header>
-        <div className="compact-list">{shownOrders.map((order) => <article key={order.id}>
-          <span className={`side-mark ${order.side.toLowerCase()}`}>{order.side === 'BUY' ? '买' : '卖'}</span>
-          <div><strong>{order.symbol} · {order.quantity} 股</strong><small>{order.id} · {order.createdAt}</small></div>
-          <div className="list-value"><strong>{order.price.toFixed(2)}</strong><small className={order.status === 'FILLED' ? 'positive-text' : order.status === 'REJECTED' ? 'negative-text' : 'warning-text'}>{order.status === 'FILLED' ? '已成交' : order.status === 'REJECTED' ? '已拒绝' : '处理中'}</small></div>
-        </article>)}</div>
-      </section>
-    </div>
+  const [market, setMarket] = useState<AccountMarket>('US')
+  const authenticated = workspace.mode === 'authenticated'
+  // This page is intentionally fail-closed: personal paper orders and local
+  // demo fixtures never represent CicloTrade's immutable validation ledger.
+  const portfolio = authenticated ? workspace.data?.portfolio : undefined
+  const shownPositions = useMemo(
+    () => (portfolio?.positions ?? []).map(apiPositionToPosition),
+    [portfolio],
   )
+  const marketPositions = shownPositions.filter((position) => position.market === market)
+  const activity = portfolio?.activity
+  const intervalDirection = new Map((activity?.intervals ?? []).map((item) => [item.interval_id, item.direction]))
+  const officialTimeline = (activity?.execution_previews_by_market?.[market]
+    ?? (activity?.executions ?? []).filter((item) => item.market === market))
+    .map<TimelineItem>((item) => {
+      const direction = intervalDirection.get(item.interval_id)
+      const action = direction === 'SHORT'
+        ? item.side === 'BUY' ? '买入平空' : '卖出做空'
+        : item.side === 'BUY' ? '买入 / 增持' : '卖出 / 平多'
+      return {
+        id: item.execution_id,
+        symbol: item.symbol,
+        market: item.market,
+        instrumentType: item.instrument_type,
+        action,
+        quantity: item.quantity,
+        price: item.price,
+        createdAt: formatTime(item.executed_at, formatLocale),
+        status: 'verified',
+        side: item.side,
+      }
+    })
+  const timeline = officialTimeline.slice(0, 8)
+  const closed = (activity?.intervals ?? [])
+    .filter((item) => item.market === market && item.status === 'CLOSED')
+    .map<ClosedOrder>((item) => ({
+      id: item.interval_id,
+      symbol: item.symbol,
+      market: item.market,
+      currency: item.currency,
+      instrumentType: item.instrument_type,
+      direction: item.direction,
+      openedAt: formatTime(item.opened_at, formatLocale),
+      closedAt: formatTime(item.closed_at, formatLocale),
+      quantity: item.opened_quantity,
+      entry: item.average_entry_price,
+      exit: item.average_exit_price ?? 0,
+      pnl: item.realized_pnl ?? 0,
+    }))
+  const currency = market === 'CN' ? 'CNY' : market === 'HK' ? 'HKD' : 'USD'
+  const account = portfolio?.accounts?.[market]
+  const accountAvailable = account?.status === 'recorded' || account?.status === 'not_recorded'
+  const accountUnavailableLabel = account ? '尚未接入' : '账户不可用'
+  const accountEmptyText = !account
+    ? `${marketLabels[market]}官方验证账户合同不可用。`
+    : account.status === 'not_connected'
+      ? `${marketLabels[market]}官方验证账户尚未接入。`
+      : `${marketLabels[market]}尚无官方权益快照。`
+  const balance = account?.total_equity
+  const marketValue = account?.market_value
+  const unrealized = account?.unrealized_pnl
+  const realized = account?.realized_pnl
+  const officialRecordCount = (() => {
+    const reported = activity?.execution_counts_by_market?.[market]
+    return typeof reported === 'number' && Number.isFinite(reported) && reported >= 0
+      ? reported
+      : officialTimeline.length
+  })()
+  const marketHasOfficialRecords = Boolean(
+    officialRecordCount
+    || marketPositions.length
+    || (activity?.intervals ?? []).some((item) => item.market === market),
+  )
+  const hasOfficialRecords = Boolean(
+    portfolio && (
+      portfolio.orders.length
+      || portfolio.positions.length
+      || activity?.executions.length
+      || activity?.intervals.length
+    ),
+  )
+  const timelineEmptyText = account?.status === 'not_recorded'
+    ? accountEmptyText
+    : `${marketLabels[market]}暂无时间线记录。`
+  const positionsEmptyText = account?.status === 'not_recorded'
+    ? accountEmptyText
+    : `${marketLabels[market]}目前没有持仓。`
+  const closedEmptyText = account?.status === 'not_recorded'
+    ? accountEmptyText
+    : `${marketLabels[market]}暂无已平仓记录。`
+
+  return <div className="page operations-page">
+    <PageHeader kicker="PORTFOLIO / RISK" title="CicloTrade模拟持仓及建议" description="官方验证账户只记录 CicloTrade 的系统行动；它不是你的券商账户，也不会自动下单。USD、CNY 和 HKD 始终分开查看。" />
+    <WorkspaceState empty={!hasOfficialRecords} emptyText="当前没有 CicloTrade 官方验证记录；系统不会用个人练习订单或演示订单填充。" />
+    <div className="account-source-bar">
+      <span><WalletCards size={18} /> CicloTrade 官方验证账户</span>
+      <strong><i className={marketHasOfficialRecords ? 'positive-dot' : 'neutral-dot'} /> {account?.status === 'not_connected' ? `${marketLabels[market]}尚未接入` : marketHasOfficialRecords ? `${marketLabels[market]}不可变日志已同步` : `${marketLabels[market]}暂无官方记录`}</strong>
+      <small><Clock3 size={14} /> {authenticated ? '估值来自最后记录价，不是实时可成交报价' : '登录并同步官方验证记录后显示。'}</small>
+    </div>
+
+    <div className="account-market-tabs" role="tablist" aria-label="官方验证账户市场">
+      {(['US', 'HK', 'CN'] as AccountMarket[]).map((value) => <button className={market === value ? 'active' : ''} type="button" role="tab" aria-selected={market === value} onClick={() => setMarket(value)} key={value}>{marketLabels[value]}</button>)}
+    </div>
+
+    <section className="metric-grid portfolio-metrics" aria-label={`${marketLabels[market]}账户摘要`}>
+      <article><span>{marketLabels[market]}模拟余额</span><strong>{accountAvailable ? formatAmount(balance, currency) : accountUnavailableLabel}</strong><small>{account?.status === 'not_recorded' ? '尚无官方权益快照' : accountAvailable ? `${currency} 独立显示` : accountEmptyText}</small></article>
+      <article><span>记录持仓市值</span><strong>{accountAvailable ? formatAmount(marketValue, currency) : accountUnavailableLabel}</strong><small>按最后记录价估算</small></article>
+      <article><span>已实现 / 未实现</span><strong className={accountAvailable && (realized ?? 0) + (unrealized ?? 0) >= 0 ? 'positive-text' : accountAvailable ? 'negative-text' : ''}>{accountAvailable ? `${formatAmount(realized, currency, true)} / ${formatAmount(unrealized, currency, true)}` : accountUnavailableLabel}</strong><small>不会跨币种相加</small></article>
+      <article><span>官方验证记录</span><strong>{accountAvailable ? officialRecordCount : accountUnavailableLabel}</strong><small>{accountAvailable ? `${marketPositions.length} 个当前持仓` : accountEmptyText}</small></article>
+    </section>
+
+    <section className="account-layout account-simulator-grid">
+      <article className="data-panel account-timeline">
+        <header className="panel-heading"><div><span>OFFICIAL ACTION TIMELINE</span><h2>交易时间线</h2></div><ListChecks size={20} /></header>
+        {!accountAvailable ? <div className="inline-empty">{accountEmptyText}</div> : timeline.length ? <div className="timeline-list">{timeline.map((item) => <div className="timeline-item" key={item.id}><span className={`timeline-dot ${item.side === 'BUY' ? 'buy' : 'sell'}`} /><div><strong>{item.action} {item.symbol} · {item.quantity} {item.instrumentType === 'option' ? '张' : '股'}</strong><small>{item.createdAt} · {item.status === 'verified' ? '官方日志记录' : item.status === 'rejected' ? '风险闸门拒绝' : '等待处理'}</small></div><b>{item.price.toFixed(2)}</b></div>)}</div> : <div className="inline-empty">{timelineEmptyText}</div>}
+        <button className="button tertiary account-timeline-link" type="button" onClick={() => navigate('/reports')}><History size={15} /> 打开验证报告</button>
+      </article>
+      <article className="data-panel account-current">
+        <header className="panel-heading"><div><span>{market} / OPEN POSITIONS</span><h2>当前持仓及建议</h2></div><span className="status-chip official"><ShieldCheck size={14} /> 官方验证</span></header>
+        {!accountAvailable ? <div className="inline-empty">{accountEmptyText}</div> : marketPositions.length ? <div className="account-position-list">{marketPositions.map((position) => <PositionRow position={position} key={`${position.symbol}-${position.name}`} />)}</div> : <div className="inline-empty">{positionsEmptyText}</div>}
+      </article>
+      <article className="data-panel account-closed">
+        <header className="panel-heading"><div><span>CLOSED ORDERS / REALIZED P&amp;L</span><h2>已平仓订单及盈亏</h2></div><span className="status-chip research">逐组核对</span></header>
+        {!accountAvailable ? <div className="inline-empty">{accountEmptyText}</div> : closed.length ? <div className="closed-order-list">{closed.map((item) => <div className="closed-order-row" key={item.id}><div><strong>{item.symbol} · {item.quantity} {item.instrumentType === 'option' ? '张' : '股'}</strong><small>{item.openedAt} 开仓 → {item.closedAt} 平仓</small></div><div><span>{item.direction === 'SHORT' ? '卖出开仓' : '买入开仓'} {item.entry.toFixed(2)} · {item.direction === 'SHORT' ? '买入平空' : '卖出平多'} {item.exit.toFixed(2)}</span><strong className={item.pnl >= 0 ? 'positive-text' : 'negative-text'}>{formatAmount(item.pnl, item.currency, true)}</strong></div></div>)}</div> : <div className="inline-empty">{closedEmptyText}</div>}
+      </article>
+    </section>
+  </div>
 }

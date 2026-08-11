@@ -7,7 +7,6 @@ from src.apps.worker.learning_cycle import (
     CandidateArtifact,
     PointInTimeSample,
     WalkForwardResult,
-    independently_review_cycle,
     run_learning_cycle,
 )
 from src.apps.worker.quant_learning import ModelState
@@ -82,20 +81,19 @@ def test_autonomous_cycle_trains_and_evaluates_but_cannot_self_promote():
     receipt = run_learning_cycle([equity_sample()], trainer, maximum_age_seconds=300)
 
     assert trainer.trained == 1
-    assert receipt.promotion.approved is False
-    assert receipt.promotion.next_state is ModelState.SHADOW
-    assert "independent promotion approval is required" in receipt.promotion.reasons
+    assert receipt.promotion_proposal.eligible_for_human_review is True
+    assert receipt.promotion_proposal.requires_human_approval is True
+    assert receipt.promotion_proposal.next_state is ModelState.SHADOW
     assert len(receipt.dataset_hash) == 64
 
 
-def test_independent_review_can_approve_a_qualified_paper_candidate():
+def test_worker_receipt_has_no_approval_or_active_state():
     receipt = run_learning_cycle([equity_sample()], QualifiedTrainer(), maximum_age_seconds=300)
 
-    reviewed = independently_review_cycle(receipt, approver_id="risk-reviewer-17")
-
-    assert reviewed.promotion.approved is True
-    assert reviewed.promotion.next_state is ModelState.APPROVED
-    assert reviewed.independent_approver_id == "risk-reviewer-17"
+    payload = str(receipt)
+    assert "approved=True" not in payload
+    assert "active" not in payload.lower()
+    assert receipt.promotion_proposal.next_state is ModelState.SHADOW
 
 
 def test_point_in_time_leakage_and_stale_evidence_are_rejected():

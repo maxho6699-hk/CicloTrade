@@ -143,6 +143,7 @@ def _plan_visible_cycles(
         if visible_at > cutoff:
             continue
         delayed = dict(cycle)
+        delayed["entitlement_redacted"] = True
         delayed["mark_price"] = None
         delayed["unrealized_pnl"] = None
         visible.append(delayed)
@@ -150,6 +151,16 @@ def _plan_visible_cycles(
 
 
 def _cycle_block(cycle: dict[str, Any]) -> str:
+    if cycle.get("entitlement_redacted") is True:
+        return "\n".join(
+            (
+                "<blockquote>",
+                f"🔒 <b>#{int(cycle['sequence'])} 延遲研究記錄</b>",
+                "標的、交易方向、入場價格、數量、止盈與止損已隱藏",
+                "升級對應會員後查看完整可執行資訊",
+                "</blockquote>",
+            )
+        )
     closed = bool(cycle.get("closed_at"))
     direction = "做多" if cycle.get("direction") == "long" else "做空"
     status = "已平倉" if closed else "持倉中"

@@ -927,7 +927,7 @@ def _render_system(service: AdminService, actor_id: int) -> None:
             key="open_user_auto_trading",
         ):
             _confirm_action(
-                "开放后，已完成会员、签约白名单和独立券商配置的用户可启用自动交易。"
+                "开放后，已完成个人券商授权和独立账户配置的用户可启用自动交易；会员订阅不授予实盘权限。"
                 "当前共享 Tiger 通道仍只允许配置的操作员，不会自动开放给所有账户。",
                 lambda: service.set_user_auto_trading_enabled(actor_id, True),
                 "用户自动交易服务已开放。",

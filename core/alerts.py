@@ -11,11 +11,116 @@ import re
 from typing import Any
 
 from core.database import DatabaseManager, get_database
-from core.plans import alert_limit, effective_plan
+from core.membership import authoritative_membership_user
+from core.plans import alert_limit, can, effective_plan
 
 
 CONDITION_TYPES = {"price", "volume", "volume_ratio", "rsi", "macd", "ma", "change"}
 OPERATORS = {">=", "<=", ">", "<", "="}
+TRIGGER_MODES = {"at_or_above", "at_or_below", "crosses_above", "crosses_below"}
+REPEAT_MODES = {"once", "repeat"}
+ALERT_CHANNELS = {"website", "telegram"}
+
+
+def _metadata_table(database: DatabaseManager) -> None:
+    """Create the optional alert metadata table for old and new databases."""
+    database.execute(
+        """CREATE TABLE IF NOT EXISTS price_alert_metadata (
+               alert_id INTEGER PRIMARY KEY,
+               trigger_mode TEXT NOT NULL DEFAULT 'at_or_above',
+               repeat_mode TEXT NOT NULL DEFAULT 'once',
+               expires_at TEXT,
+               channels TEXT NOT NULL DEFAULT '[\"website\"]',
+               notify_only INTEGER NOT NULL DEFAULT 1,
+               last_state INTEGER NOT NULL DEFAULT 0,
+               has_observation INTEGER NOT NULL DEFAULT 0,
+               last_value REAL,
+               FOREIGN KEY (alert_id) REFERENCES price_alerts(id)
+           )"""
+    )
+    columns = {str(row["name"]) for row in database.fetch_all("PRAGMA table_info(price_alert_metadata)")}
+    if "has_observation" not in columns:
+        database.execute("ALTER TABLE price_alert_metadata ADD COLUMN has_observation INTEGER NOT NULL DEFAULT 0")
+    if "last_value" not in columns:
+        database.execute("ALTER TABLE price_alert_metadata ADD COLUMN last_value REAL")
+
+
+def _normalize_trigger(value: Any, *, operator: str | None = None) -> str:
+    aliases = {
+        "达到": "at_or_above", "到达": "at_or_above", "at": "at_or_above",
+        "at_or_above": "at_or_above", "above": "at_or_above", ">=": "at_or_above", ">": "at_or_above", "=": "at_or_above",
+        "跌破": "at_or_below", "低于": "at_or_below", "at_or_below": "at_or_below",
+        "below": "at_or_below", "<=": "at_or_below", "<": "at_or_below",
+        "上穿": "crosses_above", "上破": "crosses_above", "crosses_above": "crosses_above",
+        "cross_above": "crosses_above", "cross_up": "crosses_above",
+        "下穿": "crosses_below", "下破": "crosses_below", "crosses_below": "crosses_below",
+        "cross_below": "crosses_below", "cross_down": "crosses_below",
+    }
+    if value is None or str(value).strip() == "":
+        value = operator
+    key = str(value).strip().lower()
+    normalized = aliases.get(key)
+    if normalized is None:
+        raise ValueError("预警触发方式无效。可选：达到、跌破、上穿或下穿。")
+    return normalized
+
+
+def _normalize_repeat(value: Any) -> str:
+    aliases = {"一次": "once", "单次": "once", "once": "once", "repeat": "repeat", "重复": "repeat", "持续": "repeat"}
+    normalized = aliases.get(str(value if value is not None else "once").strip().lower())
+    if normalized is None:
+        raise ValueError("预警重复方式无效。可选：一次或重复。")
+    return normalized
+
+
+def _normalize_channels(value: Any) -> list[str]:
+    if value is None:
+        value = ["website"]
+    if isinstance(value, str):
+        value = [part.strip() for part in value.split(",") if part.strip()]
+    if not isinstance(value, list) or not value:
+        raise ValueError("通知渠道至少需要选择网站或 Telegram。")
+    aliases = {"web": "website", "site": "website", "网站": "website", "telegram": "telegram", "tg": "telegram", "电报": "telegram"}
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError("通知渠道必须是 website 或 telegram。")
+        channel = aliases.get(item.strip().lower(), item.strip().lower())
+        if channel not in ALERT_CHANNELS:
+            raise ValueError("通知渠道只能是 website 或 telegram。")
+        if channel not in result:
+            result.append(channel)
+    return [channel for channel in ("website", "telegram") if channel in result]
+
+
+def _normalize_expiry(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise ValueError("预警有效期必须是 ISO 日期时间。")
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("预警有效期必须是有效的 ISO 日期时间。") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    parsed = parsed.astimezone(UTC)
+    if parsed <= datetime.now(UTC):
+        raise ValueError("预警有效期必须晚于现在。")
+    return parsed.isoformat(timespec="seconds")
+
+
+def normalize_alert_metadata(
+    *, trigger_mode: Any = None, repeat_mode: Any = "once", expires_at: Any = None,
+    channels: Any = None, operator: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "trigger_mode": _normalize_trigger(trigger_mode, operator=operator),
+        "repeat_mode": _normalize_repeat(repeat_mode),
+        "expires_at": _normalize_expiry(expires_at),
+        "channels": _normalize_channels(channels),
+        "notify_only": True,
+    }
 
 
 def _condition_type(value: str) -> str:
@@ -108,6 +213,7 @@ def condition_preview(symbol: str, conditions: list[dict[str, Any]], logic: str 
 class AlertService:
     def __init__(self, database: DatabaseManager | None = None):
         self.db = database or get_database()
+        _metadata_table(self.db)
 
     def _user_plan(self, user_id: int, supplied: str | None = None) -> str:
         user = self.db.fetch_one(
@@ -116,7 +222,7 @@ class AlertService:
         if not user:
             raise ValueError("用户不存在或已停用。")
         # Keep the argument for old callers, but never trust it for authorization.
-        return effective_plan(user)
+        return effective_plan(authoritative_membership_user(self.db, user))
 
     def create(
         self,
@@ -128,6 +234,10 @@ class AlertService:
         *,
         conditions: list[dict[str, Any]] | None = None,
         logic: str = "AND",
+        trigger_mode: str | None = None,
+        repeat_mode: str = "once",
+        expires_at: str | None = None,
+        channels: list[str] | None = None,
     ) -> None:
         symbol = str(symbol or "").strip().upper()
         valid_symbol = bool(re.fullmatch(r"(?:[A-Z][A-Z0-9.-]{0,11}|\d{6})", symbol))
@@ -145,19 +255,87 @@ class AlertService:
         if actual_plan == "免费版" and normalized[0]["type"] != "price":
             raise ValueError("免费版仅支持价格单条件预警。")
         first = normalized[0]
+        metadata = normalize_alert_metadata(
+            trigger_mode=trigger_mode,
+            repeat_mode=repeat_mode,
+            expires_at=expires_at,
+            channels=channels,
+            operator=first.get("operator"),
+        )
+        # Legacy callers had no channel field. Preserve the historical delivery
+        # pipeline; dispatch still applies membership and consent at send time.
+        if channels is None:
+            metadata["channels"] = ["website", "telegram"]
+        if metadata["trigger_mode"].startswith("crosses_") and not any(
+            item.get("type") == "price" for item in normalized
+        ):
+            raise ValueError("上穿或下穿只适用于价格条件。")
+        if channels is not None and "telegram" in metadata["channels"] and not can(actual_plan, "tg_stock_signal"):
+            raise ValueError("当前会员等级不能使用 Telegram 价格预警，请升级后再选择该渠道。")
+        if first.get("type") == "price":
+            if metadata["trigger_mode"] in {"at_or_above", "crosses_above"} and first.get("operator") not in {">=", ">", "="}:
+                raise ValueError("达到或上穿预警必须使用 >= 或 > 条件。")
+            if metadata["trigger_mode"] in {"at_or_below", "crosses_below"} and first.get("operator") not in {"<=", "<", "="}:
+                raise ValueError("跌破或下穿预警必须使用 <= 或 < 条件。")
         now = datetime.now(UTC).isoformat(timespec="seconds")
         payload = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+        metadata_channels = json.dumps(metadata["channels"], ensure_ascii=False, separators=(",", ":"))
         with self.db.transaction() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             count = conn.execute(
-                "SELECT COUNT(*) count FROM price_alerts WHERE user_id=? AND is_active=1", (user_id,)
-            ).fetchone()["count"]
-            if limit is not None and int(count) >= limit:
+                """SELECT a.*,m.trigger_mode,m.repeat_mode,m.expires_at,m.channels,m.notify_only
+                   FROM price_alerts a LEFT JOIN price_alert_metadata m ON m.alert_id=a.id
+                   WHERE a.user_id=? AND a.is_active=1""", (user_id,)
+            ).fetchall()
+            active_rows = []
+            for row in count:
+                expiry = row["expires_at"]
+                if expiry:
+                    try:
+                        when = datetime.fromisoformat(str(expiry).replace("Z", "+00:00"))
+                        if when.tzinfo is None:
+                            when = when.replace(tzinfo=UTC)
+                        if when <= datetime.now(UTC):
+                            continue
+                    except ValueError:
+                        continue
+                active_rows.append(row)
+            count_value = len(active_rows)
+            canonical_conditions = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            for row in active_rows:
+                try:
+                    existing_conditions = normalize_conditions(json.loads(row["conditions"] or "[]"))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    existing_conditions = normalize_conditions(operator=row["operator"], target=row["target_price"])
+                existing_metadata = normalize_alert_metadata(
+                    trigger_mode=row["trigger_mode"], repeat_mode=row["repeat_mode"],
+                    expires_at=row["expires_at"], channels=json.loads(row["channels"] or "[\"website\",\"telegram\"]"),
+                    operator=existing_conditions[0].get("operator"),
+                )
+                if (
+                    str(row["symbol"]).upper() == symbol
+                    and str(row["logic"] or "AND").upper() == logic
+                    and json.dumps(existing_conditions, ensure_ascii=False, sort_keys=True, separators=(",", ":")) == canonical_conditions
+                    and existing_metadata["trigger_mode"] == metadata["trigger_mode"]
+                    and existing_metadata["repeat_mode"] == metadata["repeat_mode"]
+                    and existing_metadata["expires_at"] == metadata["expires_at"]
+                    and existing_metadata["channels"] == metadata["channels"]
+                ):
+                    return
+            if limit is not None and count_value >= limit:
                 raise ValueError(f"{actual_plan}最多可启用 {limit} 条预警，请先停用旧预警或升级方案。")
-            conn.execute(
+            cursor = conn.execute(
                 """INSERT INTO price_alerts
                    (user_id,symbol,operator,target_price,conditions,logic,created_at)
                    VALUES (?,?,?,?,?,?,?)""",
                 (user_id, symbol, first.get("operator", "="), float(first.get("value", 0) or 0), payload, logic, now),
+            )
+            alert_id = cursor.lastrowid
+            conn.execute(
+                """INSERT INTO price_alert_metadata
+                   (alert_id,trigger_mode,repeat_mode,expires_at,channels,notify_only,last_state,has_observation)
+                   VALUES (?,?,?,?,?,1,0,0)""",
+                (alert_id, metadata["trigger_mode"], metadata["repeat_mode"], metadata["expires_at"], metadata_channels),
             )
             conn.execute(
                 "INSERT INTO strategy_action_logs (user_id,strategy_name,action,params,result,created_at) VALUES (?,?,?,?,?,?)",
@@ -165,8 +343,32 @@ class AlertService:
             )
 
     def list(self, user_id: int) -> list[dict[str, Any]]:
-        rows = self.db.fetch_all("SELECT * FROM price_alerts WHERE user_id=? ORDER BY created_at DESC", (user_id,))
+        rows = self.db.fetch_all(
+            """SELECT a.*,m.trigger_mode,m.repeat_mode,m.expires_at,m.channels,m.notify_only,
+                      m.last_state,m.has_observation,m.last_value
+               FROM price_alerts a LEFT JOIN price_alert_metadata m ON m.alert_id=a.id
+               WHERE a.user_id=? ORDER BY a.created_at DESC""", (user_id,)
+        )
         for row in rows:
+            if row.get("channels") is None:
+                row["channels"] = '["website","telegram"]'
+            try:
+                row["channels"] = _normalize_channels(json.loads(row["channels"]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                row["channels"] = ["website", "telegram"]
+            row["trigger_mode"] = _normalize_trigger(row.get("trigger_mode"), operator=row.get("operator"))
+            row["repeat_mode"] = _normalize_repeat(row.get("repeat_mode"))
+            row["notify_only"] = True
+            if row.get("expires_at"):
+                try:
+                    expiry = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00"))
+                    if expiry.tzinfo is None:
+                        expiry = expiry.replace(tzinfo=UTC)
+                    if expiry <= datetime.now(UTC) and row.get("is_active"):
+                        self.db.execute("UPDATE price_alerts SET is_active=0 WHERE id=? AND is_active=1", (row["id"],))
+                        row["is_active"] = 0
+                except ValueError:
+                    pass
             row["symbol"] = str(row.get("symbol") or "").upper()
             try:
                 row["conditions_list"] = normalize_conditions(json.loads(row.get("conditions") or "[]"))
@@ -175,6 +377,10 @@ class AlertService:
             logic = str(row.get("logic") or "AND").upper()
             row["logic"] = logic if logic in {"AND", "OR"} else "AND"
             row["preview"] = condition_preview(row["symbol"], row["conditions_list"], row["logic"])
+            row["metadata"] = {
+                "trigger_mode": row["trigger_mode"], "repeat_mode": row["repeat_mode"],
+                "expires_at": row.get("expires_at"), "channels": row["channels"], "notify_only": True,
+            }
         return rows
 
     def deactivate(self, user_id: int, alert_id: int) -> None:
@@ -198,6 +404,7 @@ class AlertService:
                 continue
             values = {**metrics.get(alert["symbol"], {}), "price": current_price}
             checks = []
+            current_value: float | None = current_price
             for item in alert["conditions_list"]:
                 kind = item["type"]
                 if kind in {"macd", "ma"}:
@@ -210,14 +417,66 @@ class AlertService:
                 else:
                     checks.append(False)
             hit = all(checks) if (alert.get("logic") or "AND") == "AND" else any(checks)
-            if hit:
+            trigger_mode = str(alert.get("trigger_mode") or "at_or_above")
+            repeat_mode = str(alert.get("repeat_mode") or "once")
+            has_observation = bool(alert.get("has_observation"))
+            previous_value = alert.get("last_value")
+            try:
+                previous_value = _finite(previous_value) if previous_value is not None else None
+            except (TypeError, ValueError):
+                previous_value = None
+            expired = False
+            if alert.get("expires_at"):
+                try:
+                    expires_at = datetime.fromisoformat(str(alert["expires_at"]).replace("Z", "+00:00"))
+                    if expires_at.tzinfo is None:
+                        expires_at = expires_at.replace(tzinfo=UTC)
+                    expired = expires_at <= datetime.now(UTC)
+                except ValueError:
+                    expired = True
+            if expired:
+                self.db.execute("UPDATE price_alerts SET is_active=0 WHERE id=? AND is_active=1", (alert["id"],))
+                continue
+            # Crossing alerts require an actual previous observation. Repeat
+            # alerts fire once per false-to-true transition; once alerts close.
+            threshold = next((float(item["value"]) for item in alert["conditions_list"] if item["type"] == "price"), None)
+            crossed = False
+            if threshold is not None and previous_value is not None:
+                crossed = (
+                    trigger_mode == "crosses_above" and previous_value < threshold <= current_price
+                ) or (
+                    trigger_mode == "crosses_below" and previous_value > threshold >= current_price
+                )
+            should_trigger = crossed if trigger_mode.startswith("crosses_") else bool(hit)
+            if repeat_mode == "repeat" and not trigger_mode.startswith("crosses_"):
+                should_trigger = bool(hit) and (not has_observation or not bool(alert.get("last_state")))
+            if repeat_mode == "repeat" and trigger_mode.startswith("crosses_"):
+                should_trigger = crossed
+            # Persist the latest observation even when no notification is sent.
+            self.db.execute(
+                """INSERT OR IGNORE INTO price_alert_metadata
+                   (alert_id,trigger_mode,repeat_mode,expires_at,channels,notify_only,last_state,has_observation,last_value)
+                   VALUES (?,?,?,?,?,1,?,?,?)""",
+                (
+                    alert["id"], trigger_mode, repeat_mode, alert.get("expires_at"),
+                    json.dumps(alert.get("channels") or ["website"], ensure_ascii=False, separators=(",", ":")),
+                    int(bool(hit)), 1, current_value,
+                ),
+            )
+            if not should_trigger:
+                self.db.execute(
+                    "UPDATE price_alert_metadata SET last_state=?,has_observation=1,last_value=? WHERE alert_id=?",
+                    (int(bool(hit)), current_value, alert["id"]),
+                )
+                continue
+            if should_trigger:
                 now = datetime.now(UTC).isoformat(timespec="seconds")
                 content = f"{alert['preview']}，当前价格 {current_price:.2f}"
                 with self.db.transaction() as conn:
                     conn.execute("BEGIN IMMEDIATE")
                     updated = conn.execute(
-                        "UPDATE price_alerts SET is_active=0,last_triggered=? WHERE id=? AND is_active=1",
-                        (now, alert["id"]),
+                        "UPDATE price_alerts SET is_active=CASE WHEN ?='once' THEN 0 ELSE is_active END,last_triggered=? WHERE id=? AND is_active=1",
+                        (repeat_mode, now, alert["id"]),
                     ).rowcount
                     if updated:
                         notification_id = conn.execute(
@@ -225,11 +484,29 @@ class AlertService:
                                VALUES ('PRICE_ALERT','价格预警已触发',?,'pending',?)""",
                             (content, now),
                         ).lastrowid
+                        if "telegram" in (alert.get("channels") or []):
+                            delivery = conn.execute(
+                                "SELECT id,status FROM price_alert_deliveries WHERE alert_id=?", (alert["id"],)
+                            ).fetchone()
+                            if delivery:
+                                conn.execute(
+                                    """UPDATE price_alert_deliveries SET user_id=?,notification_id=?,status='pending',
+                                       attempts=0,next_attempt_at=?,last_error=NULL,updated_at=?,sent_at=NULL
+                                       WHERE alert_id=?""",
+                                    (user_id, notification_id, now, now, alert["id"]),
+                                )
+                            else:
+                                conn.execute(
+                                    """INSERT INTO price_alert_deliveries
+                                       (alert_id,user_id,notification_id,status,attempts,next_attempt_at,created_at,updated_at)
+                                       VALUES (?,?,?,'pending',0,?,?,?)""",
+                                    (alert["id"], user_id, notification_id, now, now, now),
+                                )
+                        else:
+                            conn.execute("UPDATE notifications SET push_status='skipped' WHERE id=?", (notification_id,))
                         conn.execute(
-                            """INSERT OR IGNORE INTO price_alert_deliveries
-                               (alert_id,user_id,notification_id,status,attempts,next_attempt_at,created_at,updated_at)
-                               VALUES (?,?,?,'pending',0,?,?,?)""",
-                            (alert["id"], user_id, notification_id, now, now, now),
+                            "UPDATE price_alert_metadata SET last_state=?,has_observation=1,last_value=? WHERE alert_id=?",
+                            (int(bool(hit)), current_value, alert["id"]),
                         )
                 if updated:
                     alert["current_price"] = current_price

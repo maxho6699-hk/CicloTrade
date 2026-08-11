@@ -14,6 +14,12 @@ import unicodedata
 
 from core.auth import AuthService
 from core.database import DatabaseManager, get_database
+from core.membership import (
+    add_membership_entitlement,
+    authoritative_membership_user,
+    replace_membership_entitlements,
+    resolve_membership,
+)
 from core.plans import PLAN_ORDER
 from payment.order_service import (
     LEGACY_PROVIDER_METHODS,
@@ -77,15 +83,12 @@ class AdminService:
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY (updated_by) REFERENCES users(id)
                 );
-                CREATE TRIGGER IF NOT EXISTS trg_admin_default_user_control
+                DROP TRIGGER IF EXISTS trg_admin_default_user_control;
+                CREATE TRIGGER trg_admin_default_user_control
                 AFTER INSERT ON users
                 BEGIN
                     INSERT OR IGNORE INTO user_controls (user_id,opening_paused,updated_at)
-                    VALUES (
-                        NEW.id,
-                        COALESCE((SELECT CAST(control_value AS INTEGER) FROM platform_controls WHERE control_key='opening_paused'),0),
-                        strftime('%Y-%m-%dT%H:%M:%SZ','now')
-                    );
+                    VALUES (NEW.id,0,strftime('%Y-%m-%dT%H:%M:%SZ','now'));
                 END;
                 """
             )
@@ -97,10 +100,22 @@ class AdminService:
             conn.executemany(
                 "INSERT OR IGNORE INTO platform_controls (control_key,control_value,updated_at) VALUES (?,?,?)",
                 (
-                    ("recommendations_published", "1", now),
-                    ("opening_paused", "0", now),
+                    ("recommendations_published", "0", now),
+                    ("opening_paused", "1", now),
                     ("annual_bonus_enabled", "1", now),
-                    ("user_auto_trading_enabled", "1", now),
+                    ("user_auto_trading_enabled", "0", now),
+                ),
+            )
+            # Migration 0006 predates the public soft-launch policy and seeded
+            # this control as enabled.  Rows owned by an administrator retain
+            # their explicit choice; unowned rows are historical defaults.
+            conn.executemany(
+                """UPDATE platform_controls SET control_value=?,updated_at=?
+                   WHERE control_key=? AND updated_by IS NULL""",
+                (
+                    ("0", now, "recommendations_published"),
+                    ("1", now, "opening_paused"),
+                    ("0", now, "user_auto_trading_enabled"),
                 ),
             )
 
@@ -346,28 +361,41 @@ class AdminService:
             raise ValueError("订阅天数必须在 1 到 3650 天之间。")
         expiry: str | None = None
         with self.db.transaction() as conn:
-            current = conn.execute("SELECT plan_type,subscription_expire FROM users WHERE id=?", (user_id,)).fetchone()
-            if not current:
+            user = conn.execute("SELECT id FROM users WHERE id=?", (user_id,)).fetchone()
+            if not user:
                 raise ValueError("用户不存在。")
-            if plan != "免费版":
-                base = datetime.now(UTC)
-                if current["subscription_expire"]:
-                    try:
-                        saved = datetime.fromisoformat(current["subscription_expire"])
-                        if saved.tzinfo is None:
-                            saved = saved.replace(tzinfo=UTC)
-                        base = max(base, saved)
-                    except ValueError:
-                        pass
-                expiry = _iso(base + timedelta(days=int(days)))
-            conn.execute(
-                "UPDATE users SET plan_type=?,subscription_expire=? WHERE id=?", (plan, expiry, user_id)
-            )
-            conn.execute(
+            now = datetime.now(UTC)
+            current = resolve_membership(conn, user_id, now, sync_cache=True)
+            membership_log = conn.execute(
                 """INSERT INTO user_membership_logs
                    (user_id,admin_id,operation_type,before_plan,after_plan,expire_days,expire_at,reason,note,created_at)
                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                (user_id, actor_id, "adjust", current["plan_type"], plan, int(days) if plan != "免费版" else None, expiry, reason, note, _iso()),
+                (
+                    user_id,
+                    actor_id,
+                    "adjust",
+                    current["plan_type"],
+                    plan,
+                    int(days) if plan != "免费版" else None,
+                    None,
+                    reason,
+                    note,
+                    _iso(now),
+                ),
+            )
+            state = replace_membership_entitlements(
+                conn,
+                user_id,
+                plan,
+                int(days) if plan != "免费版" else None,
+                source_kind="admin_adjustment",
+                source_ref=f"membership_log:{membership_log.lastrowid}",
+                now=now,
+            )
+            expiry = state["subscription_expire"]
+            conn.execute(
+                "UPDATE user_membership_logs SET expire_at=? WHERE id=?",
+                (expiry, membership_log.lastrowid),
             )
             self._audit(
                 conn,
@@ -396,25 +424,42 @@ class AdminService:
         now = datetime.now(UTC)
         expiry: str
         with self.db.transaction() as conn:
-            current = conn.execute("SELECT plan_type,subscription_expire,email FROM users WHERE id=? AND is_active=1", (user_id,)).fetchone()
-            if not current:
+            user = conn.execute(
+                "SELECT id FROM users WHERE id=? AND is_active=1", (user_id,)
+            ).fetchone()
+            if not user:
                 raise ValueError("用户不存在或已停用。")
-            base = now
-            if current["subscription_expire"]:
-                try:
-                    saved = datetime.fromisoformat(current["subscription_expire"])
-                    if saved.tzinfo is None:
-                        saved = saved.replace(tzinfo=UTC)
-                    base = max(base, saved)
-                except ValueError:
-                    pass
-            expiry = _iso(base + timedelta(days=int(days)))
-            conn.execute("UPDATE users SET plan_type=?,subscription_expire=? WHERE id=?", (plan, expiry, user_id))
-            conn.execute(
+            current = resolve_membership(conn, user_id, now, sync_cache=True)
+            membership_log = conn.execute(
                 """INSERT INTO user_membership_logs
                    (user_id,admin_id,operation_type,before_plan,after_plan,expire_days,expire_at,reason,note,created_at)
                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                (user_id, actor_id, "grant_trial", current["plan_type"], plan, int(days), expiry, reason, note, _iso()),
+                (
+                    user_id,
+                    actor_id,
+                    "grant_trial",
+                    current["plan_type"],
+                    plan,
+                    int(days),
+                    None,
+                    reason,
+                    note,
+                    _iso(now),
+                ),
+            )
+            state = add_membership_entitlement(
+                conn,
+                user_id,
+                plan,
+                int(days),
+                source_kind="admin_trial",
+                source_ref=f"membership_log:{membership_log.lastrowid}",
+                now=now,
+            )
+            expiry = str(state["subscription_expire"])
+            conn.execute(
+                "UPDATE user_membership_logs SET expire_at=? WHERE id=?",
+                (expiry, membership_log.lastrowid),
             )
             self._audit(conn, actor_id, "ADMIN_MEMBERSHIP_GRANT", {"user_id": user_id, "plan": plan, "days": int(days), "reason": reason})
         # Telegram is best-effort and only targets a verified, entitled private destination.
@@ -423,6 +468,7 @@ class AdminService:
             from notification.telegram_bot import entitled_user_target, send_telegram, telegram_configured
             from notification.templates import telegram_membership
             user = self.db.fetch_one("SELECT id,plan_type,subscription_expire FROM users WHERE id=?", (user_id,)) or {}
+            user = authoritative_membership_user(self.db, user)
             target = entitled_user_target(user, load_user_settings(user_id, self.db), "membership_update")
             if target and telegram_configured(target):
                 send_telegram(telegram_membership(plan, expiry, reason), chat_id=target, protect_content=True)
@@ -773,12 +819,6 @@ class AdminService:
         self._require(actor_id, "system")
         now = _iso()
         with self.db.transaction() as conn:
-            user_ids = [row[0] for row in conn.execute("SELECT id FROM users")]
-            conn.executemany(
-                """INSERT INTO user_controls (user_id,opening_paused,updated_at) VALUES (?,?,?)
-                   ON CONFLICT(user_id) DO UPDATE SET opening_paused=excluded.opening_paused,updated_at=excluded.updated_at""",
-                ((user_id, int(paused), now) for user_id in user_ids),
-            )
             conn.execute(
                 """INSERT INTO platform_controls (control_key,control_value,updated_by,updated_at) VALUES (?,?,?,?)
                    ON CONFLICT(control_key) DO UPDATE SET control_value=excluded.control_value,
@@ -914,7 +954,15 @@ class AdminService:
             if changed.rowcount != 1:
                 raise ValueError("分享申请状态已变更，请刷新后重试。")
             expiry = (
-                grant_subscription_days(conn, request["user_id"], days, "标准版", now)
+                grant_subscription_days(
+                    conn,
+                    request["user_id"],
+                    days,
+                    "标准版",
+                    now,
+                    source_kind="social_reward",
+                    source_ref=f"reward:{int(reward_id)}",
+                )
                 if approved
                 else None
             )

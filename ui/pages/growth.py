@@ -76,7 +76,15 @@ def _claim_daily_checkin(db, user_id: int, day: str) -> tuple[bool, bool]:
         )
         if not streak.rowcount:
             return True, False
-        grant_subscription_days(conn, user_id, 1, "标准版", now)
+        grant_subscription_days(
+            conn,
+            user_id,
+            1,
+            "标准版",
+            now,
+            source_kind="streak_reward",
+            source_ref=f"reward:{streak.lastrowid}",
+        )
         return True, True
 
 

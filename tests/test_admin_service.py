@@ -56,6 +56,7 @@ def test_rbac_user_subscription_and_global_controls(services):
     assert service.list_ips(admin["id"], customer["id"])[0]["ip_address"] == "203.0.113.10"
     service.set_recommendations_published(admin["id"], False)
     assert service.control_enabled("recommendations_published", True) is False
+    service.set_user_auto_trading_enabled(admin["id"], True)
     assert service.control_enabled("user_auto_trading_enabled", False) is True
     with pytest.raises(PermissionError, match="超级管理员"):
         service.set_user_auto_trading_enabled(support["id"], False)
@@ -63,9 +64,16 @@ def test_rbac_user_subscription_and_global_controls(services):
     assert service.control_enabled("user_auto_trading_enabled", True) is False
     service.set_user_auto_trading_enabled(admin["id"], True)
     assert service.control_enabled("user_auto_trading_enabled", False) is True
+    db.execute(
+        "UPDATE user_controls SET opening_paused=1 WHERE user_id=?", (customer["id"],)
+    )
     service.set_global_opening_paused(admin["id"], True)
+    service.set_global_opening_paused(admin["id"], False)
+    assert db.fetch_one(
+        "SELECT opening_paused FROM user_controls WHERE user_id=?", (customer["id"],)
+    )["opening_paused"] == 1
     future = _register(auth, "future")
-    assert db.fetch_one("SELECT opening_paused FROM user_controls WHERE user_id=?", (future["id"],))["opening_paused"] == 1
+    assert db.fetch_one("SELECT opening_paused FROM user_controls WHERE user_id=?", (future["id"],))["opening_paused"] == 0
 
     service.set_user_active(admin["id"], customer["id"], False)
     assert db.fetch_one("SELECT is_active FROM users WHERE id=?", (customer["id"],))["is_active"] == 0
@@ -109,6 +117,7 @@ def test_data_source_verification_is_system_only_and_never_stores_captcha(servic
 def test_live_platform_pause_requires_manual_user_resume(services, monkeypatch):
     db, auth, admin, service = services
     customer = _register(auth, "live-customer")
+    service.set_user_auto_trading_enabled(admin["id"], True)
     merge_user_settings(
         customer["id"],
         {

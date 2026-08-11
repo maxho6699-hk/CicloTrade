@@ -360,6 +360,36 @@ class AuthService:
             new_ip,
         )
 
+    def verify_password(self, user_id: int, password: str, ip_address: str = "unknown") -> None:
+        """Re-authenticate a signed-in user without creating or replacing a session."""
+        if not isinstance(password, str) or not password or len(password.encode("utf-8")) > 72:
+            raise AuthError("当前密码验证失败。")
+        user = self.db.fetch_one(
+            "SELECT id,email,password_hash,is_active FROM users WHERE id=?", (int(user_id),)
+        )
+        email = str(user.get("email") if user else f"user-{int(user_id)}")
+        now = _now()
+        rate_key = self._rate_key("reauth", email, ip_address)
+        self._check_rate_limit(rate_key, now)
+        supplied = password.encode("utf-8")
+        password_hash = str(user["password_hash"]).encode("ascii") if user else DUMMY_HASH
+        valid = bool(user and user.get("is_active")) and bcrypt.checkpw(supplied, password_hash)
+        if not valid:
+            self._record_attempt(
+                rate_key,
+                now,
+                limit=5,
+                window=timedelta(minutes=15),
+                block=timedelta(minutes=15),
+            )
+            raise AuthError("当前密码验证失败。")
+        with self.db.transaction() as conn:
+            conn.execute("DELETE FROM auth_rate_limits WHERE rate_key=?", (rate_key,))
+            conn.execute(
+                "INSERT INTO user_action_logs (user_id,action_type,details,created_at) VALUES (?,?,?,?)",
+                (int(user_id), "REAUTHENTICATE", "账户敏感操作重新认证通过", _iso(now)),
+            )
+
     def verify(self, token: str) -> dict[str, Any]:
         payload = _decode_token(token)
         if payload.get("type") != "access":

@@ -3,12 +3,20 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from html import escape
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
 from core.plans import plan_display_name
+from notification.channel_content import (
+    ChannelRenderPolicy,
+    MISSING_FIELD,
+    RecommendationChange,
+    RecommendationContent,
+    recommendation_from_event,
+    recommendation_render_payload,
+)
 
 
 def email_message(
@@ -171,6 +179,8 @@ def _telegram_asset_block(
 
 
 def _telegram_time(value: object) -> str:
+    if value is None or not str(value).strip():
+        return MISSING_FIELD
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         if parsed.tzinfo is None:
@@ -210,6 +220,76 @@ def _telegram_text(lines: list[str]) -> str:
     return "\n".join(selected)
 
 
+def _recorded_text(value: object) -> str:
+    cleaned = str(value or "").strip()
+    return escape(cleaned) if cleaned else MISSING_FIELD
+
+
+def _recorded_money(currency: object, value: object) -> str:
+    return _money(currency, value) if value is not None else MISSING_FIELD
+
+
+def _recommendation_instrument(content: RecommendationContent) -> str:
+    market = "大A" if content.market == "CN" else "美股" if content.market == "US" else MISSING_FIELD
+    symbol = _recorded_text(content.symbol)
+    if content.instrument_type != "option":
+        return f"{market} {symbol} · 正股"
+    right = {"CALL": "Call", "PUT": "Put"}.get(str(content.option_right or "").upper(), MISSING_FIELD)
+    expiry = _recorded_text(content.option_expiry)
+    strike = f"{content.option_strike:g}" if content.option_strike is not None else MISSING_FIELD
+    return f"{market} {symbol} · 期權 {right} · 到期 {expiry} · 行權 {strike}"
+
+
+def _telegram_recommendation_block(
+    content: RecommendationContent,
+    change: RecommendationChange | str | None,
+    *,
+    render_policy: ChannelRenderPolicy,
+) -> list[str]:
+    unit = "張" if content.instrument_type == "option" else "股"
+    quantity = f"{content.quantity:g} {unit}" if content.quantity is not None else MISSING_FIELD
+    fallback = (
+        f"是 · 來自 {_recorded_text(content.quote.fallback_from)}"
+        if content.quote.fallback_from
+        else "否"
+        if content.quote.fallback_recorded
+        else MISSING_FIELD
+    )
+    realtime = "是" if content.quote.is_realtime is True else "否" if content.quote.is_realtime is False else MISSING_FIELD
+    actionable = (
+        "是"
+        if content.quote.actionable_quote is True
+        else "否"
+        if content.quote.actionable_quote is False
+        else MISSING_FIELD
+    )
+    render_payload = recommendation_render_payload(content, change, render_policy)
+    safety_text = str(render_payload["quote"]["safety_text"])
+    lines = [
+        "<blockquote>",
+        f"🔔 <b>{escape(str(render_payload['change_label']))}</b>",
+        f"<b>{escape(content.state_label)} · {escape(content.direction_label)}</b>",
+        _recommendation_instrument(content),
+        f"事件時間　{_telegram_time(content.event_time)}",
+        f"報價時間　{_telegram_time(content.quote.quote_at)}",
+        f"數據來源　{_recorded_text(content.quote.source)}",
+        f"新鮮度　{_recorded_text(content.quote.freshness)}",
+        f"即時報價　{realtime} · 可行動報價　{actionable}",
+        f"是否回退　{fallback}",
+        f"報價安全　<b>{escape(safety_text)}</b>",
+        f"入場　{_recorded_money(content.currency, content.entry_price)}",
+        f"數量　{quantity}",
+        f"止損　{_recorded_money(content.currency, content.stop_price)}",
+        f"目標　{_recorded_money(content.currency, content.target_price)}",
+        f"最大風險　{_recorded_money(content.currency, content.max_risk)}",
+        f"失效條件　{_recorded_text(content.invalidation_condition)}",
+    ]
+    if content.rationale:
+        lines.append(f"理由　{_recorded_text(content.rationale)}")
+    lines.append("</blockquote>")
+    return lines
+
+
 def telegram_quant_message(
     event: dict,
     legs: list[dict],
@@ -217,31 +297,42 @@ def telegram_quant_message(
     *,
     positions: list[dict] = (),
     delay_note: str | None = None,
-    source_label: str = "CicloTrade 系統模擬帳戶",
+    source_label: str = "CicloTrade 官方模擬帳戶",
+    change_kinds: dict[str, RecommendationChange | str] | None = None,
+    contents: dict[str, RecommendationContent] | None = None,
+    rendered_at: object = None,
+    delivery_delay_minutes: int = 0,
+    immediate_action_allowed: bool = False,
 ) -> str:
-    label = {"signal": "已執行", "correction": "已更正", "reversal": "已撤銷"}[event["event_type"]]
-    lines = [f"📊 <b>CicloTrade · 模擬帳戶{label}的交易建議</b>"]
+    label = {"signal": "正式事件", "correction": "更正事件", "reversal": "失效事件"}[event["event_type"]]
+    lines = [f"📊 <b>CicloTrade · 官方模擬帳戶{label}</b>"]
     if delay_note:
         lines.append(f"⏱ <b>{escape(delay_note)}</b>")
-    lines.extend((f"🕒 {_telegram_time(event['occurred_at'])}", "<b>本次建議成交</b>"))
+    lines.extend((f"🕒 事件時間 {_telegram_time(event.get('occurred_at'))}", "<b>本次正式結論</b>"))
     risk_levels = metadata.get("risk_levels") if isinstance(metadata.get("risk_levels"), dict) else {}
+    effective_delay = int(delivery_delay_minutes)
+    if delay_note and effective_delay <= 0:
+        effective_delay = 1
+    render_policy = ChannelRenderPolicy(
+        reference_time=str(rendered_at or datetime.now(timezone.utc).isoformat(timespec="seconds")),
+        immediate_action_allowed=immediate_action_allowed,
+        delivery_delay_minutes=effective_delay,
+    )
     for leg in legs:
-        delta = float(leg["quantity_delta"])
-        action, action_icon = _telegram_trade_action(leg, delta)
         lines.append("")
+        instrument_key = str(leg.get("instrument_key") or "")
+        content = (contents or {}).get(instrument_key) or recommendation_from_event(event, leg, metadata)
+        change = (change_kinds or {}).get(
+            instrument_key, RecommendationChange.NEW_OPPORTUNITY
+        )
         lines.extend(
-            _telegram_asset_block(
-                leg,
-                action=action,
-                action_icon=action_icon,
-                quantity=abs(delta),
-                price=leg.get("price"),
-                current_quantity=leg.get("target_quantity"),
-                risk_levels=risk_levels,
-                metadata=metadata,
+            _telegram_recommendation_block(
+                content,
+                change,
+                render_policy=render_policy,
             )
         )
-    lines.append("<b>最新持倉</b>")
+    lines.append("<b>最新官方模擬持倉</b>")
     if positions:
         for position in positions[:8]:
             lines.append("")
@@ -259,8 +350,8 @@ def telegram_quant_message(
         lines.append("• 暫無持倉")
     lines.extend(
         (
-            "⚡ 經量化系統數據分析建議",
-            "⚠️ 可能提前止盈或止損，請留意最新建議推送。",
+            "⚡ 正式方向與數量只讀取不可變量化事件，不會被回退行情改寫。",
+            "⚠️ 僅在 is_realtime=true 且 actionable_quote=true 的已驗證報價下，才可核對即時行動描述。",
             f"<i>{escape(source_label)} · 事件 #{int(event['id'])}</i>",
         )
     )
@@ -354,7 +445,11 @@ def telegram_daily_summary(
 
 
 def telegram_price_alert(content: str) -> str:
-    return f"⚠️ <b>CicloTrade · 價格預警建議</b>\n<blockquote>{escape(str(content))}</blockquote>\n請先核對即時行情與風險限制。"
+    return (
+        f"⚠️ <b>CicloTrade · 價格預警</b>\n"
+        f"<blockquote>{escape(str(content))}</blockquote>\n"
+        "只提醒，不會自動買賣。請先核對即時行情與風險限制。"
+    )
 
 
 def telegram_binding(code: str) -> str:

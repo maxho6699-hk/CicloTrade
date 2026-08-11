@@ -3,12 +3,17 @@
 
 from __future__ import annotations
 
+import re
 import time
 
 import pandas as pd
 import yfinance as yf
 
 from data.datasource import DataSource, DataSourceError, require_market_data_enabled
+
+
+class YahooOptionExpiryUnavailableError(DataSourceError):
+    """A syntactically valid expiry is absent from Yahoo's current chain."""
 
 
 class YFinanceAdapter(DataSource):
@@ -125,12 +130,79 @@ class YFinanceAdapter(DataSource):
             raise DataSourceError(f"{symbol} 没有可用的 {interval} 行情。")
         return frame.dropna(subset=["Open", "High", "Low", "Close"])
 
-    def option_chain(self, symbol: str, expiry: str | None = None) -> tuple[str, pd.DataFrame, pd.DataFrame]:
+    def stock_quote(self, symbol: str) -> dict[str, object]:
+        """Return a delayed research snapshot, never an executable bid/ask quote."""
         require_market_data_enabled()
-        ticker = yf.Ticker(self.normalize_symbol(symbol))
-        expiries = tuple(ticker.options)
+        normalized = self.normalize_symbol(symbol)
+        try:
+            frame = yf.Ticker(normalized).history(period="5d", interval="1d", auto_adjust=False, prepost=False)
+        except Exception as exc:
+            raise DataSourceError(f"Yahoo Finance 研究报价暂时不可用：{exc}") from exc
+        required = {"Open", "High", "Low", "Close", "Volume"}
+        if frame.empty or not required.issubset(frame.columns):
+            raise DataSourceError(f"{normalized} 没有可用的 Yahoo Finance 研究报价。")
+        row = frame.dropna(subset=["Close"]).iloc[-1]
+        timestamp = frame.dropna(subset=["Close"]).index[-1]
+        quote_at = timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp)
+        previous = frame["Close"].dropna()
+        return {
+            "symbol": symbol.strip().upper(),
+            "last": float(row["Close"]),
+            "bid": None,
+            "ask": None,
+            "spread": None,
+            "open": float(row["Open"]) if pd.notna(row["Open"]) else None,
+            "high": float(row["High"]) if pd.notna(row["High"]) else None,
+            "low": float(row["Low"]) if pd.notna(row["Low"]) else None,
+            "prev_close": float(previous.iloc[-2]) if len(previous) >= 2 else None,
+            "volume": float(row["Volume"]) if pd.notna(row["Volume"]) else None,
+            "quote_at": quote_at,
+            "source": self.name,
+            "is_realtime": False,
+            "actionable_quote": False,
+            "freshness": f"约 {self.delay_minutes} 分钟延迟的研究报价",
+            "verification": "delayed_research_quote",
+        }
+
+    def option_chain_with_expiries(
+        self, symbol: str, expiry: str | None = None
+    ) -> tuple[str, list[str], pd.DataFrame, pd.DataFrame]:
+        """Return an exact Yahoo expiry for delayed professional research."""
+        require_market_data_enabled()
+        normalized = self.normalize_symbol(symbol)
+        try:
+            ticker = yf.Ticker(normalized)
+            expiries = [str(item) for item in ticker.options]
+        except Exception as exc:
+            raise DataSourceError(f"Yahoo Finance 期权到期日暂时不可用：{exc}") from exc
         if not expiries:
             raise DataSourceError(f"{symbol} 没有可用的 Yahoo Finance 期权到期日。")
-        selected = expiry if expiry in expiries else expiries[0]
-        chain = ticker.option_chain(selected)
-        return selected, chain.calls.copy(), chain.puts.copy()
+        if expiry is not None and expiry not in expiries:
+            raise YahooOptionExpiryUnavailableError("请求的期权到期日不在 Yahoo Finance 可用列表中。")
+        selected = expiry or expiries[0]
+        try:
+            chain = ticker.option_chain(selected)
+        except Exception as exc:
+            raise DataSourceError(f"Yahoo Finance 期权链暂时不可用：{exc}") from exc
+        return selected, expiries, chain.calls.copy(), chain.puts.copy()
+
+    def option_chain(self, symbol: str, expiry: str | None = None) -> tuple[str, pd.DataFrame, pd.DataFrame]:
+        selected, _, calls, puts = self.option_chain_with_expiries(symbol, expiry)
+        return selected, calls, puts
+
+    def option_bars(self, contract_code: str, period: str, interval: str) -> pd.DataFrame:
+        """Read delayed Yahoo bars only for an exact Yahoo contract symbol."""
+        require_market_data_enabled()
+        code = str(contract_code).strip().upper()
+        if not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,11}\d{6}[CP]\d{8}", code):
+            raise DataSourceError("Yahoo Finance 期权合约代码无效。")
+        try:
+            frame = yf.Ticker(code).history(
+                period=period, interval=interval, auto_adjust=False, prepost=False
+            )
+        except Exception as exc:
+            raise DataSourceError(f"Yahoo Finance 期权 K 线暂时不可用：{exc}") from exc
+        required = {"Open", "High", "Low", "Close", "Volume"}
+        if frame.empty or not required.issubset(frame.columns):
+            raise DataSourceError(f"{code} 没有可用的 Yahoo Finance 期权 K 线。")
+        return frame.dropna(subset=["Open", "High", "Low", "Close"])

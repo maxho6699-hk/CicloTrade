@@ -57,6 +57,11 @@ class OpenD:
             }
         )
 
+    def get_user_info(self, _fields):
+        from futu import RET_OK
+
+        return RET_OK, {"us_qot_right": "LV2", "us_option_qot_right": "LV1"}
+
 
 def test_opend_history_and_option_greeks(monkeypatch):
     monkeypatch.setenv("MARKET_DATA_ENABLED", "true")
@@ -70,6 +75,20 @@ def test_opend_history_and_option_greeks(monkeypatch):
     assert adapter.search("Apple") == [
         {"symbol": "AAPL", "name": "Apple Inc.", "exchange": "Futu OpenD", "type": "股票"}
     ]
+
+
+def test_opend_stock_quote_uses_runtime_entitlements_not_environment_claims(monkeypatch):
+    monkeypatch.setenv("MARKET_DATA_ENABLED", "true")
+    adapter = OpenDAdapter()
+    monkeypatch.setattr(adapter, "_context", lambda: OpenD())
+
+    quote = adapter.stock_quote("AAPL")
+
+    assert quote["us_qot_right"] == "LV2"
+    assert quote["us_option_qot_right"] == "LV1"
+    assert quote["us_realtime_entitlement"] is True
+    assert quote["us_option_realtime_entitlement"] is True
+    assert quote["actionable_snapshot"] is True
 
 
 @pytest.mark.parametrize(

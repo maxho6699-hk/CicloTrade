@@ -20,7 +20,11 @@ from core.auth import AuthService
 from core.admin_service import AdminService
 from core.database import DatabaseManager
 from core.plans import referral_code
-from payment.order_service import OrderService, grant_subscription_days
+from payment.order_service import (
+    MembershipPlanConflict,
+    OrderService,
+    grant_subscription_days,
+)
 from payment.proof_storage import resolve_payment_proof, store_payment_proof
 from payment.paddle_client import PaddleClient
 from payment.paypal_client import PayPalClient
@@ -93,6 +97,109 @@ def test_new_orders_support_only_manual_payment_methods(db, method):
 
     assert order["pay_method"] == method
     assert order["status"] == "pending"
+
+
+def test_active_member_can_renew_or_upgrade_but_cannot_buy_lower_plan(db):
+    user = _user(db, "membership-order-guard")
+    expiry = (datetime.now(UTC) + timedelta(days=30)).isoformat(timespec="seconds")
+    db.execute(
+        "UPDATE users SET plan_type='专业版',subscription_expire=? WHERE id=?",
+        (expiry, user["id"]),
+    )
+    service = OrderService(db)
+
+    with pytest.raises(MembershipPlanConflict, match="当前会员已覆盖"):
+        service.create_order(
+            user["id"], "高级版", "monthly", "fps", terms_accepted=True
+        )
+
+    renewal = service.create_order(
+        user["id"], "专业版", "monthly", "fps", terms_accepted=True
+    )
+    assert renewal["plan_type"] == "专业版"
+
+
+def test_stale_lower_order_cannot_downgrade_member_when_payment_arrives(db):
+    user = _user(db, "membership-activation-guard")
+    service = OrderService(db)
+    stale = service.create_order(
+        user["id"], "标准版", "monthly", "paypal", terms_accepted=True, source="legacy"
+    )
+    expiry = (datetime.now(UTC) + timedelta(days=30)).isoformat(timespec="seconds")
+    db.execute(
+        "UPDATE users SET plan_type='专业版',subscription_expire=? WHERE id=?",
+        (expiry, user["id"]),
+    )
+
+    with pytest.raises(MembershipPlanConflict, match="当前会员已覆盖"):
+        service.process_callback("stale-lower-paid", stale["order_no"], "paid", {})
+
+    assert service.get_order(stale["order_no"])["status"] == "pending"
+    assert db.fetch_one(
+        "SELECT plan_type,subscription_expire FROM users WHERE id=?", (user["id"],)
+    ) == {"plan_type": "专业版", "subscription_expire": expiry}
+
+
+def test_stale_lower_manual_order_cannot_accept_new_payment_proof(db):
+    user = _user(db, "membership-proof-guard")
+    service = OrderService(db)
+    stale = service.create_order(
+        user["id"], "标准版", "monthly", "fps", terms_accepted=True
+    )
+    expiry = (datetime.now(UTC) + timedelta(days=30)).isoformat(timespec="seconds")
+    db.execute(
+        "UPDATE users SET plan_type='专业版',subscription_expire=? WHERE id=?",
+        (expiry, user["id"]),
+    )
+
+    with pytest.raises(MembershipPlanConflict, match="当前会员已覆盖"):
+        service.submit_manual_payment_claim(
+            user["id"],
+            stale["order_no"],
+            file_id="telegram-file",
+            file_unique_id="telegram-file-unique",
+        )
+
+
+def test_upgrade_cancels_unclaimed_lower_pending_orders_but_keeps_submitted_claims(db):
+    user = _user(db, "membership-pending-cleanup")
+    service = OrderService(db)
+    unclaimed = service.create_order(
+        user["id"],
+        "标准版",
+        "monthly",
+        "fps",
+        terms_accepted=True,
+        idempotency_key="unclaimed-lower",
+    )
+    claimed = service.create_order(
+        user["id"],
+        "高级版",
+        "monthly",
+        "alipay",
+        terms_accepted=True,
+        idempotency_key="claimed-lower",
+    )
+    service.submit_manual_payment_claim(
+        user["id"],
+        claimed["order_no"],
+        file_id="claimed-file",
+        file_unique_id="claimed-file-unique",
+    )
+    higher = service.create_order(
+        user["id"],
+        "专业版",
+        "monthly",
+        "paypal",
+        terms_accepted=True,
+        source="legacy",
+    )
+
+    assert service.process_callback(
+        "pending-cleanup-upgrade", higher["order_no"], "paid", {}
+    )
+    assert service.get_order(unclaimed["order_no"])["status"] == "cancelled"
+    assert service.get_order(claimed["order_no"])["status"] == "pending"
 
 
 def test_same_purchase_is_atomic_across_web_and_telegram(db):
@@ -379,7 +486,7 @@ def test_terminal_callbacks_and_provider_reversal_restore_entitlement(db):
     assert service.get_order(second["order_no"])["status"] == "refunded"
 
     failed = service.create_order(
-        user["id"], "标准版", "monthly", "paypal", terms_accepted=True, source="legacy"
+        user["id"], "高级版", "monthly", "paypal", terms_accepted=True, source="legacy"
     )
     assert service.process_callback("failed-1", failed["order_no"], "failed", {})
     assert service.process_callback("late-paid-2", failed["order_no"], "paid", {}) is False
@@ -1274,6 +1381,7 @@ def test_paypal_refund_webhook_forces_reversal(monkeypatch, db):
 
 
 def test_order_api_rejects_bad_inputs_and_honors_global_pause(monkeypatch):
+    monkeypatch.setenv("TRADEAI_LEGACY_ORDER_WRITE_ENABLED", "true")
     monkeypatch.setattr(asgi_app, "_api_user", lambda request: {"id": 7})
 
     class Request:

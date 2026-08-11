@@ -29,15 +29,53 @@ def test_signal_capability_matrix(plan, expected):
 
 def test_signal_and_trading_capabilities_follow_final_plan_matrix():
     assert can("高级版", "stock_signal_telegram")
-    assert can("高级版", "stock_auto")
+    assert can("高级版", "short_research")
+    assert not can("高级版", "stock_auto")
+    assert not can("定制版", "real_trade")
+    assert not can("定制版", "short_trading")
     assert can("专业版", "option_signal_telegram")
-    assert not can("专业版", "option_auto")
+    assert can("专业版", "option_auto")
+    assert can("专业版", "option_auto_paper_official")
+    assert can("专业版", "option_auto_live")
 
 
-def test_every_plan_keeps_basic_strategy_access_and_broker_limits_are_distinct():
+def test_every_plan_keeps_basic_strategy_access_and_controlled_account_limits_match_product():
     assert all("strategy_basic" in CAPABILITIES[plan] for plan in CAPABILITIES)
-    assert trading_limits("专业版")["brokers"] == 3
-    assert trading_limits("专业版")["broker_accounts"] == 50
+    assert [trading_limits(plan)["auto_control_accounts"] for plan in PLAN_ORDER] == [0, 0, 1, 5, 5]
+    assert [trading_limits(plan)["broker_accounts"] for plan in PLAN_ORDER] == [0, 0, 1, 5, 5]
+    assert [trading_limits(plan)["instruments"] for plan in PLAN_ORDER] == [
+        ("stock",),
+        ("stock",),
+        ("stock",),
+        ("stock", "option"),
+        ("stock", "option"),
+    ]
+
+
+def test_option_research_and_multileg_strategies_start_at_professional():
+    option_capabilities = {
+        "option_chain",
+        "option_quote_chart",
+        "option_greeks",
+        "option_iv",
+        "option_strategy",
+        "option_strategy_multi_leg",
+    }
+    assert not any(can("高级版", capability) for capability in option_capabilities)
+    assert all(can("专业版", capability) for capability in option_capabilities)
+    assert all(can("定制版", capability) for capability in option_capabilities)
+
+
+def test_earnings_and_option_automation_eligibility_start_at_professional():
+    professional_capabilities = {
+        "earnings_forecast",
+        "earnings_option_defined_risk",
+        "option_auto_paper_official",
+        "option_auto_live",
+    }
+    assert not any(can("高级版", capability) for capability in professional_capabilities)
+    assert all(can("专业版", capability) for capability in professional_capabilities)
+    assert all(can("定制版", capability) for capability in professional_capabilities)
 
 
 def test_higher_plans_include_every_lower_plan_capability():
@@ -49,11 +87,11 @@ def test_higher_plans_include_every_lower_plan_capability():
         previous = current
 
 
-def test_progressive_alert_backtest_push_and_auto_trade_access():
+def test_progressive_alert_backtest_and_push_access():
     assert can("标准版", "alert_basic") and can("标准版", "backtest_1y")
     assert can("高级版", "alerts_10") and can("高级版", "backtest_3y")
     assert can("专业版", "stock_signal_telegram") and can("专业版", "option_signal_telegram")
-    assert can("定制版", "real_trade") and can("定制版", "option_auto")
+    assert can("专业版", "option_auto") and can("定制版", "option_auto")
 
 
 def test_pricing_copy_declares_inherited_entitlements_and_current_limits():
@@ -63,6 +101,9 @@ def test_pricing_copy_declares_inherited_entitlements_and_current_limits():
     assert "包含专业版全部权益" in PLANS["定制版"]["features"]
     assert "最多 3 个组合条件" in " ".join(PLANS["标准版"]["features"])
     assert "最多 5 个组合条件" in " ".join(PLANS["高级版"]["features"])
+    assert "期权链" not in " ".join(PLANS["高级版"]["features"])
+    assert "期权链" in " ".join(PLANS["专业版"]["features"])
+    assert "最多 5 个自动交易控制账号" in " ".join(PLANS["专业版"]["features"])
 
 
 def test_expired_subscription_loses_signal_permissions():
@@ -75,3 +116,7 @@ def test_expired_subscription_loses_signal_permissions():
 
     assert expired == "免费版"
     assert not any(can(expired, capability) for capability in SIGNAL_CAPABILITIES)
+    assert not can(expired, "earnings_forecast")
+    assert not can(expired, "earnings_option_defined_risk")
+    assert not can(expired, "option_auto_paper_official")
+    assert not can(expired, "option_auto_live")

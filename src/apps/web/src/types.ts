@@ -6,7 +6,7 @@ export type RecommendationState =
   | 'wait'
   | 'blocked'
 
-export type ActionKind = 'buy' | 'hold' | 'reduce' | 'exit' | 'wait'
+export type ActionKind = 'buy' | 'hold' | 'reduce' | 'exit' | 'short' | 'cover' | 'wait'
 
 export interface Instrument {
   symbol: string
@@ -32,8 +32,24 @@ export interface Decision {
   evidence: string[]
   counterEvidence: string[]
   eventId: string
+  officialEventId?: number
   modelVersion: string
   updatedAt: string
+  actionable: boolean
+  currentInstruction: string
+  currentPrice: string
+  quantityHint: string
+  quoteUpdatedAt: string
+  quoteFreshness: 'fresh' | 'stale' | 'missing'
+  actionBlockReason?: string
+  plainLanguage?: {
+    reason: string
+    setup: string
+    rebound?: string
+    reboundSince?: string
+    takeProfit?: string
+    quantityHint: string
+  }
 }
 
 export interface Candle {
@@ -51,6 +67,7 @@ export interface Position {
   symbol: string
   name: string
   market: Market
+  instrumentType?: 'stock' | 'option'
   quantity: number
   averagePrice: number
   lastPrice: number
@@ -63,11 +80,13 @@ export interface Position {
 export interface OrderRecord {
   id: string
   symbol: string
+  market?: Market
+  instrumentType?: 'stock' | 'option'
   side: 'BUY' | 'SELL'
   quantity: number
   price: number
   status: 'FILLED' | 'PENDING' | 'REJECTED'
-  mode: 'paper' | 'live'
+  mode: 'paper' | 'official' | 'live'
   createdAt: string
 }
 

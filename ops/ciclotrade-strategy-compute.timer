@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodically offer one bounded strategy Compute Gate pass
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=15min
+RandomizedDelaySec=2min
+AccuracySec=1min
+Persistent=false
+Unit=ciclotrade-strategy-compute.service
+
+[Install]
+WantedBy=timers.target
