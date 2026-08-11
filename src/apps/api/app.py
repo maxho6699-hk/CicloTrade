@@ -62,6 +62,13 @@ from src.apps.api.official_option_sim_receiver import (
     official_option_sim_receipt,
     official_option_sim_receiver_error,
 )
+from src.apps.api.system_cycle_receiver import (
+    SystemCycleResearchReceiverError,
+    build_system_cycle_research_receiver,
+    system_cycle_research_heartbeat,
+    system_cycle_research_receiver_error,
+    system_cycle_research_result,
+)
 from core.backtest_queue import BacktestQueueError
 from core.database import DatabaseManager
 from core.official_option_sim_journal import OfficialOptionSimulationJournal
@@ -1909,6 +1916,8 @@ routes = [
     Route("/api/rewrite/v1/official-option-simulation", official_option_sim_overview, methods=["GET"]),
     Route("/api/rewrite/v1/official-option-simulation/{position_id:str}", official_option_sim_detail, methods=["GET"]),
     Route("/api/rewrite/internal/v1/official-option-simulation/receipts", official_option_sim_receipt, methods=["POST"]),
+    Route("/api/rewrite/internal/v1/system-cycle-research/results", system_cycle_research_result, methods=["POST"]),
+    Route("/api/rewrite/internal/v1/system-cycle-research/heartbeat", system_cycle_research_heartbeat, methods=["POST"]),
     Route("/api/rewrite/v1/membership", membership, methods=["GET"]),
     Route("/api/rewrite/v1/telegram/status", telegram_status, methods=["GET"]),
     Route("/api/rewrite/v1/settings", settings, methods=["GET"]),
@@ -1947,9 +1956,11 @@ app = Starlette(
         EarningsForecastUnavailable: earnings_forecast_unavailable_handler,
         OfficialOptionSimulationUnavailable: official_option_sim_unavailable_handler,
         OfficialOptionSimulationReceiverError: official_option_sim_receiver_error,
+        SystemCycleResearchReceiverError: system_cycle_research_receiver_error,
     },
 )
 app.state.repository = ReadOnlyLegacyRepository()
 app.state.earnings_forecast_api = _build_earnings_forecast_api()
 app.state.official_option_sim_api = _build_official_option_sim_api()
 app.state.official_option_sim_receiver = _build_official_option_sim_receiver()
+app.state.system_cycle_research_receiver = build_system_cycle_research_receiver()
