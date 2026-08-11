@@ -149,6 +149,8 @@ def test_service_has_environment_and_integration_enable_gates():
     assert "EnvironmentFile=/etc/ciclotrade-worker/producer.env" in body
     assert "ConditionPathExists=/etc/ciclotrade-worker/enable-system-cycle-producer.after-integration" in body
     assert "PrivateNetwork=false" in body
+    assert "After=local-fs.target network-online.target" in body
+    assert "Wants=network-online.target" in body
 
 
 def test_same_slot_is_idempotent_before_reaching_source(spool):

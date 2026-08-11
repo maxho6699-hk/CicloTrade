@@ -1,6 +1,7 @@
 [Unit]
 Description=CicloTrade canonical system-cycle shadow research producer
-After=local-fs.target
+After=local-fs.target network-online.target
+Wants=network-online.target
 RequiresMountsFor=/var/lib/ciclotrade-worker
 ConditionPathExists=/etc/ciclotrade-worker/enable-system-cycle-producer.after-integration
 
