@@ -1,0 +1,35 @@
+[Unit]
+Description=CicloTrade bounded local autonomous candidate producer
+After=local-fs.target
+RequiresMountsFor=/var/lib/ciclotrade-worker
+ConditionPathIsDirectory=/var/lib/ciclotrade-worker/candidate-sources
+ConditionPathIsDirectory=/var/lib/ciclotrade-worker/inbox
+
+[Service]
+Type=oneshot
+User=cicloworker
+Group=cicloworker
+WorkingDirectory=/opt/ciclotrade-worker/current
+EnvironmentFile=/etc/ciclotrade-worker/worker.env
+ExecStart=/opt/ciclotrade-worker/current/.venv/bin/python -m src.apps.worker.autonomous_candidate_producer --once --execute-one
+TimeoutStartSec=1200
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateNetwork=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictNamespaces=true
+LockPersonality=true
+ReadWritePaths=/var/lib/ciclotrade-worker/inbox /var/lib/ciclotrade-worker/artifacts /var/lib/ciclotrade-worker/backtest-queue.db /var/lib/ciclotrade-worker/backtest-queue.db-wal /var/lib/ciclotrade-worker/backtest-queue.db-shm /var/log/ciclotrade-worker
+ReadOnlyPaths=/var/lib/ciclotrade-worker/candidate-sources
+RestrictAddressFamilies=AF_UNIX
+MemoryHigh=200M
+MemoryMax=300M
+CPUQuota=50%
+TasksMax=16
+LimitNOFILE=1024

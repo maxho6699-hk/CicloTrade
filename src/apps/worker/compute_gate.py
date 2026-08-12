@@ -18,6 +18,11 @@ from core.backtest_contracts import BacktestQueueError, sha256_json
 from core.backtest_operations import BacktestOperations
 from core.backtest_queue import BacktestQueue
 from src.apps.worker.backtest_runtime import ResourceProbe, ResourceSnapshot, WorkerSettings
+from src.apps.worker.candidate_input_contracts import (
+    CandidateInputError,
+    approved_universe_sha256,
+    validate_candidate_spec,
+)
 from src.apps.worker.compute_gate_config import (
     ComputeGateError,
     absolute as _absolute,
@@ -42,6 +47,7 @@ REQUEST_FIELDS = {
     "source_sha256",
     "source_bytes",
 }
+AUTONOMOUS_REQUEST_FIELDS = REQUEST_FIELDS | {"evaluation_at", "universe_sha256", "candidate_spec"}
 REQUEST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,95}$")
 SOURCE_FILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,123}\.csv$")
 SYMBOL = re.compile(r"^[A-Z][A-Z0-9.-]{0,15}$")
@@ -233,7 +239,7 @@ class ComputeGate:
     def _produce(self, request_path: Path, now: datetime) -> tuple[dict[str, Any], bool, str]:
         request = self._request(request_path, now)
         evaluation = date.fromisoformat(request["evaluation_date"])
-        as_of = datetime.combine(evaluation, time.max, tzinfo=timezone.utc)
+        as_of = _evaluation_at(request) or datetime.combine(evaluation, time.max, tzinfo=timezone.utc)
         try:
             snapshot = import_local_csv_snapshot(
                 self.settings.drop_dir,
@@ -291,8 +297,12 @@ class ComputeGate:
             value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise ComputeGateError("request JSON is unreadable") from exc
-        if not isinstance(value, dict) or set(value) != REQUEST_FIELDS or value.get("schema_version") != 1:
+        fields = frozenset(value) if isinstance(value, dict) else frozenset()
+        if not isinstance(value, dict) or fields not in {frozenset(REQUEST_FIELDS), frozenset(AUTONOMOUS_REQUEST_FIELDS)}:
             raise ComputeGateError("request fields do not match the Compute Gate contract")
+        autonomous = fields == frozenset(AUTONOMOUS_REQUEST_FIELDS)
+        if value.get("schema_version") != (2 if autonomous else 1):
+            raise ComputeGateError("request schema version does not match its field set")
         if not isinstance(value["request_id"], str) or not REQUEST_ID.fullmatch(value["request_id"]):
             raise ComputeGateError("request_id is invalid")
         if value["symbol"] not in self.settings.allowed_symbols:
@@ -315,6 +325,23 @@ class ComputeGate:
             raise ComputeGateError("evaluation_date must be YYYY-MM-DD") from exc
         if evaluation > now.astimezone(timezone.utc).date():
             raise ComputeGateError("evaluation_date must not be in the future")
+        if autonomous:
+            try:
+                evaluated_at = datetime.fromisoformat(str(value["evaluation_at"]).replace("Z", "+00:00"))
+            except (TypeError, ValueError) as exc:
+                raise ComputeGateError("evaluation_at must be an aware ISO timestamp") from exc
+            if evaluated_at.tzinfo is None or evaluated_at.utcoffset() is None:
+                raise ComputeGateError("evaluation_at must include a timezone")
+            evaluated_at = evaluated_at.astimezone(timezone.utc)
+            if evaluated_at > now.astimezone(timezone.utc) or evaluated_at.date() != evaluation:
+                raise ComputeGateError("evaluation_at must be observed and match evaluation_date")
+            expected_universe = approved_universe_sha256(self.settings.allowed_symbols)
+            if value["universe_sha256"] != expected_universe:
+                raise ComputeGateError("candidate request universe hash does not match the deployed allow-list")
+            try:
+                value["candidate_spec"] = validate_candidate_spec(value["candidate_spec"])
+            except CandidateInputError as exc:
+                raise ComputeGateError(str(exc)) from exc
         return value
 
     def _request_paths(self) -> list[Path]:
@@ -401,6 +428,32 @@ def _candidate_manifest(request: Mapping[str, Any], snapshot: LocalCsvSnapshot) 
     symbol = str(request["symbol"])
     evaluation = str(request["evaluation_date"])
     frozen = snapshot.frozen
+    spec = request.get("candidate_spec")
+    if spec is not None:
+        try:
+            candidate = validate_candidate_spec(spec)
+        except CandidateInputError as exc:  # pragma: no cover - validated while opening request
+            raise ComputeGateError(str(exc)) from exc
+        provenance_source = str(candidate["provenance_source"])
+        candidate_id = str(candidate["candidate_id"])
+        candidate_version = str(candidate["candidate_version"])
+        hypothesis = str(candidate["hypothesis"])
+        parent_version = candidate["parent_version"]
+        parent_job_id = candidate["parent_job_id"]
+        parent_manifest_sha256 = candidate["parent_manifest_sha256"]
+        parent_result_sha256 = candidate["parent_result_sha256"]
+        search_space = candidate["search_space"]
+        experiment_budget = candidate["experiment_budget"]
+        parameters = candidate["parameters"]
+    else:
+        provenance_source = "approved_seed"
+        candidate_id = f"{symbol}.{template}"
+        candidate_version = f"{evaluation.replace('-', '')}.{snapshot.snapshot_id[:12]}"
+        hypothesis = f"Bounded point-in-time long-flat research for {symbol} using {template}."
+        parent_version = parent_job_id = parent_manifest_sha256 = parent_result_sha256 = None
+        search_space = {"lookback": [_LOOKBACK[template]]}
+        experiment_budget = {"runs": 1, "folds": 3}
+        parameters = {"lookback": _LOOKBACK[template]}
     return {
         "schema_version": 1,
         "template_key": template,
@@ -408,19 +461,19 @@ def _candidate_manifest(request: Mapping[str, Any], snapshot: LocalCsvSnapshot) 
         "dataset_end": frozen.dataset_end.isoformat(),
         "code_bundle_sha256": research_code_bundle_sha256(),
         "inputs": snapshot.manifest_inputs(),
-        "candidate_id": f"{symbol}.{template}",
-        "candidate_version": f"{evaluation.replace('-', '')}.{snapshot.snapshot_id[:12]}",
+        "candidate_id": candidate_id,
+        "candidate_version": candidate_version,
         "provenance": {
-            "source": "approved_seed",
+            "source": provenance_source,
             "generated_by": "compute-gate",
             "request_id": str(request["request_id"]),
             "request_sha256": sha256_json(dict(request)),
         },
-        "hypothesis": f"Bounded point-in-time long-flat research for {symbol} using {template}.",
-        "parent_version": None,
-        "parent_job_id": None,
-        "parent_manifest_sha256": None,
-        "parent_result_sha256": None,
+        "hypothesis": hypothesis,
+        "parent_version": parent_version,
+        "parent_job_id": parent_job_id,
+        "parent_manifest_sha256": parent_manifest_sha256,
+        "parent_result_sha256": parent_result_sha256,
         "asset_universe": {
             "market": "US",
             "instrument_family": "equity",
@@ -429,8 +482,9 @@ def _candidate_manifest(request: Mapping[str, Any], snapshot: LocalCsvSnapshot) 
             "research_proxy": False,
             "data_mode": "point_in_time_prices",
         },
-        "search_space": {"lookback": [_LOOKBACK[template]]},
-        "experiment_budget": {"runs": 1, "folds": 3},
+        "search_space": search_space,
+        "experiment_budget": experiment_budget,
+        "parameters": parameters,
         "evidence_hashes": snapshot.evidence_hashes(),
         "authority": {
             "origin_site": "hk-strategy-worker",
@@ -463,6 +517,14 @@ def _candidate_manifest(request: Mapping[str, Any], snapshot: LocalCsvSnapshot) 
             "market_regimes": ["bull", "bear", "sideways"],
         },
     }
+
+
+def _evaluation_at(request: Mapping[str, Any]) -> datetime | None:
+    raw = request.get("evaluation_at")
+    if raw is None:
+        return None
+    parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    return parsed.astimezone(timezone.utc)
 
 
 def main(argv: list[str] | None = None) -> int:

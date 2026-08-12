@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodically offer one bounded local candidate proposal
+
+[Timer]
+OnBootSec=30min
+OnUnitActiveSec=30min
+RandomizedDelaySec=5min
+AccuracySec=1min
+Persistent=false
+Unit=ciclotrade-candidate-producer.service
+
+[Install]
+WantedBy=timers.target

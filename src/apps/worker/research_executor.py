@@ -40,7 +40,7 @@ def execute_research(manifest: Mapping[str, Any], input_bytes_by_key: Mapping[st
     dataset, input_hashes = _freeze_manifest_input(manifest, input_bytes_by_key, symbols)
     if dataset.row_count < MINIMUM_BARS:
         raise ResearchExecutionError(f"at least {MINIMUM_BARS} frozen daily bars are required")
-    signal, risk, plan = _signal(template), _risk(manifest), _plan(manifest)
+    signal, risk, plan = _signal(template, manifest), _risk(manifest), _plan(manifest)
     costs = {label: _metrics(dataset.bars, signal, multiplier) for label, multiplier in (("1x", 1.0), ("2x", 2.0))}
     oos_start = max(LOOKBACK + 1, len(dataset.bars) // 2)
     oos = _metrics(dataset.bars, signal, 1.0, start=oos_start)
@@ -265,12 +265,26 @@ def _plan(manifest: Mapping[str, Any]) -> Mapping[str, Any]:
     return plan
 
 
-def _signal(template: str) -> Callable[[list[DailyBar]], int]:
+def _signal(template: str, manifest: Mapping[str, Any]) -> Callable[[list[DailyBar]], int]:
+    parameters = manifest.get("parameters")
+    if not isinstance(parameters, Mapping) or set(parameters) != {"lookback"}:
+        raise ResearchExecutionError("one frozen lookback parameter is required")
+    lookback = parameters["lookback"]
+    search = manifest.get("search_space")
+    allowed = search.get("lookback") if isinstance(search, Mapping) else None
+    if (
+        not isinstance(lookback, int)
+        or isinstance(lookback, bool)
+        or not isinstance(allowed, list)
+        or lookback not in allowed
+        or not 2 <= lookback <= 250
+    ):
+        raise ResearchExecutionError("lookback is outside the frozen candidate search space")
     if template == "equity.trend.long_flat.v1":
-        return lambda history: int(history[-1].close > fmean(bar.close for bar in history[-5:]))
+        return lambda history: int(history[-1].close > fmean(bar.close for bar in history[-lookback:]))
     if template == "equity.mean_reversion.long_flat.v1":
-        return lambda history: int(history[-1].close < fmean(bar.close for bar in history[-10:]) - pstdev([bar.close for bar in history[-10:]]))
-    return lambda history: int(history[-1].close > max(bar.close for bar in history[-10:-1]))
+        return lambda history: int(history[-1].close < fmean(bar.close for bar in history[-lookback:]) - pstdev([bar.close for bar in history[-lookback:]]))
+    return lambda history: int(history[-1].close > max(bar.close for bar in history[-lookback:-1]))
 
 
 def _metrics(bars: tuple[DailyBar, ...], signal: Callable[[list[DailyBar]], int], cost_multiplier: float, *, start: int = LOOKBACK + 1, stop: int | None = None, gap_penalty: bool = False, liquidity_penalty: bool = False, volatility_penalty: bool = False) -> dict[str, Any]:
