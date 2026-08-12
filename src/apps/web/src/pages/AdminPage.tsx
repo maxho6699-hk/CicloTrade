@@ -69,6 +69,8 @@ export function AdminPage() {
   const modalRef = useRef<HTMLFormElement | null>(null)
   const modalTriggerRef = useRef<HTMLButtonElement | null>(null)
   const modalBusyRef = useRef(false)
+  const noticeRef = useRef<HTMLParagraphElement | null>(null)
+  const focusNoticeAfterLoadRef = useRef(false)
 
   modalBusyRef.current = reviewingId !== null || autoTradingBusy
 
@@ -95,6 +97,13 @@ export function AdminPage() {
   }
 
   useEffect(() => { void load() }, [])
+
+  useEffect(() => {
+    if (!loading && notice && focusNoticeAfterLoadRef.current) {
+      focusNoticeAfterLoadRef.current = false
+      noticeRef.current?.focus()
+    }
+  }, [loading, notice])
 
   useEffect(() => {
     if (!activeModal) return
@@ -153,6 +162,7 @@ export function AdminPage() {
         ? { decision: 'approve', password: reviewPassword, settlement_reference: reviewReference.trim() }
         : { decision: 'reject', password: reviewPassword, rejection_reason: reviewReason.trim() })
       setNotice(`付款凭证 #${reviewMode.id} 已提交审核决定。`)
+      focusNoticeAfterLoadRef.current = true
       setReviewMode(null); setReviewReason(''); setReviewReference(''); setReviewPassword('')
       await load()
     } catch (caught) { setError(errorMessage(caught, '付款凭证审核未完成。')) } finally { setReviewingId(null) }
@@ -175,7 +185,7 @@ export function AdminPage() {
     <PageHeader kicker="SUPER ADMIN / HUMAN REVIEW" title="超级管理" description="审核账户、人工付款与受控服务状态。所有操作保留审计记录；不可用数据不会被替换为演示值。" />
     <section className="admin-boundary" aria-label="管理台边界"><ShieldAlert size={18} /><span><strong>受控管理台</strong> 影子候选仅供研究，待人工审核；官方模拟不执行券商下单。</span></section>
     {error && <p className="form-error" role="alert"><CircleAlert size={16} />{error}</p>}
-    {notice && <p className="admin-notice" role="status" aria-live="polite"><CheckCircle2 size={16} />{notice}</p>}
+    {notice && <p className="admin-notice" role="status" aria-live="polite" tabIndex={-1} ref={noticeRef}><CheckCircle2 size={16} />{notice}</p>}
     <div className="admin-toolbar"><span role="status" aria-live="polite">{loading ? <><LoaderCircle className="spin" size={16} />正在读取管理数据…</> : '数据按当前管理员权限读取'}</span><button className="button secondary" type="button" disabled={loading} onClick={() => void load()}><RefreshCw size={16} />刷新</button><button className="button danger" type="button" onClick={(event) => { modalTriggerRef.current = event.currentTarget; setAutoTradingOpen(true) }}><AlertTriangle size={16} />用户实盘服务</button></div>
     <section className="admin-metric-grid" aria-label="运营概览">
       {metrics.map(({ label, value, total, Icon, tone }) => {

@@ -617,7 +617,7 @@ export interface AdminManualClaim {
   currency?: string
   pay_method?: string
   created_at?: string
-  settlement_reference?: string | null
+  settlement_reference_masked?: string | null
   [key: string]: unknown
 }
 
