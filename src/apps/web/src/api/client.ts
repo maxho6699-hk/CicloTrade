@@ -634,7 +634,8 @@ export interface AdminAuditEntry {
   id?: string | number
   action_type?: string
   created_at?: string
-  user_email?: string
+  actor_id?: number | null
+  actor_display?: string
   details?: string | Record<string, unknown>
   [key: string]: unknown
 }

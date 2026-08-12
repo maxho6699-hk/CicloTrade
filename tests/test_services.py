@@ -14,6 +14,7 @@ import jwt
 
 from backtest.engine import option_payoff
 from core.alerts import AlertService
+from core.admin_service import AdminService
 from core.auth import AuthError, AuthService
 from core.broker_authorization import broker_execution_authorized
 from core.database import DatabaseManager
@@ -21,6 +22,7 @@ from core.strategy_registry import StrategyRegistry
 from core.user_settings import merge_user_settings
 from notification.email_sender import send_email
 from payment.order_service import OrderService
+from payment.receiving_profile import ReceivingProfileService
 from scheduler.jobs import downgrade_expired_subscriptions, notify_expiring_subscriptions, scan_price_alerts
 from trading.order_manager import OrderManager, derive_execution_slices, trade_ledger_state
 from trading.risk_filter import RiskDecision, validate_order
@@ -50,6 +52,29 @@ def jwt_secret(monkeypatch):
 
 def _user(auth: AuthService, suffix: str = "one"):
     return auth.register(f"{suffix}@example.com", "CorrectHorse123", "Test User", True)
+
+
+def test_billing_profile_accepts_finance_and_rechecks_role_inside_transaction(db, monkeypatch):
+    auth = AuthService(db)
+    finance = auth.register("finance-profile@example.com", "CorrectHorse123", "Finance", True)
+    db.execute("UPDATE users SET is_admin=1 WHERE id=?", (finance["id"],))
+    AdminService(db)
+    db.execute("UPDATE admin_roles SET role='finance' WHERE user_id=?", (finance["id"],))
+    profiles = ReceivingProfileService(db)
+
+    saved = profiles.set_receiver_text(finance["id"], "fps", "FPS receiver 123")
+    assert saved["receiver_text"] == "FPS receiver 123"
+
+    original_require = profiles.require_billing_admin
+
+    def downgrade_after_entry(actor_id: int) -> None:
+        original_require(actor_id)
+        db.execute("UPDATE admin_roles SET role='support' WHERE user_id=?", (actor_id,))
+
+    monkeypatch.setattr(profiles, "require_billing_admin", downgrade_after_entry)
+    with pytest.raises(PermissionError, match="无权管理收款资料"):
+        profiles.set_receiver_text(finance["id"], "fps", "must not replace")
+    assert profiles.current("fps")["receiver_text"] == "FPS receiver 123"
 
 
 def _set_user_auto_trading(db: DatabaseManager, enabled: bool = True) -> None:
@@ -184,6 +209,25 @@ def test_bootstrap_admin_persists_super_admin_role_before_web_login(db, monkeypa
     )
     assert admin["is_admin"] == 1
     assert admin["role"] == "super_admin"
+
+
+def test_admin_role_migration_upgrades_an_existing_admin(db):
+    auth = AuthService(db)
+    user = _user(auth, "migration-admin")
+    db.execute("UPDATE users SET is_admin=1 WHERE id=?", (user["id"],))
+    db.execute("DELETE FROM admin_roles WHERE user_id=?", (user["id"],))
+    db.execute(
+        "DELETE FROM schema_migrations WHERE version='0021_admin_roles.sql'"
+    )
+
+    with db._get_connection() as connection:
+        db._run_migrations(connection)
+
+    role = db.fetch_one("SELECT role FROM admin_roles WHERE user_id=?", (user["id"],))
+    assert role == {"role": "super_admin"}
+    assert db.fetch_one(
+        "SELECT version FROM schema_migrations WHERE version='0021_admin_roles.sql'"
+    ) == {"version": "0021_admin_roles.sql"}
 
 
 def test_login_failures_do_not_globally_lock_victim_and_reset_has_cooldown(db):

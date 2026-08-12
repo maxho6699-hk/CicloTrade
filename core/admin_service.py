@@ -157,6 +157,24 @@ class AdminService:
         return role
 
     @staticmethod
+    def _require_billing_in_transaction(conn: Any, actor_id: int) -> str:
+        """Re-check billing authority after acquiring the SQLite write lock."""
+        row = conn.execute(
+            """SELECT u.is_admin,u.is_active,r.role FROM users u
+               LEFT JOIN admin_roles r ON r.user_id=u.id WHERE u.id=?""",
+            (actor_id,),
+        ).fetchone()
+        role = str(row["role"]) if row and row["role"] else ""
+        if (
+            not row
+            or not row["is_admin"]
+            or not row["is_active"]
+            or not AdminService.has_permission(role, "billing")
+        ):
+            raise PermissionError("当前后台角色无权管理收款资料。")
+        return role
+
+    @staticmethod
     def _audit(conn: Any, actor_id: int, action: str, details: dict[str, Any]) -> None:
         conn.execute(
             "INSERT INTO user_action_logs (user_id,action_type,details,created_at) VALUES (?,?,?,?)",
