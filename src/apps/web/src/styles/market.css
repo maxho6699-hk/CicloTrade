@@ -494,7 +494,7 @@
 .is-pane-focused .multi-chart-grid { isolation: isolate; }
 .is-pane-focused .chart-slot:not(.is-focused) { visibility: hidden; pointer-events: none; }
 .is-pane-focused .chart-slot.is-focused { position: absolute; z-index: 2; inset: 0; }
-.chart-slot { container-type: inline-size; position: relative; display: grid; min-width: 0; min-height: 0; grid-template-rows: auto minmax(0, 1fr) 28px; overflow: hidden; background: var(--workspace); }
+.chart-slot { container-type: inline-size; position: relative; display: grid; min-width: 0; min-height: 0; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; background: var(--workspace); }
 .chart-slot.is-layout-hidden { display: none; }
 .chart-slot::after { position: absolute; z-index: 12; inset: 0; border: 1px solid var(--border-strong); content: ''; opacity: 0; pointer-events: none; transition: opacity 100ms ease-out; }
 .chart-slot.is-active::after { border: 2px solid var(--accent); opacity: 1; }
@@ -516,13 +516,6 @@
 .chart-view-controls button:hover { background: var(--surface-hover); color: var(--text); }
 .chart-slot-canvas { position: relative; min-width: 0; min-height: 0; }
 .chart-slot-data-status { display: block; min-width: 0; overflow: hidden; color: var(--warning); font: 10px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
-.chart-range-presets { display: flex; min-width: 0; align-items: center; gap: 3px; padding: 0 5px; overflow-x: auto; border-top: 1px solid var(--border); background: var(--surface-subtle); scrollbar-width: none; }
-.chart-range-presets::-webkit-scrollbar { display: none; }
-.chart-range-presets > span { display: flex; align-items: center; gap: 1px; }
-.chart-range-presets > i { width: 1px; height: 15px; flex: 0 0 auto; margin: 0 2px; background: var(--border-strong); }
-.chart-range-presets button { min-width: max-content; height: 26px; padding: 0 7px; border: 0; border-radius: 2px; background: transparent; color: var(--muted); cursor: pointer; font-size: 10px; }
-.chart-range-presets button:hover, .chart-range-presets button.active { background: var(--accent-soft); color: var(--accent); }
-.chart-quick-timeframes { padding-right: 1px; }
 .chart-pane-state { display: grid; height: 100%; place-content: center; justify-items: center; gap: 5px; color: var(--muted); }
 .chart-pane-state strong { color: var(--text); font-size: 13px; }
 .chart-pane-state span { font: 11px var(--mono); }

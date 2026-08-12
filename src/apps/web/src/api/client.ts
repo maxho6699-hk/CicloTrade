@@ -583,6 +583,46 @@ export async function authenticatedJsonRequest<T>(
   return request<T>(path, init)
 }
 
+export type FeedbackCategory = 'bug' | 'suggestion' | 'data' | 'experience' | 'other'
+
+export interface FeedbackReceipt {
+  id: string
+  category: FeedbackCategory
+  status: string
+  created_at: string
+  message: string
+}
+
+function validFeedbackReceipt(value: unknown): value is FeedbackReceipt {
+  if (!value || typeof value !== 'object') return false
+  const item = value as Record<string, unknown>
+  return typeof item.id === 'string' && typeof item.category === 'string' && typeof item.status === 'string'
+    && typeof item.created_at === 'string' && typeof item.message === 'string'
+}
+
+export async function fetchFeedback(): Promise<FeedbackReceipt[]> {
+  const payload = await request<unknown>('/api/rewrite/v1/feedback')
+  const items = Array.isArray(payload) ? payload : (payload as { items?: unknown })?.items
+  if (!Array.isArray(items) || !items.every(validFeedbackReceipt)) throw new BrowserApiError('反馈回执响应格式无效。', 502)
+  return items
+}
+
+export async function submitFeedback(payload: {
+  category: FeedbackCategory
+  context_path: string
+  message: string
+  contact_preference: 'none' | 'telegram' | 'email'
+}, idempotencyKey: string): Promise<FeedbackReceipt> {
+  const response = await request<unknown>('/api/rewrite/v1/feedback', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey },
+    body: JSON.stringify(payload),
+  })
+  const item = (response as { item?: unknown }).item ?? response
+  if (!validFeedbackReceipt(item)) throw new BrowserApiError('反馈回执响应格式无效。', 502)
+  return item
+}
+
 export async function login(email: string, password: string): Promise<SessionResponse> {
   const session = await request<SessionResponse>('/api/rewrite/v1/session', {
     method: 'POST',

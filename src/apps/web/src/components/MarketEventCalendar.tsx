@@ -105,6 +105,6 @@ export function MarketEventCalendar({ market, onRangeChange }: MarketEventCalend
     </div>
     <div className="event-calendar-status"><span>显示范围：<strong>{range === '自订' ? selectedDate.replaceAll('-', '/') : range}</strong></span><span><i className="status-dot" /> 数据为组件预览，不构成交易依据</span></div>
     <div className="event-calendar-table-wrap"><table className="event-calendar-table"><thead><tr><th>时间</th><th>事件</th><th>影响</th><th>当前</th><th>预测</th><th>前次</th></tr></thead>{groups.map((group) => <Fragment key={group.date}><tbody><tr className="event-date-row"><th colSpan={6}>{group.label}</th></tr>{group.items.map((item) => <tr key={`${item.date}-${item.time}-${item.event}`}><td data-label="时间"><time>{item.time}</time></td><td data-label="事件"><span className="event-name"><b className="event-flag" aria-hidden="true">{item.flag}</b><span><strong>{item.event}</strong><small>{item.symbol ? `${item.symbol} · ` : ''}{item.country} · 界面预览</small></span></span></td><td data-label="影响"><ImpactBars level={item.impact} /></td><td data-label="当前" className="calendar-number">{item.current}</td><td data-label="预测" className="calendar-number">{item.forecast}</td><td data-label="前次" className="calendar-number">{item.previous}</td></tr>)}</tbody></Fragment>)}</table></div>
-    <footer className="event-calendar-footer"><span><BellOff size={14} /> 真实提醒需等待事件服务接入</span><span>时间显示为台北时区预览</span></footer>
+    <footer className="event-calendar-footer"><span><BellOff size={14} /> 真实提醒需等待事件服务接入</span><span>时间显示为香港时区预览</span></footer>
   </section>
 }

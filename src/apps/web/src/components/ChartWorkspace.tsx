@@ -69,10 +69,6 @@ interface ChartWorkspaceProps {
 
 const STORAGE_KEY = 'ciclotrade:chart-workspace:v2'
 const LEGACY_STORAGE_KEY = 'ciclotrade:chart-workspace:v1'
-const RANGE_PRESETS = [
-  ['1D', '1 天'], ['5D', '5 天'], ['1M', '1 个月'], ['3M', '3 个月'],
-  ['6M', '6 个月'], ['YTD', '年初至今'], ['1Y', '1 年'], ['ALL', '全部'],
-] as const
 const NARROW_CHART_QUERY = '(max-width: 760px), (max-width: 980px) and (max-height: 560px) and (orientation: landscape)'
 
 function candleIdentity(slot: Pick<ChartSlotState, 'market' | 'symbol' | 'timeframe'>) {
@@ -600,9 +596,6 @@ export function ChartWorkspace({
                     <div className="chart-pane-state" role="status"><strong>{slotStatus[slot.id] ?? `${marketLabel(slot.market)} ${slot.symbol} 暂无可验证 K 线`}</strong><span>{marketLabel(slot.market)} · {slot.symbol} · {slot.timeframe} · 市场未连接或数据尚未返回</span></div>
                   )}
                 </div>
-                <nav className="chart-range-presets" aria-label={`${slot.symbol} 常用周期与查看范围`}>
-                  <span>{RANGE_PRESETS.map(([value, label]) => <button type="button" onClick={() => chartRefs.current[slot.id]?.setRange(value)} key={value}>{label}</button>)}</span>
-                </nav>
                 {symbolEditorId === slot.id && (
                   <form className="chart-symbol-editor" onSubmit={(event) => { event.preventDefault(); applySymbol() }}>
                     <header><strong>更换当前图表</strong><button className="icon-button" type="button" aria-label="关闭" onClick={() => setSymbolEditorId(null)}>×</button></header>

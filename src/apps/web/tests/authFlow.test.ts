@@ -13,8 +13,13 @@ test('public authentication client exposes every fail-closed account endpoint', 
   assert.match(clientSource, /session\/password-reset\/confirm/)
 })
 
-test('login page exposes login, registration, verification, and password reset modes', () => {
-  assert.match(pageSource, /const authModes = \['login', 'register', 'verify', 'forgot'\]/)
+test('login page keeps registration verification inside one card and retains password reset', () => {
+  assert.match(pageSource, /const authModes = \['login', 'register', 'forgot'\]/)
+  assert.match(pageSource, /registrationStage/)
+  assert.match(pageSource, /registrationStage === 'verify'/)
+  assert.match(pageSource, /maskedEmail/)
+  assert.match(pageSource, /改用其他电子邮件|改用其他電子郵件/)
+  assert.doesNotMatch(pageSource, /changeMode\('verify'/)
   assert.match(pageSource, /registerAccount\(/)
   assert.match(pageSource, /requestEmailVerification\(/)
   assert.match(pageSource, /verifyEmailToken\(/)

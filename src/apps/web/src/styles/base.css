@@ -431,6 +431,10 @@ textarea:focus-visible {
   text-align: center;
 }
 
+.sidebar-feedback { display: grid; min-height: 38px; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 0 8px; border: 1px solid var(--border); background: var(--surface-subtle); color: var(--muted); font-size: 12px; }
+.sidebar-feedback:hover { border-color: var(--accent); background: var(--surface-hover); color: var(--text); }
+.sidebar-feedback > svg:first-child { color: var(--accent); }
+
 .membership-mini {
   display: grid;
   grid-template-columns: 30px 1fr auto;

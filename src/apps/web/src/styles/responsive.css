@@ -66,7 +66,7 @@
   .account-layout,
   .mystic-board,
   .login-layout,
-  .help-layout { grid-template-columns: 1fr; }
+  .help-layout, .feedback-layout { grid-template-columns: 1fr; }
   .notification-dashboard-grid { grid-template-columns: minmax(0, 1fr) minmax(320px, .9fr); grid-template-areas: "connection preferences" "deliveries preferences"; }
   .account-simulator-grid { grid-template-columns: 1fr; grid-template-areas: "timeline" "current" "closed"; }
   .professional-lab-page { grid-template-columns: 1fr; }
@@ -138,6 +138,8 @@
   .page-header { margin-bottom: 17px; }
   .page-header h1 { font-size: 24px; }
   .page-header p { font-size: 14px; line-height: 1.6; }
+  .feedback-kind-grid { grid-template-columns: 1fr; }
+  .feedback-choice { margin-right: 0; }
   .decision-card-header { display: grid; gap: 13px; padding: 14px; }
   .decision-card-header h2 { font-size: 19px; }
   .action-value { width: 100%; min-width: 0; }

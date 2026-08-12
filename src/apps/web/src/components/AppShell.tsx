@@ -8,6 +8,7 @@ import {
   CircleGauge,
   CreditCard,
   FileChartColumn,
+  MessageSquareText,
   FlaskConical,
   House,
   Languages,
@@ -76,6 +77,7 @@ const mobileMoreItems = [
 ]
 
 const mobileHelpItem = { to: '/help', label: '帮助与支持', icon: HelpCircle }
+const feedbackItem = { to: '/feedback', label: '反馈建议', icon: MessageSquareText }
 
 const SEARCH_HISTORY_STORAGE_KEY = 'ciclotrade.searchHistory'
 const MAX_RECENT_SEARCHES = 6
@@ -131,7 +133,7 @@ export function AppShell({ children }: AppShellProps) {
   const marketDisconnected = marketFreshness === '已停用' || marketFreshness === '未启用或暂不可用'
   const telegramReady = Boolean(workspace.data?.telegram.bound && workspace.data?.telegram.verified && workspace.data?.telegram.consented)
   const hasModelSnapshots = Boolean(workspace.data?.performance.items.length)
-  const mobileMoreActive = [...mobileMoreItems, mobileHelpItem].some(({ to }) => pathname === to || pathname.startsWith(`${to}/`))
+  const mobileMoreActive = [...mobileMoreItems, mobileHelpItem, feedbackItem].some(({ to }) => pathname === to || pathname.startsWith(`${to}/`))
   const marketStatusLabel = !realData
     ? workspace.mode === 'offline' ? '离线演示' : '界面演示'
     : marketDisconnected ? '未连接' : marketDelay || (marketFreshness === '状态未记录' && marketStatus?.is_realtime ? '实时权限已验证' : marketFreshness)
@@ -293,6 +295,7 @@ export function AppShell({ children }: AppShellProps) {
           ))}
         </nav>
         <div className="sidebar-bottom">
+          <NavLink className="sidebar-feedback" to={feedbackItem.to} state={{ sourcePage: pathname }}><MessageSquareText size={16} /><span>{feedbackItem.label}</span><ChevronRight size={15} /></NavLink>
           <NavLink className="membership-mini" to="/membership">
             <span className="membership-mark"><ShieldCheck size={16} /></span>
             <span><small>当前方案</small><strong>{workspace.user?.plan_display_name ?? '演示模式'}</strong></span>
@@ -359,6 +362,7 @@ export function AppShell({ children }: AppShellProps) {
               <NavLink key={to} to={to} onClick={() => setMobileMenuOpen(false)}><Icon size={19} />{label}<ChevronRight size={17} /></NavLink>
             ))}
             <NavLink className="mobile-sheet-support" to={mobileHelpItem.to} onClick={() => setMobileMenuOpen(false)}><HelpCircle size={19} />{mobileHelpItem.label}<ChevronRight size={17} /></NavLink>
+            <NavLink to={feedbackItem.to} state={{ sourcePage: pathname }} onClick={() => setMobileMenuOpen(false)}><MessageSquareText size={19} />{feedbackItem.label}<ChevronRight size={17} /></NavLink>
             <a href="/" onClick={() => setMobileMenuOpen(false)}><House size={19} />返回欢迎页<ChevronRight size={17} /></a>
             <button className="mobile-logout" type="button" onClick={() => void workspace.logout().then(() => navigate('/'))}><LogOut size={19} />登出账户</button>
           </section>

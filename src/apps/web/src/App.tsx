@@ -17,6 +17,7 @@ import { ProfessionalLabPage } from './pages/ProfessionalLabPage'
 import { WelcomePage } from './pages/WelcomePage'
 import { OpportunitiesPage } from './pages/OpportunitiesPage'
 import { EarningsForecastPage } from './pages/EarningsForecastPage'
+import { FeedbackPage } from './pages/FeedbackPage'
 import { useLocale } from './i18n/useLocale'
 import { applyTheme, readStoredTheme } from './theme'
 
@@ -61,6 +62,7 @@ export default function App() {
     <Route path="/notifications" element={<NotificationsPage />} />
     <Route path="/account" element={<AccountPage />} />
     <Route path="/help" element={<HelpPage />} />
+    <Route path="/feedback" element={<FeedbackPage />} />
     <Route path="/membership" element={<MembershipPage />} />
     <Route path="/mystic" element={<MysticPage />} />
     <Route path="*" element={<Navigate to="/today" replace />} />
