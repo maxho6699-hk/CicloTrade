@@ -6,6 +6,8 @@ export interface SessionUser {
   plan: string
   plan_display_name: string
   subscription_expire: string | null
+  /** Omitted or null for every account that is not explicitly a super admin. */
+  admin_role: 'super_admin' | null
 }
 
 export type MembershipPlanKey = '免费版' | '标准版' | '高级版' | '专业版' | '定制版'
@@ -581,6 +583,107 @@ export async function authenticatedJsonRequest<T>(
   init: RequestInit = {},
 ): Promise<T> {
   return request<T>(path, init)
+}
+
+export interface AdminOverview {
+  users?: number
+  active_users?: number
+  subscribers?: number
+  pending_orders?: number
+  paid_amount?: number
+  critical_risk?: number
+  [key: string]: unknown
+}
+
+export interface AdminUser {
+  id: number
+  email: string
+  display_name: string
+  plan_type?: string
+  subscription_expire?: string | null
+  last_login?: string | null
+  is_active?: boolean
+  admin_role?: string | null
+  active_sessions?: number
+  [key: string]: unknown
+}
+
+export interface AdminManualClaim {
+  id: number
+  order_no: string
+  status: 'submitted' | 'approved' | 'rejected' | string
+  user_email?: string
+  amount?: number
+  currency?: string
+  pay_method?: string
+  created_at?: string
+  settlement_reference?: string | null
+  [key: string]: unknown
+}
+
+export interface AdminBrokerAccount {
+  id?: string | number
+  broker?: string
+  account_masked?: string
+  status?: string
+  updated_at?: string
+  [key: string]: unknown
+}
+
+export interface AdminAuditEntry {
+  id?: string | number
+  action_type?: string
+  created_at?: string
+  user_email?: string
+  details?: string | Record<string, unknown>
+  [key: string]: unknown
+}
+
+function adminItems<T>(payload: unknown): T[] {
+  return Array.isArray(payload) ? payload as T[] : Array.isArray((payload as { items?: unknown })?.items) ? (payload as { items: T[] }).items : []
+}
+
+export async function fetchAdminOverview(): Promise<AdminOverview> {
+  return request<AdminOverview>('/api/rewrite/v1/admin/overview')
+}
+
+export async function fetchAdminUsers(): Promise<AdminUser[]> {
+  return adminItems<AdminUser>(await request<unknown>('/api/rewrite/v1/admin/users'))
+}
+
+export async function fetchAdminManualClaims(): Promise<AdminManualClaim[]> {
+  return adminItems<AdminManualClaim>(await request<unknown>('/api/rewrite/v1/admin/payments/manual-claims'))
+}
+
+export async function fetchAdminBrokers(): Promise<AdminBrokerAccount[]> {
+  return adminItems<AdminBrokerAccount>(await request<unknown>('/api/rewrite/v1/admin/brokers'))
+}
+
+export async function fetchAdminAudit(): Promise<AdminAuditEntry[]> {
+  return adminItems<AdminAuditEntry>(await request<unknown>('/api/rewrite/v1/admin/audit'))
+}
+
+export async function reviewAdminManualClaim(id: number, payload: {
+  decision: 'approve' | 'reject'
+  password: string
+  settlement_reference?: string
+  rejection_reason?: string
+}): Promise<AdminManualClaim> {
+  return request<AdminManualClaim>(`/api/rewrite/v1/admin/payments/manual-claims/${id}/review`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function updateAdminUserAutoTrading(payload: {
+  enabled: boolean
+  confirmation: '暂停用户实盘服务' | '恢复用户实盘服务'
+  password: string
+}): Promise<{ enabled?: boolean; affected_users?: number }> {
+  return request<{ enabled?: boolean; affected_users?: number }>('/api/rewrite/v1/admin/user-auto-trading', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
 }
 
 export type FeedbackCategory = 'bug' | 'suggestion' | 'data' | 'experience' | 'other'

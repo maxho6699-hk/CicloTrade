@@ -67,6 +67,8 @@
   .mystic-board,
   .login-layout,
   .help-layout, .feedback-layout { grid-template-columns: 1fr; }
+  .admin-grid { grid-template-columns: 1fr; }
+  .admin-claims { grid-row: auto; }
   .notification-dashboard-grid { grid-template-columns: minmax(0, 1fr) minmax(320px, .9fr); grid-template-areas: "connection preferences" "deliveries preferences"; }
   .account-simulator-grid { grid-template-columns: 1fr; grid-template-areas: "timeline" "current" "closed"; }
   .professional-lab-page { grid-template-columns: 1fr; }
@@ -302,6 +304,19 @@
   .checkout-body dl { grid-template-columns: 1fr 1fr; }
   .checkout-body dl div:nth-child(2) { border-right: 0; }
   .checkout-body dl div:nth-child(-n + 2) { border-bottom: 1px solid var(--border); }
+}
+
+@media (max-width: 620px) {
+  .admin-metric-grid { grid-template-columns: 1fr 1fr; }
+  .admin-toolbar { flex-wrap: wrap; }
+  .admin-toolbar > span { width: 100%; }
+  .admin-modal-backdrop { align-items: end; padding: 0; }
+  .admin-modal { width: 100%; max-height: 90dvh; overflow: auto; border-right: 0; border-bottom: 0; border-left: 0; border-radius: 8px 8px 0 0; }
+}
+
+@media (max-width: 420px) {
+  .admin-metric-grid { grid-template-columns: 1fr; }
+  .admin-metric { min-height: 98px; }
 }
 
 @media (max-width: 760px) {
