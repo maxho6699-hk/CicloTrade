@@ -27,9 +27,11 @@ RestrictNamespaces=true
 RestrictSUIDSGID=true
 LockPersonality=true
 ReadOnlyPaths=/var/lib/ciclotrade-worker/backtest-queue.db /var/lib/ciclotrade-worker/artifacts
-# SQLite's WAL reader updates lock bookkeeping in the pre-existing -shm file.
-# The canonical DB, WAL, and artifacts remain read-only to this exporter.
-ReadWritePaths=/var/lib/ciclotrade-worker/backtest-queue.db-shm /var/lib/ciclotrade-worker/compute-evidence
+# SQLite's WAL reader may update lock bookkeeping in a pre-existing -shm file.
+# Prefixing only that optional file with "-" keeps startup safe when SQLite has
+# removed it after the last writer closed; the canonical DB, WAL, and artifacts
+# remain read-only, and the exporter still fails closed if the queue is absent.
+ReadWritePaths=-/var/lib/ciclotrade-worker/backtest-queue.db-shm /var/lib/ciclotrade-worker/compute-evidence
 RestrictAddressFamilies=AF_UNIX
 MemoryHigh=192M
 MemoryMax=256M

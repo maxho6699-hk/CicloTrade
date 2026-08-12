@@ -191,7 +191,12 @@ def test_systemd_units_keep_compute_and_network_capabilities_separate():
     assert "PrivateNetwork=true" in exporter
     assert "RestrictAddressFamilies=AF_UNIX" in exporter
     assert "ReadOnlyPaths=/var/lib/ciclotrade-worker/backtest-queue.db" in exporter
-    assert "ReadWritePaths=/var/lib/ciclotrade-worker/backtest-queue.db-shm" in exporter
+    write_paths = next(line for line in exporter.splitlines() if line.startswith("ReadWritePaths="))
+    writable = write_paths.removeprefix("ReadWritePaths=").split()
+    assert "-/var/lib/ciclotrade-worker/backtest-queue.db-shm" in writable
+    assert "/var/lib/ciclotrade-worker/backtest-queue.db-shm" not in writable
+    assert "/var/lib/ciclotrade-worker" not in writable
+    assert "/var/lib/ciclotrade-worker/compute-evidence" in writable
     assert "PrivateNetwork=false" in publisher
     assert "backtest-queue.db" not in publisher and "/artifacts" not in publisher
     assert all("WantedBy=timers.target" in timer and "Persistent=false" in timer for timer in timers)
