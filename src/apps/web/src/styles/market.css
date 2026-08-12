@@ -420,6 +420,7 @@
 .instrument-price strong { font: 600 26px var(--mono); }
 .instrument-price span { display: flex; align-items: center; font: 500 13px var(--mono); }
 .instrument-actions { display: flex; gap: 7px; }
+.mobile-market-controls { display: none; }
 .chart-toolbar {
   min-height: 43px;
   justify-content: space-between;
@@ -604,6 +605,7 @@
   .chart-slot-toolbar { min-height: 44px; grid-template-rows: 44px; grid-template-columns: minmax(52px, auto) 82px 44px 44px; }
   .chart-symbol-trigger, .chart-symbol-label, .chart-focus-control, .chart-view-menu > summary { min-height: 44px; height: 44px; }
   .chart-focus-control, .chart-view-menu > summary { width: 44px; }
+  .layout-picker-trigger, .multi-chart-actions button, .multi-chart-utility-actions button { min-width: 44px; min-height: 44px; height: 44px; }
   .chart-view-popover button, .chart-symbol-chips button, .chart-symbol-manual > summary { min-height: 44px; }
 }
 .chart-empty-state {
@@ -707,6 +709,7 @@
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
 }
+.mobile-evidence-panel { min-width: 0; }
 
 .workspace-tabs button { min-height: 44px; flex: 0 0 auto; padding: 0 11px; border-bottom: 2px solid transparent; font-size: 13px; }
 .workspace-tabs button.active { border-bottom-color: var(--accent); color: var(--text); }
