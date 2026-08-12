@@ -66,7 +66,7 @@ export function FeedbackPage() {
       </form>
       <section className="data-panel feedback-history" aria-busy={loading}>
         <header className="panel-heading"><div><span>YOUR RECEIPTS</span><h2>历史回执</h2></div><Lightbulb size={20} /></header>
-        {loading ? <div className="feedback-state"><LoaderCircle className="spin" size={20} />正在读取回执…</div> : receipts.length ? <ol>{receipts.map((item) => <li key={item.id}><header><strong>{kinds.find((kindItem) => kindItem.value === item.category)?.label ?? '反馈'}</strong><span>{item.status}</span></header><p>{item.message.length > 180 ? `${item.message.slice(0, 180)}…` : item.message}</p><footer><code>{item.id}</code><time>{new Date(item.created_at).toLocaleString('zh-HK', { hour12: false, timeZone: 'Asia/Hong_Kong' })}</time></footer></li>)}</ol> : <div className="feedback-state"><RefreshCw size={20} /><strong>尚无反馈回执</strong><span>提交后将在这里显示处理状态。</span></div>}
+        {loading ? <div className="feedback-state"><LoaderCircle className="spin" size={20} />正在读取回执…</div> : receipts.length ? <ol>{receipts.map((item) => <li key={item.id}><header><strong>{kinds.find((kindItem) => kindItem.value === item.category)?.label ?? '反馈'}</strong><span>{item.status}</span></header><p>{item.summary}</p><footer><code>{item.id}</code><time>{new Date(item.created_at).toLocaleString('zh-HK', { hour12: false, timeZone: 'Asia/Hong_Kong' })}</time></footer></li>)}</ol> : <div className="feedback-state"><RefreshCw size={20} /><strong>尚无反馈回执</strong><span>提交后将在这里显示处理状态。</span></div>}
       </section>
     </div>
   </div>

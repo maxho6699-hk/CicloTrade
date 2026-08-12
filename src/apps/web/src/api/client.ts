@@ -590,14 +590,14 @@ export interface FeedbackReceipt {
   category: FeedbackCategory
   status: string
   created_at: string
-  message: string
+  summary: string
 }
 
 function validFeedbackReceipt(value: unknown): value is FeedbackReceipt {
   if (!value || typeof value !== 'object') return false
   const item = value as Record<string, unknown>
   return typeof item.id === 'string' && typeof item.category === 'string' && typeof item.status === 'string'
-    && typeof item.created_at === 'string' && typeof item.message === 'string'
+    && typeof item.created_at === 'string' && typeof item.summary === 'string'
 }
 
 export async function fetchFeedback(): Promise<FeedbackReceipt[]> {
