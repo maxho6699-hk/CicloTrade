@@ -101,10 +101,12 @@ class BacktestQueueDatabase:
 class ReadOnlyBacktestQueueDatabase:
     """Read an existing live queue without creating, migrating, or writing it.
 
-    URI ``mode=ro`` and ``immutable=1`` ensure the exporter does not take SQLite
-    locks or create WAL/SHM sidecars beside the canonical queue.  Evidence is
-    therefore read from the last checkpointed queue state; a concurrent worker's
-    uncheckpointed WAL entries are deferred to a later export run.
+    URI ``mode=ro`` and SQLite ``query_only`` prevent schema changes and writes
+    while retaining SQLite's normal WAL visibility.  A reader may update the
+    existing shared-memory lock file while coordinating with the writer; that is
+    not queue data, and is required to avoid silently exporting a stale snapshot.
+    On a read-only mount, SQLite requires an existing ``-wal`` and ``-shm`` pair
+    for a live WAL database; otherwise opening the queue fails closed.
     """
 
     def __init__(self, path: str | Path):
@@ -123,7 +125,7 @@ class ReadOnlyBacktestQueueDatabase:
             raise BacktestQueueDatabaseError("read-only backtest queue database cannot be opened") from exc
 
     def _connect(self) -> sqlite3.Connection:
-        uri = f"{Path(self._db_path).as_uri()}?mode=ro&immutable=1"
+        uri = f"{Path(self._db_path).as_uri()}?mode=ro"
         conn = sqlite3.connect(uri, uri=True, timeout=30, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA query_only=ON")

@@ -70,6 +70,7 @@ def test_enabled_exporter_reads_existing_queue_without_modifying_database_or_art
     protected = [queue_path, *sorted(path for path in artifact_root.rglob("*") if path.is_file())]
     before = {path: _file_identity(path) for path in protected}
     before_names = {path.relative_to(source_root).as_posix() for path in source_root.rglob("*")}
+    before_artifact_names = {path.relative_to(artifact_root).as_posix() for path in artifact_root.rglob("*")}
     original_modes = {path: stat.S_IMODE(path.stat().st_mode) for path in protected}
     for path in protected:
         path.chmod(stat.S_IREAD)
@@ -83,7 +84,9 @@ def test_enabled_exporter_reads_existing_queue_without_modifying_database_or_art
 
     assert result["state"] == "exported" and result["exported"] == 1
     assert {path: _file_identity(path) for path in protected} == before
-    assert {path.relative_to(source_root).as_posix() for path in source_root.rglob("*")} == before_names
+    after_names = {path.relative_to(source_root).as_posix() for path in source_root.rglob("*")}
+    assert after_names - before_names <= {"queue.db-wal", "queue.db-shm"}
+    assert {path.relative_to(artifact_root).as_posix() for path in artifact_root.rglob("*")} == before_artifact_names
 
 
 def test_enabled_exporter_fails_closed_when_source_queue_or_artifact_root_is_missing(tmp_path):
@@ -113,6 +116,40 @@ def test_read_only_queue_adapter_rejects_writes_at_the_sqlite_boundary(tmp_path)
         with readonly.transaction() as connection:
             connection.execute("DELETE FROM schema_migrations")
     assert _file_identity(Path(writable._db_path)) == before
+
+
+def test_enabled_exporter_reads_completed_candidate_from_live_wal_without_writing_queue(tmp_path):
+    queue = _completed_queue(tmp_path / "source")
+    queue_path = Path(queue.db._db_path)
+    job_id = queue.db.fetch_one("SELECT id FROM backtest_jobs")["id"]
+    writer = sqlite3.connect(queue_path)
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("UPDATE backtest_jobs SET status='queued', completed_at=NULL WHERE id=?", (job_id,))
+        writer.commit()
+        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        writer.execute("UPDATE backtest_jobs SET status='completed', completed_at=? WHERE id=?", ("2026-01-01T00:00:00Z", job_id))
+        writer.commit()
+
+        wal_path = queue_path.with_name(f"{queue_path.name}-wal")
+        shm_path = queue_path.with_name(f"{queue_path.name}-shm")
+        assert wal_path.exists() and shm_path.exists()
+        with sqlite3.connect(f"{queue_path.as_uri()}?mode=ro&immutable=1", uri=True) as stale:
+            assert stale.execute("SELECT status FROM backtest_jobs WHERE id=?", (job_id,)).fetchone()[0] == "queued"
+        before = {path: _file_identity(path) for path in (queue_path, wal_path)}
+
+        result = run_compute_evidence_exporter(
+            env=_enabled_exporter_env(queue_path, queue.artifacts.root, tmp_path / "delivery" / "spool.db")
+        )
+
+        assert result["state"] == "exported" and result["exported"] == 1
+        assert {path: _file_identity(path) for path in (queue_path, wal_path)} == before
+        # SQLite may mutate lock bookkeeping in an existing shared-memory file;
+        # queue data is verified above via the unchanged primary DB and WAL bytes.
+        assert shm_path.exists()
+    finally:
+        writer.close()
 
 
 def test_enabled_exporter_fails_closed_when_queue_cannot_be_opened_read_only(tmp_path, monkeypatch):
@@ -154,6 +191,7 @@ def test_systemd_units_keep_compute_and_network_capabilities_separate():
     assert "PrivateNetwork=true" in exporter
     assert "RestrictAddressFamilies=AF_UNIX" in exporter
     assert "ReadOnlyPaths=/var/lib/ciclotrade-worker/backtest-queue.db" in exporter
+    assert "ReadWritePaths=/var/lib/ciclotrade-worker/backtest-queue.db-shm" in exporter
     assert "PrivateNetwork=false" in publisher
     assert "backtest-queue.db" not in publisher and "/artifacts" not in publisher
     assert all("WantedBy=timers.target" in timer and "Persistent=false" in timer for timer in timers)
