@@ -160,6 +160,24 @@ def web_market_data_visibility(plan: str, instrument_type: str = "stock") -> dic
     return {"delivery_delay_minutes": delays[kind][level]}
 
 
+def web_recommendation_visibility(plan: str, instrument_type: str = "stock") -> dict[str, int]:
+    """Return the server-enforced website recommendation release delay.
+
+    This is deliberately separate from both market-data visibility and Telegram
+    delivery. A delayed quote is not a delayed recommendation, and changing a
+    Bot policy must never make website action content visible sooner.
+    """
+    level = str(plan) if str(plan) in PLANS else "免费版"
+    kind = str(instrument_type).strip().lower()
+    if kind not in {"stock", "option"}:
+        raise ValueError("instrument_type must be stock or option")
+    delays = {
+        "stock": {"免费版": 60, "标准版": 60, "高级版": 0, "专业版": 0, "定制版": 0},
+        "option": {"免费版": 15, "标准版": 15, "高级版": 15, "专业版": 0, "定制版": 0},
+    }
+    return {"delivery_delay_minutes": delays[kind][level]}
+
+
 def trading_limits(plan: str) -> dict[str, Any]:
     """Return execution safety caps and the plan's authorized account capacity.
 

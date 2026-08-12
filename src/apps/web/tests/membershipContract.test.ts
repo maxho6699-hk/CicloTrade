@@ -4,6 +4,7 @@ import test from 'node:test'
 
 const pageSource = readFileSync(new URL('../src/pages/MembershipPage.tsx', import.meta.url), 'utf8')
 const clientSource = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
+const opportunitiesSource = readFileSync(new URL('../src/pages/OpportunitiesPage.tsx', import.meta.url), 'utf8')
 
 test('membership page keeps plans, prices, and checkout values API-sourced', () => {
   assert.match(pageSource, /workspace\.data\.membership\.plans\.filter\(isMembershipPlan\)/)
@@ -32,4 +33,11 @@ test('membership buttons consume authoritative purchase actions instead of array
   assert.match(pageSource, /order\.can_submit_proof/)
   assert.doesNotMatch(pageSource, /currentPlanIndex/)
   assert.doesNotMatch(pageSource, /planIndex < currentPlanIndex/)
+})
+
+test('opportunities describe the server-authoritative recommendation delay and upgrade path', () => {
+  assert.match(clientSource, /delivery: \{ stock: number; option: number \}/)
+  assert.match(opportunitiesSource, /const recommendationDelivery = workspace\.data\?\.recommendations\.delivery/)
+  assert.match(opportunitiesSource, /网站推荐发布延迟/)
+  assert.match(opportunitiesSource, /升级高级会员可即时查看正股建议；升级专业会员可即时查看正股与期权建议。/)
 })

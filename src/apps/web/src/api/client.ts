@@ -189,6 +189,7 @@ export interface RecommendationItem {
   strategy_version: string
   occurred_at: string
   recorded_at?: string
+  available_at?: string
 }
 
 export interface PerformanceSnapshot {
@@ -284,7 +285,12 @@ export interface BootstrapPayload {
     mark_source: string
     activity?: PortfolioActivity
   }
-  recommendations: { items: RecommendationItem[]; source: string; fresh_marks: false }
+  recommendations: {
+    items: RecommendationItem[]
+    source: string
+    fresh_marks: false
+    delivery: { stock: number; option: number }
+  }
   performance: { items: PerformanceSnapshot[]; fresh_marks: false; mark_source: string; scope?: 'system_model_validation' | string; user_id?: number }
   settings: {
     risk: Partial<RiskSettings>

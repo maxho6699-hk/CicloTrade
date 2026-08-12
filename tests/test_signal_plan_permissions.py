@@ -5,7 +5,7 @@ import pytest
 
 from core.plans import (
     CAPABILITIES, PLAN_ORDER, PLANS, can, effective_plan, trading_limits,
-    telegram_timeline_limits, web_market_data_visibility,
+    telegram_timeline_limits, web_market_data_visibility, web_recommendation_visibility,
 )
 
 
@@ -46,6 +46,13 @@ def test_telegram_recommendation_delays_match_the_member_contract():
     assert telegram_timeline_limits("高级版")["option_delay_minutes"] == 15
     assert telegram_timeline_limits("专业版")["stock_delay_minutes"] == 0
     assert telegram_timeline_limits("专业版")["option_delay_minutes"] == 0
+
+
+def test_website_recommendation_delay_is_independent_from_market_data_and_telegram():
+    assert [web_recommendation_visibility(plan, "stock")["delivery_delay_minutes"] for plan in PLAN_ORDER] == [60, 60, 0, 0, 0]
+    assert [web_recommendation_visibility(plan, "option")["delivery_delay_minutes"] for plan in PLAN_ORDER] == [15, 15, 15, 0, 0]
+    with pytest.raises(ValueError):
+        web_recommendation_visibility("免费版", "future")
 
 
 def test_signal_and_trading_capabilities_follow_final_plan_matrix():

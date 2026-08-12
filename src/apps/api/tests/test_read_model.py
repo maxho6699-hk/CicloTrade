@@ -121,7 +121,7 @@ def test_option_details_are_filtered_before_response(compatibility):
     assert {"bid", "ask", "current_price", "quote_at"}.issubset(recommendation["missing_fields"])
 
 
-def test_stock_recommendations_require_signal_web_entitlement(compatibility):
+def test_website_recommendation_release_gate_uses_recorded_at_per_member_plan(compatibility):
     database, user, login, repository = compatibility
     QuantJournal(database).append_event(
         ledger_key="tradeai-system",
@@ -157,12 +157,16 @@ def test_stock_recommendations_require_signal_web_entitlement(compatibility):
         (expiry, user["id"]),
     )
     standard = repository.authenticate(login.access_token)
-    visible = repository.recommendations(standard)["items"][0]
+    assert repository.recommendations(standard)["items"][0]["state"] == "locked"
+
+    visible_at = datetime.now(UTC) + timedelta(minutes=61)
+    visible = repository.recommendations(standard, now=visible_at)["items"][0]
     assert visible["state"] == "official"
     assert visible["symbol"] == "AAPL"
     assert visible["actionable"] is True
     assert visible["contract_status"] == "complete"
     assert visible["stop_price"] == 200
+    assert datetime.fromisoformat(visible["available_at"]) <= visible_at
 
     expired = (datetime.now(UTC) - timedelta(days=1)).isoformat()
     database.execute(
@@ -170,7 +174,75 @@ def test_stock_recommendations_require_signal_web_entitlement(compatibility):
         (expired, user["id"]),
     )
     downgraded = repository.authenticate(login.access_token)
-    assert repository.recommendations(downgraded)["items"][0]["state"] == "locked"
+    assert repository.recommendations(downgraded, now=visible_at)["items"][0]["state"] == "official"
+
+
+@pytest.mark.parametrize(
+    "provided_now",
+    (
+        datetime(2026, 8, 12, 4, 0),
+        datetime(2026, 8, 12, 12, 0, tzinfo=UTC),
+    ),
+)
+def test_website_recommendation_release_gate_normalizes_naive_and_aware_now(compatibility, provided_now):
+    _, _, _, repository = compatibility
+    legs = repository._legs_for_events([{
+        "id": 1,
+        "recorded_at": "2026-08-12T03:00:00+00:00",
+        "_legs": [{"instrument_type": "stock", "symbol": "AAPL"}],
+    }], plan="标准版", now=provided_now)
+
+    assert legs[1][0]["symbol"] == "AAPL"
+    assert legs[1][0]["available_at"] == "2026-08-12T04:00:00+00:00"
+
+
+@pytest.mark.parametrize(
+    ("plan", "instrument_type", "age_minutes", "visible"),
+    (
+        ("免费版", "stock", 59, False),
+        ("免费版", "stock", 60, True),
+        ("标准版", "option", 14, False),
+        ("标准版", "option", 15, True),
+        ("高级版", "stock", 0, True),
+        ("高级版", "option", 14, False),
+        ("高级版", "option", 15, True),
+        ("专业版", "option", 0, True),
+    ),
+)
+def test_website_recommendation_matrix_never_leaks_before_available_at(
+    compatibility, plan, instrument_type, age_minutes, visible,
+):
+    database, user, login, repository = compatibility
+    expiry = (datetime.now(UTC) + timedelta(days=30)).isoformat()
+    database.execute(
+        "UPDATE users SET plan_type=?,subscription_expire=? WHERE id=?", (plan, expiry, user["id"])
+    )
+    legs = [{
+        "market": "US", "instrument_type": instrument_type, "symbol": "AAPL",
+        "target_quantity": 1, "quantity_delta": 1, "price": 210,
+    }]
+    if instrument_type == "option":
+        legs[0].update({"option_expiry": "2026-09-18", "option_right": "CALL", "option_strike": 210})
+    event = QuantJournal(database).append_event(
+        ledger_key="tradeai-system", source="pytest",
+        external_event_id=f"website-release-{plan}-{instrument_type}-{age_minutes}",
+        strategy_name="release-gate", strategy_version="1", occurred_at=datetime.now(UTC).isoformat(), legs=legs,
+    )
+    recorded_at = datetime.fromisoformat(event["recorded_at"])
+    identity = repository.authenticate(login.access_token)
+    visible_at = recorded_at + timedelta(minutes=age_minutes)
+    item = repository.recommendations(identity, now=visible_at)["items"][0]
+    timeline_leg = repository.timeline(identity, now=visible_at)["items"][0]["legs"][0]
+    assert (item["state"] == "official") is visible
+    if visible:
+        assert item["symbol"] == "AAPL"
+        assert "available_at" in item
+        assert timeline_leg["symbol"] == "AAPL"
+        assert "available_at" in timeline_leg
+    else:
+        assert "symbol" not in item
+        assert "reference_price" not in item
+        assert timeline_leg == {"instrument_type": instrument_type, "locked": True}
 
 
 def test_recommendations_distinguish_short_cover_and_incomplete_contract(compatibility):
@@ -201,7 +273,7 @@ def test_recommendations_distinguish_short_cover_and_incomplete_contract(compati
     )
 
     identity = repository.authenticate(login.access_token)
-    items = repository.recommendations(identity)["items"]
+    items = repository.recommendations(identity, now=datetime.now(UTC) + timedelta(minutes=61))["items"]
 
     assert [item["action"] for item in items[:2]] == ["COVER", "SHORT"]
     assert [item["position_action"] for item in items[:2]] == ["close_short", "open_short"]

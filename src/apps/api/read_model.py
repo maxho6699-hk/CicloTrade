@@ -15,7 +15,10 @@ from typing import Any, Iterator
 from core.auth import AuthError, _decode_token
 from core.compat import UTC
 from core.broker_authorization import broker_execution_authorized
-from core.plans import CAPABILITIES, PLAN_ORDER, PLANS, can, effective_plan, plan_display_name, trading_limits
+from core.plans import (
+    CAPABILITIES, PLAN_ORDER, PLANS, effective_plan, plan_display_name,
+    trading_limits, web_recommendation_visibility,
+)
 from core.membership import membership_purchase_state, resolve_membership_snapshot
 from core.official_paper_consumers import (
     OFFICIAL_PAPER_V2,
@@ -146,6 +149,21 @@ def _quote_is_fresh(value: Any, *, now: datetime | None = None) -> bool:
         quoted_at = quoted_at.replace(tzinfo=UTC)
     age = (now or datetime.now(UTC)) - quoted_at.astimezone(UTC)
     return -timedelta(minutes=1) <= age <= timedelta(minutes=15)
+
+
+def _timestamp(value: Any) -> datetime | None:
+    """Parse a persisted timestamp without trusting client-facing strings."""
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+def _recommendation_available_at(recorded_at: Any, delay_minutes: int) -> datetime | None:
+    """Derive the immutable website release time from the recorded event time."""
+    recorded = _timestamp(recorded_at)
+    return recorded + timedelta(minutes=max(0, int(delay_minutes))) if recorded else None
 
 
 def _mask_identifier(value: str) -> str:
@@ -737,44 +755,51 @@ class ReadOnlyLegacyRepository:
         return sorted(rows, key=lambda row: (str(row["recorded_at"]), int(row["id"])), reverse=True)[:bounded]
 
     def _legs_for_events(
-        self, event_rows: list[dict[str, Any]], *, include_stocks: bool, include_options: bool
+        self, event_rows: list[dict[str, Any]], *, plan: str, now: datetime | None = None,
     ) -> dict[int, list[dict[str, Any]]]:
+        """Project legs only after their website release gate has opened.
+
+        ``available_at`` is derived from the append-only ``recorded_at`` value
+        and the website recommendation policy. Both timestamps are checked
+        server-side; the browser never receives a key action before release.
+        """
+        current = datetime.now(UTC) if now is None else (
+            now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
+        )
         output = {int(event["id"]): [] for event in event_rows}
         for event in event_rows:
+            recorded_at = _timestamp(event["recorded_at"])
             for leg in event["_legs"]:
                 item = dict(leg)
                 item.pop("id", None)
                 item.pop("leg_no", None)
                 event_id = int(event["id"])
                 instrument_type = str(item["instrument_type"])
-                if (instrument_type == "stock" and not include_stocks) or (
-                    instrument_type == "option" and not include_options
-                ):
+                delay = web_recommendation_visibility(plan, instrument_type)["delivery_delay_minutes"]
+                available_at = _recommendation_available_at(event["recorded_at"], delay)
+                if recorded_at is None or available_at is None or recorded_at > current or available_at > current:
                     item = {"instrument_type": instrument_type, "locked": True}
+                else:
+                    item["available_at"] = available_at.isoformat()
                 output[event_id].append(item)
         return output
 
     def timeline(
-        self, identity: BrowserIdentity, *, limit: int = 30, cursor: int | None = None
+        self, identity: BrowserIdentity, *, limit: int = 30, cursor: int | None = None,
+        now: datetime | None = None,
     ) -> dict[str, Any]:
         rows = self._event_rows(limit=limit, cursor=cursor)
-        include_stocks = can(identity.effective_plan, "signal_web")
-        include_options = can(identity.effective_plan, "tg_option_signal")
-        legs = self._legs_for_events(
-            rows,
-            include_stocks=include_stocks,
-            include_options=include_options,
-        )
+        legs = self._legs_for_events(rows, plan=identity.effective_plan, now=now)
         items = [{
             key: value for key, value in row.items() if not key.startswith("_")
         } | {"active": bool(row["active"]), "legs": legs[int(row["id"])]} for row in rows]
         return {"items": items, "next_cursor": items[-1]["id"] if len(items) == limit else None}
 
-    def recommendations(self, identity: BrowserIdentity, *, limit: int = 20) -> dict[str, Any]:
+    def recommendations(
+        self, identity: BrowserIdentity, *, limit: int = 20, now: datetime | None = None,
+    ) -> dict[str, Any]:
         rows = self._event_rows(limit=min(max(limit * 3, limit), 100))
-        include_stocks = can(identity.effective_plan, "signal_web")
-        include_options = can(identity.effective_plan, "tg_option_signal")
-        legs_by_event = self._legs_for_events(rows, include_stocks=include_stocks, include_options=include_options)
+        legs_by_event = self._legs_for_events(rows, plan=identity.effective_plan, now=now)
         items = []
         for row in rows:
             event = {key: value for key, value in row.items() if not key.startswith("_")}
@@ -859,10 +884,18 @@ class ReadOnlyLegacyRepository:
                     **contract,
                     "strategy_name": event["strategy_name"], "strategy_version": event["strategy_version"],
                     "occurred_at": event["occurred_at"], "recorded_at": event["recorded_at"],
+                    "available_at": leg["available_at"],
                 })
             if len(items) >= limit:
                 break
-        return {"items": items[:limit], "source": "immutable_quant_journal", "fresh_marks": False}
+        plan = identity.effective_plan
+        return {
+            "items": items[:limit], "source": "immutable_quant_journal", "fresh_marks": False,
+            "delivery": {
+                instrument: web_recommendation_visibility(plan, instrument)["delivery_delay_minutes"]
+                for instrument in ("stock", "option")
+            },
+        }
 
     def performance(self, identity: BrowserIdentity, *, limit: int = 200) -> dict[str, Any]:
         bounded = max(1, min(int(limit), 500))

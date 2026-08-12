@@ -91,6 +91,7 @@ export function OpportunitiesPage() {
   const [watchBusy, setWatchBusy] = useState('')
   const demoMode = workspace.mode === 'demo' || workspace.mode === 'offline'
   const capabilities = workspace.data?.membership.capabilities ?? []
+  const recommendationDelivery = workspace.data?.recommendations.delivery
   const hasOptionResearch = ['option_chain', 'option_quote_chart', 'option_greeks', 'option_iv', 'option_strategy', 'option_strategy_multi_leg'].every((capability) => capabilities.includes(capability))
   const optionLocked = filter === 'option' && !hasOptionResearch
   const evidenceEventIds = useMemo(() => new Set((workspace.data?.portfolio.activity?.executions ?? []).flatMap((execution) => {
@@ -204,6 +205,7 @@ export function OpportunitiesPage() {
         <SegmentedControl ariaLabel="机会类型" value={filter} options={filterOptions} onChange={(value) => { const next = new URLSearchParams(searchParams); if (value === 'all') next.delete('type'); else next.set('type', value); setSearchParams(next); setShowAllMobile(false) }} />
         <span className="opportunity-order-note">按正式记录时间排列</span>
       </section>
+      {recommendationDelivery && (recommendationDelivery.stock > 0 || recommendationDelivery.option > 0) && <div className="opportunity-demo-notice"><Clock3 size={17} /><span><strong>网站推荐发布延迟</strong><small>正股建议在正式记录后延迟 {recommendationDelivery.stock} 分钟；期权建议延迟 {recommendationDelivery.option} 分钟。{recommendationDelivery.stock > 0 && recommendationDelivery.option > 0 ? '升级高级会员可即时查看正股建议；升级专业会员可即时查看正股与期权建议。' : '专业会员可即时查看正股与期权建议。'}</small></span><button className="button tertiary" type="button" onClick={() => navigate('/membership')}>查看升级权益</button></div>}
       {demoMode && <div className="opportunity-demo-notice"><ShieldAlert size={17} /><span><strong>当前为界面演示</strong><small>以下卡片用于展示机会中心的信息层级，不是真实行情或交易建议。</small></span></div>}
       {filter === 'short' && <div className="opportunity-demo-notice"><ShieldAlert size={17} /><span><strong>建立空头 = 卖出做空</strong><small>这不是卖出现有持仓。只有触发条件出现，并确认券商保证金、可借券与账户权限后才考虑执行。</small></span></div>}
       {optionLocked && <section className="opportunity-option-lock data-panel"><LockKeyhole size={28} /><div><span>PROFESSIONAL OPTIONS RESEARCH</span><h2>期权研究只对专业会员开放</h2><p>期权链、期权报价 K 线、Bid / Ask、价差、Greeks、IV、成交量、未平仓量，以及单腿与多腿组合内容都会保持隐藏，不泄露合约字段。</p></div><button className="button primary" type="button" onClick={() => navigate('/membership')}>查看专业会员权益</button></section>}
