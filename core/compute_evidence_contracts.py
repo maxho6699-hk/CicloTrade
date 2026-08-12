@@ -279,7 +279,9 @@ def _artifacts(
         if item["direction"] != "input":
             continue
         declared = input_descriptors[item["artifact_key"]]
-        if item["bytes"] != declared.get("bytes") or item["row_count"] != declared.get("rows"):
+        if "bytes" in declared and item["bytes"] != declared["bytes"]:
+            raise ComputeEvidenceError("input artifact metadata does not match the frozen manifest")
+        if "rows" in declared and item["row_count"] != declared["rows"]:
             raise ComputeEvidenceError("input artifact metadata does not match the frozen manifest")
     return sorted(normalized, key=lambda item: (item["direction"], item["artifact_key"]))
 

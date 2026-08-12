@@ -231,6 +231,17 @@ def test_contract_rejects_artifact_tamper_and_non_equity_proxy_or_wrong_site():
         validate_package(rejected)
 
 
+def test_contract_accepts_legacy_frozen_input_without_optional_size_metadata():
+    value = package_fixture()
+    for item in value["manifest"]["inputs"]:
+        item.pop("bytes", None)
+        item.pop("rows", None)
+    _rebind(value)
+    accepted = validate_package(value)
+    assert accepted["manifest"]["inputs"]
+    assert all("bytes" not in item and "rows" not in item for item in accepted["manifest"]["inputs"])
+
+
 def test_package_builder_accepts_completed_system_shadow_and_detects_artifact_tamper(tmp_path):
     queue = _completed_queue(tmp_path)
     job_id = queue.db.fetch_one("SELECT id FROM backtest_jobs")["id"]
