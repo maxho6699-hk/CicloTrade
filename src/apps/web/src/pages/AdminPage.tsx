@@ -1,9 +1,12 @@
-import { AlertTriangle, CheckCircle2, CircleAlert, CreditCard, Gauge, LoaderCircle, RefreshCw, ShieldAlert, UsersRound } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { AlertTriangle, CheckCircle2, CircleAlert, CreditCard, Database, Fingerprint, Gauge, LoaderCircle, LockKeyhole, RefreshCw, ShieldAlert, UsersRound } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
   BrowserApiError,
   fetchAdminAudit,
   fetchAdminBrokers,
+  fetchAdminComputeEvidenceHistory,
+  fetchAdminComputeEvidenceLatest,
+  fetchAdminComputeEvidenceStatus,
   fetchAdminManualClaims,
   fetchAdminOverview,
   fetchAdminUsers,
@@ -11,6 +14,9 @@ import {
   updateAdminUserAutoTrading,
   type AdminAuditEntry,
   type AdminBrokerAccount,
+  type AdminComputeEvidenceHistory,
+  type AdminComputeEvidenceLatest,
+  type AdminComputeEvidenceStatus,
   type AdminManualClaim,
   type AdminOverview,
   type AdminUser,
@@ -23,9 +29,18 @@ type AdminData = {
   claims: AdminManualClaim[]
   brokers: AdminBrokerAccount[]
   audit: AdminAuditEntry[]
+  evidenceStatus: AdminComputeEvidenceStatus
+  evidenceLatest: AdminComputeEvidenceLatest
+  evidenceHistory: AdminComputeEvidenceHistory
 }
 
-const emptyData: AdminData = { overview: {}, users: [], claims: [], brokers: [], audit: [] }
+const emptyEvidenceAuthority = { publication_ceiling: 'shadow', research_only: true, actionable: false, user_visible: false } as const
+const emptyData: AdminData = {
+  overview: {}, users: [], claims: [], brokers: [], audit: [],
+  evidenceStatus: { ...emptyEvidenceAuthority, available: false, counts: { quarantine: 0, shadow: 0 }, last_received_at: null },
+  evidenceLatest: { ...emptyEvidenceAuthority, available: false, evidence: null },
+  evidenceHistory: { ...emptyEvidenceAuthority, available: false, limit: 20, items: [] },
+}
 
 function errorMessage(caught: unknown, fallback: string) {
   return caught instanceof BrowserApiError ? caught.message : fallback
@@ -52,9 +67,18 @@ function displayDate(value: unknown) {
   return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleString('zh-HK', { hour12: false, timeZone: 'Asia/Hong_Kong' }) : value
 }
 
+function shortHash(value: unknown) {
+  const text = typeof value === 'string' ? value.trim() : ''
+  return text.length >= 16 ? `${text.slice(0, 8)}…${text.slice(-6)}` : text || '未提供'
+}
+
 export function AdminPage() {
   const [data, setData] = useState<AdminData>(emptyData)
   const [loading, setLoading] = useState(true)
+  const [evidenceLoading, setEvidenceLoading] = useState(true)
+  const [evidenceError, setEvidenceError] = useState('')
+  const [evidenceUpdatedAt, setEvidenceUpdatedAt] = useState<string | null>(null)
+  const evidenceUpdatedAtRef = useRef<string | null>(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [reviewingId, setReviewingId] = useState<number | null>(null)
@@ -83,20 +107,37 @@ export function AdminPage() {
     { label: '24h 严重风险', value: data.overview.critical_risk, total: Math.max(1, numberValue(data.overview.critical_risk)), Icon: AlertTriangle, tone: 'risk' },
   ], [data.claims.length, data.overview])
 
-  async function load() {
+  const load = useCallback(async () => {
     setLoading(true); setError('')
     try {
       const [overview, users, claims, brokers, audit] = await Promise.all([
         fetchAdminOverview(), fetchAdminUsers(), fetchAdminManualClaims(), fetchAdminBrokers(), fetchAdminAudit(),
       ])
-      setData({ overview, users, claims, brokers, audit })
+      setData((current) => ({ ...current, overview, users, claims, brokers, audit }))
     } catch (caught) {
       setError(errorMessage(caught, '管理数据暂时不可用。未显示任何推断数据。'))
-      setData(emptyData)
+      setData((current) => ({ ...current, overview: {}, users: [], claims: [], brokers: [], audit: [] }))
     } finally { setLoading(false) }
-  }
+  }, [])
 
-  useEffect(() => { void load() }, [])
+  const refreshEvidence = useCallback(async () => {
+    setEvidenceLoading(true); setEvidenceError('')
+    try {
+      const [evidenceStatus, evidenceLatest, evidenceHistory] = await Promise.all([
+        fetchAdminComputeEvidenceStatus(), fetchAdminComputeEvidenceLatest(), fetchAdminComputeEvidenceHistory(20),
+      ])
+      setData((current) => ({ ...current, evidenceStatus, evidenceLatest, evidenceHistory }))
+      const refreshedAt = new Date().toISOString()
+      evidenceUpdatedAtRef.current = refreshedAt
+      setEvidenceUpdatedAt(refreshedAt)
+    } catch (caught) {
+      const message = errorMessage(caught, '隔离研究收据暂时不可用。')
+      const lastSuccessfulRefresh = evidenceUpdatedAtRef.current
+      setEvidenceError(lastSuccessfulRefresh ? `${message} 当前保留上次成功刷新的只读快照（${displayDate(lastSuccessfulRefresh)}）。` : message)
+    } finally { setEvidenceLoading(false) }
+  }, [])
+
+  useEffect(() => { void load(); void refreshEvidence() }, [load, refreshEvidence])
 
   useEffect(() => {
     if (!loading && notice && focusNoticeAfterLoadRef.current) {
@@ -192,6 +233,26 @@ export function AdminPage() {
         const percentage = Math.min(100, Math.round(numberValue(value) / Math.max(1, numberValue(total)) * 100))
         return <article className={`admin-metric admin-metric-${tone}`} key={label}><Icon size={18} /><div className="admin-ring" style={{ '--admin-ring-value': percentage } as React.CSSProperties}><strong>{countLabel(value)}</strong><small>{percentage}%</small></div><span>{label}</span></article>
       })}
+    </section>
+    <section className="admin-evidence" aria-labelledby="compute-evidence-title">
+      <header>
+        <div className="admin-evidence-title"><span><LockKeyhole size={18} /></span><div><small>COMPUTE EVIDENCE / QUARANTINE</small><h2 id="compute-evidence-title">策略研究收据隔离区</h2><p>只读查看已回传的研究证据；始终不可执行、不可推送、不可对用户显示。</p>{evidenceUpdatedAt && <small className="admin-evidence-refreshed">上次成功刷新：{displayDate(evidenceUpdatedAt)}</small>}</div></div>
+        <button className="button secondary" type="button" disabled={evidenceLoading} onClick={() => void refreshEvidence()}><RefreshCw className={evidenceLoading ? 'spin' : ''} size={16} />{evidenceLoading ? '刷新中…' : '刷新收据'}</button>
+      </header>
+      {evidenceError && <p className="admin-evidence-error" role="alert"><CircleAlert size={15} />{evidenceError}</p>}
+      {evidenceLoading ? <AdminState label="正在读取隔离研究收据…" /> : <>
+        <div className="admin-evidence-metrics">
+          <article><Database size={17} /><span>收据总数</span><strong>{countLabel(data.evidenceStatus.counts.quarantine + data.evidenceStatus.counts.shadow)}</strong></article>
+          <article><ShieldAlert size={17} /><span>隔离 / 影子</span><strong>{countLabel(data.evidenceStatus.counts.quarantine)} / {countLabel(data.evidenceStatus.counts.shadow)}</strong></article>
+          <article><Gauge size={17} /><span>最新候选</span><strong>{data.evidenceLatest.evidence?.candidate_id ?? '尚无收据'}</strong></article>
+          <article><Fingerprint size={17} /><span>最近接收</span><strong>{displayDate(data.evidenceStatus.last_received_at)}</strong></article>
+        </div>
+        {data.evidenceLatest.evidence ? <div className="admin-evidence-latest">
+          <div><span className={`admin-state ${data.evidenceLatest.evidence.publication_state === 'quarantine' ? 'pending' : 'healthy'}`}>{data.evidenceLatest.evidence.publication_state === 'quarantine' ? '隔离' : '影子'}</span><small>最新候选</small><strong>{data.evidenceLatest.evidence.candidate_id}</strong><p>{data.evidenceLatest.evidence.symbols.join(' · ')} · {data.evidenceLatest.evidence.candidate_version}</p></div>
+          <dl><div><dt>候选状态</dt><dd>{data.evidenceLatest.evidence.candidate_status}</dd></div><div><dt>完成时间</dt><dd>{displayDate(data.evidenceLatest.evidence.completed_at)}</dd></div><div><dt>Manifest</dt><dd title={data.evidenceLatest.evidence.manifest_sha256}>{shortHash(data.evidenceLatest.evidence.manifest_sha256)}</dd></div><div><dt>Result</dt><dd title={data.evidenceLatest.evidence.result_sha256}>{shortHash(data.evidenceLatest.evidence.result_sha256)}</dd></div></dl>
+        </div> : <AdminState label="尚未收到可显示的隔离研究收据。" />}
+        {data.evidenceHistory.items.length > 0 && <div className="admin-evidence-history"><header><span>最近收据</span><small>最多显示 20 条</small></header><div className="responsive-table"><table><thead><tr><th>候选</th><th>状态</th><th>接收时间</th><th>Package</th></tr></thead><tbody>{data.evidenceHistory.items.map((item) => <tr key={`${item.package_sha256}:${item.received_at}`}><td><strong>{item.candidate_id}</strong><small>{item.candidate_version}</small></td><td><span className={`admin-state ${item.publication_state === 'quarantine' ? 'pending' : 'healthy'}`}>{item.publication_state === 'quarantine' ? '隔离' : '影子'}</span></td><td>{displayDate(item.received_at)}</td><td><code title={item.package_sha256}>{shortHash(item.package_sha256)}</code></td></tr>)}</tbody></table></div></div>}
+      </>}
     </section>
     <div className="admin-grid">
       <section className="data-panel admin-panel admin-claims"><header className="panel-heading"><div><span>PAYMENT REVIEW</span><h2>人工付款凭证</h2></div><CreditCard size={20} /></header><p className="admin-panel-note">只有“待人工审核”的凭证可提交决定；批准与拒绝均写入审计记录。</p>{loading ? <AdminState label="正在读取付款凭证…" /> : data.claims.length ? <div className="responsive-table"><table><thead><tr><th>凭证</th><th>账户</th><th>金额</th><th>状态</th><th>操作</th></tr></thead><tbody>{data.claims.map((claim) => <tr key={claim.id}><td><strong>#{claim.id}</strong><small>{claim.order_no}</small></td><td>{claim.user_email ?? '未提供'}</td><td>{typeof claim.amount === 'number' ? `${claim.currency ?? ''} ${claim.amount.toLocaleString('zh-HK')}` : '未提供'}</td><td><span className={`admin-state ${claim.status === 'submitted' ? 'pending' : claim.status}`}>{claim.status === 'submitted' ? '待人工审核' : claim.status}</span></td><td>{claim.status === 'submitted' ? <span className="admin-row-actions"><button type="button" onClick={(event) => { modalTriggerRef.current = event.currentTarget; setReviewMode({ id: claim.id, decision: 'approve' }) }}>批准</button><button type="button" onClick={(event) => { modalTriggerRef.current = event.currentTarget; setReviewMode({ id: claim.id, decision: 'reject' }) }}>拒绝</button></span> : '已处理'}</td></tr>)}</tbody></table></div> : <AdminState label="没有待处理的人工付款凭证。" />}</section>
