@@ -228,7 +228,7 @@ class BrowserWriteService:
 
     def create_alert(self, identity: BrowserIdentity, payload: dict[str, Any]) -> list[dict[str, Any]]:
         allowed = {
-            "symbol", "conditions", "logic", "trigger_mode", "repeat_mode", "expires_at",
+            "market", "symbol", "conditions", "logic", "trigger_mode", "repeat_mode", "expires_at",
             "channels", "notify_channels", "notify_only", "operator", "target", "target_price", "value",
         }
         if set(payload) - allowed or not isinstance(payload.get("symbol"), str):
@@ -256,6 +256,7 @@ class BrowserWriteService:
             repeat_mode=payload.get("repeat_mode", "once"),
             expires_at=payload.get("expires_at"),
             channels=channels,
+            market=payload.get("market"),
         )
         return self.list_alerts(identity)
 

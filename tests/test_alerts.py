@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from pathlib import Path
+import sqlite3
 from core.compat import UTC
 
 import pandas as pd
@@ -36,6 +38,42 @@ def _user(db: DatabaseManager, suffix: str, plan: str = "免费版") -> dict:
     return user
 
 
+def test_price_alert_market_migration_backfills_and_checks_values(tmp_path):
+    connection = sqlite3.connect(tmp_path / "legacy-alerts.db")
+    connection.executescript(
+        """CREATE TABLE price_alerts (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               user_id INTEGER NOT NULL,
+               symbol TEXT NOT NULL,
+               operator TEXT NOT NULL,
+               target_price REAL NOT NULL,
+               conditions TEXT,
+               logic TEXT NOT NULL DEFAULT 'AND',
+               is_active INTEGER NOT NULL DEFAULT 1,
+               last_triggered TEXT,
+               created_at TEXT NOT NULL
+           );
+           INSERT INTO price_alerts
+               (user_id,symbol,operator,target_price,created_at)
+           VALUES
+               (1,'600519','>=',100,'2026-08-12T00:00:00+00:00'),
+               (1,'AAPL','>=',100,'2026-08-12T00:00:00+00:00');"""
+    )
+
+    migration = Path("migrations/0024_price_alert_market.sql").read_text(encoding="utf-8")
+    connection.executescript(migration)
+
+    assert connection.execute(
+        "SELECT symbol,market FROM price_alerts ORDER BY id"
+    ).fetchall() == [("600519", "CN"), ("AAPL", "US")]
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            """INSERT INTO price_alerts
+               (user_id,market,symbol,operator,target_price,created_at)
+               VALUES (1,'HK','0700','>=',100,'2026-08-12T00:00:00+00:00')"""
+        )
+
+
 def test_and_or_conditions_are_evaluated_and_persisted(db):
     user = _user(db, "logic", "标准版")
     alerts = AlertService(db)
@@ -67,6 +105,37 @@ def test_and_or_conditions_are_evaluated_and_persisted(db):
     assert and_hit[0]["preview"] == "AAPL 价格 >= 100 AND RSI <= 30"
     assert or_hit[0]["logic"] == "OR"
     assert alerts.evaluate(user["id"], {"AAPL": 110, "MSFT": 600}) == []
+
+
+def test_market_is_persisted_normalized_and_scopes_evaluation(db):
+    user = _user(db, "market", "标准版")
+    alerts = AlertService(db)
+    alerts.create(user["id"], None, " aapl ", ">=", 200, market="us")
+    alerts.create(user["id"], None, "600519.SS", ">=", 100, market="CN")
+
+    listed = alerts.list(user["id"])
+    assert {(row["market"], row["symbol"]) for row in listed} == {
+        ("US", "AAPL"),
+        ("CN", "600519"),
+    }
+    assert alerts.evaluate(user["id"], {"CN:AAPL": 201, "US:600519": 101}) == []
+    assert alerts.evaluate(user["id"], {"US:AAPL": 201})[0]["market"] == "US"
+    assert alerts.evaluate(user["id"], {"600519": 101})[0]["market"] == "CN"
+
+
+@pytest.mark.parametrize(
+    ("market", "symbol", "message"),
+    [
+        ("HK", "0700", "US 或 CN"),
+        ("", "AAPL", "US 或 CN"),
+        ("US", "600519", "美股 ticker"),
+        ("CN", "AAPL", "6 位数字"),
+    ],
+)
+def test_market_and_symbol_must_match(db, market, symbol, message):
+    user = _user(db, f"invalid-{market}-{symbol}")
+    with pytest.raises(ValueError, match=message):
+        AlertService(db).create(user["id"], None, symbol, ">=", 100, market=market)
 
 
 def test_database_plan_cannot_be_spoofed(db):
@@ -122,6 +191,19 @@ def test_background_scan_handles_empty_and_single_row_history(db):
     assert scan_price_alerts(db, EmptyHistory()) == 0
     assert alerts.list(user["id"])[0]["is_active"] == 1
     assert scan_price_alerts(db, SingleRowHistory()) == 1
+
+
+def test_background_scan_supports_cn_alert_market(db):
+    user = _user(db, "cn-scan")
+    AlertService(db).create(user["id"], None, "600519", ">=", 1500, market="CN")
+
+    class ChinaHistory:
+        def history(self, symbols, period):
+            assert symbols == ("600519",)
+            return pd.DataFrame({"600519": [1499.0, 1501.0]}), pd.DataFrame({"600519": [1, 1]})
+
+    assert scan_price_alerts(db, ChinaHistory()) == 1
+    assert AlertService(db).list(user["id"])[0]["market"] == "CN"
 
 
 def test_background_scan_uses_five_day_volume_ratio(db):

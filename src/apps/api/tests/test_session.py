@@ -2366,6 +2366,7 @@ def test_alert_delete_endpoint_is_idempotent_and_rejects_other_users(browser_api
 def test_alert_create_endpoint_accepts_metadata_and_deduplicates(browser_api):
     auth_header = f"Bearer {_login_token()}"
     payload = {
+        "market": "US",
         "symbol": "AAPL",
         "conditions": [{"type": "price", "operator": "<=", "value": 180}],
         "trigger_mode": "crosses_below",
@@ -2384,10 +2385,38 @@ def test_alert_create_endpoint_accepts_metadata_and_deduplicates(browser_api):
     assert first.status_code == second.status_code == 201
     assert len(_payload(first)["items"]) == len(_payload(second)["items"]) == 1
     item = _payload(first)["items"][0]
+    assert item["market"] == "US"
     assert item["trigger_mode"] == "crosses_below"
     assert item["repeat_mode"] == "repeat"
     assert item["channels"] == ["website"]
     assert item["notify_only"] is True
+
+
+def test_alert_create_endpoint_supports_cn_and_rejects_invalid_market(browser_api):
+    auth_header = f"Bearer {_login_token()}"
+    created = asyncio.run(alerts(_request(
+        "/api/rewrite/v1/alerts", method="POST", authorization=auth_header,
+        payload={
+            "market": "CN",
+            "symbol": "600519.SS",
+            "conditions": [{"type": "price", "operator": ">=", "value": 1500}],
+        },
+    )))
+
+    item = _payload(created)["items"][0]
+    assert created.status_code == 201
+    assert (item["market"], item["symbol"]) == ("CN", "600519")
+
+    with pytest.raises(ApiError, match="US 或 CN") as invalid:
+        asyncio.run(alerts(_request(
+            "/api/rewrite/v1/alerts", method="POST", authorization=auth_header,
+            payload={
+                "market": "A股",
+                "symbol": "600519",
+                "conditions": [{"type": "price", "operator": ">=", "value": 1500}],
+            },
+        )))
+    assert invalid.value.status == 400
 
 
 def test_watchlist_api_isolates_identities(browser_api):

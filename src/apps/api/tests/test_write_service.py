@@ -203,7 +203,51 @@ def test_alert_creation_uses_legacy_plan_and_condition_rules(write_context):
     })
 
     assert alerts[0]["symbol"] == "AAPL"
+    assert alerts[0]["market"] == "US"
     assert alerts[0]["conditions_list"][0]["value"] == 220
+
+
+def test_alert_creation_accepts_explicit_us_and_cn_markets(write_context):
+    _, identity, service = write_context
+
+    us_items = service.create_alert(identity, {
+        "market": "US",
+        "symbol": " aapl ",
+        "conditions": [{"type": "price", "operator": ">=", "value": 220}],
+    })
+    legacy_us_items = service.create_alert(identity, {
+        "symbol": "AAPL",
+        "conditions": [{"type": "price", "operator": ">=", "value": 220}],
+    })
+    cn_items = service.create_alert(identity, {
+        "market": "CN",
+        "symbol": "600519.SS",
+        "conditions": [{"type": "price", "operator": ">=", "value": 1500}],
+    })
+
+    assert {(item["market"], item["symbol"]) for item in cn_items} == {
+        ("US", "AAPL"),
+        ("CN", "600519"),
+    }
+    assert us_items[0]["market"] == "US"
+    assert len(legacy_us_items) == 1
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"market": "A股", "symbol": "600519"},
+        {"market": "US", "symbol": "600519"},
+        {"market": "CN", "symbol": "AAPL"},
+    ],
+)
+def test_alert_creation_rejects_invalid_market_symbol_pairs(write_context, payload):
+    _, identity, service = write_context
+    with pytest.raises(ValueError):
+        service.create_alert(identity, {
+            **payload,
+            "conditions": [{"type": "price", "operator": ">=", "value": 100}],
+        })
 
 
 def test_alert_metadata_validates_cross_repeat_expiry_channels_and_deduplicates(write_context):

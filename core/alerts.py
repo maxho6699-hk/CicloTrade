@@ -20,6 +20,54 @@ OPERATORS = {">=", "<=", ">", "<", "="}
 TRIGGER_MODES = {"at_or_above", "at_or_below", "crosses_above", "crosses_below"}
 REPEAT_MODES = {"once", "repeat"}
 ALERT_CHANNELS = {"website", "telegram"}
+ALERT_MARKETS = {"US", "CN"}
+_US_SYMBOL = re.compile(r"[A-Z][A-Z0-9.-]{0,11}")
+_CN_SYMBOL = re.compile(r"\d{6}")
+
+
+def normalize_alert_instrument(symbol: Any, market: Any = None) -> tuple[str, str]:
+    """Return the canonical (market, symbol) pair for persisted alerts."""
+    if not isinstance(symbol, str):
+        raise ValueError("预警标的代码必须是字符串。")
+    normalized_symbol = symbol.strip().upper()
+    if market is None:
+        normalized_market = "CN" if _CN_SYMBOL.fullmatch(normalized_symbol) else "US"
+    elif not isinstance(market, str):
+        raise ValueError("预警市场必须是 US 或 CN。")
+    else:
+        normalized_market = market.strip().upper()
+    if normalized_market not in ALERT_MARKETS:
+        raise ValueError("预警市场必须是 US 或 CN。")
+    if normalized_market == "CN" and normalized_symbol.endswith((".SS", ".SZ")):
+        normalized_symbol = normalized_symbol[:-3]
+    pattern = _CN_SYMBOL if normalized_market == "CN" else _US_SYMBOL
+    if not pattern.fullmatch(normalized_symbol):
+        expected = "6 位数字" if normalized_market == "CN" else "美股 ticker"
+        raise ValueError(f"{normalized_market} 市场标的代码无效，应为{expected}。")
+    return normalized_market, normalized_symbol
+
+
+def _market_value_map(values: dict[Any, Any] | None) -> dict[tuple[str, str], Any]:
+    """Normalize legacy SYMBOL and unambiguous MARKET:SYMBOL evaluation keys."""
+    normalized: dict[tuple[str, str], Any] = {}
+    for raw_key, value in (values or {}).items():
+        key = str(raw_key).strip().upper()
+        if ":" in key:
+            raw_market, raw_symbol = key.split(":", 1)
+            try:
+                market, symbol = normalize_alert_instrument(raw_symbol, raw_market)
+            except ValueError:
+                continue
+            normalized[(market, symbol)] = value
+            continue
+        try:
+            inferred_market, symbol = normalize_alert_instrument(key)
+        except ValueError:
+            continue
+        # Bare legacy keys are safe because the canonical CN and US symbol
+        # formats are disjoint; an explicit composite key still takes priority.
+        normalized.setdefault((inferred_market, symbol), value)
+    return normalized
 
 
 def _metadata_table(database: DatabaseManager) -> None:
@@ -238,11 +286,9 @@ class AlertService:
         repeat_mode: str = "once",
         expires_at: str | None = None,
         channels: list[str] | None = None,
+        market: str | None = None,
     ) -> None:
-        symbol = str(symbol or "").strip().upper()
-        valid_symbol = bool(re.fullmatch(r"(?:[A-Z][A-Z0-9.-]{0,11}|\d{6})", symbol))
-        if not valid_symbol:
-            raise ValueError("标的代码无效。")
+        market, symbol = normalize_alert_instrument(symbol, market)
         logic = str(logic).upper().strip()
         if logic not in {"AND", "OR"}:
             raise ValueError("条件逻辑只能是 AND 或 OR。")
@@ -313,7 +359,8 @@ class AlertService:
                     operator=existing_conditions[0].get("operator"),
                 )
                 if (
-                    str(row["symbol"]).upper() == symbol
+                    str(row["market"] or "US").upper() == market
+                    and str(row["symbol"]).upper() == symbol
                     and str(row["logic"] or "AND").upper() == logic
                     and json.dumps(existing_conditions, ensure_ascii=False, sort_keys=True, separators=(",", ":")) == canonical_conditions
                     and existing_metadata["trigger_mode"] == metadata["trigger_mode"]
@@ -326,9 +373,9 @@ class AlertService:
                 raise ValueError(f"{actual_plan}最多可启用 {limit} 条预警，请先停用旧预警或升级方案。")
             cursor = conn.execute(
                 """INSERT INTO price_alerts
-                   (user_id,symbol,operator,target_price,conditions,logic,created_at)
-                   VALUES (?,?,?,?,?,?,?)""",
-                (user_id, symbol, first.get("operator", "="), float(first.get("value", 0) or 0), payload, logic, now),
+                   (user_id,market,symbol,operator,target_price,conditions,logic,created_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (user_id, market, symbol, first.get("operator", "="), float(first.get("value", 0) or 0), payload, logic, now),
             )
             alert_id = cursor.lastrowid
             conn.execute(
@@ -339,7 +386,7 @@ class AlertService:
             )
             conn.execute(
                 "INSERT INTO strategy_action_logs (user_id,strategy_name,action,params,result,created_at) VALUES (?,?,?,?,?,?)",
-                (user_id, "价格预警", "ALERT_CREATE", json.dumps({"symbol": symbol, "conditions": normalized, "logic": logic}, ensure_ascii=False), "success", now),
+                (user_id, "价格预警", "ALERT_CREATE", json.dumps({"market": market, "symbol": symbol, "conditions": normalized, "logic": logic}, ensure_ascii=False), "success", now),
             )
 
     def list(self, user_id: int) -> list[dict[str, Any]]:
@@ -369,7 +416,9 @@ class AlertService:
                         row["is_active"] = 0
                 except ValueError:
                     pass
-            row["symbol"] = str(row.get("symbol") or "").upper()
+            row["market"], row["symbol"] = normalize_alert_instrument(
+                str(row.get("symbol") or ""), row.get("market")
+            )
             try:
                 row["conditions_list"] = normalize_conditions(json.loads(row.get("conditions") or "[]"))
             except (TypeError, ValueError, json.JSONDecodeError):
@@ -392,17 +441,24 @@ class AlertService:
         prices: dict[str, float],
         metrics: dict[str, dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
-        prices = {str(symbol).upper(): value for symbol, value in prices.items()}
-        metrics = {str(symbol).upper(): value for symbol, value in (metrics or {}).items() if isinstance(value, dict)}
+        prices_by_instrument = _market_value_map(prices)
+        metrics_by_instrument = _market_value_map(
+            {key: value for key, value in (metrics or {}).items() if isinstance(value, dict)}
+        )
         triggered = []
         for alert in self.list(user_id):
-            if not alert["is_active"] or alert["symbol"] not in prices:
+            instrument = (alert["market"], alert["symbol"])
+            if not alert["is_active"] or instrument not in prices_by_instrument:
                 continue
             try:
-                current_price = _finite(prices[alert["symbol"]])
+                current_price = _finite(prices_by_instrument[instrument])
             except (TypeError, ValueError):
                 continue
-            values = {**metrics.get(alert["symbol"], {}), "price": current_price}
+            instrument_metrics = metrics_by_instrument.get(instrument, {})
+            values = {
+                **(instrument_metrics if isinstance(instrument_metrics, dict) else {}),
+                "price": current_price,
+            }
             checks = []
             current_value: float | None = current_price
             for item in alert["conditions_list"]:
