@@ -173,6 +173,45 @@ def test_same_candidate_version_is_idempotent_across_time_and_changed_content_co
         producer(config, queue).produce("aapl.csv", spec())
 
 
+@pytest.mark.parametrize(
+    "wrong_spec",
+    [
+        spec(candidate_id="MSFT.trend"),
+        spec(candidate_id="AAPL.breakout"),
+        spec(template_key="equity.breakout.long_flat.v1"),
+    ],
+)
+def test_producer_rejects_root_candidate_lineage_that_does_not_match_source_and_template(tmp_path, wrong_spec):
+    config = settings(tmp_path)
+    (config.source_dir / "aapl.csv").write_bytes(prices())
+    queue = queue_for(config)
+
+    with pytest.raises(CandidateProducerError, match="lineage"):
+        producer(config, queue).produce("aapl.csv", wrong_spec)
+
+    assert not list(config.drop_dir.iterdir())
+    assert queue.db.fetch_one("SELECT id FROM backtest_jobs") is None
+
+
+def test_producer_rejects_derived_candidate_with_cross_family_id_before_delivery(tmp_path):
+    config = settings(tmp_path)
+    (config.source_dir / "aapl.csv").write_bytes(prices())
+    queue = queue_for(config)
+    child = spec(
+        provenance_source="derived_candidate",
+        candidate_id="AAPL.breakout",
+        parent_version="v0",
+        parent_job_id="parent-job",
+        parent_manifest_sha256="a" * 64,
+        parent_result_sha256="b" * 64,
+    )
+
+    with pytest.raises(CandidateProducerError, match="lineage"):
+        producer(config, queue).produce("aapl.csv", child)
+
+    assert not list(config.drop_dir.iterdir())
+
+
 def test_automatic_cycle_uses_real_allowlisted_source_and_emits_only_one_root_candidate(tmp_path):
     config = settings(tmp_path)
     (config.source_dir / "aapl.csv").write_bytes(prices())

@@ -13,6 +13,11 @@ from core.backtest_contracts import BUDGET_LIMITS, BacktestQueueError, validate_
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 PROVENANCE_SOURCES = frozenset({"approved_seed", "derived_candidate"})
+EQUITY_CANDIDATE_FAMILIES = {
+    "equity.trend.long_flat.v1": "trend",
+    "equity.mean_reversion.long_flat.v1": "mean_reversion",
+    "equity.breakout.long_flat.v1": "breakout",
+}
 CANDIDATE_SPEC_FIELDS = frozenset({
     "candidate_id",
     "candidate_version",
@@ -44,6 +49,22 @@ def approved_universe_sha256(symbols: Collection[str]) -> str:
         allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(body).hexdigest()
+
+
+def canonical_candidate_id(symbol: Any, template_key: Any) -> str:
+    """Bind one candidate lineage to its executable symbol/template family."""
+    if not isinstance(symbol, str) or not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,15}", symbol):
+        raise CandidateInputError("candidate lineage symbol is invalid")
+    family = EQUITY_CANDIDATE_FAMILIES.get(template_key) if isinstance(template_key, str) else None
+    if family is None:
+        raise CandidateInputError("candidate lineage template is outside the bounded equity families")
+    return f"{symbol}.{family}"
+
+
+def validate_candidate_binding(candidate: Mapping[str, Any], *, symbol: Any, template_key: Any) -> None:
+    expected = canonical_candidate_id(symbol, template_key)
+    if candidate.get("template_key") != template_key or candidate.get("candidate_id") != expected:
+        raise CandidateInputError("candidate lineage does not match its frozen symbol and template")
 
 
 def validate_candidate_spec(value: Any) -> dict[str, Any]:

@@ -24,6 +24,8 @@ from src.apps.worker.backtest_runtime import BacktestRuntime, ResourceProbe, Res
 from src.apps.worker.candidate_input_contracts import (
     CandidateInputError,
     approved_universe_sha256,
+    canonical_candidate_id,
+    validate_candidate_binding,
     validate_candidate_spec,
 )
 from src.apps.worker.candidate_producer_config import (
@@ -270,6 +272,10 @@ class AutonomousCandidateProducer:
         template = str(spec["template_key"])
         if template not in EQUITY_TEMPLATES:
             raise CandidateProducerError("candidate template is outside the executable equity allow-list")
+        try:
+            validate_candidate_binding(spec, symbol=symbol, template_key=template)
+        except CandidateInputError as exc:
+            raise CandidateProducerError(str(exc)) from exc
         evaluation = now.astimezone(timezone.utc)
         seed = {
             "candidate_id": spec["candidate_id"],
@@ -405,8 +411,7 @@ def _atomic_write(destination: Path, body: bytes) -> None:
 
 
 def _candidate_id(symbol: str, template: str) -> str:
-    family = template.removeprefix("equity.").removesuffix(".long_flat.v1")
-    return f"{symbol}.{family}"
+    return canonical_candidate_id(symbol, template)
 
 
 def main(argv: list[str] | None = None) -> int:

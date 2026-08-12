@@ -21,6 +21,8 @@ from src.apps.worker.backtest_runtime import ResourceProbe, ResourceSnapshot, Wo
 from src.apps.worker.candidate_input_contracts import (
     CandidateInputError,
     approved_universe_sha256,
+    canonical_candidate_id,
+    validate_candidate_binding,
     validate_candidate_spec,
 )
 from src.apps.worker.compute_gate_config import (
@@ -340,6 +342,11 @@ class ComputeGate:
                 raise ComputeGateError("candidate request universe hash does not match the deployed allow-list")
             try:
                 value["candidate_spec"] = validate_candidate_spec(value["candidate_spec"])
+                validate_candidate_binding(
+                    value["candidate_spec"],
+                    symbol=value["symbol"],
+                    template_key=value["template_key"],
+                )
             except CandidateInputError as exc:
                 raise ComputeGateError(str(exc)) from exc
         return value
@@ -447,7 +454,7 @@ def _candidate_manifest(request: Mapping[str, Any], snapshot: LocalCsvSnapshot) 
         parameters = candidate["parameters"]
     else:
         provenance_source = "approved_seed"
-        candidate_id = f"{symbol}.{template}"
+        candidate_id = canonical_candidate_id(symbol, template)
         candidate_version = f"{evaluation.replace('-', '')}.{snapshot.snapshot_id[:12]}"
         hypothesis = f"Bounded point-in-time long-flat research for {symbol} using {template}."
         parent_version = parent_job_id = parent_manifest_sha256 = parent_result_sha256 = None

@@ -16,6 +16,7 @@ from core.backtest_queue_database import BacktestQueueDatabase
 from src.apps.worker import compute_gate_cli as compute_gate_cli_module
 from src.apps.worker.backtest_runtime import BacktestRuntime, ResourceSnapshot
 from src.apps.worker.compute_gate import ComputeGate, ComputeGateError, ComputeGateSettings, main
+from src.apps.worker.candidate_input_contracts import approved_universe_sha256
 
 
 NOW = datetime(2026, 1, 2, 18, 0, tzinfo=timezone.utc)  # 02:00 Asia/Hong_Kong
@@ -84,6 +85,32 @@ def request(source_file: str = "aapl.csv", *, source_body: bytes | None = None, 
     }
     value.update(overrides)
     return value
+
+
+def autonomous_request(*, source_body: bytes | None = None, **candidate_overrides) -> dict:
+    body = raw_prices() if source_body is None else source_body
+    candidate = {
+        "candidate_id": "AAPL.trend",
+        "candidate_version": "v1",
+        "template_key": "equity.trend.long_flat.v1",
+        "provenance_source": "approved_seed",
+        "hypothesis": "A bounded trend lookback may remain robust.",
+        "parent_version": None,
+        "parent_job_id": None,
+        "parent_manifest_sha256": None,
+        "parent_result_sha256": None,
+        "search_space": {"lookback": [5]},
+        "experiment_budget": {"runs": 1, "folds": 3},
+        "parameters": {"lookback": 5},
+    }
+    candidate.update(candidate_overrides)
+    return request(
+        source_body=body,
+        schema_version=2,
+        evaluation_at="2026-01-01T18:00:00Z",
+        universe_sha256=approved_universe_sha256({"AAPL"}),
+        candidate_spec=candidate,
+    )
 
 
 def settings(tmp_path: Path, **overrides) -> ComputeGateSettings:
@@ -361,6 +388,34 @@ def test_import_contract_rejects_traversal_unknown_symbols_future_dates_and_temp
 
     with pytest.raises(ComputeGateError):
         gate(config, queue).run_once()
+    assert queue.db.fetch_one("SELECT id FROM backtest_jobs") is None
+
+
+@pytest.mark.parametrize(
+    "candidate_overrides",
+    [
+        {"candidate_id": "MSFT.trend"},
+        {"candidate_id": "AAPL.breakout"},
+        {"template_key": "equity.breakout.long_flat.v1"},
+        {
+            "provenance_source": "derived_candidate",
+            "candidate_id": "AAPL.breakout",
+            "parent_version": "v0",
+            "parent_job_id": "parent-job",
+            "parent_manifest_sha256": "a" * 64,
+            "parent_result_sha256": "b" * 64,
+        },
+    ],
+)
+def test_compute_gate_rejects_autonomous_candidate_with_cross_symbol_or_template_lineage(tmp_path, candidate_overrides):
+    config = settings(tmp_path)
+    payload = autonomous_request(**candidate_overrides)
+    write_drop(config, payload=payload)
+    queue = queue_for(config)
+
+    with pytest.raises(ComputeGateError, match="lineage"):
+        gate(config, queue).run_once()
+
     assert queue.db.fetch_one("SELECT id FROM backtest_jobs") is None
 
 
