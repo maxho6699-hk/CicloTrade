@@ -1,0 +1,12 @@
+[Unit]
+Description=Freeze delayed candidate sources once per Compute Gate day
+
+[Timer]
+OnCalendar=*-*-* 00:35:00 Asia/Hong_Kong
+RandomizedDelaySec=5min
+AccuracySec=1min
+Persistent=false
+Unit=ciclotrade-candidate-source-freezer.service
+
+[Install]
+WantedBy=timers.target

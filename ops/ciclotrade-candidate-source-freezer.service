@@ -1,0 +1,38 @@
+[Unit]
+Description=CicloTrade isolated delayed candidate source freezer
+After=local-fs.target network-online.target
+Wants=network-online.target
+RequiresMountsFor=/var/lib/ciclotrade-worker/candidate-sources
+ConditionPathExists=/etc/ciclotrade-worker/enable-candidate-source-freezer.after-integration
+ConditionPathIsDirectory=/var/lib/ciclotrade-worker/candidate-sources
+
+[Service]
+Type=oneshot
+User=cicloworker
+Group=cicloworker
+WorkingDirectory=/opt/ciclotrade-worker/current
+EnvironmentFile=/etc/ciclotrade-worker/candidate-source-freezer.env
+ExecStart=/opt/ciclotrade-worker/current/.venv/bin/python -m src.apps.worker.candidate_source_freezer --once
+TimeoutStartSec=300
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateNetwork=false
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+InaccessiblePaths=-/var/lib/ciclotrade-worker/backtest-queue.db -/var/lib/ciclotrade-worker/artifacts -/var/lib/ciclotrade-worker/inbox -/var/lib/ciclotrade-worker/compute-evidence -/var/lib/ciclotrade-worker/system-cycle-spool.db
+ReadWritePaths=/var/lib/ciclotrade-worker/candidate-sources
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryHigh=192M
+MemoryMax=256M
+CPUQuota=50%
+TasksMax=32
+LimitNOFILE=1024
