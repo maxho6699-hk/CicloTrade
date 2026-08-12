@@ -20,6 +20,7 @@ from core.auth import AuthService
 from core.admin_service import AdminService
 from core.database import DatabaseManager
 from core.plans import referral_code
+from core.referral_affiliate import ReferralProgramService
 from payment.order_service import (
     MembershipPlanConflict,
     OrderService,
@@ -61,6 +62,16 @@ def _billing_admin(db: DatabaseManager, name: str = "billing-admin") -> tuple[di
     admin = _user(db, name)
     db.execute("UPDATE users SET is_admin=1 WHERE id=?", (admin["id"],))
     return admin, AdminService(db)
+
+
+def _enable_referral_cash(db: DatabaseManager, name: str) -> None:
+    admin = _user(db, name)
+    db.execute("UPDATE users SET is_admin=1 WHERE id=?", (admin["id"],))
+    db.execute(
+        "INSERT INTO admin_roles(user_id,role,updated_at) VALUES (?,'super_admin',?)",
+        (admin["id"], datetime.now(UTC).isoformat(timespec="seconds")),
+    )
+    ReferralProgramService(db).enable(admin["id"])
 
 
 def test_telegram_order_idempotency_and_owner_boundary(db):
@@ -496,6 +507,7 @@ def test_terminal_callbacks_and_provider_reversal_restore_entitlement(db):
 
 
 def test_paid_referral_cash_commission_replaces_legacy_days_reward(db):
+    _enable_referral_cash(db, "cash-release-one")
     auth = AuthService(db)
     referrer = _user(db, "referrer")
     referee = auth.register(
@@ -529,6 +541,7 @@ def test_paid_referral_cash_commission_replaces_legacy_days_reward(db):
 
 
 def test_refund_claws_back_cash_commission_without_requalifying_first_rate(db):
+    _enable_referral_cash(db, "cash-release-two")
     auth = AuthService(db)
     referrer = _user(db, "refund-referrer")
     referee = auth.register(
@@ -759,6 +772,7 @@ def test_reversal_does_not_reactivate_a_manually_downgraded_account(db):
 
 
 def test_reversing_cash_commission_does_not_move_or_rewrite_history(db):
+    _enable_referral_cash(db, "cash-release-three")
     auth = AuthService(db)
     referrer = _user(db, "replacement-referrer")
     referee = auth.register(
@@ -793,6 +807,7 @@ def test_reversing_cash_commission_does_not_move_or_rewrite_history(db):
 
 
 def test_expired_referrer_plan_does_not_receive_legacy_days_and_yearly_cash_is_twenty_percent(db):
+    _enable_referral_cash(db, "cash-release-four")
     referrer = _user(db, "expired-reward")
     expired = (datetime.now(UTC) - timedelta(days=1)).isoformat(timespec="seconds")
     db.execute(
@@ -1298,6 +1313,7 @@ def test_paypal_refund_webhook_forces_reversal(monkeypatch, db):
         "event_type": "PAYMENT.CAPTURE.REFUNDED",
         "resource": {
             "id": "PAYPAL-REFUND",
+            "amount": {"currency_code": "HKD", "value": str(order["amount"])},
             "supplementary_data": {
                 "related_ids": {"order_id": "PAYPAL-ORDER", "capture_id": "PAYPAL-CAPTURE"}
             },
@@ -1346,6 +1362,7 @@ def test_paypal_refund_webhook_forces_reversal(monkeypatch, db):
         "event_type": "PAYMENT.CAPTURE.REFUNDED",
         "resource": {
             "id": "PAYPAL-REFUND",
+            "amount": {"currency_code": "HKD", "value": str(order["amount"])},
             "supplementary_data": {
                 "related_ids": {"order_id": "PAYPAL-ORDER", "capture_id": "PAYPAL-CAPTURE"}
             },

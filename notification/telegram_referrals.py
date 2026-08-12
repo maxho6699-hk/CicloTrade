@@ -3,12 +3,24 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 from html import escape
+import os
 from typing import Any
 
 from core.admin_service import AdminService
 from notification.telegram_models import TelegramOutbound
 from notification.telegram_outbox import enqueue_telegram_outbound
+
+
+def _recipient_fingerprint(chat_id: Any) -> str:
+    secret = os.getenv("REFERRAL_NOTICE_HMAC_SECRET") or os.getenv("JWT_SECRET_KEY") or ""
+    if len(secret.encode("utf-8")) < 32:
+        raise RuntimeError("推广通知去重密钥未配置。")
+    return hmac.new(
+        secret.encode("utf-8"), str(chat_id).encode("utf-8"), hashlib.sha256
+    ).hexdigest()[:24]
 
 
 def queue_withdrawal_review_notice(database, withdrawal: dict[str, Any]) -> int:
@@ -35,7 +47,7 @@ def queue_withdrawal_review_notice(database, withdrawal: dict[str, Any]) -> int:
         queued += int(enqueue_telegram_outbound(
             database,
             TelegramOutbound(str(row["chat_id"]), message),
-            f"referral-withdrawal:{public_id}:submitted:{row['chat_id']}",
+            f"referral-withdrawal:{public_id}:submitted:{_recipient_fingerprint(row['chat_id'])}",
         ))
     return queued
 

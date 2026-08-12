@@ -9,7 +9,7 @@ from starlette.requests import Request
 
 from core.admin_service import AdminService
 from core.compat import UTC
-from core.referral_affiliate import ReferralCommissionService, ReferralService
+from core.referral_affiliate import ReferralCommissionService, ReferralProgramService, ReferralService
 from payment.order_service import OrderService
 from src.apps.api.app import (
     admin_referral_withdrawal_paid,
@@ -61,7 +61,11 @@ def test_portal_and_visit_contract_use_public_fields_hkt_and_no_raw_fingerprint(
     assert set(payload) == {"program", "invite", "balances", "trends", "funnel", "referrals", "commissions", "withdrawals", "timeline"}
     assert payload["program"]["currency"] == "HKD"
     assert payload["program"]["minimum_withdrawal_minor"] == 10000
+    assert payload["program"]["enabled"] is False
+    assert payload["program"]["cutover_at"] is None
     assert payload["invite"]["qr_payload"] == payload["invite"]["invite_link"]
+    assert payload["invite"]["invite_link"].startswith("/login?ref=")
+    assert "testserver" not in payload["invite"]["invite_link"]
     visit = asyncio.run(referral_visit(_request(
         "/api/rewrite/v1/referrals/visits", method="POST",
         payload={"invite_code": payload["invite"]["invite_code"]},
@@ -78,6 +82,15 @@ def test_portal_and_visit_contract_use_public_fields_hkt_and_no_raw_fingerprint(
 
 def test_withdrawal_http_and_billing_admin_state_machine(browser_api):
     database, auth = browser_api["database"], browser_api["auth"]
+    release_admin = auth.register(
+        "referral-http-release@example.com", "StrongPass123", "Referral Release", True
+    )
+    database.execute("UPDATE users SET is_admin=1 WHERE id=?", (release_admin["id"],))
+    database.execute(
+        "INSERT INTO admin_roles(user_id,role,updated_at) VALUES (?,'super_admin',?)",
+        (release_admin["id"], datetime.now(UTC).isoformat(timespec="seconds")),
+    )
+    ReferralProgramService(database).enable(release_admin["id"])
     referrer = database.fetch_one("SELECT * FROM users WHERE email='browser@example.com'")
     profile = ReferralService(database).ensure_profile(referrer["id"])
     referred = auth.register("ref-http@example.com", "StrongPass123", "Ref HTTP", True, profile["invite_code"])
@@ -136,3 +149,22 @@ def test_withdrawal_http_and_billing_admin_state_machine(browser_api):
     )))
     assert _payload(paid)["status"] == "paid"
     assert "payout_reference" not in json.dumps(_payload(paid))
+
+
+def test_admin_referral_review_wrong_password_is_forbidden(browser_api):
+    database, auth = browser_api["database"], browser_api["auth"]
+    admin = auth.register("wrong-password-finance@example.com", "StrongPass123", "Finance", True)
+    database.execute("UPDATE users SET is_admin=1 WHERE id=?", (admin["id"],))
+    database.execute(
+        "INSERT INTO admin_roles(user_id,role,updated_at) VALUES (?,'finance',?)",
+        (admin["id"], datetime.now(UTC).isoformat(timespec="seconds")),
+    )
+    token = _login(browser_api, "wrong-password-finance@example.com")
+    with pytest.raises(Exception) as caught:
+        asyncio.run(admin_referral_withdrawal_review(_request(
+            "/api/rewrite/v1/admin/referrals/withdrawals/WDR000000000000000000000000/review",
+            method="POST", token=token,
+            payload={"decision": "approve", "password": "WrongPass123"},
+            path_params={"withdrawal_id": "WDR000000000000000000000000"},
+        )))
+    assert getattr(caught.value, "status", None) == 403

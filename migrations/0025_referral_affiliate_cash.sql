@@ -105,10 +105,21 @@ ON referral_commissions(referrer_user_id,settled_at DESC,id DESC);
 CREATE INDEX IF NOT EXISTS idx_referral_commissions_due
 ON referral_commissions(available_at,id);
 
+CREATE TABLE IF NOT EXISTS referral_journal_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_key TEXT NOT NULL UNIQUE,
+    group_key TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('open','finalized')),
+    created_at TEXT NOT NULL,
+    finalized_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS referral_ledger_entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     public_id TEXT NOT NULL UNIQUE,
-    user_id INTEGER NOT NULL,
+    batch_id INTEGER NOT NULL,
+    account_kind TEXT NOT NULL CHECK(account_kind IN ('user','platform')),
+    user_id INTEGER,
     bucket TEXT NOT NULL CHECK(bucket IN ('pending','available','reserved','paid')),
     amount_minor INTEGER NOT NULL CHECK(amount_minor <> 0),
     currency TEXT NOT NULL CHECK(currency='HKD'),
@@ -118,13 +129,59 @@ CREATE TABLE IF NOT EXISTS referral_ledger_entries (
     reference_id TEXT NOT NULL,
     idempotency_key TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL,
-    FOREIGN KEY (user_id) REFERENCES users(id)
+    FOREIGN KEY (batch_id) REFERENCES referral_journal_batches(id),
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    CHECK((account_kind='user' AND user_id IS NOT NULL) OR
+          (account_kind='platform' AND user_id IS NULL))
 );
+
+CREATE TRIGGER IF NOT EXISTS trg_referral_journal_insert_open
+BEFORE INSERT ON referral_journal_batches
+WHEN NEW.status<>'open' OR NEW.finalized_at IS NOT NULL
+BEGIN SELECT RAISE(ABORT,'referral journal batch must start open'); END;
 
 CREATE INDEX IF NOT EXISTS idx_referral_ledger_user
 ON referral_ledger_entries(user_id,currency,created_at DESC,id DESC);
 CREATE INDEX IF NOT EXISTS idx_referral_ledger_reference
 ON referral_ledger_entries(reference_type,reference_id,bucket,id);
+
+CREATE TRIGGER IF NOT EXISTS trg_referral_journal_no_late_entries
+BEFORE INSERT ON referral_ledger_entries
+WHEN (SELECT status FROM referral_journal_batches WHERE id=NEW.batch_id)<>'open'
+BEGIN SELECT RAISE(ABORT,'referral journal batch is finalized'); END;
+
+CREATE TRIGGER IF NOT EXISTS trg_referral_journal_finalize_balanced
+BEFORE UPDATE OF status ON referral_journal_batches
+WHEN NEW.status='finalized' AND (
+    OLD.status<>'open' OR
+    (SELECT COUNT(*) FROM referral_ledger_entries WHERE batch_id=OLD.id)<2 OR
+    (SELECT COALESCE(SUM(amount_minor),0) FROM referral_ledger_entries WHERE batch_id=OLD.id)<>0 OR
+    EXISTS (
+        SELECT bucket FROM referral_ledger_entries WHERE batch_id=OLD.id
+        GROUP BY bucket
+        HAVING COUNT(DISTINCT account_kind)<>2 OR SUM(amount_minor)<>0
+    )
+)
+BEGIN SELECT RAISE(ABORT,'referral journal batch is unbalanced'); END;
+
+CREATE TRIGGER IF NOT EXISTS trg_referral_journal_no_reopen
+BEFORE UPDATE OF status ON referral_journal_batches
+WHEN OLD.status='finalized'
+BEGIN SELECT RAISE(ABORT,'referral journal batch is immutable'); END;
+
+CREATE TRIGGER IF NOT EXISTS trg_referral_journal_identity_immutable
+BEFORE UPDATE OF batch_key,group_key,created_at ON referral_journal_batches
+BEGIN SELECT RAISE(ABORT,'referral journal batch identity is immutable'); END;
+
+CREATE TRIGGER IF NOT EXISTS trg_referral_journal_finalized_at_guard
+BEFORE UPDATE OF finalized_at ON referral_journal_batches
+WHEN NOT (OLD.status='open' AND NEW.status='finalized' AND
+          OLD.finalized_at IS NULL AND NEW.finalized_at IS NOT NULL)
+BEGIN SELECT RAISE(ABORT,'referral journal finalized time is immutable'); END;
+
+CREATE TRIGGER IF NOT EXISTS trg_referral_journal_no_delete
+BEFORE DELETE ON referral_journal_batches
+BEGIN SELECT RAISE(ABORT,'referral journal batch is immutable'); END;
 
 CREATE TABLE IF NOT EXISTS referral_withdrawal_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -231,10 +288,22 @@ WHEN NOT (
 )
 BEGIN SELECT RAISE(ABORT,'invalid referral withdrawal transition'); END;
 
+CREATE TRIGGER IF NOT EXISTS trg_referral_withdrawal_identity_immutable
+BEFORE UPDATE OF public_id,user_id,amount_minor,currency,idempotency_key,
+                 request_fingerprint,submitted_at ON referral_withdrawal_requests
+BEGIN SELECT RAISE(ABORT,'referral withdrawal identity is immutable'); END;
+
+CREATE TRIGGER IF NOT EXISTS trg_referral_withdrawal_paid_requires_confirmation
+BEFORE UPDATE OF status ON referral_withdrawal_requests
+WHEN NEW.status='paid' AND NOT EXISTS (
+    SELECT 1 FROM referral_payout_confirmations WHERE withdrawal_id=OLD.id
+)
+BEGIN SELECT RAISE(ABORT,'referral withdrawal payment confirmation required'); END;
+
 INSERT OR IGNORE INTO platform_controls(control_key,control_value,updated_at)
-VALUES ('referral_cash_enabled','1',CURRENT_TIMESTAMP);
+VALUES ('referral_cash_enabled','0',CURRENT_TIMESTAMP);
 INSERT OR IGNORE INTO platform_controls(control_key,control_value,updated_at)
-VALUES ('referral_cash_cutover_at',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+VALUES ('referral_cash_cutover_at','',CURRENT_TIMESTAMP);
 INSERT OR IGNORE INTO platform_controls(control_key,control_value,updated_at)
 VALUES ('referral_first_rate_bps','2000',CURRENT_TIMESTAMP);
 INSERT OR IGNORE INTO platform_controls(control_key,control_value,updated_at)

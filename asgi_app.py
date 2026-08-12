@@ -587,6 +587,30 @@ def _paddle_transaction_matches(data: object, order: dict) -> bool:
     return expected > 0 and received == expected and balance == 0
 
 
+def _paddle_full_reversal_matches(data: object, order: dict) -> bool:
+    if not isinstance(data, dict) or data.get("currency_code") != order.get("currency"):
+        return False
+    totals = data.get("totals")
+    if not isinstance(totals, dict):
+        return False
+    try:
+        reversed_minor = int(totals.get("total"))
+        expected_minor = int(order.get("amount_minor") or round(float(order["amount"]) * 100))
+    except (TypeError, ValueError):
+        return False
+    return reversed_minor == expected_minor
+
+
+def _paypal_full_reversal_matches(resource: dict, order: dict) -> bool:
+    amount = resource.get("amount")
+    if _paypal_amount_matches(amount, order):
+        return True
+    disputed = resource.get("disputed_transactions")
+    if not isinstance(disputed, list) or len(disputed) != 1 or not isinstance(disputed[0], dict):
+        return False
+    return _paypal_amount_matches(disputed[0].get("seller_transaction_amount"), order)
+
+
 def _paypal_webhook_rate_guard() -> None:
     # ponytail: one merchant-wide bucket; split only if legitimate webhook volume reaches it.
     limiter = AuthService(get_database())
@@ -634,6 +658,8 @@ async def paddle_webhook(request):
         ) if isinstance(transaction_id, str) and transaction_id else None
         if not order:
             raise ApiError("Paddle 逆转无法绑定对应订单。")
+        if not _paddle_full_reversal_matches(data, order):
+            raise ApiError("Paddle 仅支持币种和金额匹配的全额逆转。", 409)
         audit = {
             "provider": "paddle",
             "event_id": event_id,
@@ -724,6 +750,8 @@ async def paypal_webhook(request):
         ) if candidates else None
         if not order:
             raise ApiError("PayPal 逆转无法绑定对应订单。")
+        if not _paypal_full_reversal_matches(resource, order):
+            raise ApiError("PayPal 仅支持币种和金额匹配的全额逆转。", 409)
         audit = {
             "provider": "paypal",
             "event_id": event_id,

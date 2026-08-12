@@ -90,37 +90,135 @@ def _audit(
     )
 
 
-def _ledger(
+def _ledger_batch(
     conn: Any,
     *,
     user_id: int,
-    bucket: str,
-    amount_minor: int,
+    legs: list[tuple[str, int]],
     entry_type: str,
     group_key: str,
     reference_type: str,
     reference_id: str,
-    idempotency_key: str,
+    batch_key: str,
     now: datetime,
 ) -> bool:
-    inserted = conn.execute(
-        """INSERT OR IGNORE INTO referral_ledger_entries
-           (public_id,user_id,bucket,amount_minor,currency,entry_type,group_key,
-            reference_type,reference_id,idempotency_key,created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-        (
-            _public_id("LED"), int(user_id), bucket, int(amount_minor), CURRENCY,
-            entry_type, group_key, reference_type, reference_id, idempotency_key,
-            _iso(now),
-        ),
+    if not legs or any(int(amount) == 0 for _, amount in legs):
+        raise ValueError("推广账本分录无效。")
+    existing = conn.execute(
+        "SELECT * FROM referral_journal_batches WHERE batch_key=?", (batch_key,)
+    ).fetchone()
+    if existing:
+        rows = conn.execute(
+            """SELECT account_kind,user_id,bucket,amount_minor,entry_type,group_key,
+                      reference_type,reference_id
+               FROM referral_ledger_entries WHERE batch_id=? ORDER BY bucket,account_kind,amount_minor""",
+            (existing["id"],),
+        ).fetchall()
+        expected = sorted(
+            (
+                account_kind, int(user_id) if account_kind == "user" else None,
+                bucket, int(amount if account_kind == "user" else -amount), entry_type,
+                group_key, reference_type, reference_id,
+            )
+            for bucket, amount in legs
+            for account_kind in ("user", "platform")
+        )
+        actual = sorted(tuple(row) for row in rows)
+        if existing["status"] != "finalized" or existing["group_key"] != group_key or actual != expected:
+            raise RuntimeError("推广账本幂等回执不一致。")
+        return False
+    batch = conn.execute(
+        """INSERT INTO referral_journal_batches(batch_key,group_key,status,created_at)
+           VALUES (?,?,'open',?)""",
+        (batch_key, group_key, _iso(now)),
     )
-    return inserted.rowcount == 1
+    batch_id = int(batch.lastrowid)
+    for index, (bucket, amount_minor) in enumerate(legs):
+        for account_kind, line_user_id, amount, suffix in (
+            ("user", int(user_id), int(amount_minor), "user"),
+            ("platform", None, -int(amount_minor), "platform"),
+        ):
+            conn.execute(
+                """INSERT INTO referral_ledger_entries
+                   (public_id,batch_id,account_kind,user_id,bucket,amount_minor,currency,entry_type,
+                    group_key,reference_type,reference_id,idempotency_key,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    _public_id("LED"), batch_id, account_kind, line_user_id, bucket, amount,
+                    CURRENCY, entry_type, group_key, reference_type, reference_id,
+                    f"{batch_key}:{index}:{suffix}", _iso(now),
+                ),
+            )
+    conn.execute(
+        "UPDATE referral_journal_batches SET status='finalized',finalized_at=? WHERE id=? AND status='open'",
+        (_iso(now), batch_id),
+    )
+    return True
+
+
+class ReferralProgramService:
+    """One-way release gate for the cash referral program."""
+
+    def __init__(self, database: DatabaseManager | None = None):
+        self.db = database or get_database()
+
+    def enable(self, actor_id: int, now: datetime | None = None) -> dict[str, Any]:
+        moment = now or datetime.now(UTC)
+        with self.db.transaction() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            from core.admin_service import AdminService
+            AdminService._require_super_admin_in_transaction(conn, int(actor_id))
+            raw_enabled = _control(conn, "referral_cash_enabled", "").strip()
+            cutover = _control(conn, "referral_cash_cutover_at", "").strip()
+            if raw_enabled == "1":
+                if not cutover:
+                    raise ValueError("推广计划控制状态不一致。")
+                return {"enabled": True, "cutover_at": cutover}
+            if raw_enabled != "0" or cutover:
+                raise ValueError("推广计划控制状态无效，禁止启用。")
+            controls = {
+                "first_rate_bps": _int_control(conn, "referral_first_rate_bps", 2000, 0, 10000),
+                "repeat_rate_bps": _int_control(conn, "referral_repeat_rate_bps", 1000, 0, 10000),
+                "upgrade_rate_bps": _int_control(conn, "referral_upgrade_rate_bps", 1000, 0, 10000),
+                "hold_days": _int_control(conn, "referral_hold_days", 14, 0, 365),
+                "minimum_withdrawal_minor": _int_control(
+                    conn, "referral_min_withdraw_minor", 10000, 1, 100_000_000
+                ),
+            }
+            dirty = conn.execute(
+                """SELECT 1 FROM referral_attributions
+                   WHERE referrer_user_id=referred_user_id LIMIT 1"""
+            ).fetchone()
+            if dirty:
+                raise ValueError("历史推广关系未通过启用前检查。")
+            cutover = _iso(moment)
+            enabled_update = conn.execute(
+                """UPDATE platform_controls SET control_value='1',updated_by=?,updated_at=?
+                   WHERE control_key='referral_cash_enabled' AND control_value='0'""",
+                (int(actor_id), cutover),
+            )
+            cutover_update = conn.execute(
+                """UPDATE platform_controls SET control_value=?,updated_by=?,updated_at=?
+                   WHERE control_key='referral_cash_cutover_at' AND control_value=''""",
+                (cutover, int(actor_id), cutover),
+            )
+            if enabled_update.rowcount != 1 or cutover_update.rowcount != 1:
+                raise ValueError("推广计划控制状态已变更，请重试。")
+            _audit(
+                conn, actor_user_id=int(actor_id), actor_kind="admin",
+                action="REFERRAL_PROGRAM_ENABLED", entity_type="program",
+                entity_public_id="REFERRAL_CASH_V1",
+                details={"cutover_at": cutover, **controls}, now=moment,
+            )
+            return {"enabled": True, "cutover_at": cutover}
 
 
 def _balance_rows(conn: Any, user_id: int) -> dict[str, int]:
     rows = conn.execute(
         """SELECT bucket,COALESCE(SUM(amount_minor),0) balance
-           FROM referral_ledger_entries WHERE user_id=? AND currency=? GROUP BY bucket""",
+           FROM referral_ledger_entries l JOIN referral_journal_batches b ON b.id=l.batch_id
+           WHERE l.account_kind='user' AND l.user_id=? AND l.currency=? AND b.status='finalized'
+           GROUP BY bucket""",
         (int(user_id), CURRENCY),
     ).fetchall()
     result = {"pending": 0, "available": 0, "reserved": 0, "paid": 0}
@@ -305,7 +403,10 @@ class ReferralService:
     def portal(self, user_id: int, *, base_url: str = "") -> dict[str, Any]:
         profile = self.ensure_profile(int(user_id))
         with self.db.transaction() as conn:
-            ReferralCommissionService.release_due_in_transaction(conn, int(user_id), datetime.now(UTC))
+            enabled = _enabled(conn)
+            cutover_at = _control(conn, "referral_cash_cutover_at", "").strip() or None
+            if enabled:
+                ReferralCommissionService.release_due_in_transaction(conn, int(user_id), datetime.now(UTC))
             buckets = _balance_rows(conn, int(user_id))
             first_rate = _int_control(conn, "referral_first_rate_bps", 2000, 0, 10000)
             renewal_rate = _int_control(conn, "referral_repeat_rate_bps", 1000, 0, 10000)
@@ -322,8 +423,11 @@ class ReferralService:
             pending_by_commission = {
                 str(row["reference_id"]): int(row["balance"] or 0)
                 for row in conn.execute(
-                    """SELECT reference_id,SUM(amount_minor) balance FROM referral_ledger_entries
-                       WHERE user_id=? AND reference_type='commission' AND bucket='pending'
+                    """SELECT l.reference_id,SUM(l.amount_minor) balance
+                       FROM referral_ledger_entries l
+                       JOIN referral_journal_batches b ON b.id=l.batch_id
+                       WHERE l.account_kind='user' AND l.user_id=? AND b.status='finalized'
+                         AND l.reference_type='commission' AND l.bucket='pending'
                        GROUP BY reference_id""",
                     (int(user_id),),
                 ).fetchall()
@@ -446,7 +550,8 @@ class ReferralService:
         prefix = str(base_url or "").rstrip("/")
         link = f"{prefix}/login?ref={profile['invite_code']}" if prefix else f"/login?ref={profile['invite_code']}"
         return {
-            "program": {"enabled": True, "currency": CURRENCY, "policy_version": POLICY_VERSION,
+            "program": {"enabled": enabled, "cutover_at": _hkt(cutover_at),
+                        "currency": CURRENCY, "policy_version": POLICY_VERSION,
                         "first_rate_bps": first_rate, "renewal_rate_bps": renewal_rate,
                         "upgrade_rate_bps": upgrade_rate, "hold_days": hold_days,
                         "minimum_withdrawal_minor": minimum},
@@ -531,11 +636,11 @@ class ReferralCommissionService:
             ),
         )
         if commission_minor:
-            _ledger(
-                conn, user_id=int(attribution["referrer_user_id"]), bucket="pending",
-                amount_minor=commission_minor, entry_type="commission_award",
+            _ledger_batch(
+                conn, user_id=int(attribution["referrer_user_id"]),
+                legs=[("pending", commission_minor)], entry_type="commission_award",
                 group_key=f"commission:{public_id}", reference_type="commission",
-                reference_id=public_id, idempotency_key=f"commission:{order['order_no']}:award",
+                reference_id=public_id, batch_key=f"commission:{order['order_no']}:award",
                 now=now,
             )
         _audit(
@@ -550,6 +655,8 @@ class ReferralCommissionService:
 
     @staticmethod
     def release_due_in_transaction(conn: Any, user_id: int | None, now: datetime) -> int:
+        if not _enabled(conn):
+            return 0
         params: tuple[Any, ...]
         clause = ""
         if user_id is None:
@@ -561,7 +668,9 @@ class ReferralCommissionService:
             f"""SELECT * FROM referral_commissions c
                 WHERE datetime(available_at)<=datetime(?) {clause}
                   AND EXISTS (SELECT 1 FROM referral_ledger_entries l
-                              WHERE l.reference_type='commission' AND l.reference_id=c.public_id
+                              JOIN referral_journal_batches b ON b.id=l.batch_id
+                              WHERE l.account_kind='user' AND b.status='finalized'
+                                AND l.reference_type='commission' AND l.reference_id=c.public_id
                               GROUP BY l.reference_id
                               HAVING SUM(CASE WHEN l.bucket='pending' THEN l.amount_minor ELSE 0 END)>0)
                 ORDER BY id""",
@@ -570,25 +679,22 @@ class ReferralCommissionService:
         released = 0
         for row in rows:
             pending = int(conn.execute(
-                """SELECT COALESCE(SUM(amount_minor),0) FROM referral_ledger_entries
-                   WHERE reference_type='commission' AND reference_id=? AND bucket='pending'""",
+                """SELECT COALESCE(SUM(l.amount_minor),0) FROM referral_ledger_entries l
+                   JOIN referral_journal_batches b ON b.id=l.batch_id
+                   WHERE l.account_kind='user' AND b.status='finalized'
+                     AND l.reference_type='commission' AND l.reference_id=? AND l.bucket='pending'""",
                 (row["public_id"],),
             ).fetchone()[0])
             if pending <= 0:
                 continue
             group = f"commission:{row['public_id']}:mature"
-            if _ledger(
-                conn, user_id=int(row["referrer_user_id"]), bucket="pending",
-                amount_minor=-pending, entry_type="commission_mature", group_key=group,
+            if _ledger_batch(
+                conn, user_id=int(row["referrer_user_id"]),
+                legs=[("pending", -pending), ("available", pending)],
+                entry_type="commission_mature", group_key=group,
                 reference_type="commission", reference_id=row["public_id"],
-                idempotency_key=f"{group}:pending", now=now,
+                batch_key=group, now=now,
             ):
-                _ledger(
-                    conn, user_id=int(row["referrer_user_id"]), bucket="available",
-                    amount_minor=pending, entry_type="commission_mature", group_key=group,
-                    reference_type="commission", reference_id=row["public_id"],
-                    idempotency_key=f"{group}:available", now=now,
-                )
                 released += 1
         return released
 
@@ -612,14 +718,16 @@ class ReferralCommissionService:
         ).fetchone()
         if not commission:
             return False
+        if not _enabled(conn):
+            raise PermissionError("推广现金计划尚未启用。")
         if conn.execute(
             "SELECT 1 FROM referral_reversal_events WHERE event_key=?", (event_key,)
         ).fetchone():
             return False
         amount = int(amount_minor)
         remaining_gross = int(commission["gross_amount_minor"]) - int(commission["reversed_amount_minor"])
-        if amount < 1 or amount > remaining_gross:
-            raise ValueError("推广佣金逆转金额无效。")
+        if amount != remaining_gross:
+            raise ValueError("推广佣金仅支持经验证的全额逆转。")
         kind = "chargeback" if "chargeback" in reason.lower() else "dispute" if "dispute" in reason.lower() else "refund"
         reversal_id = _public_id("REV")
         conn.execute(
@@ -642,28 +750,30 @@ class ReferralCommissionService:
         if claw > 0:
             user_id = int(commission["referrer_user_id"])
             pending = int(conn.execute(
-                """SELECT COALESCE(SUM(amount_minor),0) FROM referral_ledger_entries
-                   WHERE reference_type='commission' AND reference_id=? AND bucket='pending'""",
+                """SELECT COALESCE(SUM(l.amount_minor),0) FROM referral_ledger_entries l
+                   JOIN referral_journal_batches b ON b.id=l.batch_id
+                   WHERE l.account_kind='user' AND b.status='finalized'
+                     AND l.reference_type='commission' AND l.reference_id=? AND l.bucket='pending'""",
                 (commission["public_id"],),
             ).fetchone()[0])
             from_pending = min(claw, max(0, pending))
             if from_pending:
-                _ledger(
-                    conn, user_id=user_id, bucket="pending", amount_minor=-from_pending,
+                _ledger_batch(
+                    conn, user_id=user_id, legs=[("pending", -from_pending)],
                     entry_type="commission_clawback", group_key=f"reversal:{reversal_id}",
                     reference_type="reversal", reference_id=reversal_id,
-                    idempotency_key=f"reversal:{event_key}:pending", now=now,
+                    batch_key=f"reversal:{event_key}:pending", now=now,
                 )
             remainder = claw - from_pending
             if remainder:
                 ReferralWalletService.cancel_open_withdrawal_in_transaction(
                     conn, user_id, reason="原订单发生退款或拒付，系统已释放待付款金额。", now=now
                 )
-                _ledger(
-                    conn, user_id=user_id, bucket="available", amount_minor=-remainder,
+                _ledger_batch(
+                    conn, user_id=user_id, legs=[("available", -remainder)],
                     entry_type="commission_clawback", group_key=f"reversal:{reversal_id}",
                     reference_type="reversal", reference_id=reversal_id,
-                    idempotency_key=f"reversal:{event_key}:available", now=now,
+                    batch_key=f"reversal:{event_key}:available", now=now,
                 )
         _audit(
             conn, actor_user_id=None, actor_kind="system", action="COMMISSION_CLAWBACK",
@@ -698,6 +808,8 @@ class ReferralWalletService:
         now = datetime.now(UTC)
         with self.db.transaction() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if not _enabled(conn):
+                raise PermissionError("推广现金计划尚未启用。")
             existing = conn.execute(
                 "SELECT * FROM referral_withdrawal_requests WHERE user_id=? AND idempotency_key=?",
                 (int(user_id), key),
@@ -737,17 +849,12 @@ class ReferralWalletService:
                     raise ValueError("已有提款申请正在处理。") from exc
                 raise
             group = f"withdrawal:{public_id}:reserve"
-            _ledger(
-                conn, user_id=int(user_id), bucket="available", amount_minor=-amount_minor,
+            _ledger_batch(
+                conn, user_id=int(user_id),
+                legs=[("available", -amount_minor), ("reserved", amount_minor)],
                 entry_type="withdrawal_reserved", group_key=group,
                 reference_type="withdrawal", reference_id=public_id,
-                idempotency_key=f"{group}:available", now=now,
-            )
-            _ledger(
-                conn, user_id=int(user_id), bucket="reserved", amount_minor=amount_minor,
-                entry_type="withdrawal_reserved", group_key=group,
-                reference_type="withdrawal", reference_id=public_id,
-                idempotency_key=f"{group}:reserved", now=now,
+                batch_key=group, now=now,
             )
             _audit(
                 conn, actor_user_id=int(user_id), actor_kind="user", action="WITHDRAWAL_SUBMITTED",
@@ -778,15 +885,17 @@ class ReferralWalletService:
         if changed.rowcount != 1:
             return None
         group = f"withdrawal:{row['public_id']}:system-cancel"
-        _ledger(
-            conn, user_id=int(user_id), bucket="reserved", amount_minor=-int(row["amount_minor"]),
+        _ledger_batch(
+            conn, user_id=int(user_id),
+            legs=[("reserved", -int(row["amount_minor"])),
+                  ("available", int(row["amount_minor"]))],
             entry_type="withdrawal_released", group_key=group, reference_type="withdrawal",
-            reference_id=row["public_id"], idempotency_key=f"{group}:reserved", now=now,
+            reference_id=row["public_id"], batch_key=group, now=now,
         )
-        _ledger(
-            conn, user_id=int(user_id), bucket="available", amount_minor=int(row["amount_minor"]),
-            entry_type="withdrawal_released", group_key=group, reference_type="withdrawal",
-            reference_id=row["public_id"], idempotency_key=f"{group}:available", now=now,
+        _audit(
+            conn, actor_user_id=None, actor_kind="system", action="WITHDRAWAL_SYSTEM_CANCELLED",
+            entity_type="withdrawal", entity_public_id=row["public_id"],
+            details={"reason": reason[:500]}, now=now,
         )
         return dict(conn.execute(
             "SELECT * FROM referral_withdrawal_requests WHERE id=?", (row["id"],)
@@ -802,6 +911,8 @@ class ReferralWalletService:
         now = datetime.now(UTC)
         with self.db.transaction() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if not _enabled(conn):
+                raise PermissionError("推广现金计划尚未启用。")
             from core.admin_service import AdminService
             AdminService._require_billing_in_transaction(conn, int(actor_id))
             row = conn.execute(
@@ -829,17 +940,13 @@ class ReferralWalletService:
                     (int(actor_id), _iso(now), str(reason).strip(), row["id"]),
                 )
                 group = f"withdrawal:{public_id}:reject"
-                _ledger(
-                    conn, user_id=int(row["user_id"]), bucket="reserved",
-                    amount_minor=-int(row["amount_minor"]), entry_type="withdrawal_released",
+                _ledger_batch(
+                    conn, user_id=int(row["user_id"]),
+                    legs=[("reserved", -int(row["amount_minor"])),
+                          ("available", int(row["amount_minor"]))],
+                    entry_type="withdrawal_released",
                     group_key=group, reference_type="withdrawal", reference_id=public_id,
-                    idempotency_key=f"{group}:reserved", now=now,
-                )
-                _ledger(
-                    conn, user_id=int(row["user_id"]), bucket="available",
-                    amount_minor=int(row["amount_minor"]), entry_type="withdrawal_released",
-                    group_key=group, reference_type="withdrawal", reference_id=public_id,
-                    idempotency_key=f"{group}:available", now=now,
+                    batch_key=group, now=now,
                 )
             _audit(
                 conn, actor_user_id=int(actor_id), actor_kind="admin",
@@ -860,6 +967,8 @@ class ReferralWalletService:
         now = datetime.now(UTC)
         with self.db.transaction() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if not _enabled(conn):
+                raise PermissionError("推广现金计划尚未启用。")
             from core.admin_service import AdminService
             AdminService._require_billing_in_transaction(conn, int(actor_id))
             row = conn.execute(
@@ -899,17 +1008,13 @@ class ReferralWalletService:
             if changed.rowcount != 1:
                 raise ValueError("提款申请状态已变更。")
             group = f"withdrawal:{public_id}:paid"
-            _ledger(
-                conn, user_id=int(row["user_id"]), bucket="reserved",
-                amount_minor=-int(row["amount_minor"]), entry_type="withdrawal_paid",
+            _ledger_batch(
+                conn, user_id=int(row["user_id"]),
+                legs=[("reserved", -int(row["amount_minor"])),
+                      ("paid", int(row["amount_minor"]))],
+                entry_type="withdrawal_paid",
                 group_key=group, reference_type="withdrawal", reference_id=public_id,
-                idempotency_key=f"{group}:reserved", now=now,
-            )
-            _ledger(
-                conn, user_id=int(row["user_id"]), bucket="paid",
-                amount_minor=int(row["amount_minor"]), entry_type="withdrawal_paid",
-                group_key=group, reference_type="withdrawal", reference_id=public_id,
-                idempotency_key=f"{group}:paid", now=now,
+                batch_key=group, now=now,
             )
             _audit(
                 conn, actor_user_id=int(actor_id), actor_kind="admin", action="WITHDRAWAL_PAID",

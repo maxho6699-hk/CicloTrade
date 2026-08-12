@@ -815,8 +815,11 @@ def _withdrawal_public(row: dict[str, Any]) -> dict[str, Any]:
 
 async def referral_portal(request: Request) -> JSONResponse:
     identity = _identity(request)
-    host = request.headers.get("host", "").strip()
-    base_url = f"{request.url.scheme}://{host}" if host else ""
+    base_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if base_url and not re.fullmatch(r"https://[^\s/]+(?:/[^\s]*)?", base_url):
+        if os.getenv("APP_ENV", "development").strip().lower() == "production":
+            raise ApiError("推广链接配置无效。", 503)
+        base_url = ""
     try:
         payload = await run_in_threadpool(
             ReferralService(_auth_service(request).db).portal,
@@ -854,6 +857,9 @@ async def referral_visit(request: Request) -> Response:
         ReferralService(_auth_service(request).db).record_visit(
             payload["invite_code"], fingerprint, rate_key
         )
+    except AuthError as exc:
+        status = 429 if "过多" in str(exc) or "稍后" in str(exc) else 403
+        raise ApiError(str(exc), status) from exc
     except PermissionError as exc:
         raise ApiError(str(exc), 429) from exc
     except ValueError as exc:
@@ -877,6 +883,9 @@ async def referral_withdrawals(request: Request) -> JSONResponse:
             payload["amount_minor"],
             key,
         )
+    except AuthError as exc:
+        status = 429 if "过多" in str(exc) or "稍后" in str(exc) else 403
+        raise ApiError(str(exc), status) from exc
     except PermissionError as exc:
         raise ApiError(str(exc), 403) from exc
     except ValueError as exc:
@@ -924,6 +933,9 @@ async def admin_referral_withdrawal_review(request: Request) -> JSONResponse:
             ReferralWalletService(_auth_service(request).db).review,
             identity.id, public_id, decision, str(payload.get("reason") or ""),
         )
+    except AuthError as exc:
+        status = 429 if "过多" in str(exc) or "稍后" in str(exc) else 403
+        raise ApiError(str(exc), status) from exc
     except PermissionError as exc:
         raise ApiError(str(exc), 403) from exc
     except ValueError as exc:
@@ -950,6 +962,9 @@ async def admin_referral_withdrawal_paid(request: Request) -> JSONResponse:
             ReferralWalletService(_auth_service(request).db).confirm_paid,
             identity.id, public_id, payload["payout_method"], payload["payout_reference"],
         )
+    except AuthError as exc:
+        status = 429 if "过多" in str(exc) or "稍后" in str(exc) else 403
+        raise ApiError(str(exc), status) from exc
     except PermissionError as exc:
         raise ApiError(str(exc), 403) from exc
     except ValueError as exc:
