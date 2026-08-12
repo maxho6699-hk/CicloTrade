@@ -79,10 +79,16 @@ from src.apps.api.system_cycle_research_read_model import (
     SystemCycleResearchReadModel,
 )
 from src.apps.api.compute_evidence_http import (
+    ADMIN_HISTORY_PATH as COMPUTE_EVIDENCE_ADMIN_HISTORY_PATH,
+    ADMIN_LATEST_PATH as COMPUTE_EVIDENCE_ADMIN_LATEST_PATH,
+    ADMIN_STATUS_PATH as COMPUTE_EVIDENCE_ADMIN_STATUS_PATH,
     INTERNAL_PATH as COMPUTE_EVIDENCE_INTERNAL_PATH,
     ComputeEvidenceHttpError,
     compute_evidence_accept,
     compute_evidence_error_handler,
+    compute_evidence_history,
+    compute_evidence_latest,
+    compute_evidence_status,
 )
 from src.apps.api.compute_evidence_receiver import (
     ComputeEvidenceReceiverError,
@@ -823,6 +829,21 @@ async def admin_overview(request: Request) -> JSONResponse:
         },
     })
     return JSONResponse(metrics, headers=_admin_headers())
+
+
+async def admin_compute_evidence_status(request: Request) -> JSONResponse:
+    _admin_identity(request)
+    return await compute_evidence_status(request)
+
+
+async def admin_compute_evidence_latest(request: Request) -> JSONResponse:
+    _admin_identity(request)
+    return await compute_evidence_latest(request)
+
+
+async def admin_compute_evidence_history(request: Request) -> JSONResponse:
+    _admin_identity(request)
+    return await compute_evidence_history(request)
 
 
 async def admin_users(request: Request) -> JSONResponse:
@@ -2475,6 +2496,9 @@ routes = [
     Route("/api/rewrite/v1/session", session_logout, methods=["DELETE"]),
     Route("/api/rewrite/v1/me", me, methods=["GET"]),
     Route("/api/rewrite/v1/admin/overview", admin_overview, methods=["GET"]),
+    Route(COMPUTE_EVIDENCE_ADMIN_STATUS_PATH, admin_compute_evidence_status, methods=["GET"]),
+    Route(COMPUTE_EVIDENCE_ADMIN_LATEST_PATH, admin_compute_evidence_latest, methods=["GET"]),
+    Route(COMPUTE_EVIDENCE_ADMIN_HISTORY_PATH, admin_compute_evidence_history, methods=["GET"]),
     Route("/api/rewrite/v1/admin/users", admin_users, methods=["GET"]),
     Route("/api/rewrite/v1/admin/payments/manual-claims", admin_manual_claims, methods=["GET"]),
     Route("/api/rewrite/v1/admin/payments/manual-claims/{claim_id:str}/proof", admin_manual_claim_proof, methods=["GET"]),

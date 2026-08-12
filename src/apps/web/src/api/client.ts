@@ -641,6 +641,54 @@ export interface AdminAuditEntry {
   [key: string]: unknown
 }
 
+export interface AdminComputeEvidenceStatus {
+  available: boolean
+  publication_ceiling: 'shadow'
+  research_only: true
+  actionable: false
+  user_visible: false
+  counts: { quarantine: number; shadow: number }
+  last_received_at: string | null
+}
+
+export interface AdminComputeEvidenceItem {
+  publication_state: 'quarantine' | 'shadow'
+  received_at: string
+  completed_at: string
+  candidate_id: string
+  candidate_version: string
+  market: string
+  instrument_family: 'equity'
+  symbols: string[]
+  candidate_status: string
+  manifest_sha256: string
+  result_sha256: string
+  package_sha256: string
+  artifact_count: number
+  research_only: true
+  actionable: false
+  user_visible: false
+}
+
+export interface AdminComputeEvidenceLatest {
+  available: boolean
+  publication_ceiling: 'shadow'
+  research_only: true
+  actionable: false
+  user_visible: false
+  evidence: AdminComputeEvidenceItem | null
+}
+
+export interface AdminComputeEvidenceHistory {
+  available: boolean
+  publication_ceiling: 'shadow'
+  research_only: true
+  actionable: false
+  user_visible: false
+  limit: number
+  items: AdminComputeEvidenceItem[]
+}
+
 function adminItems<T>(payload: unknown): T[] {
   return Array.isArray(payload) ? payload as T[] : Array.isArray((payload as { items?: unknown })?.items) ? (payload as { items: T[] }).items : []
 }
@@ -663,6 +711,25 @@ export async function fetchAdminBrokers(): Promise<AdminBrokerAccount[]> {
 
 export async function fetchAdminAudit(): Promise<AdminAuditEntry[]> {
   return adminItems<AdminAuditEntry>(await request<unknown>('/api/rewrite/v1/admin/audit'))
+}
+
+export async function fetchAdminComputeEvidenceStatus(): Promise<AdminComputeEvidenceStatus> {
+  const payload = await request<unknown>('/api/rewrite/v1/admin/compute-evidence/status')
+  if (!validAdminComputeEvidenceStatus(payload)) throw new BrowserApiError('策略研究收据状态响应格式无效。', 502)
+  return payload
+}
+
+export async function fetchAdminComputeEvidenceLatest(): Promise<AdminComputeEvidenceLatest> {
+  const payload = await request<unknown>('/api/rewrite/v1/admin/compute-evidence/latest')
+  if (!validAdminComputeEvidenceLatest(payload)) throw new BrowserApiError('策略研究最新收据响应格式无效。', 502)
+  return payload
+}
+
+export async function fetchAdminComputeEvidenceHistory(limit = 20): Promise<AdminComputeEvidenceHistory> {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new BrowserApiError('研究收据数量必须介于 1 与 100。', 400)
+  const payload = await request<unknown>(`/api/rewrite/v1/admin/compute-evidence/history?limit=${limit}`)
+  if (!validAdminComputeEvidenceHistory(payload, limit)) throw new BrowserApiError('策略研究收据历史响应格式无效。', 502)
+  return payload
 }
 
 export async function reviewAdminManualClaim(id: number, payload: {
@@ -862,6 +929,75 @@ function validSha256(value: unknown): value is string {
 
 function validText(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 256
+}
+
+function validAdminComputeEvidenceAuthority(value: Record<string, unknown>) {
+  return value.publication_ceiling === 'shadow'
+    && value.research_only === true
+    && value.actionable === false
+    && value.user_visible === false
+}
+
+function validAdminComputeEvidenceItem(value: unknown): value is AdminComputeEvidenceItem {
+  if (!exactKeys(value, [
+    'publication_state', 'received_at', 'completed_at', 'candidate_id', 'candidate_version',
+    'market', 'instrument_family', 'symbols', 'candidate_status', 'manifest_sha256',
+    'result_sha256', 'package_sha256', 'artifact_count', 'research_only', 'actionable',
+    'user_visible',
+  ])) return false
+  return (value.publication_state === 'quarantine' || value.publication_state === 'shadow')
+    && validIsoTimestamp(value.received_at)
+    && validIsoTimestamp(value.completed_at)
+    && validText(value.candidate_id)
+    && validText(value.candidate_version)
+    && value.market === 'US'
+    && value.instrument_family === 'equity'
+    && Array.isArray(value.symbols)
+    && value.symbols.length > 0
+    && value.symbols.length <= 128
+    && value.symbols.every(validText)
+    && new Set(value.symbols).size === value.symbols.length
+    && value.candidate_status === 'shadow'
+    && validSha256(value.manifest_sha256)
+    && validSha256(value.result_sha256)
+    && validSha256(value.package_sha256)
+    && finiteNonNegativeInteger(value.artifact_count)
+    && value.research_only === true
+    && value.actionable === false
+    && value.user_visible === false
+}
+
+export function validAdminComputeEvidenceStatus(value: unknown): value is AdminComputeEvidenceStatus {
+  if (!exactKeys(value, [
+    'available', 'publication_ceiling', 'research_only', 'actionable', 'user_visible',
+    'counts', 'last_received_at',
+  ]) || typeof value.available !== 'boolean' || !validAdminComputeEvidenceAuthority(value)) return false
+  const counts = value.counts
+  if (!exactKeys(counts, ['quarantine', 'shadow'])
+    || !finiteNonNegativeInteger(counts.quarantine)
+    || !finiteNonNegativeInteger(counts.shadow)) return false
+  const total = Number(counts.quarantine) + Number(counts.shadow)
+  return value.available
+    ? total > 0 && validIsoTimestamp(value.last_received_at)
+    : total === 0 && value.last_received_at === null
+}
+
+export function validAdminComputeEvidenceLatest(value: unknown): value is AdminComputeEvidenceLatest {
+  if (!exactKeys(value, [
+    'available', 'publication_ceiling', 'research_only', 'actionable', 'user_visible', 'evidence',
+  ]) || typeof value.available !== 'boolean' || !validAdminComputeEvidenceAuthority(value)) return false
+  return value.available ? validAdminComputeEvidenceItem(value.evidence) : value.evidence === null
+}
+
+export function validAdminComputeEvidenceHistory(value: unknown, expectedLimit = 20): value is AdminComputeEvidenceHistory {
+  if (!exactKeys(value, [
+    'available', 'publication_ceiling', 'research_only', 'actionable', 'user_visible', 'limit', 'items',
+  ]) || typeof value.available !== 'boolean' || !validAdminComputeEvidenceAuthority(value)
+    || !Number.isSafeInteger(expectedLimit) || expectedLimit < 1 || expectedLimit > 100
+    || value.limit !== expectedLimit || !Array.isArray(value.items)
+    || value.items.length > expectedLimit || !value.items.every(validAdminComputeEvidenceItem)) return false
+  const hashes = value.items.map((item) => item.package_sha256)
+  return value.available === (value.items.length > 0) && new Set(hashes).size === hashes.length
 }
 
 function validStatusCounts(stockCount: number, coverageCount: unknown, noDataCount: unknown) {
