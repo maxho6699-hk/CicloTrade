@@ -96,6 +96,10 @@ from src.apps.api.compute_evidence_receiver import (
 )
 from core.admin_service import AdminService, ROLE_LABELS, ROLE_PERMISSIONS
 from core.backtest_queue import BacktestQueueError
+from core.broker_access_applications import (
+    BrokerAccessApplicationError,
+    BrokerAccessApplicationService,
+)
 from core.database import DatabaseManager
 from core.feedback import FeedbackError, FeedbackService
 from core.official_option_sim_journal import OfficialOptionSimulationJournal
@@ -745,6 +749,9 @@ _ADMIN_AUDIT_DETAIL_KEYS = {
     "ADMIN_USER_AUTO_TRADING_STATUS": frozenset({"enabled", "affected"}),
     "ADMIN_GLOBAL_OPENING_PAUSE": frozenset({"paused"}),
     "ADMIN_DATA_SOURCE_VERIFICATION": frozenset({"provider", "action", "success"}),
+    "ADMIN_BROKER_ACCESS_APPLICATION_REVIEW": frozenset({
+        "application_id", "provider", "decision", "reason",
+    }),
     "ADMIN_STRATEGY_CYCLE": frozenset({
         "strategy_key", "event_created", "leg_count", "snapshots_created",
     }),
@@ -1044,6 +1051,68 @@ async def feedback(request: Request) -> JSONResponse:
     except FeedbackError as exc:
         raise ApiError(str(exc), exc.status) from exc
     return JSONResponse({"accepted": True, "item": item, "replayed": replayed}, status_code=202)
+
+
+def _broker_access_service(request: Request) -> BrokerAccessApplicationService:
+    return BrokerAccessApplicationService(_auth_service(request).db)
+
+
+async def broker_access_applications(request: Request) -> JSONResponse:
+    identity = _identity(request)
+    service = _broker_access_service(request)
+    try:
+        if request.method == "GET":
+            return JSONResponse({"items": service.list_for_user(identity.id)}, headers=_admin_headers())
+        item, replayed = service.create(
+            identity.id,
+            await _json_body(request),
+            request.headers.get("idempotency-key"),
+        )
+    except BrokerAccessApplicationError as exc:
+        raise ApiError(str(exc), exc.status) from exc
+    return JSONResponse(
+        {"application": item, "replayed": replayed},
+        status_code=200 if replayed else 201,
+        headers=_admin_headers(),
+    )
+
+
+async def broker_access_application_withdraw(request: Request) -> JSONResponse:
+    identity = _identity(request)
+    try:
+        item = _broker_access_service(request).withdraw(
+            identity.id, request.path_params.get("application_id")
+        )
+    except BrokerAccessApplicationError as exc:
+        raise ApiError(str(exc), exc.status) from exc
+    return JSONResponse({"application": item}, headers=_admin_headers())
+
+
+async def admin_broker_access_applications(request: Request) -> JSONResponse:
+    identity, _ = _admin_identity(request)
+    try:
+        items = _broker_access_service(request).list_for_admin(
+            identity.id,
+            request.query_params.get("status", "submitted"),
+            _bounded_int(request, "limit", 100, 200),
+        )
+    except BrokerAccessApplicationError as exc:
+        raise ApiError(str(exc), exc.status) from exc
+    return JSONResponse({"items": items}, headers=_admin_headers())
+
+
+async def admin_broker_access_application_review(request: Request) -> JSONResponse:
+    identity, _ = _admin_identity(request)
+    try:
+        item = _broker_access_service(request).review(
+            identity.id,
+            request.path_params.get("application_id"),
+            await _json_body(request),
+        )
+    except (BrokerAccessApplicationError, PermissionError) as exc:
+        status = exc.status if isinstance(exc, BrokerAccessApplicationError) else 403
+        raise ApiError(str(exc), status) from exc
+    return JSONResponse({"application": item}, headers=_admin_headers())
 
 
 async def quant_timeline(request: Request) -> JSONResponse:
@@ -2504,10 +2573,14 @@ routes = [
     Route("/api/rewrite/v1/admin/payments/manual-claims/{claim_id:str}/proof", admin_manual_claim_proof, methods=["GET"]),
     Route("/api/rewrite/v1/admin/payments/manual-claims/{claim_id:str}/review", admin_manual_claim_review, methods=["POST"]),
     Route("/api/rewrite/v1/admin/brokers", admin_brokers, methods=["GET"]),
+    Route("/api/rewrite/v1/admin/broker-access-applications", admin_broker_access_applications, methods=["GET"]),
+    Route("/api/rewrite/v1/admin/broker-access-applications/{application_id:str}/review", admin_broker_access_application_review, methods=["POST"]),
     Route("/api/rewrite/v1/admin/audit", admin_audit, methods=["GET"]),
     Route("/api/rewrite/v1/admin/user-auto-trading", admin_user_auto_trading, methods=["GET", "PUT"]),
     Route("/api/rewrite/v1/bootstrap", bootstrap, methods=["GET"]),
     Route("/api/rewrite/v1/feedback", feedback, methods=["GET", "POST"]),
+    Route("/api/rewrite/v1/broker-access-applications", broker_access_applications, methods=["GET", "POST"]),
+    Route("/api/rewrite/v1/broker-access-applications/{application_id:str}/withdraw", broker_access_application_withdraw, methods=["POST"]),
     Route("/api/rewrite/v1/recommendations", recommendations, methods=["GET"]),
     Route("/api/rewrite/v1/quant/timeline", quant_timeline, methods=["GET"]),
     Route("/api/rewrite/v1/quant/performance", quant_performance, methods=["GET"]),
