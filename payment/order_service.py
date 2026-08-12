@@ -21,12 +21,13 @@ from core.membership import (
     revoke_membership_entitlement,
 )
 from core.plans import PLAN_ORDER, PLANS
+from core.referral_affiliate import ReferralCommissionService
 
 
 CYCLE_DAYS = {"monthly": 30, "quarterly": 90, "yearly": 365}
 YEARLY_PROMO_DAYS = 90
 TERMINAL_STATUSES = {"paid", "failed", "cancelled", "refunded"}
-REFERRAL_REWARD_PERCENT = 30
+LEGACY_REFERRAL_REWARD_PERCENT = 30
 TERMS_VERSION = "2026-08-07-no-refund-v1"
 ORDER_EXPIRY_HOURS = {"telegram": 1, "web": 24, "legacy": 24}
 MAX_PENDING_MANUAL_ORDERS = 3
@@ -480,6 +481,7 @@ class OrderService:
             source_ref=str(order["order_no"]),
             now=now,
         )
+        ReferralCommissionService.record_settlement(conn, order, current, now)
         current_rank = PLAN_ORDER.index(str(state["plan_type"]))
         lower_plans = PLAN_ORDER[:current_rank]
         if lower_plans:
@@ -495,45 +497,6 @@ class OrderService:
                       )""",
                 (int(order["user_id"]), str(order["order_no"]), *lower_plans),
             )
-        referral = conn.execute(
-            "SELECT * FROM referrals WHERE referee_id=? AND status='registered'", (order["user_id"],)
-        ).fetchone()
-        if referral:
-            qualified = conn.execute(
-                "UPDATE referrals SET status='qualified' WHERE id=? AND status='registered'", (referral["id"],)
-            )
-            if qualified.rowcount:
-                reward_days = max(1, days * REFERRAL_REWARD_PERCENT // 100)
-                inserted_reward = conn.execute(
-                    """INSERT OR IGNORE INTO rewards
-                       (user_id,reward_type,days,reference,source_order_no,created_at)
-                       VALUES (?,?,?,?,?,?)""",
-                    (
-                        referral["referrer_id"], "REFERRAL_30", reward_days, f"referral:{referral['id']}",
-                        order["order_no"], _iso(now),
-                    ),
-                )
-                if inserted_reward.rowcount:
-                    reward_expiry = grant_subscription_days(
-                        conn,
-                        referral["referrer_id"],
-                        reward_days,
-                        order["plan_type"],
-                        now,
-                        source_kind="referral_reward",
-                        source_ref=f"reward:{inserted_reward.lastrowid}",
-                    )
-                    conn.execute(
-                        "INSERT INTO user_action_logs (user_id,action_type,details,created_at) VALUES (?,?,?,?)",
-                        (
-                            referral["referrer_id"], "REFERRAL_REWARD_GRANTED",
-                            json.dumps(
-                                {"order_no": order["order_no"], "referee_id": order["user_id"],
-                                 "days": reward_days, "expiry": reward_expiry}, ensure_ascii=False,
-                            ),
-                            _iso(now),
-                        ),
-                    )
         return True
 
     def process_callback(
@@ -653,14 +616,17 @@ class OrderService:
                        ORDER BY paid_at,id LIMIT 1""",
                     (order["user_id"],),
                 ).fetchone()
-                if replacement_row:
+                cash_enabled = str(conn.execute(
+                    "SELECT control_value FROM platform_controls WHERE control_key='referral_cash_enabled'"
+                ).fetchone()[0]).lower() in {"1", "true", "yes", "on"}
+                if replacement_row and not cash_enabled:
                     replacement = dict(replacement_row)
                     replacement_days = int(
                         replacement.get("entitlement_days")
                         or CYCLE_DAYS.get(replacement["billing_cycle"], 3650)
                     )
                     reward_days = max(
-                        1, replacement_days * REFERRAL_REWARD_PERCENT // 100
+                        1, replacement_days * LEGACY_REFERRAL_REWARD_PERCENT // 100
                     )
                     inserted = conn.execute(
                         """INSERT OR IGNORE INTO rewards
@@ -875,13 +841,17 @@ class OrderService:
                ORDER BY paid_at,id LIMIT 1""",
             (order["user_id"],),
         ).fetchone()
-        if replacement:
+        cash_enabled_row = conn.execute(
+            "SELECT control_value FROM platform_controls WHERE control_key='referral_cash_enabled'"
+        ).fetchone()
+        cash_enabled = bool(cash_enabled_row and str(cash_enabled_row[0]).lower() in {"1", "true", "yes", "on"})
+        if replacement and not cash_enabled:
             replacement = dict(replacement)
             replacement_days = int(
                 replacement.get("entitlement_days")
                 or CYCLE_DAYS.get(replacement["billing_cycle"], 3650)
             )
-            reward_days = max(1, replacement_days * REFERRAL_REWARD_PERCENT // 100)
+            reward_days = max(1, replacement_days * LEGACY_REFERRAL_REWARD_PERCENT // 100)
             inserted = conn.execute(
                 """INSERT OR IGNORE INTO rewards
                    (user_id,reward_type,days,reference,source_order_no,created_at)
@@ -950,6 +920,14 @@ class OrderService:
             )
             if changed.rowcount != 1:
                 raise ValueError("订单状态已变更，请重试支付逆转事件。")
+            ReferralCommissionService.record_reversal(
+                conn,
+                event_key=event_id,
+                order=order,
+                amount_minor=int(order.get("amount_minor") or round(float(order["amount"]) * 100)),
+                reason=reason,
+                now=now,
+            )
             self._reverse_entitlements(conn, order, now)
             conn.execute(
                 "INSERT INTO user_action_logs (user_id,action_type,details,created_at) VALUES (?,?,?,?)",

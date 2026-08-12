@@ -495,7 +495,7 @@ def test_terminal_callbacks_and_provider_reversal_restore_entitlement(db):
     assert {"PAYMENT_PROVIDER_CALLBACK", "PAYMENT_EXTERNAL_REVERSAL"} <= actions
 
 
-def test_paid_referral_grants_thirty_percent_once(db):
+def test_paid_referral_cash_commission_replaces_legacy_days_reward(db):
     auth = AuthService(db)
     referrer = _user(db, "referrer")
     referee = auth.register(
@@ -512,41 +512,23 @@ def test_paid_referral_grants_thirty_percent_once(db):
     )
     assert service.process_callback("referral-paid-1", first["order_no"], "paid", {})
 
-    reward = db.fetch_one(
-        "SELECT reward_type,days,reference FROM rewards WHERE user_id=?",
+    commission = db.fetch_one(
+        "SELECT rate_bps,order_kind,source_order_no FROM referral_commissions WHERE referrer_user_id=?",
         (referrer["id"],),
     )
-    assert reward == {
-        "reward_type": "REFERRAL_30",
-        "days": 9,
-        "reference": db.fetch_one(
-            "SELECT 'referral:' || id reference FROM referrals WHERE referee_id=?",
-            (referee["id"],),
-        )["reference"],
-    }
-    rewarded_user = db.fetch_one(
-        "SELECT plan_type,subscription_expire FROM users WHERE id=?", (referrer["id"],)
-    )
-    assert rewarded_user["plan_type"] == "标准版"
-    first_expiry = rewarded_user["subscription_expire"]
+    assert commission == {"rate_bps": 2000, "order_kind": "initial_purchase", "source_order_no": first["order_no"]}
+    assert db.fetch_one("SELECT COUNT(*) count FROM rewards WHERE user_id=?", (referrer["id"],))["count"] == 0
 
     second = service.create_order(
         referee["id"], "高级版", "quarterly", "paypal", terms_accepted=True, source="legacy"
     )
     assert service.process_callback("referral-paid-2", second["order_no"], "paid", {})
 
-    assert db.fetch_one("SELECT COUNT(*) count FROM rewards WHERE user_id=?", (referrer["id"],))["count"] == 1
-    assert db.fetch_one(
-        "SELECT subscription_expire FROM users WHERE id=?", (referrer["id"],)
-    )["subscription_expire"] == first_expiry
-    assert db.fetch_one("SELECT status FROM referrals WHERE referee_id=?", (referee["id"],))["status"] == "qualified"
-    assert db.fetch_one(
-        "SELECT COUNT(*) count FROM user_action_logs WHERE user_id=? AND action_type='REFERRAL_REWARD_GRANTED'",
-        (referrer["id"],),
-    )["count"] == 1
+    rows = db.fetch_all("SELECT rate_bps,order_kind FROM referral_commissions WHERE referrer_user_id=? ORDER BY id", (referrer["id"],))
+    assert rows == [{"rate_bps": 2000, "order_kind": "initial_purchase"}, {"rate_bps": 1000, "order_kind": "upgrade"}]
 
 
-def test_refund_revokes_source_referral_reward_and_allows_future_qualification(db):
+def test_refund_claws_back_cash_commission_without_requalifying_first_rate(db):
     auth = AuthService(db)
     referrer = _user(db, "refund-referrer")
     referee = auth.register(
@@ -561,21 +543,17 @@ def test_refund_revokes_source_referral_reward_and_allows_future_qualification(d
         referee["id"], "标准版", "monthly", "paypal", terms_accepted=True, source="legacy"
     )
     assert service.process_callback("refund-referral-paid", order["order_no"], "paid", {})
-    assert db.fetch_one("SELECT COUNT(*) count FROM rewards")["count"] == 1
+    assert db.fetch_one("SELECT COUNT(*) count FROM referral_commissions")["count"] == 1
 
     service.process_reversal("referral-provider-reversal", order["order_no"], {}, "provider_refund")
 
-    assert db.fetch_one("SELECT COUNT(*) count FROM rewards")["count"] == 0
-    assert db.fetch_one("SELECT status FROM referrals WHERE referee_id=?", (referee["id"],))["status"] == "registered"
-    assert db.fetch_one(
-        "SELECT plan_type,subscription_expire FROM users WHERE id=?", (referrer["id"],)
-    ) == {"plan_type": "免费版", "subscription_expire": None}
+    assert db.fetch_one("SELECT clawed_back_minor=commission_amount_minor full_claw FROM referral_commissions")["full_claw"] == 1
 
     replacement = service.create_order(
         referee["id"], "标准版", "monthly", "paypal", terms_accepted=True, source="legacy"
     )
     assert service.process_callback("refund-referral-repaid", replacement["order_no"], "paid", {})
-    assert db.fetch_one("SELECT COUNT(*) count FROM rewards")["count"] == 1
+    assert db.fetch_one("SELECT rate_bps FROM referral_commissions WHERE source_order_no=?", (replacement["order_no"],))["rate_bps"] == 1000
 
 
 def test_refund_preserves_rewards_granted_after_payment(db):
@@ -780,7 +758,7 @@ def test_reversal_does_not_reactivate_a_manually_downgraded_account(db):
     ) == {"plan_type": "免费版", "subscription_expire": None}
 
 
-def test_reversing_referral_source_moves_reward_to_next_paid_order(db):
+def test_reversing_cash_commission_does_not_move_or_rewrite_history(db):
     auth = AuthService(db)
     referrer = _user(db, "replacement-referrer")
     referee = auth.register(
@@ -809,12 +787,12 @@ def test_reversing_referral_source_moves_reward_to_next_paid_order(db):
         "paypal:payment.capture.refunded",
     )
 
-    reward = db.fetch_one("SELECT days,source_order_no FROM rewards WHERE user_id=?", (referrer["id"],))
-    assert reward == {"days": 27, "source_order_no": second["order_no"]}
-    assert db.fetch_one("SELECT status FROM referrals WHERE referee_id=?", (referee["id"],))["status"] == "qualified"
+    rows = db.fetch_all("SELECT source_order_no,rate_bps,clawed_back_minor,commission_amount_minor FROM referral_commissions ORDER BY id")
+    assert rows[0]["source_order_no"] == first["order_no"] and rows[0]["clawed_back_minor"] == rows[0]["commission_amount_minor"]
+    assert rows[1]["source_order_no"] == second["order_no"] and rows[1]["rate_bps"] == 1000 and rows[1]["clawed_back_minor"] == 0
 
 
-def test_expired_plan_reward_uses_fallback_and_yearly_is_fifteen_months(db):
+def test_expired_referrer_plan_does_not_receive_legacy_days_and_yearly_cash_is_twenty_percent(db):
     referrer = _user(db, "expired-reward")
     expired = (datetime.now(UTC) - timedelta(days=1)).isoformat(timespec="seconds")
     db.execute(
@@ -843,9 +821,10 @@ def test_expired_plan_reward_uses_fallback_and_yearly_is_fifteen_months(db):
         db.fetch_one("SELECT subscription_expire FROM users WHERE id=?", (referee["id"],))["subscription_expire"]
     )
     assert timedelta(days=454) < buyer_expiry - before < timedelta(days=456)
-    assert db.fetch_one(
-        "SELECT days FROM rewards WHERE source_order_no=?", (order["order_no"],)
-    )["days"] == 136
+    cash = db.fetch_one("SELECT rate_bps,commission_amount_minor,gross_amount_minor FROM referral_commissions WHERE source_order_no=?", (order["order_no"],))
+    assert cash["rate_bps"] == 2000
+    assert cash["commission_amount_minor"] == cash["gross_amount_minor"] * 20 // 100
+    assert db.fetch_one("SELECT COUNT(*) count FROM rewards WHERE source_order_no=?", (order["order_no"],))["count"] == 0
 
 
 def test_annual_bonus_switch_only_changes_new_orders(db):

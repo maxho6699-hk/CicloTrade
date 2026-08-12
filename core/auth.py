@@ -17,7 +17,7 @@ import bcrypt
 import jwt
 
 from core.database import DatabaseManager, get_database
-from core.plans import parse_referral_code
+from core.referral_affiliate import ReferralService
 
 
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
@@ -233,14 +233,9 @@ class AuthService:
                     (email, password_hash, display_name, now, None if email_verification_required() else now),
                 )
                 user_id = int(cursor.lastrowid)
-                referrer_id = parse_referral_code(referral)
-                if referrer_id and referrer_id != user_id and conn.execute(
-                    "SELECT 1 FROM users WHERE id=? AND is_active=1", (referrer_id,)
-                ).fetchone():
-                    conn.execute(
-                        "INSERT INTO referrals (referrer_id,referee_id,status,created_at) VALUES (?,?,?,?)",
-                        (referrer_id, user_id, "registered", _iso()),
-                    )
+                ReferralService.attach_at_registration(
+                    conn, user_id, referral, source="web"
+                )
                 conn.execute(
                     "INSERT INTO user_action_logs (user_id,action_type,details,created_at) VALUES (?,?,?,?)",
                     (user_id, "REGISTER", "用户同意协议并完成邮箱注册", _iso()),
