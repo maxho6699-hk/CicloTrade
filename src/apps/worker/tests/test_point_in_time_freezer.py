@@ -24,14 +24,13 @@ def daily_csv(rows: list[tuple[str, ...]]) -> bytes:
     return target.getvalue().encode()
 
 
-def test_freeze_normalizes_unordered_rows_and_exposes_manifest_descriptor():
+def test_freeze_requires_canonical_order_and_exposes_manifest_descriptor():
     ordered = freeze_daily_ohlcv(daily_csv([row("2025-01-02"), row("2025-01-03")]), as_of=AS_OF, allowed_symbols={"AAPL"})
-    unordered = freeze_daily_ohlcv(daily_csv([row("2025-01-03"), row("2025-01-02")]), as_of=AS_OF, allowed_symbols={"AAPL"})
-
-    assert ordered.canonical_csv == unordered.canonical_csv
     assert ordered.manifest_input()["rows"] == 2
     with pytest.raises(PointInTimeError):
         freeze_daily_ohlcv(daily_csv([row("2025-01-02"), row("2025-01-02")]), as_of=AS_OF)
+    with pytest.raises(PointInTimeError):
+        freeze_daily_ohlcv(daily_csv([row("2025-01-03"), row("2025-01-02")]), as_of=AS_OF, allowed_symbols={"AAPL"})
 
 
 @pytest.mark.parametrize(

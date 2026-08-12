@@ -15,7 +15,8 @@ def test_long_canary_meets_its_declared_validation_gates():
     result = run_pass_canary()
 
     assert result["rows"] == 300
-    assert all(result["validation"][key] for key in ("oos_passed", "walk_forward_passed", "stress_passed"))
+    assert result["validation"]["candidate_status"] == "shadow"
+    assert result["validation"]["cost_2x_passed"] is True
 
 
 @pytest.mark.parametrize("template_key", sorted(EQUITY_TEMPLATES))

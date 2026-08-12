@@ -315,12 +315,27 @@ def _chronological_folds(bars: tuple[DailyBar, ...], signal: Callable[[list[Dail
 
 def _validation(dataset: FrozenDailyOhlcv, manifest: Mapping[str, Any], costs: Mapping[str, Mapping[str, Any]], oos: Mapping[str, Any], folds: list[Mapping[str, Any]], stress: Mapping[str, Mapping[str, Any]], regimes: Mapping[str, int], risk: Mapping[str, Any], plan: Mapping[str, Any]) -> dict[str, Any]:
     actual_regimes = [name for name, count in regimes.items() if count > 0]
-    minimums = costs["1x"]["trades"] >= plan["minimum_trades"] and dataset.row_count >= plan["minimum_coverage_days"] and set(plan["market_regimes"]) <= set(actual_regimes)
     oos_gate = oos["return_pct"] > 0 and oos["max_drawdown"] < risk["quarantine_drawdown_pct"]
     folds_gate = all(fold["metrics"]["return_pct"] > 0 and fold["metrics"]["max_drawdown"] < risk["quarantine_drawdown_pct"] for fold in folds)
+    cost_1x_gate = costs["1x"]["return_pct"] > 0 and costs["1x"]["max_drawdown"] < risk["quarantine_drawdown_pct"]
+    cost_2x_gate = costs["2x"]["return_pct"] > 0 and costs["2x"]["max_drawdown"] < risk["quarantine_drawdown_pct"]
     stress_gate = all(value["max_drawdown"] < risk["quarantine_drawdown_pct"] and value["tail_stress_loss_pct"] <= risk["daily_new_risk_pause_pct"] for value in stress.values())
-    passed = bool(minimums and oos_gate and folds_gate and stress_gate)
-    return {"dataset_end": dataset.dataset_end.isoformat(), "evaluation_date": manifest["evaluation_date"], "oos_passed": passed, "walk_forward_passed": passed, "cost_multipliers": [1.0, 2.0], "stress_passed": passed, "trade_count": costs["1x"]["trades"], "coverage_days": dataset.row_count, "max_drawdown": costs["1x"]["max_drawdown"], "tail_stress_loss_pct": stress["volatility"]["tail_stress_loss_pct"], "market_regimes": actual_regimes}
+    multi_regime_gate = set(plan["market_regimes"]) <= set(actual_regimes)
+    minimum_trades_gate = costs["1x"]["trades"] >= plan["minimum_trades"]
+    coverage_gate = dataset.row_count >= plan["minimum_coverage_days"]
+    gates = (oos_gate, folds_gate, cost_1x_gate, cost_2x_gate, stress_gate, multi_regime_gate, minimum_trades_gate, coverage_gate)
+    quarantined = any(value["max_drawdown"] >= risk["quarantine_drawdown_pct"] for value in (costs["1x"], costs["2x"], *stress.values()))
+    return {
+        "dataset_end": dataset.dataset_end.isoformat(), "evaluation_date": manifest["evaluation_date"],
+        "oos_passed": oos_gate, "walk_forward_passed": folds_gate,
+        "cost_1x_passed": cost_1x_gate, "cost_2x_passed": cost_2x_gate,
+        "stress_passed": stress_gate, "multi_regime_passed": multi_regime_gate,
+        "minimum_trades_passed": minimum_trades_gate, "minimum_coverage_passed": coverage_gate,
+        "candidate_status": "shadow" if all(gates) else "quarantine" if quarantined else "rejected",
+        "cost_multipliers": [1.0, 2.0], "trade_count": costs["1x"]["trades"],
+        "coverage_days": dataset.row_count, "max_drawdown": costs["1x"]["max_drawdown"],
+        "tail_stress_loss_pct": stress["volatility"]["tail_stress_loss_pct"], "market_regimes": actual_regimes,
+    }
 
 
 def _regimes(bars: Iterable[DailyBar]) -> dict[str, int]:

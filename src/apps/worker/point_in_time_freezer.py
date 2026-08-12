@@ -68,7 +68,7 @@ def freeze_daily_ohlcv(body: bytes, *, as_of: datetime, allowed_symbols: Collect
         raise PointInTimeError("daily OHLCV input must be UTF-8") from exc
     if tuple(reader.fieldnames or ()) != CANONICAL_COLUMNS:
         raise PointInTimeError("daily OHLCV columns must exactly match the canonical contract")
-    bars = tuple(sorted(_parse_rows(reader, as_of.astimezone(timezone.utc), allowed_symbols), key=lambda item: (item.symbol, item.session_date)))
+    bars = tuple(_parse_rows(reader, as_of.astimezone(timezone.utc), allowed_symbols))
     if not bars:
         raise PointInTimeError("daily OHLCV input has no rows")
     _validate_sequence(bars)
@@ -81,6 +81,7 @@ def canonicalize_daily_ohlcv(body: bytes, *, as_of: datetime, allowed_symbols: C
 
 
 def _parse_rows(reader: csv.DictReader, as_of: datetime, allowed_symbols: Collection[str] | None) -> Iterable[DailyBar]:
+    previous_key: tuple[str, date] | None = None
     for number, row in enumerate(reader, start=2):
         if None in row or set(row) != set(CANONICAL_COLUMNS):
             raise PointInTimeError(f"row {number} has an invalid number of fields")
@@ -97,6 +98,10 @@ def _parse_rows(reader: csv.DictReader, as_of: datetime, allowed_symbols: Collec
         open_, high, low, close = prices
         if low > min(open_, close) or high < max(open_, close):
             raise PointInTimeError(f"row {number} has inconsistent OHLC bounds")
+        key = (symbol, session)
+        if previous_key is not None and key <= previous_key:
+            raise PointInTimeError("daily OHLCV rows must be strictly ordered by symbol and session_date")
+        previous_key = key
         yield DailyBar(symbol, session, opened, closed, available, open_, high, low, close, _volume(row["volume"], number))
 
 

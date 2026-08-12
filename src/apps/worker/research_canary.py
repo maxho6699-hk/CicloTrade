@@ -17,14 +17,14 @@ from src.apps.worker.research_executor import EQUITY_TEMPLATES, execute_all_temp
 
 
 def run_canary() -> dict[str, Any]:
-    """Complete all three templates on 96 bars; validation gates stay false."""
+    """Complete all templates on 96 bars; coverage keeps every result out of shadow."""
     frozen, manifest, inputs = _request(96, minimum_coverage_days=252)
     receipts = execute_all_templates(manifest, inputs)
     repeated = execute_all_templates(manifest, inputs)
     if receipts != repeated or set(receipts) != EQUITY_TEMPLATES:
         raise AssertionError("canary computation is not deterministic")
-    if any(any(receipt["validation"][key] for key in ("oos_passed", "walk_forward_passed", "stress_passed")) for receipt in receipts.values()):
-        raise AssertionError("short canary must not pass its declared gates")
+    if any(receipt["validation"]["candidate_status"] == "shadow" for receipt in receipts.values()):
+        raise AssertionError("short canary must not enter shadow without declared coverage")
     return {"dataset_sha256": frozen.sha256, "templates": sorted(receipts), "rows": frozen.row_count}
 
 
@@ -32,7 +32,10 @@ def run_pass_canary() -> dict[str, Any]:
     """Run a longer bounded sample whose declared gates are eligible to pass."""
     frozen, manifest, inputs = _request(300, minimum_coverage_days=252, minimum_trades=1)
     receipt = execute_research(manifest, inputs)
-    if not all(receipt["validation"][key] for key in ("oos_passed", "walk_forward_passed", "stress_passed")):
+    if not all(receipt["validation"][key] for key in (
+        "oos_passed", "walk_forward_passed", "cost_1x_passed", "cost_2x_passed",
+        "stress_passed", "multi_regime_passed", "minimum_trades_passed", "minimum_coverage_passed",
+    )) or receipt["validation"]["candidate_status"] != "shadow":
         raise AssertionError("long canary did not meet its declared gates")
     return {"dataset_sha256": frozen.sha256, "rows": frozen.row_count, "validation": receipt["validation"]}
 

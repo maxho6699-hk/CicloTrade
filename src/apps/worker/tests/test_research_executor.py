@@ -19,7 +19,8 @@ def test_all_templates_compute_but_short_declared_coverage_fails_all_gates():
     receipts = execute_all_templates(manifest, inputs)
 
     assert len(receipts) == 3
-    assert all(not any(item["validation"][key] for key in ("oos_passed", "walk_forward_passed", "stress_passed")) for item in receipts.values())
+    assert all(item["validation"]["minimum_coverage_passed"] is False for item in receipts.values())
+    assert all(item["validation"]["candidate_status"] != "shadow" for item in receipts.values())
     assert all(set(item["metrics"]) == {"costs", "oos", "chronological_folds", "stress", "regime_counts"} for item in receipts.values())
 
 
@@ -50,7 +51,46 @@ def test_negative_oos_and_insufficient_regimes_fail_closed():
 
     assert receipt["validation"]["coverage_days"] == 96
     assert receipt["validation"]["market_regimes"]
-    assert receipt["validation"]["oos_passed"] is False
+    assert receipt["validation"]["minimum_coverage_passed"] is False
+    assert receipt["validation"]["candidate_status"] in {"rejected", "quarantine"}
+
+
+def test_validation_reports_independent_gates_and_two_x_cost_is_a_hard_gate():
+    _, manifest, inputs = _request(96, minimum_coverage_days=60)
+    receipt = execute_research(manifest, inputs)
+
+    validation = receipt["validation"]
+    assert {
+        "oos_passed",
+        "walk_forward_passed",
+        "cost_1x_passed",
+        "cost_2x_passed",
+        "stress_passed",
+        "multi_regime_passed",
+        "minimum_trades_passed",
+    } <= set(validation)
+    assert validation["cost_2x_passed"] is (receipt["metrics"]["costs"]["2x"]["return_pct"] > 0)
+    if not validation["cost_2x_passed"]:
+        assert validation["candidate_status"] != "shadow"
+
+
+def test_unprofitable_two_x_cost_forces_rejection_even_when_other_metrics_pass(monkeypatch):
+    _, manifest, inputs = _request(96, minimum_coverage_days=60)
+
+    def controlled_metrics(_bars, _signal, cost_multiplier, **_kwargs):
+        return {
+            "return_pct": -0.01 if cost_multiplier == 2.0 else 0.01,
+            "max_drawdown": 0.01,
+            "tail_stress_loss_pct": 0.001,
+            "trades": 60,
+            "observations": 50,
+        }
+
+    monkeypatch.setattr("src.apps.worker.research_executor._metrics", controlled_metrics)
+    receipt = execute_research(manifest, inputs)
+
+    assert receipt["validation"]["cost_2x_passed"] is False
+    assert receipt["validation"]["candidate_status"] == "rejected"
 
 
 def test_negative_open_to_next_open_path_has_negative_oos_style_metrics():

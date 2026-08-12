@@ -377,18 +377,18 @@ def _validate_candidate_result_evidence(evidence: dict[str, Any], manifest: dict
     if data_contract["research_proxy"] is not manifest["asset_universe"]["research_proxy"]:
         raise BacktestQueueError("research_proxy 标记与 manifest 不一致。", 409)
     validation = _as_object(evidence["validation"])
-    expected = {
-        "dataset_end", "evaluation_date", "oos_passed", "walk_forward_passed", "cost_multipliers",
-        "stress_passed", "trade_count", "coverage_days", "max_drawdown", "tail_stress_loss_pct",
-        "market_regimes",
-    }
+    expected = {"dataset_end", "evaluation_date", "oos_passed", "walk_forward_passed", "cost_multipliers", "cost_1x_passed", "cost_2x_passed", "stress_passed", "multi_regime_passed", "minimum_trades_passed", "minimum_coverage_passed", "candidate_status", "trade_count", "coverage_days", "max_drawdown", "tail_stress_loss_pct", "market_regimes"}
     if set(validation) != expected:
         raise BacktestQueueError("候选 validation 证据字段无效。")
     if validation["dataset_end"] != manifest["dataset_end"] or validation["evaluation_date"] != manifest["evaluation_date"]:
         raise BacktestQueueError("候选 validation 日期未绑定 manifest。", 409)
-    for key in ("oos_passed", "walk_forward_passed", "stress_passed"):
+    for key in ("oos_passed", "walk_forward_passed", "cost_1x_passed", "cost_2x_passed", "stress_passed", "multi_regime_passed", "minimum_trades_passed", "minimum_coverage_passed"):
         if not isinstance(validation[key], bool):
             raise BacktestQueueError(f"validation.{key} 必须为布尔值。")
+    if validation["candidate_status"] not in {"rejected", "quarantine", "shadow"}:
+        raise BacktestQueueError("候选只能为 rejected、quarantine 或 shadow。")
+    if validation["candidate_status"] == "shadow" and not all(validation[key] for key in ("oos_passed", "walk_forward_passed", "cost_1x_passed", "cost_2x_passed", "stress_passed", "multi_regime_passed", "minimum_trades_passed", "minimum_coverage_passed")):
+        raise BacktestQueueError("未通过独立门禁的候选不得进入 shadow。")
     if validation["cost_multipliers"] != [1.0, 2.0]:
         raise BacktestQueueError("候选证据必须包含固定 1x/2x 成本结果。")
     if not isinstance(validation["trade_count"], int) or isinstance(validation["trade_count"], bool) or validation["trade_count"] < 0:
@@ -453,7 +453,7 @@ def validate_result_shape(result: Any, row: dict[str, Any]) -> dict[str, Any]:
         risk = evidence["risk"]
         if evidence["data_contract"]["research_proxy"] is True:
             raise BacktestQueueError("research proxy 不得提出用户发布晋级建议。", 403)
-        if not all(validation[key] is True for key in ("oos_passed", "walk_forward_passed", "stress_passed")):
+        if validation["candidate_status"] != "shadow" or not all(validation[key] is True for key in ("oos_passed", "walk_forward_passed", "cost_1x_passed", "cost_2x_passed", "stress_passed", "multi_regime_passed", "minimum_trades_passed", "minimum_coverage_passed")):
             raise BacktestQueueError("未通过验证门的候选不得提出晋级建议。", 403)
         if validation["trade_count"] < manifest["validation_plan"]["minimum_trades"] or validation["coverage_days"] < manifest["validation_plan"]["minimum_coverage_days"]:
             raise BacktestQueueError("样本覆盖不足，不能提出晋级建议。", 403)
