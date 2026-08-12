@@ -1,17 +1,23 @@
 .operations-page { display: grid; gap: 18px; }
 
-.admin-page { max-width: 1520px; }
+.admin-page { position: relative; max-width: 1520px; isolation: isolate; }
+.admin-page::before { position: absolute; z-index: -1; inset: -18px 0 auto; height: min(360px, 36vh); background: radial-gradient(ellipse at 12% 0%, color-mix(in srgb, var(--accent) 13%, transparent), transparent 58%), radial-gradient(ellipse at 88% 8%, color-mix(in srgb, var(--positive) 7%, transparent), transparent 56%); content: ''; opacity: .78; pointer-events: none; }
+.admin-page > .page-header,
+.admin-boundary,
+.admin-metric,
+.admin-modal { backdrop-filter: blur(18px) saturate(1.08); -webkit-backdrop-filter: blur(18px) saturate(1.08); }
+.admin-page > .page-header { border-color: color-mix(in srgb, var(--border-strong) 72%, transparent); background: color-mix(in srgb, var(--surface) 82%, transparent); box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 10%, transparent); }
 .admin-boundary,
 .admin-toolbar,
 .admin-notice { display: flex; align-items: center; gap: 9px; }
-.admin-boundary { padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--surface) 90%, var(--accent-soft)); color: var(--muted); font-size: 13px; line-height: 1.5; }
+.admin-boundary { padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--surface) 82%, transparent); box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 9%, transparent); color: var(--muted); font-size: 13px; line-height: 1.5; }
 .admin-boundary svg { flex: 0 0 auto; color: var(--accent); }
 .admin-boundary strong { color: var(--text); }
 .admin-toolbar { justify-content: flex-end; }
 .admin-toolbar > span { display: inline-flex; align-items: center; gap: 7px; margin-right: auto; color: var(--muted); font-size: 12px; }
 .admin-notice { padding: 11px 13px; border: 1px solid color-mix(in srgb, var(--positive) 45%, var(--border)); background: color-mix(in srgb, var(--positive) 8%, var(--surface)); color: var(--positive); font-size: 13px; }
 .admin-metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; border: 1px solid var(--border); background: var(--border); }
-.admin-metric { display: grid; min-width: 0; grid-template-columns: auto 1fr; grid-template-rows: auto auto; align-items: center; gap: 7px 10px; min-height: 130px; padding: 15px; background: var(--surface); }
+.admin-metric { display: grid; min-width: 0; grid-template-columns: auto 1fr; grid-template-rows: auto auto; align-items: center; gap: 7px 10px; min-height: 130px; padding: 15px; background: color-mix(in srgb, var(--surface) 86%, transparent); box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent); }
 .admin-metric > svg { grid-row: 1 / -1; color: var(--accent); }
 .admin-metric > span { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .admin-metric-healthy > svg { color: var(--positive); }
@@ -21,7 +27,7 @@
 .admin-metric-healthy .admin-ring { background: conic-gradient(var(--positive) calc(var(--admin-ring-value) * 1%), var(--surface-inset) 0); }
 .admin-metric-warning .admin-ring { background: conic-gradient(var(--warning) calc(var(--admin-ring-value) * 1%), var(--surface-inset) 0); }
 .admin-metric-risk .admin-ring { background: conic-gradient(var(--negative) calc(var(--admin-ring-value) * 1%), var(--surface-inset) 0); }
-.admin-ring::before { position: absolute; inset: 5px; border-radius: 50%; background: var(--surface); content: ''; }
+.admin-ring::before { position: absolute; inset: 5px; border-radius: 50%; background: color-mix(in srgb, var(--surface-raised) 92%, transparent); content: ''; }
 .admin-ring strong,
 .admin-ring small { position: relative; z-index: 1; font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .admin-ring strong { font-size: 13px; }
@@ -55,8 +61,8 @@
 .admin-audit-list span { overflow: hidden; color: var(--muted); font: 11px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .admin-audit-list li { display: grid; gap: 4px; align-items: start; }
 .admin-audit-list strong { font-size: 13px; }
-.admin-modal-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 20px; background: color-mix(in srgb, #000 57%, transparent); }
-.admin-modal { display: grid; width: min(100%, 490px); gap: 14px; padding: 18px; border: 1px solid var(--border-strong); border-radius: var(--radius-panel); background: var(--surface-raised); box-shadow: 0 22px 70px rgba(0, 0, 0, .42); }
+.admin-modal-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 20px; background: color-mix(in srgb, #000 62%, transparent); backdrop-filter: blur(7px) saturate(.88); -webkit-backdrop-filter: blur(7px) saturate(.88); }
+.admin-modal { display: grid; width: min(100%, 490px); gap: 14px; padding: 18px; border: 1px solid color-mix(in srgb, var(--border-strong) 86%, transparent); border-radius: var(--radius-panel); background: color-mix(in srgb, var(--surface-raised) 93%, transparent); box-shadow: 0 22px 70px rgba(0, 0, 0, .42), inset 0 1px 0 color-mix(in srgb, #fff 13%, transparent); }
 .admin-modal header,
 .admin-modal footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .admin-modal h2 { margin: 0; font-size: 18px; }
@@ -67,6 +73,11 @@
 .admin-modal fieldset label { display: flex; align-items: center; gap: 7px; color: var(--text); }
 .admin-modal fieldset input { min-height: 18px; padding: 0; }
 .admin-danger-modal { border-color: color-mix(in srgb, var(--negative) 56%, var(--border)); }
+:root[data-theme='light'] .admin-page::before { background: radial-gradient(ellipse at 12% 0%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 58%), radial-gradient(ellipse at 88% 8%, color-mix(in srgb, var(--positive) 9%, transparent), transparent 56%); opacity: .58; }
+:root[data-theme='light'] .admin-page > .page-header,
+:root[data-theme='light'] .admin-boundary,
+:root[data-theme='light'] .admin-metric { background: color-mix(in srgb, var(--surface) 88%, transparent); box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 58%, transparent); }
+:root[data-theme='light'] .admin-modal { background: color-mix(in srgb, var(--surface-raised) 95%, transparent); box-shadow: 0 22px 60px color-mix(in srgb, #45584d 18%, transparent), inset 0 1px 0 color-mix(in srgb, #fff 72%, transparent); }
 
 .data-panel {
   min-width: 0;

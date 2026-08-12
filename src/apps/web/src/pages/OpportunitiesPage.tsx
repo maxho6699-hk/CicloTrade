@@ -65,7 +65,7 @@ function formatOpportunityTime(value: string) {
   const date = new Date(value)
   return Number.isNaN(date.valueOf())
     ? value
-    : new Intl.DateTimeFormat(getFormatLocale(), { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false, timeZoneName: 'short' }).format(date)
+    : new Intl.DateTimeFormat(getFormatLocale(), { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Hong_Kong', timeZoneName: 'short' }).format(date)
 }
 
 const filterOptions = [

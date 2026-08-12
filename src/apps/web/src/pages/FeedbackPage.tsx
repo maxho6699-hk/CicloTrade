@@ -1,5 +1,5 @@
 import { CheckCircle2, CircleAlert, Lightbulb, LoaderCircle, MessageSquareText, RefreshCw } from 'lucide-react'
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { useLocation } from 'react-router-dom'
 import { BrowserApiError, fetchFeedback, submitFeedback, type FeedbackCategory, type FeedbackReceipt } from '../api/client'
 import { PageHeader } from '../components/PageHeader'
@@ -27,15 +27,31 @@ export function FeedbackPage() {
   const [submitting, setSubmitting] = useState(false)
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
+  const [historyError, setHistoryError] = useState('')
+  const mounted = useRef(true)
+  const receiptRequest = useRef(0)
   const sourcePage = useMemo(() => page.trim().startsWith('/') ? page.trim() : '/today', [page])
 
-  useEffect(() => {
-    let active = true
-    void fetchFeedback().then((items) => { if (active) setReceipts(items) }).catch((caught) => {
-      if (active) setError(caught instanceof BrowserApiError ? caught.message : '反馈记录暂时不可用。')
-    }).finally(() => { if (active) setLoading(false) })
-    return () => { active = false }
+  const loadReceipts = useCallback(async () => {
+    const request = receiptRequest.current + 1
+    receiptRequest.current = request
+    setLoading(true)
+    setHistoryError('')
+    try {
+      const items = await fetchFeedback()
+      if (mounted.current && receiptRequest.current === request) setReceipts(items)
+    } catch (caught) {
+      if (mounted.current && receiptRequest.current === request) setHistoryError(caught instanceof BrowserApiError ? caught.message : '反馈记录暂时不可用。')
+    } finally {
+      if (mounted.current && receiptRequest.current === request) setLoading(false)
+    }
   }, [])
+
+  useEffect(() => {
+    mounted.current = true
+    void loadReceipts()
+    return () => { mounted.current = false; receiptRequest.current += 1 }
+  }, [loadReceipts])
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -66,7 +82,7 @@ export function FeedbackPage() {
       </form>
       <section className="data-panel feedback-history" aria-busy={loading}>
         <header className="panel-heading"><div><span>YOUR RECEIPTS</span><h2>历史回执</h2></div><Lightbulb size={20} /></header>
-        {loading ? <div className="feedback-state"><LoaderCircle className="spin" size={20} />正在读取回执…</div> : receipts.length ? <ol>{receipts.map((item) => <li key={item.id}><header><strong>{kinds.find((kindItem) => kindItem.value === item.category)?.label ?? '反馈'}</strong><span>{item.status}</span></header><p>{item.summary}</p><footer><code>{item.id}</code><time>{new Date(item.created_at).toLocaleString('zh-HK', { hour12: false, timeZone: 'Asia/Hong_Kong' })}</time></footer></li>)}</ol> : <div className="feedback-state"><RefreshCw size={20} /><strong>尚无反馈回执</strong><span>提交后将在这里显示处理状态。</span></div>}
+        {loading ? <div className="feedback-state"><LoaderCircle className="spin" size={20} />正在读取回执…</div> : historyError ? <div className="feedback-state feedback-state-error" role="alert"><CircleAlert size={20} /><strong>暂时无法读取历史回执</strong><span>{historyError}</span><button className="button secondary" type="button" onClick={() => void loadReceipts()}><RefreshCw size={15} />重新读取</button></div> : receipts.length ? <ol>{receipts.map((item) => <li key={item.id}><header><strong>{kinds.find((kindItem) => kindItem.value === item.category)?.label ?? '反馈'}</strong><span>{item.status}</span></header><p>{item.summary}</p><footer><code>{item.id}</code><time>{new Date(item.created_at).toLocaleString('zh-HK', { hour12: false, timeZone: 'Asia/Hong_Kong' })}</time></footer></li>)}</ol> : <div className="feedback-state"><RefreshCw size={20} /><strong>尚无反馈回执</strong><span>提交后将在这里显示处理状态。</span></div>}
       </section>
     </div>
   </div>

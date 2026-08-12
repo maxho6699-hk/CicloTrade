@@ -408,7 +408,6 @@ export interface MarketQuotePayload extends DeliveryVisibilityMetadata {
   verification: string
   configuration_allows_realtime: boolean
   request_succeeded: boolean
-  fallback_from?: string
   status: 'available'
 }
 
@@ -449,9 +448,7 @@ export interface OptionChainPayload extends DeliveryVisibilityMetadata {
   freshness: string
   verification: string
   configuration_allows_realtime: boolean
-  qot_right: string
   missing_fields: string[]
-  fallback_from?: string
   status: 'available'
 }
 
@@ -465,9 +462,7 @@ export interface OptionCandlePayload extends DeliveryVisibilityMetadata {
   freshness: string
   verification: string
   configuration_allows_realtime: boolean
-  qot_right: string
   missing_fields: string[]
-  fallback_from?: string
   status: 'available'
 }
 
@@ -988,15 +983,13 @@ export async function fetchMarketQuote(symbol: string) {
   const payload = await request<MarketQuotePayload>(`/api/rewrite/v1/market/quote?symbol=${encodeURIComponent(symbol)}`)
   const valid = payload.status === 'available'
     && typeof payload.symbol === 'string'
-    && typeof payload.source === 'string'
-    && payload.source.length > 0
+    && payload.source === '真实数据来源'
     && typeof payload.is_realtime === 'boolean'
     && typeof payload.actionable_quote === 'boolean'
     && typeof payload.freshness === 'string'
-    && typeof payload.verification === 'string'
+    && validPublicVerification(payload.verification)
     && typeof payload.configuration_allows_realtime === 'boolean'
     && typeof payload.request_succeeded === 'boolean'
-    && (payload.fallback_from === undefined || typeof payload.fallback_from === 'string')
     && [payload.last, payload.bid, payload.ask, payload.spread, payload.open, payload.high, payload.low, payload.prev_close, payload.volume]
       .every(nullableFinite)
     && (payload.quote_at === null || typeof payload.quote_at === 'string')
@@ -1007,6 +1000,12 @@ export async function fetchMarketQuote(symbol: string) {
 
 function nullableFinite(value: unknown): value is number | null {
   return value === null || (typeof value === 'number' && Number.isFinite(value))
+}
+
+function validPublicVerification(value: unknown) {
+  return value === 'realtime_verified'
+    || value === 'realtime_unverified'
+    || value === 'delayed_research'
 }
 
 function validDeliveryVisibilityMetadata(value: unknown) {
@@ -1086,16 +1085,14 @@ export async function fetchOptionChain(symbol: string, expiry?: string) {
   const payload = await request<OptionChainPayload>(`/api/rewrite/v1/options/chain?${params}`)
   const arraysAreValid = [payload.calls, payload.puts, payload.items]
     .every((items) => Array.isArray(items) && items.every(validOptionContract))
-  const metadataIsValid = typeof payload.source === 'string'
+  const metadataIsValid = payload.source === '真实数据来源'
     && typeof payload.is_realtime === 'boolean'
     && typeof payload.actionable_quote === 'boolean'
     && typeof payload.freshness === 'string'
-    && typeof payload.verification === 'string'
+    && validPublicVerification(payload.verification)
     && typeof payload.configuration_allows_realtime === 'boolean'
-    && typeof payload.qot_right === 'string'
     && Array.isArray(payload.missing_fields)
     && payload.missing_fields.every((item) => typeof item === 'string')
-    && (payload.fallback_from === undefined || typeof payload.fallback_from === 'string')
     && validDeliveryVisibilityMetadata(payload)
   if (!arraysAreValid || !metadataIsValid || !Array.isArray(payload.expiries) || !payload.expiries.every((item) => typeof item === 'string')) {
     throw new BrowserApiError('期权链响应格式无效。', 502)
@@ -1110,16 +1107,14 @@ export async function fetchOptionCandles(contractCode: string, timeframe: string
     (typeof item.time === 'string' || typeof item.time === 'number')
     && [item.open, item.high, item.low, item.close, item.volume].every(Number.isFinite)
   ))
-  const metadataIsValid = typeof payload.source === 'string'
+  const metadataIsValid = payload.source === '真实数据来源'
     && typeof payload.is_realtime === 'boolean'
     && typeof payload.actionable_quote === 'boolean'
     && typeof payload.freshness === 'string'
-    && typeof payload.verification === 'string'
+    && validPublicVerification(payload.verification)
     && typeof payload.configuration_allows_realtime === 'boolean'
-    && typeof payload.qot_right === 'string'
     && Array.isArray(payload.missing_fields)
     && payload.missing_fields.every((item) => typeof item === 'string')
-    && (payload.fallback_from === undefined || typeof payload.fallback_from === 'string')
     && validDeliveryVisibilityMetadata(payload)
   if (!valid || !metadataIsValid) throw new BrowserApiError('期权 K 线响应格式无效。', 502)
   return payload

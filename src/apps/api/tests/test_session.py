@@ -1381,8 +1381,8 @@ def test_market_candles_a_share_prefers_akshare_and_reports_actual_source(browse
     payload = _payload(response)
     assert calls == ["akshare"]
     assert payload["items"][0]["close"] == 1505.0
-    assert payload["status"]["source"] == "AKShare"
-    assert payload["status"]["fallback_from"] is None
+    assert payload["status"]["display_source"] == "真实数据来源"
+    assert "source" not in payload["status"] and "fallback_from" not in payload["status"]
     assert payload["status"]["delivery_delay_minutes"] == 15
 
 
@@ -1425,8 +1425,8 @@ def test_market_candles_opend_failure_falls_back_to_yahoo_with_actual_status(bro
 
     payload = _payload(response)
     assert calls == [None, "yfinance"]
-    assert payload["status"]["source"] == "Yahoo Finance"
-    assert payload["status"]["fallback_from"] == "Futu OpenD"
+    assert payload["status"]["display_source"] == "真实数据来源"
+    assert "source" not in payload["status"] and "fallback_from" not in payload["status"]
     assert payload["status"]["delivery_delay_minutes"] == 15
 
 
@@ -1455,11 +1455,11 @@ def test_authenticated_market_quote_marks_unverified_opend_snapshot_non_actionab
 
     assert response.status_code == 200 and received == ["AAPL"]
     payload = _payload(response)
-    assert payload["source"] == "OpenD" and payload["last"] == 211.5
+    assert payload["source"] == "真实数据来源" and payload["last"] == 211.5
     assert payload["bid"] == 211.4 and payload["ask"] == 211.6
     assert payload["status"] == "available" and payload["request_succeeded"] is True
     assert payload["is_realtime"] is False and payload["actionable_quote"] is False
-    assert payload["verification"] == "opend_snapshot_realtime_unverified"
+    assert payload["verification"] == "realtime_unverified"
     assert "未验证" in payload["freshness"]
 
 
@@ -1490,9 +1490,11 @@ def test_authenticated_market_quote_accepts_verified_opend_realtime_right(browse
 
     payload = _payload(response)
     assert response.status_code == 200
+    assert payload["source"] == "真实数据来源"
+    assert set(payload).isdisjoint({"fallback_from", "qot_right", "provider_name"})
     assert payload["is_realtime"] is True and payload["actionable_quote"] is True
-    assert payload["verification"] == "opend_qot_right_lv2"
-    assert "LV2 实时权限已验证" in payload["freshness"]
+    assert payload["verification"] == "realtime_verified"
+    assert payload["freshness"] == "实时权限已验证"
 
 
 def test_authenticated_market_quote_never_labels_a_stale_entitled_snapshot_realtime(
@@ -1715,6 +1717,7 @@ def test_market_status_is_vendor_neutral_cached_and_applies_the_member_boundary(
     ))))
     assert free["delivery_delay_minutes"] == 15 and free["is_realtime"] is False
     assert "source" not in free and "Futu" not in json.dumps(free, ensure_ascii=False)
+    assert set(free).isdisjoint({"qot_right", "provider_name", "fallback_from"})
 
     browser_api["database"].execute(
         "UPDATE users SET plan_type='高级版', subscription_expire=? WHERE email=?",
@@ -1724,6 +1727,7 @@ def test_market_status_is_vendor_neutral_cached_and_applies_the_member_boundary(
         "/api/rewrite/v1/market/status", authorization=f"Bearer {_login_token()}"
     ))))
     assert advanced["delivery_delay_minutes"] == 0 and advanced["is_realtime"] is True
+    assert set(advanced).isdisjoint({"qot_right", "provider_name", "fallback_from"})
     assert calls == {"available": 1, "rights": 1}
 
 
@@ -1815,7 +1819,7 @@ def test_market_quote_uses_akshare_research_quote_for_a_shares_and_yahoo_for_us_
     )))
     a_share_payload = _payload(a_share)
     assert a_share.status_code == 200 and created is False
-    assert a_share_payload["source"] == "AKShare" and a_share_payload["last"] == 1500.0
+    assert a_share_payload["source"] == "真实数据来源" and a_share_payload["last"] == 1500.0
     assert a_share_payload["bid"] is a_share_payload["ask"] is a_share_payload["spread"] is None
     assert a_share_payload["is_realtime"] is False and a_share_payload["actionable_quote"] is False
 
@@ -1844,10 +1848,10 @@ def test_market_quote_uses_akshare_research_quote_for_a_shares_and_yahoo_for_us_
 
     payload = _payload(response)
     assert response.status_code == 200 and payload["status"] == "available"
-    assert payload["source"] == "Yahoo Finance" and payload["fallback_from"] == "OpenD"
+    assert payload["source"] == "真实数据来源" and "fallback_from" not in payload
     assert payload["last"] == 201.5 and payload["bid"] is payload["ask"] is payload["spread"] is None
     assert payload["is_realtime"] is False and payload["actionable_quote"] is False
-    assert payload["verification"] == "delayed_research_quote"
+    assert payload["verification"] == "delayed_research"
 
 
 def test_market_quote_a_share_falls_back_to_yahoo_research_without_constructing_opend(browser_api, monkeypatch):
@@ -1889,8 +1893,8 @@ def test_market_quote_a_share_falls_back_to_yahoo_research_without_constructing_
     )))
 
     payload = _payload(response)
-    assert response.status_code == 200 and payload["source"] == "Yahoo Finance"
-    assert payload["fallback_from"] == "AKShare"
+    assert response.status_code == 200 and payload["source"] == "真实数据来源"
+    assert "fallback_from" not in payload
     assert payload["is_realtime"] is False and payload["actionable_quote"] is False
 
 
@@ -1959,12 +1963,14 @@ def test_professional_options_chain_exposes_normalized_opend_fields(browser_api,
     assert received == [("AAPL", "2026-09-18")]
     assert payload["expiry"] == "2026-09-18"
     assert payload["expiries"] == ["2026-09-18", "2026-10-16"] and len(payload["puts"]) == 1
+    assert payload["source"] == "真实数据来源"
+    assert set(payload).isdisjoint({"fallback_from", "qot_right", "provider_name"})
     assert call == {
         "expiry": "2026-09-18", "option_type": "CALL", "contract_code": "US.AAPL260918C210000",
         "strike": 210.0, "last": 5.2, "bid": 5.1, "ask": 5.3, "spread": pytest.approx(0.2),
         "volume": 100.0, "open_interest": 500.0, "implied_volatility": 0.31,
         "greeks": {"delta": 0.5, "gamma": 0.02, "theta": -0.1, "vega": 0.2, "rho": 0.05},
-        "quote_at": "2026-08-08 16:00:00",
+        "quote_at": "2026-08-08T20:00:00+00:00",
     }
 
 
@@ -2158,8 +2164,8 @@ def test_options_opend_failure_uses_delayed_yahoo_chain_but_never_guesses_contra
 
     assert chain.status_code == 200
     chain_payload = _payload(chain)
-    assert chain_payload["source"] == "Yahoo Finance"
-    assert chain_payload["fallback_from"] == "OpenD"
+    assert chain_payload["source"] == "真实数据来源"
+    assert "fallback_from" not in chain_payload and "qot_right" not in chain_payload
     assert chain_payload["is_realtime"] is False and chain_payload["actionable_quote"] is False
     assert chain_payload["missing_fields"] == ["delta", "gamma", "theta", "vega", "rho"]
     assert chain_payload["calls"][0]["contract_code"] == "AAPL260918C00210000"

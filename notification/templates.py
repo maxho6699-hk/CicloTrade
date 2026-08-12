@@ -248,13 +248,6 @@ def _telegram_recommendation_block(
 ) -> list[str]:
     unit = "張" if content.instrument_type == "option" else "股"
     quantity = f"{content.quantity:g} {unit}" if content.quantity is not None else MISSING_FIELD
-    fallback = (
-        f"是 · 來自 {_recorded_text(content.quote.fallback_from)}"
-        if content.quote.fallback_from
-        else "否"
-        if content.quote.fallback_recorded
-        else MISSING_FIELD
-    )
     realtime = "是" if content.quote.is_realtime is True else "否" if content.quote.is_realtime is False else MISSING_FIELD
     actionable = (
         "是"
@@ -272,10 +265,10 @@ def _telegram_recommendation_block(
         _recommendation_instrument(content),
         f"事件時間　{_telegram_time(content.event_time)}",
         f"報價時間　{_telegram_time(content.quote.quote_at)}",
-        f"數據來源　{_recorded_text(content.quote.source)}",
+        "數據來源　真實數據來源",
         f"新鮮度　{_recorded_text(content.quote.freshness)}",
         f"即時報價　{realtime} · 可行動報價　{actionable}",
-        f"是否回退　{fallback}",
+        "數據狀態　已按可見性與報價安全門檻核對",
         f"報價安全　<b>{escape(safety_text)}</b>",
         f"入場　{_recorded_money(content.currency, content.entry_price)}",
         f"數量　{quantity}",

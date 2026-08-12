@@ -133,8 +133,9 @@ def _public_error_response(
     headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     safe_context = dict(context or {})
-    # Success payloads may disclose a source for research provenance.  Failure
-    # payloads must not expose provider topology or fallback behavior.
+    # Browser-facing failures must not expose provider topology or fallback
+    # behavior.  Provider evidence remains available only inside adapters and
+    # server-side audit records.
     if status >= 500:
         for key in ("source", "fallback_from", "provider", "provider_name"):
             safe_context.pop(key, None)
@@ -1307,21 +1308,107 @@ def _final_market_status(
     visible_as_of: datetime,
     observed_at: datetime | None,
 ) -> dict[str, object]:
-    """Apply the membership delivery boundary to an upstream status object."""
+    """Apply the membership boundary without exposing market-data topology."""
     delay = max(0, int(delivery_delay_minutes))
     realtime = bool(provider_realtime and delay == 0)
-    result = dict(status)
-    result.update({
+    raw_freshness = str(status.get("freshness") or "")
+    if delay:
+        freshness = f"延迟 {delay} 分钟"
+        detail = "会员数据延迟已生效"
+        verification = "delayed_research"
+    elif realtime:
+        freshness = "实时权限已验证"
+        detail = "账户可见性与实时权限已核对"
+        verification = "realtime_verified"
+    elif "停用" in raw_freshness:
+        freshness = "已停用"
+        detail = "行情服务当前未启用"
+        verification = "market_data_disabled"
+    else:
+        freshness = "实时权限未验证，仅供研究"
+        detail = "实时权限或报价新鲜度未满足"
+        verification = "realtime_unverified"
+    return {
+        "display_source": "真实数据来源",
+        "freshness": freshness,
+        "detail": detail,
+        "verification": verification,
+        "request_succeeded": bool(status.get("request_succeeded", True)),
         "delivery_delay_minutes": delay,
         "visible_as_of": visible_as_of.isoformat(),
         "observed_at": observed_at.isoformat() if observed_at is not None else None,
         "provider_realtime": bool(provider_realtime),
         "is_realtime": realtime,
-    })
-    if delay:
-        result["freshness"] = f"延迟 {delay} 分钟"
-        result["detail"] = "会员数据延迟已生效"
-    return result
+    }
+
+
+def _public_quote_values(quote: dict[str, object], *, symbol: str, quote_at: str | None) -> dict[str, object]:
+    """Return only quote values that are safe for authenticated browser clients."""
+    return {
+        "symbol": symbol,
+        "last": quote.get("last"),
+        "bid": quote.get("bid"),
+        "ask": quote.get("ask"),
+        "spread": quote.get("spread"),
+        "open": quote.get("open"),
+        "high": quote.get("high"),
+        "low": quote.get("low"),
+        "prev_close": quote.get("prev_close"),
+        "volume": quote.get("volume"),
+        "quote_at": quote_at,
+        "source": "真实数据来源",
+    }
+
+
+def _public_quote_metadata(
+    *,
+    is_realtime: bool,
+    actionable_quote: bool,
+    delivery_delay_minutes: int,
+    observed_at: str | None,
+    configuration_allows_realtime: bool,
+    verification: str,
+    freshness: str,
+) -> dict[str, object]:
+    """Keep the public decision contract, but not provider names or rights."""
+    return {
+        "is_realtime": is_realtime,
+        "actionable_quote": actionable_quote,
+        "freshness": freshness,
+        "verification": verification,
+        "configuration_allows_realtime": configuration_allows_realtime,
+        "delivery_delay_minutes": delivery_delay_minutes,
+        "visible_as_of": _visible_as_of(delivery_delay_minutes).isoformat(),
+        "observed_at": observed_at,
+        "request_succeeded": True,
+        "status": "available",
+    }
+
+
+def _public_option_status(status: dict[str, object]) -> dict[str, object]:
+    """Project private provider evidence into the vendor-neutral option contract."""
+    realtime = bool(status.get("is_realtime"))
+    delayed = str(status.get("verification") or "").startswith("delayed_")
+    return {
+        "source": "真实数据来源",
+        "is_realtime": realtime,
+        "actionable_quote": bool(status.get("actionable_quote")),
+        "freshness": (
+            "实时权限已验证" if realtime
+            else "延迟研究数据，仅供研究" if delayed
+            else "实时权限未验证，仅供研究"
+        ),
+        "verification": (
+            "realtime_verified" if realtime
+            else "delayed_research" if delayed
+            else "realtime_unverified"
+        ),
+        "configuration_allows_realtime": bool(status.get("configuration_allows_realtime")),
+        "delivery_delay_minutes": 0,
+        "visible_as_of": _visible_as_of(0).isoformat(),
+        "observed_at": status.get("observed_at"),
+        "missing_fields": list(status.get("missing_fields") or ()),
+    }
 
 
 def _upstream_market_status() -> dict[str, object]:
@@ -1379,7 +1466,7 @@ async def _delayed_market_quote(
 ) -> JSONResponse:
     """Construct a delayed quote from bars, never from a current snapshot."""
     try:
-        frame, source, fallback_from = await run_in_threadpool(
+        frame, _source, _fallback_from = await run_in_threadpool(
             _market_bars_with_fallback, symbol, market, "5d", "1m"
         )
         visible, observed_at, visible_as_of = await run_in_threadpool(
@@ -1409,30 +1496,25 @@ async def _delayed_market_quote(
     row = visible.iloc[-1]
     quote_at = _iso_market_datetime(visible.index[-1], market)
     return JSONResponse({
-        "symbol": symbol,
-        "last": float(row["Close"]),
-        "bid": None,
-        "ask": None,
-        "spread": None,
-        "open": float(row["Open"]),
-        "high": float(row["High"]),
-        "low": float(row["Low"]),
-        "prev_close": None,
-        "volume": float(row["Volume"]),
-        "quote_at": quote_at,
-        "source": str(getattr(source, "name", "市场数据")),
-        "is_realtime": False,
-        "provider_realtime": False,
-        "actionable_quote": False,
-        "freshness": f"延迟 {delivery_delay_minutes} 分钟的研究报价",
-        "verification": "plan_delayed_market_data",
-        "configuration_allows_realtime": _enabled("MARKET_DATA_REALTIME"),
-        "delivery_delay_minutes": delivery_delay_minutes,
+        **_public_quote_values(
+            {
+                "last": float(row["Close"]), "bid": None, "ask": None, "spread": None,
+                "open": float(row["Open"]), "high": float(row["High"]),
+                "low": float(row["Low"]), "prev_close": None, "volume": float(row["Volume"]),
+            },
+            symbol=symbol,
+            quote_at=quote_at,
+        ),
+        **_public_quote_metadata(
+            is_realtime=False,
+            actionable_quote=False,
+            delivery_delay_minutes=delivery_delay_minutes,
+            observed_at=observed_at.isoformat() if observed_at is not None else quote_at,
+            configuration_allows_realtime=_enabled("MARKET_DATA_REALTIME"),
+            verification="delayed_research",
+            freshness=f"延迟 {delivery_delay_minutes} 分钟的研究报价",
+        ),
         "visible_as_of": visible_as_of.isoformat(),
-        "observed_at": observed_at.isoformat() if observed_at is not None else None,
-        "request_succeeded": True,
-        "fallback_from": fallback_from,
-        "status": "available",
     })
 
 
@@ -1542,6 +1624,7 @@ def _opend_option_status(
         "configuration_allows_realtime": configured,
         "qot_right": qot_right,
         "missing_fields": [],
+        "observed_at": observed_at.isoformat() if observed_at is not None else None,
     }
 
 
@@ -1555,6 +1638,7 @@ def _delayed_option_status(*, fallback_from: str | None = None) -> dict[str, obj
         "configuration_allows_realtime": False,
         "qot_right": "N/A",
         "missing_fields": ["delta", "gamma", "theta", "vega", "rho"],
+        "observed_at": None,
     }
     if fallback_from:
         result["fallback_from"] = fallback_from
@@ -1594,7 +1678,7 @@ def _option_rows(frame: Any, option_type: str, expiry: str) -> list[dict[str, An
                 "vega": _option_number(row, "vega"),
                 "rho": _option_number(row, "rho"),
             },
-            "quote_at": _option_text(row, "lastTradeDate"),
+            "quote_at": _iso_market_datetime(_option_text(row, "lastTradeDate"), "美股"),
         })
     return items
 
@@ -1637,7 +1721,7 @@ def _opend_quote_unavailable(
             "prev_close": None,
             "volume": None,
             "quote_at": None,
-            "source": source,
+            "source": "真实数据来源",
             "is_realtime": False,
             "actionable_quote": False,
             "freshness": "无可用研究报价",
@@ -1786,38 +1870,29 @@ async def market_quote(request: Request) -> JSONResponse:
                 )
             quote_at = _iso_market_datetime(quote.get("quote_at"), market_name)
             return JSONResponse({
-                "symbol": symbol,
-                **quote,
-                "quote_at": quote_at,
-                "is_realtime": False,
-                "provider_realtime": False,
-                "actionable_quote": False,
-                "freshness": str(quote.get("freshness") or "约 15 分钟延迟的研究报价"),
-                "verification": str(quote.get("verification") or "delayed_research_quote"),
-                "configuration_allows_realtime": False,
-                "delivery_delay_minutes": delivery_delay_minutes,
-                "visible_as_of": _visible_as_of(delivery_delay_minutes).isoformat(),
-                "observed_at": quote_at,
-                "request_succeeded": True,
-                "fallback_from": "AKShare",
-                "status": "available",
+                **_public_quote_values(quote, symbol=symbol, quote_at=quote_at),
+                **_public_quote_metadata(
+                    is_realtime=False,
+                    actionable_quote=False,
+                    delivery_delay_minutes=delivery_delay_minutes,
+                    observed_at=quote_at,
+                    configuration_allows_realtime=False,
+                    verification="delayed_research",
+                    freshness="延迟研究报价，仅供研究",
+                ),
             })
         quote_at = _iso_market_datetime(quote.get("quote_at"), market_name)
         return JSONResponse({
-            "symbol": symbol,
-            **quote,
-            "quote_at": quote_at,
-            "is_realtime": False,
-            "provider_realtime": False,
-            "actionable_quote": False,
-            "freshness": str(quote.get("freshness") or "A 股免费研究报价；实时等级未验证"),
-            "verification": str(quote.get("verification") or "delayed_research_quote"),
-            "configuration_allows_realtime": False,
-            "delivery_delay_minutes": delivery_delay_minutes,
-            "visible_as_of": _visible_as_of(delivery_delay_minutes).isoformat(),
-            "observed_at": quote_at,
-            "request_succeeded": True,
-            "status": "available",
+            **_public_quote_values(quote, symbol=symbol, quote_at=quote_at),
+            **_public_quote_metadata(
+                is_realtime=False,
+                actionable_quote=False,
+                delivery_delay_minutes=delivery_delay_minutes,
+                observed_at=quote_at,
+                configuration_allows_realtime=False,
+                verification="delayed_research",
+                freshness="延迟研究报价，仅供研究",
+            ),
         })
     try:
         quote = await run_in_threadpool(OpenDAdapter().stock_quote, symbol)
@@ -1834,24 +1909,18 @@ async def market_quote(request: Request) -> JSONResponse:
             )
         quote_at = _iso_market_datetime(quote.get("quote_at"), market_name)
         return JSONResponse({
-            "symbol": symbol,
-            **quote,
-            "quote_at": quote_at,
-            "is_realtime": False,
-            "provider_realtime": False,
-            "actionable_quote": False,
-            "freshness": str(quote.get("freshness") or "约 15 分钟延迟的研究报价"),
-            "verification": str(quote.get("verification") or "delayed_research_quote"),
-            "configuration_allows_realtime": bool(os.getenv("MARKET_DATA_REALTIME", "").strip().lower() in {"1", "true", "yes", "on"}),
-            "delivery_delay_minutes": delivery_delay_minutes,
-            "visible_as_of": _visible_as_of(delivery_delay_minutes).isoformat(),
-            "observed_at": quote_at,
-            "request_succeeded": True,
-            "fallback_from": "OpenD",
-            "status": "available",
+            **_public_quote_values(quote, symbol=symbol, quote_at=quote_at),
+            **_public_quote_metadata(
+                is_realtime=False,
+                actionable_quote=False,
+                delivery_delay_minutes=delivery_delay_minutes,
+                observed_at=quote_at,
+                configuration_allows_realtime=bool(os.getenv("MARKET_DATA_REALTIME", "").strip().lower() in {"1", "true", "yes", "on"}),
+                verification="delayed_research",
+                freshness="延迟研究报价，仅供研究",
+            ),
         })
     configured_realtime = bool(os.getenv("MARKET_DATA_REALTIME", "").strip().lower() in {"1", "true", "yes", "on"})
-    qot_right = str(quote.get("us_qot_right") or "N/A").strip().upper()
     entitlement_realtime = bool(quote.get("us_realtime_entitlement"))
     quote_at = _iso_market_datetime(quote.get("quote_at"), market_name)
     fresh_snapshot = _realtime_observation_is_fresh(
@@ -1859,32 +1928,23 @@ async def market_quote(request: Request) -> JSONResponse:
     )
     realtime_verified = configured_realtime and entitlement_realtime and fresh_snapshot
     actionable_quote = realtime_verified and bool(quote.get("actionable_snapshot"))
-    right_verified = qot_right in {"BMP", "LV1", "LV2", "LV3", "SF", "NO"}
     if entitlement_realtime and fresh_snapshot:
-        freshness = f"OpenD 快照 · 美股 {qot_right} 实时权限已验证"
-        if not configured_realtime:
-            freshness += "；平台实时开关未启用"
+        freshness = "实时权限已验证" if configured_realtime else "实时权限已验证；平台实时开关未启用"
     elif entitlement_realtime:
         freshness = "美股实时权限已验证，但快照时间戳不新鲜，仅供研究"
-    elif right_verified:
-        freshness = f"OpenD 快照 · 美股权限 {qot_right}，仅供研究"
     else:
-        freshness = "OpenD 快照已返回；实时等级未验证"
+        freshness = "实时权限未验证，仅供研究"
     return JSONResponse({
-        "symbol": symbol,
-        **quote,
-        "quote_at": quote_at,
-        "is_realtime": realtime_verified,
-        "provider_realtime": realtime_verified,
-        "actionable_quote": actionable_quote,
-        "freshness": freshness,
-        "verification": f"opend_qot_right_{qot_right.lower()}" if right_verified else "opend_snapshot_realtime_unverified",
-        "configuration_allows_realtime": configured_realtime,
-        "delivery_delay_minutes": delivery_delay_minutes,
-        "visible_as_of": _visible_as_of(delivery_delay_minutes).isoformat(),
-        "observed_at": quote_at,
-        "request_succeeded": True,
-        "status": "available",
+        **_public_quote_values(quote, symbol=symbol, quote_at=quote_at),
+        **_public_quote_metadata(
+            is_realtime=realtime_verified,
+            actionable_quote=actionable_quote,
+            delivery_delay_minutes=delivery_delay_minutes,
+            observed_at=quote_at,
+            configuration_allows_realtime=configured_realtime,
+            verification="realtime_verified" if realtime_verified else "realtime_unverified",
+            freshness=freshness,
+        ),
     })
 
 
@@ -1979,7 +2039,7 @@ async def options_chain(request: Request) -> JSONResponse:
         "calls": call_items,
         "puts": put_items,
         "items": [*call_items, *put_items],
-        **source_status,
+        **_public_option_status(source_status),
         "status": "available",
     })
 
@@ -2046,7 +2106,7 @@ async def option_candles(request: Request) -> JSONResponse:
         "contract_code": contract_code,
         "timeframe": timeframe,
         "items": items,
-        **source_status,
+        **_public_option_status(source_status),
         "status": "available",
     })
 

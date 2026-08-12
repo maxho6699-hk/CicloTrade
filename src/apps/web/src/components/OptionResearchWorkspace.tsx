@@ -189,6 +189,7 @@ function quoteTime(value: string | null) {
         minute: "2-digit",
         second: "2-digit",
         hour12: false,
+        timeZone: "Asia/Hong_Kong",
       }).format(date);
 }
 
@@ -495,9 +496,7 @@ export function OptionResearchWorkspace({
           <CircleAlert size={16} />
           <span>
             <strong>当前期权数据仅供研究</strong>
-            {chain.fallback_from
-              ? '已从未满足条件的数据回退；回退来源已匿名化。'
-              : '真实数据来源的实时权限尚未满足。'}{" "}
+            {'真实数据来源的实时权限或报价新鲜度尚未满足。'}{" "}
             不用于立即交易；缺失的 Greeks 会明确留空。
           </span>
         </div>

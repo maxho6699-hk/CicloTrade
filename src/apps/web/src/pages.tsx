@@ -235,8 +235,7 @@ export function MarketsPage() {
         })
         const delivery = displayDeliveryDelay(payload.delivery_delay_minutes)
         const access = deliveryAllowsImmediateAction(payload) ? '可核对即时行动' : '仅供研究，不用于立即交易'
-        const fallback = payload.fallback_from ? ' · 已从未满足条件的数据回退' : ''
-        setQuoteStatus(`${displayDataSource(payload.source)} · ${delivery || displayFreshness(payload.freshness)} · ${access}${fallback}`)
+        setQuoteStatus(`${displayDataSource(payload.source)} · ${delivery || displayFreshness(payload.freshness)} · ${access}`)
       } catch {
         if (active && quoteRequestSequence.current === sequence) setQuoteStatus(safeDataError())
       }
