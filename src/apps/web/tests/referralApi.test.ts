@@ -1,0 +1,44 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { createReferralApi, decodeReferralPortal, type ReferralPortal } from '../src/api/promotion.ts'
+import { withdrawalIdempotencyKey } from '../src/domain/referralWithdrawal.ts'
+
+const portal: ReferralPortal = {
+  program: { enabled: true, currency: 'HKD', policy_version: 'cash-affiliate-v1', first_rate_bps: 2000, renewal_rate_bps: 1000, upgrade_rate_bps: 1000, hold_days: 14, minimum_withdrawal_minor: 10000 },
+  invite: { invite_code: 'CT8K2M9Q', invite_link: 'https://app.example/login?ref=CT8K2M9Q', qr_payload: 'https://app.example/login?ref=CT8K2M9Q' },
+  balances: { earned_total_minor: 12000, pending_minor: 1000, withdrawable_minor: 10000, reserved_minor: 0, paid_minor: 0, clawed_back_total_minor: 0, debt_minor: 0 },
+  trends: { windows: [7, 30, 90].map((days) => ({ days: days as 7 | 30 | 90, visits: 1, registrations: 1, settled_orders: 1, gross_amount_minor: 100, earned_amount_minor: 20, clawed_back_minor: 0 })) },
+  funnel: { visits_30d: 1, registrations_30d: 1, settled_referrals_30d: 1, registration_rate_bps: 10000, settlement_rate_bps: 10000 },
+  referrals: [{ referral_id: 'RFR8A1F3', user_masked: 'm***@e***.com', joined_at: '2026-08-12T12:00:00+08:00', settled_orders: 1, last_settled_at: null }],
+  commissions: [{ commission_id: 'COM3C9E2', recharge_id: 'RCH7V4P8', commission_type: 'initial_purchase', gross_amount_minor: 100, rate_bps: 2000, earned_amount_minor: 20, clawed_back_minor: 0, net_amount_minor: 20, status: 'pending', settled_at: '2026-08-12T12:00:00+08:00', available_at: '2026-08-26T12:00:00+08:00' }],
+  withdrawals: [], timeline: [{ event_id: 'AUD4F9C2', event_type: 'registration', public_reference: 'RFR8A1F3', amount_minor: null, occurred_at: '2026-08-12T12:00:00+08:00' }],
+}
+
+test('referral portal decoder accepts the exact canonical HKT/minor contract', () => {
+  assert.deepEqual(decodeReferralPortal(portal), portal)
+  assert.throws(() => decodeReferralPortal({ ...portal, provider: 'private' }), /响应格式无效/)
+  assert.throws(() => decodeReferralPortal({ ...portal, balances: { ...portal.balances, withdrawable_minor: 1.2 } }), /结算字段无效/)
+  assert.throws(() => decodeReferralPortal({ ...portal, referrals: [{ ...portal.referrals[0], joined_at: '2026-08-12T12:00:00Z' }] }), /邀请字段无效/)
+})
+
+test('withdrawal client sends only HKD integer minor units and idempotency key', async () => {
+  let captured: RequestInit | undefined
+  const api = createReferralApi(async (_path, init) => {
+    captured = init
+    return { withdrawal: { withdrawal_id: 'WDR4F9C2', amount_minor: 10000, currency: 'HKD', status: 'submitted', submitted_at: '2026-08-12T12:00:00+08:00', reviewed_at: null, approved_at: null, paid_at: null, rejection_reason: null }, balances: { withdrawable_minor: 0, reserved_minor: 10000, debt_minor: 0 } }
+  })
+  await api.requestWithdrawal({ amount_minor: 10000, currency: 'HKD' }, 'idem-key-123')
+  const headers = captured?.headers
+  assert.ok(headers)
+  assert.equal(headers instanceof Headers ? headers.get('Idempotency-Key') : (headers as Record<string, string>)['Idempotency-Key'], 'idem-key-123')
+  assert.equal(captured?.body, '{"amount_minor":10000,"currency":"HKD"}')
+  await assert.rejects(() => api.requestWithdrawal({ amount_minor: 1.5, currency: 'HKD' }, 'idem-key-123'), /申请字段无效/)
+})
+
+test('a response-lost withdrawal retry reuses its idempotency key until amount changes', () => {
+  const first = withdrawalIdempotencyKey(10000, null)
+  const retry = withdrawalIdempotencyKey(10000, first)
+  const changed = withdrawalIdempotencyKey(20000, first)
+  assert.equal(retry.key, first.key)
+  assert.notEqual(changed.key, first.key)
+})

@@ -602,6 +602,22 @@ export async function authenticatedJsonRequest<T>(
   return request<T>(path, init)
 }
 
+/**
+ * Opens an authenticated, same-origin response without consuming its body.
+ * Streaming callers own the response body and must close it when unmounted.
+ */
+export async function authenticatedStreamRequest(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers)
+  headers.set('Accept', 'text/event-stream')
+  if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
+  const response = await fetch(path, { ...init, headers, credentials: 'same-origin' })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { error?: string }
+    throw new BrowserApiError(payload.error ?? '服务暂时不可用。', response.status)
+  }
+  return response
+}
+
 export interface AdminOverview {
   users?: number
   active_users?: number

@@ -7,7 +7,6 @@ import {
   Minimize2,
   MoreHorizontal,
   PencilRuler,
-  SlidersHorizontal,
   PanelRightClose,
   PanelRightOpen,
   RotateCcw,
@@ -18,6 +17,7 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { MarketQuotePayload, PortfolioActivity } from '../api/client'
+import type { FormingMarketBar, MarketStreamConnectionState, MarketStreamSubscription } from '../api/marketStream'
 import type { Candle, Market } from '../types'
 import {
   SharedDrawingToolbar,
@@ -59,6 +59,7 @@ interface ChartWorkspaceProps {
   loadCandles?: (symbol: string, timeframe: string, market: Market) => Promise<Candle[]>
   initialQuote?: MarketQuotePayload | null
   loadQuote?: (symbol: string, market: Market) => Promise<MarketQuotePayload>
+  subscribeMarketStream?: MarketStreamSubscription
   onSymbolChange?: (symbol: string, market: Market) => void
   onTimeframeChange?: (timeframe: string) => void
   watchlistSymbols?: Partial<Record<Market, readonly string[]>> | ((market: Market) => readonly string[])
@@ -144,6 +145,7 @@ export function ChartWorkspace({
   loadCandles,
   initialQuote,
   loadQuote,
+  subscribeMarketStream,
   onSymbolChange,
   onTimeframeChange,
   watchlistSymbols,
@@ -188,6 +190,8 @@ export function ChartWorkspace({
   const [slotQuotes, setSlotQuotes] = useState<Record<string, MarketQuotePayload | null>>({ [initial.id]: initialQuote ?? null })
   const [slotQuoteIdentity, setSlotQuoteIdentity] = useState<Record<string, string>>({ [initial.id]: quoteIdentity(initial) })
   const [slotQuoteStatus, setSlotQuoteStatus] = useState<Record<string, string>>({})
+  const [slotFormingBars, setSlotFormingBars] = useState<Record<string, FormingMarketBar | null>>({})
+  const [slotStreamState, setSlotStreamState] = useState<Record<string, MarketStreamConnectionState>>({})
   const [drawingToolState, setDrawingToolState] = useState<DrawingToolState>({
     tool: 'cursor', continuous: false, magnet: 'off', visible: true, crossTimeframe: false,
   })
@@ -199,7 +203,6 @@ export function ChartWorkspace({
   const slotQuoteIdentityRef = useRef(slotQuoteIdentity)
   const layoutPickerRef = useRef<HTMLDivElement>(null)
   const symbolEditorRef = useRef<HTMLElement>(null)
-  const mobileToolsRef = useRef<HTMLDetailsElement>(null)
   const timeRangeSyncLock = useRef(false)
   const focusOpenedWorkbench = useRef(false)
   const viewportDrafts = useRef<Record<string, { from: number; to: number }>>({})
@@ -207,6 +210,8 @@ export function ChartWorkspace({
   const slotLoadSequence = useRef<Record<string, number>>({})
   const quoteLoadSequence = useRef<Record<string, number>>({})
   const quoteInFlightRef = useRef<Record<string, { identity: string; request: Promise<MarketQuotePayload> }>>({})
+  const slotStreamStateRef = useRef<Record<string, MarketStreamConnectionState>>({})
+  const slotStreamSequenceRef = useRef<Record<string, number>>({})
 
   const definition = layoutDefinition(workspace.layout)
   const visibleSlots = useMemo(() => workspace.slots.slice(0, definition.count), [definition.count, workspace.slots])
@@ -254,6 +259,10 @@ export function ChartWorkspace({
   useEffect(() => {
     slotQuoteIdentityRef.current = slotQuoteIdentity
   }, [slotQuoteIdentity])
+
+  useEffect(() => {
+    slotStreamStateRef.current = slotStreamState
+  }, [slotStreamState])
 
   useEffect(() => {
     setSlotCandles((current) => current[primarySlotId] === candles ? current : { ...current, [primarySlotId]: candles })
@@ -333,6 +342,41 @@ export function ChartWorkspace({
     }, 5_000)
     return () => { active = false; stopPolling() }
   }, [initialMarket, initialSymbol, loadQuote, primaryQuoteExternallyManaged, primarySlotId, quoteFetchSignature])
+
+  useEffect(() => {
+    if (!subscribeMarketStream) return
+    let active = true
+    const targets = JSON.parse(fetchSignature) as Array<Pick<ChartSlotState, 'id' | 'market' | 'symbol' | 'timeframe'>>
+    const stops = targets.map((slot) => {
+      setSlotStreamState((current) => ({ ...current, [slot.id]: 'connecting' }))
+      setSlotFormingBars((current) => ({ ...current, [slot.id]: null }))
+      slotStreamStateRef.current = { ...slotStreamStateRef.current, [slot.id]: 'connecting' }
+      slotStreamSequenceRef.current[slot.id] = -1
+      return subscribeMarketStream(slot.symbol, slot.timeframe, (event) => {
+        if (!active) return
+        if (event.type === 'status') {
+          slotStreamStateRef.current = { ...slotStreamStateRef.current, [slot.id]: event.state }
+          setSlotStreamState((current) => ({ ...current, [slot.id]: event.state }))
+          if (event.state !== 'connected') setSlotFormingBars((current) => ({ ...current, [slot.id]: null }))
+          return
+        }
+        const validForSlot = event.bar.symbol === slot.symbol && event.bar.timeframe === slot.timeframe
+          && slotStreamStateRef.current[slot.id] === 'connected'
+          && event.bar.realtime && event.bar.authorized && !event.bar.stale
+        if (validForSlot && event.bar.sequence > (slotStreamSequenceRef.current[slot.id] ?? -1)) {
+          slotStreamSequenceRef.current[slot.id] = event.bar.sequence
+          setSlotFormingBars((current) => ({ ...current, [slot.id]: event.bar }))
+        } else if (!validForSlot) {
+          setSlotFormingBars((current) => ({ ...current, [slot.id]: null }))
+        }
+      })
+    })
+    return () => {
+      active = false
+      stops.forEach((stop) => stop())
+      setSlotFormingBars((current) => ({ ...current, ...Object.fromEntries(targets.map((slot) => [slot.id, null])) }))
+    }
+  }, [fetchSignature, subscribeMarketStream])
 
   useEffect(() => {
     const query = window.matchMedia(NARROW_CHART_QUERY)
@@ -526,7 +570,6 @@ export function ChartWorkspace({
   const completeDrawing = useCallback(() => setDrawingToolState((current) => ({ ...current, tool: 'cursor' })), [])
   const toggleMobileDrawingTools = () => {
     setMobileDrawingToolsOpen((current) => !current)
-    mobileToolsRef.current?.removeAttribute('open')
   }
   const latest = slotLatest(activeCandles)
 
@@ -539,7 +582,7 @@ export function ChartWorkspace({
           {layoutPickerOpen && <div className="layout-picker-popover" role="dialog" aria-label="K 线多图布局选择"><header><strong>分割视图</strong><small>{isNarrowViewport ? '手机版使用图表标签切换；四图以上请使用桌面版' : '选择后保持每张图的股票和周期'}</small></header><div className="layout-picker-grid">{CHART_LAYOUTS.map((layout) => { const unavailable = isNarrowViewport && layout.desktopOnly; return <button type="button" disabled={unavailable} className={workspace.layout === layout.id ? 'active' : ''} title={unavailable ? `${layout.label} · 仅桌面版` : layout.label} aria-label={`${layout.label}${unavailable ? '，仅桌面版' : ''}`} onClick={() => setLayout(layout.id)} key={layout.id}><span className={`layout-preview layout-preview-${layout.id}`}>{Array.from({ length: layout.count }, (_, index) => <i key={index} />)}</span><b>{layout.label}</b></button> })}</div></div>}
         </div>
         <div className="multi-chart-actions">
-          {toolbarActions && <><span className="multi-chart-utility-actions">{toolbarActions}</span><details className="mobile-chart-tools" ref={mobileToolsRef}><summary aria-label="打开图表工具" title="图表工具"><SlidersHorizontal size={16} /></summary><div className="mobile-chart-tools-popover" role="group" aria-label="图表工具">{toolbarActions}<button className={mobileDrawingToolsOpen ? 'active' : ''} type="button" aria-expanded={mobileDrawingToolsOpen} onClick={toggleMobileDrawingTools}><PencilRuler size={16} /><span>{mobileDrawingToolsOpen ? '收起画图' : '展开画图'}</span></button></div></details></>}
+          {toolbarActions && <span className="multi-chart-utility-actions">{toolbarActions}</span>}
           <button type="button" title={inspectorVisible ? '收起检查器' : '展开检查器'} aria-label={inspectorVisible ? '收起检查器' : '展开检查器'} aria-expanded={inspectorVisible} onClick={() => { setSymbolEditorId(null); setInspectorVisible(!inspectorVisible) }}>{inspectorVisible ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}</button>
           <button type="button" title={workbenchOpen ? '返回行情页' : '打开全屏K线工作图'} aria-label={workbenchOpen ? '返回行情页' : '打开全屏K线工作图'} onClick={() => workbenchOpen ? exitWorkbench() : setWorkbenchOpen(true)}>{workbenchOpen ? <Shrink size={16} /> : <Expand size={16} />}</button>
         </div>
@@ -602,6 +645,10 @@ export function ChartWorkspace({
                       <button type="button" onClick={() => chartRefs.current[slot.id]?.reset()}><RotateCcw size={14} /><span>适配全部</span></button>
                     </div>
                   </details>
+                  {slotIsActive && <span className="mobile-chart-inline-actions" role="group" aria-label="图表工具">
+                    {toolbarActions}
+                    <button className={mobileDrawingToolsOpen ? 'active' : ''} type="button" aria-label={mobileDrawingToolsOpen ? '收起画图工具' : '打开画图工具'} title={mobileDrawingToolsOpen ? '收起画图' : '画图'} aria-expanded={mobileDrawingToolsOpen} onClick={toggleMobileDrawingTools}><PencilRuler size={16} /><span>画图</span></button>
+                  </span>}
                 </header>
                 <div className="chart-slot-canvas">
                   {visibleDataStatus && <span className="chart-slot-data-status" role="status" title={visibleDataStatus}>{visibleDataStatus}</span>}
@@ -621,6 +668,8 @@ export function ChartWorkspace({
                       textColor={textColor}
                       dataStatus={slotStatus[slot.id] ?? dataStatus}
                       quote={quote}
+                      formingBar={slotFormingBars[slot.id]}
+                      streamConnectionState={slotStreamState[slot.id]}
                       officialActivity={officialActivity}
                       alertPrices={typeof alertPrices === 'function' ? alertPrices(slot.market, slot.symbol) : alertPrices}
                       drawingActive={slotIsActive}

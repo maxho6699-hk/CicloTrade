@@ -166,15 +166,23 @@ export function LoginPage() {
     }
   }
 
-  async function submit(event: FormEvent) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (submitting) return
+    const submittedForm = event.currentTarget
+    const submittedData = new FormData(submittedForm)
+    const submittedEmail = String(submittedData.get('email') ?? email).trim()
+    const submittedPassword = String(submittedData.get('password') ?? password)
+    const submittedConfirmPassword = String(submittedData.get('confirm_password') ?? confirmPassword)
     setSubmitting(true)
     setError('')
     setNotice('')
     try {
       if (mode === 'login') {
-        await workspace.login(email.trim(), password)
+        // Password managers may fill the DOM without dispatching a React input
+        // event.  Read the submitted form value so login never depends on the
+        // user toggling password visibility first.
+        await workspace.login(submittedEmail, submittedPassword)
         navigate(returnTo, { replace: true })
         return
       }
@@ -188,13 +196,13 @@ export function LoginPage() {
           changeMode('login', traditional ? '電郵驗證完成，現在可以登入。' : '邮箱验证完成，现在可以登录。')
           return
         }
-        if (password !== confirmPassword) {
+        if (submittedPassword !== submittedConfirmPassword) {
           setError(traditional ? '兩次輸入的密碼不一致。' : '两次输入的密码不一致。')
           return
         }
         const response = await registerAccount({
-          email: email.trim(),
-          password,
+          email: submittedEmail,
+          password: submittedPassword,
           display_name: displayName.trim(),
           terms_accepted: termsAccepted,
         })
@@ -213,7 +221,7 @@ export function LoginPage() {
         await requestCode()
         return
       }
-      await confirmPasswordReset(code.trim(), password)
+      await confirmPasswordReset(code.trim(), submittedPassword)
       changeMode('login', traditional ? '密碼已重設，所有舊工作階段已失效。' : '密码已重设，所有旧会话已失效。')
     } catch (caught) {
       setError(caught instanceof BrowserApiError ? caught.message : copy.genericError)
@@ -275,10 +283,10 @@ export function LoginPage() {
             {mode === 'register' && registrationStage === 'verify' && <p className="login-notice login-field-full" role="status"><MailCheck size={16} />{traditional ? `驗證碼已發送至 ${maskedEmail(email)}` : `验证码已发送至 ${maskedEmail(email)}`}</p>}
             {mode === 'register' && registrationStage === 'verify' && <button className="button secondary login-field-full" type="button" disabled={submitting} onClick={() => { setRegistrationStage('details'); setCode(''); setPassword(''); setConfirmPassword(''); clearFeedback() }}>{traditional ? '改用其他電子郵件' : '改用其他电子邮件'}</button>}
             {(mode === 'login' || (mode === 'register' && registrationStage === 'details') || mode === 'forgot') && (
-              <label className={mode === 'forgot' ? 'login-field-full' : undefined} htmlFor="login-password"><span>{mode === 'forgot' ? copy.newPassword : copy.password}</span><div className="password-field"><input id="login-password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={12} name="password" required={mode !== 'forgot' || Boolean(code.trim())} type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => { setPassword(event.target.value); clearFeedback() }} placeholder={traditional ? '至少 12 個字元…' : '至少 12 个字符…'} aria-invalid={Boolean(error)} aria-describedby={error ? 'login-error' : undefined} /><button className="icon-button" type="button" aria-controls="login-password" aria-label={showPassword ? (traditional ? '隱藏密碼' : '隐藏密码') : (traditional ? '顯示密碼' : '显示密码')} aria-pressed={showPassword} onClick={() => setShowPassword(!showPassword)}>{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button></div></label>
+              <label className={mode === 'forgot' ? 'login-field-full' : undefined} htmlFor="login-password"><span>{mode === 'forgot' ? copy.newPassword : copy.password}</span><div className="password-field"><input id="login-password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={mode === 'login' ? undefined : 8} name="password" required={mode !== 'forgot' || Boolean(code.trim())} type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => { setPassword(event.target.value); clearFeedback() }} placeholder={mode === 'login' ? (traditional ? '輸入你的密碼…' : '输入你的密码…') : (traditional ? '至少 8 個字元，包含字母和數字…' : '至少 8 个字符，包含字母和数字…')} aria-invalid={Boolean(error)} aria-describedby={error ? 'login-error' : undefined} /><button className="icon-button" type="button" aria-controls="login-password" aria-label={showPassword ? (traditional ? '隱藏密碼' : '隐藏密码') : (traditional ? '顯示密碼' : '显示密码')} aria-pressed={showPassword} onClick={() => setShowPassword(!showPassword)}>{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button></div></label>
             )}
             {mode === 'register' && registrationStage === 'details' && (
-              <label htmlFor="register-confirm-password"><span>{traditional ? '確認密碼' : '确认密码'}</span><div className="password-field"><input id="register-confirm-password" autoComplete="new-password" minLength={12} name="confirm_password" required type={showPassword ? 'text' : 'password'} value={confirmPassword} onChange={(event) => { setConfirmPassword(event.target.value); clearFeedback() }} placeholder={traditional ? '再次輸入密碼…' : '再次输入密码…'} aria-invalid={Boolean(error)} aria-describedby={error ? 'login-error' : undefined} /></div></label>
+              <label htmlFor="register-confirm-password"><span>{traditional ? '確認密碼' : '确认密码'}</span><div className="password-field"><input id="register-confirm-password" autoComplete="new-password" minLength={8} name="confirm_password" required type={showPassword ? 'text' : 'password'} value={confirmPassword} onChange={(event) => { setConfirmPassword(event.target.value); clearFeedback() }} placeholder={traditional ? '再次輸入密碼…' : '再次输入密码…'} aria-invalid={Boolean(error)} aria-describedby={error ? 'login-error' : undefined} /></div></label>
             )}
             {codeMode && (
               <label htmlFor="auth-code"><span>{copy.verificationCode}</span><input id="auth-code" autoComplete="one-time-code" autoCapitalize="characters" inputMode="text" name="code" value={code} onChange={(event) => { setCode(event.target.value); clearFeedback() }} placeholder={traditional ? '輸入郵件中的驗證碼…' : '输入邮件中的验证码…'} /></label>

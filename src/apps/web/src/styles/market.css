@@ -460,7 +460,7 @@
 .workbench-title .workbench-watchlist-toggle { flex: 0 0 auto; }
 .workbench-title strong { color: var(--text); font-size: 12px; }
 .multi-chart-layouts, .multi-chart-actions, .multi-chart-layout-picker, .multi-chart-utility-actions { display: flex; min-width: 0; align-items: center; gap: 3px; }
-.mobile-chart-tools { display: none; }
+.mobile-chart-inline-actions { display: none; }
 .multi-chart-layout-picker { align-self: stretch; justify-content: center; padding-inline: 10px; border-inline: 1px solid var(--border); }
 .multi-chart-actions { align-self: stretch; justify-content: flex-end; padding-left: 5px; }
 .multi-chart-utility-actions { padding-right: 4px; border-right: 1px solid var(--border); }
@@ -470,10 +470,6 @@
 .multi-chart-layouts button { position: relative; }
 .multi-chart-layouts button sup { position: absolute; top: 1px; right: 2px; color: var(--muted-2); font-size: 7px; }
 .multi-chart-layouts button:hover, .multi-chart-actions button:hover { background: var(--surface-hover); color: var(--text); }
-.mobile-chart-tools > summary { display: grid; min-width: 31px; height: 31px; place-items: center; border-radius: 3px; color: var(--muted); cursor: pointer; list-style: none; }
-.mobile-chart-tools > summary::-webkit-details-marker { display: none; }
-.mobile-chart-tools[open] > summary { background: var(--surface-hover); color: var(--text); }
-.mobile-chart-tools-popover { display: grid; }
 .multi-chart-layouts button.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .multi-chart-layout-picker { position: relative; }
 .layout-picker-trigger { display: inline-flex; min-height: 32px; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--workspace); color: var(--text); cursor: pointer; font-size: 11px; }
@@ -522,6 +518,7 @@
 .chart-view-popover button:hover { background: var(--surface-hover); color: var(--text); }
 .chart-slot-canvas { position: relative; min-width: 0; min-height: 0; }
 .chart-slot-data-status { position: absolute; z-index: 5; top: 7px; right: 62px; display: block; max-width: calc(100% - 270px); overflow: hidden; padding: 2px 5px; border: 1px solid color-mix(in srgb, var(--warning) 36%, transparent); background: color-mix(in srgb, var(--surface) 88%, transparent); color: var(--warning); font: 9px var(--mono); text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
+.chart-realtime-label { position: absolute; z-index: 5; right: 8px; bottom: 8px; padding: 3px 6px; border: 1px solid color-mix(in srgb, var(--positive) 55%, transparent); border-radius: var(--radius-control); background: color-mix(in srgb, var(--positive) 18%, var(--surface)); color: var(--positive); font: 700 10px var(--mono); pointer-events: none; }
 .chart-pane-state { display: grid; height: 100%; place-content: center; justify-items: center; gap: 5px; color: var(--muted); }
 .chart-pane-state strong { color: var(--text); font-size: 13px; }
 .chart-pane-state span { font: 11px var(--mono); }

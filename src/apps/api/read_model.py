@@ -535,6 +535,7 @@ class ReadOnlyLegacyRepository:
         items = []
         for row in rows:
             item = dict(row)
+            item["is_active"] = bool(item.get("is_active"))
             # Keep persisted condition metadata bounded and do not expose delivery payloads.
             try:
                 item["conditions"] = json.loads(item["conditions"] or "[]")

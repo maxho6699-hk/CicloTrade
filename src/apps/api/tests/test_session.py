@@ -2358,6 +2358,8 @@ def test_alert_delete_endpoint_is_idempotent_and_rejects_other_users(browser_api
         request.scope["path_params"] = {"alert_id": str(alert_id)}
         deleted = asyncio.run(alert_item(request))
         assert _payload(deleted)["deactivated"] is True
+        deleted_item = next(item for item in _payload(deleted)["items"] if item["id"] == alert_id)
+        assert deleted_item["is_active"] is False
 
     row = browser_api["database"].fetch_one("SELECT is_active FROM price_alerts WHERE id=?", (alert_id,))
     assert row["is_active"] == 0

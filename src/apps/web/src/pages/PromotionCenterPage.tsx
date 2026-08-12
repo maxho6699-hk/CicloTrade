@@ -1,0 +1,118 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowUpRight, Check, CircleAlert, Copy, FileClock, Landmark, LoaderCircle, LockKeyhole, QrCode, RefreshCw, ShieldCheck, Wallet, WalletCards } from 'lucide-react'
+import { referralApi, type ReferralPortal, type ReferralTimelineType, type ReferralWithdrawalStatus } from '../api/promotion'
+import { PageHeader } from '../components/PageHeader'
+import { MetricRing } from '../components/ui/MetricRing'
+import { useLocale } from '../i18n/useLocale'
+import { localizeText } from '../i18n/runtime'
+import { withdrawalIdempotencyKey } from '../domain/referralWithdrawal'
+
+type ViewState = 'ready' | 'loading' | 'error' | 'forbidden' | 'disabled'
+type CopyTarget = 'link' | 'code' | `referral:${string}` | null
+
+const formatMinor = (value: number, locale: string) => new Intl.NumberFormat(locale, { style: 'currency', currency: 'HKD' }).format(value / 100)
+const formatBps = (value: number) => `${(value / 100).toFixed(2)}%`
+const hkt = (value: string | null, locale: string) => value ? new Intl.DateTimeFormat(locale, { month: '2-digit', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Hong_Kong' }).format(new Date(value)) : '—'
+const funnelRows = (funnel: ReferralPortal['funnel']): Array<[string, number]> => [['访问', funnel.visits_30d], ['注册', funnel.registrations_30d], ['首充/续费结算', funnel.settled_referrals_30d]]
+const withdrawalLabel = (value: ReferralWithdrawalStatus) => localizeText(({ submitted: '待审核', approved: '已批准', rejected: '已拒绝', paid: '已付款', system_cancelled: '已取消' })[value])
+const eventLabel = (value: ReferralTimelineType) => localizeText(({ registration: '完成注册', commission_pending: '佣金进入冻结期', commission_withdrawable: '佣金可提现', clawback: '佣金回退', withdrawal_submitted: '已提交提现', withdrawal_approved: '提现已批准', withdrawal_rejected: '提现被拒绝', withdrawal_paid: '已人工付款', withdrawal_cancelled: '提现已取消' })[value])
+const commissionLabel = (value: ReferralPortal['commissions'][number]['commission_type']) => localizeText(({ initial_purchase: '首次购买', renewal: '续费', upgrade: '升级' })[value])
+const commissionStatusLabel = (value: ReferralPortal['commissions'][number]['status']) => localizeText(({ pending: '冻结中', withdrawable: '可提现', partially_clawed_back: '部分回退', clawed_back: '已回退' })[value])
+const timelineTone = (value: ReferralTimelineType) => value === 'withdrawal_paid' || value === 'withdrawal_approved' || value === 'commission_withdrawable' ? 'success' : value === 'withdrawal_rejected' || value === 'withdrawal_cancelled' || value === 'clawback' ? 'danger' : 'pending'
+
+function StatePanel({ state, retry }: { state: Exclude<ViewState, 'ready'>; retry: () => void }) {
+  const content = state === 'loading'
+    ? [LoaderCircle, '正在读取推广资料', '只展示服务端返回的归因、结算和审计字段。'] as const
+    : state === 'disabled'
+      ? [Landmark, '推广计划暂未开放', '推广入口会保留；计划开放后可在这里查看真实邀请、佣金和提现资料。'] as const
+      : state === 'forbidden'
+        ? [LockKeyhole, '当前账户无推广权限', '不会显示其他用户的推广或结算资料。'] as const
+        : [CircleAlert, '推广资料暂时无法读取', '保留空白，不以旧资料、日期或金额推算替代。'] as const
+  const Icon = content[0]
+  return <section className={`promotion-state ${state}`} role={state === 'error' || state === 'forbidden' ? 'alert' : 'status'}><Icon /><strong>{localizeText(content[1])}</strong><span>{localizeText(content[2])}</span>{state === 'error' && <button className="button secondary" type="button" onClick={retry}><RefreshCw size={16} />{localizeText('重新读取')}</button>}</section>
+}
+
+export function PromotionCenterPage() {
+  const { formatLocale } = useLocale()
+  const [state, setState] = useState<ViewState>('loading')
+  const [portal, setPortal] = useState<ReferralPortal | null>(null)
+  const [copied, setCopied] = useState<CopyTarget>(null)
+  const [amount, setAmount] = useState('')
+  const [note, setNote] = useState('')
+  const [submitBusy, setSubmitBusy] = useState(false)
+  const pendingWithdrawal = useRef<{ amountMinor: number; key: string } | null>(null)
+
+  const load = useCallback(() => {
+    const controller = new AbortController()
+    setState('loading')
+    void referralApi.loadPortal(controller.signal).then((result) => {
+      setPortal(result)
+      setState(result.program.enabled ? 'ready' : 'disabled')
+    }).catch((error: unknown) => {
+      if (controller.signal.aborted) return
+      const status = typeof error === 'object' && error !== null && 'status' in error ? Number(error.status) : 0
+      setPortal(null)
+      setState(status === 403 ? 'forbidden' : 'error')
+    })
+    return () => controller.abort()
+  }, [])
+
+  useEffect(() => load(), [load])
+
+  const copy = async (kind: Exclude<CopyTarget, null>, value: string) => {
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopied(kind)
+      window.setTimeout(() => setCopied(null), 1800)
+    } catch {
+      setNote(localizeText('浏览器未允许复制；请手动选择内容。'))
+    }
+  }
+
+  const amountMinor = useMemo(() => Math.round(Number(amount) * 100), [amount])
+  const withdraw = async () => {
+    if (!portal) return
+    if (!Number.isSafeInteger(amountMinor) || amountMinor < portal.program.minimum_withdrawal_minor) {
+      setNote(`${localizeText('申请金额不得低于')} ${formatMinor(portal.program.minimum_withdrawal_minor, formatLocale)}。`)
+      return
+    }
+    if (amountMinor > portal.balances.withdrawable_minor) {
+      setNote(localizeText('申请金额超过服务端返回的可提现余额。'))
+      return
+    }
+    const request = withdrawalIdempotencyKey(amountMinor, pendingWithdrawal.current)
+    pendingWithdrawal.current = request
+    setSubmitBusy(true)
+    setNote('')
+    try {
+      const result = await referralApi.requestWithdrawal({ amount_minor: amountMinor, currency: portal.program.currency }, request.key)
+      pendingWithdrawal.current = null
+      setAmount('')
+      setNote(`${localizeText('申请')} ${result.withdrawal.withdrawal_id} ${localizeText('已提交；最终状态以服务端审核为准。')}`)
+      void referralApi.loadPortal().then((next) => { setPortal(next); setState(next.program.enabled ? 'ready' : 'disabled') }).catch(() => undefined)
+    } catch {
+      setNote(localizeText('提现申请状态未确认；再次提交相同金额会安全复用本次申请编号。'))
+    } finally {
+      setSubmitBusy(false)
+    }
+  }
+
+  const balanceCards = portal ? [
+    ['earned_total_minor', '累计佣金', FileClock, `${localizeText('回退累计')} ${formatMinor(portal.balances.clawed_back_total_minor, formatLocale)}`],
+    ['withdrawable_minor', '可提现', Wallet, localizeText('可提交提现申请')],
+    ['pending_minor', '冻结佣金', ShieldCheck, `${portal.program.hold_days} ${localizeText('日冻结期')}`],
+    ['reserved_minor', '提现审核中', Landmark, localizeText('已为申请预留')],
+    ['paid_minor', '已付款', Check, localizeText('管理员已确认付款')],
+    ['debt_minor', '负余额', CircleAlert, localizeText('后续佣金将优先抵扣')],
+  ] as const : []
+
+  return <div className="page promotion-page"><div className="promotion-title-row"><PageHeader kicker="PARTNER / SETTLEMENT" title="推广中心" description="查看推广转化、真实佣金、提现状态与审计记录。首单佣金 20%，续费与升级佣金 10%。" /><div className="promotion-preview-badge"><ShieldCheck size={15} /><span><strong>{localizeText('服务端核对字段')}</strong><small>{localizeText('金额按 HKD minor units，时间固定为香港时区；不保存访客、收款账户或付款参考。')}</small></span></div></div>
+    {state !== 'ready' || !portal ? <StatePanel state={state === 'ready' ? 'loading' : state} retry={load} /> : <>
+      <section className="promotion-balance-grid" aria-label={localizeText('推广资产总览')}>{balanceCards.map(([key, label, Icon, detail]) => <article className={`promotion-balance-card ${key}`} key={key}><header><span>{localizeText(label)}</span><Icon size={17} /></header><strong>{formatMinor(portal.balances[key], formatLocale)}</strong><small>{detail}</small></article>)}</section>
+      <section className="promotion-insight-grid"><article className="promotion-conversion-panel"><header><span>CONVERSION / SERVER BASIS</span><strong>{localizeText('转化质量')}</strong><small>{localizeText('分母与比率由服务端窗口统计返回。')}</small></header><div className="promotion-rings"><MetricRing label={localizeText('注册转化')} value={portal.funnel.registration_rate_bps / 100} displayValue={formatBps(portal.funnel.registration_rate_bps)} caption={localizeText('30日访问 → 注册')} tone="positive" /><MetricRing label={localizeText('结算转化')} value={portal.funnel.settlement_rate_bps / 100} displayValue={formatBps(portal.funnel.settlement_rate_bps)} caption={localizeText('30日注册 → 有效结算')} tone="accent" /></div></article><article className="promotion-funnel-panel"><header><span>ATTRIBUTION / FUNNEL</span><strong>{localizeText('访问 → 注册 → 结算')}</strong><small>{localizeText('不由前端反推归因或转化率。')}</small></header><ol>{funnelRows(portal.funnel).map(([label, count], index) => <li key={label}><span>{String(index + 1).padStart(2, '0')}</span><div><strong>{localizeText(label)}</strong><small>{localizeText('30日服务端统计')}</small></div><b>{count.toLocaleString(formatLocale)}</b><i style={{ width: `${count / Math.max(portal.funnel.visits_30d, 1) * 100}%` }} /></li>)}</ol></article></section>
+      <section className="promotion-analytics-grid"><section className="promotion-trend-panel"><header><div><span>WINDOW / HKT SETTLEMENT</span><strong>{localizeText('7 / 30 / 90 趋势矩阵')}</strong></div><small>{localizeText('没有日序列时，直接展示服务端窗口 KPI，不构造时间线。')}</small></header><div className="promotion-kpi-matrix">{portal.trends.windows.map((item) => <div key={item.days}><strong>{item.days}{localizeText('日')}</strong><dl><div><dt>{localizeText('访问')}</dt><dd>{item.visits.toLocaleString(formatLocale)}</dd></div><div><dt>{localizeText('注册')}</dt><dd>{item.registrations.toLocaleString(formatLocale)}</dd></div><div><dt>{localizeText('结算订单')}</dt><dd>{item.settled_orders.toLocaleString(formatLocale)}</dd></div><div><dt>{localizeText('已得佣金')}</dt><dd>{formatMinor(item.earned_amount_minor, formatLocale)}</dd></div></dl></div>)}</div><footer><span>{localizeText('按香港结算时间窗口')}</span><span>{localizeText('金额/计数来自服务端')}</span></footer></section></section>
+      <section className="promotion-asset-grid"><article className="promotion-assets-panel"><header><div><span>REFERRAL ASSETS</span><strong>{localizeText('专属链接与邀请码')}</strong></div><ShieldCheck size={20} /></header><div className="promotion-copy-row"><span><small>{localizeText('专属链接')}</small><b>{portal.invite.invite_link}</b></span><button type="button" onClick={() => void copy('link', portal.invite.invite_link)} aria-label={localizeText('复制专属链接')}>{copied === 'link' ? <Check size={17} /> : <Copy size={17} />}<em>{localizeText(copied === 'link' ? '已复制' : '复制')}</em></button></div><div className="promotion-code-row"><span><small>{localizeText('邀请码')}</small><b>{portal.invite.invite_code}</b></span><button type="button" onClick={() => void copy('code', portal.invite.invite_code)} aria-label={localizeText('复制邀请码')}>{copied === 'code' ? <Check size={17} /> : <Copy size={17} />}</button></div></article><article className="promotion-qr-panel"><header><QrCode size={17} /><span><strong>{localizeText('邀请链接')}</strong><small>{localizeText('在接入可扫描 QR 编码器前仅显示可复制的链接，不生成伪二维码。')}</small></span></header><a className="promotion-link-proof" href={portal.invite.invite_link} target="_blank" rel="noreferrer">{localizeText('打开邀请链接')} <ArrowUpRight size={15} /></a></article></section>
+      <section className="promotion-records-grid"><article className="promotion-table-panel"><header><div><span>REFERRALS</span><strong>{localizeText('邀请用户')}</strong></div></header><div className="promotion-record-list">{portal.referrals.length ? portal.referrals.map((referral) => <article className="promotion-record" key={referral.referral_id}><div><button className="promotion-id-copy" type="button" onClick={() => void copy(`referral:${referral.referral_id}`, referral.referral_id)}><span>{referral.referral_id}</span>{copied === `referral:${referral.referral_id}` ? <Check size={13} /> : <Copy size={13} />}</button><small>{referral.user_masked}</small></div><dl><div><dt>{localizeText('加入时间')}</dt><dd>{hkt(referral.joined_at, formatLocale)}</dd></div><div><dt>{localizeText('有效订单')}</dt><dd>{referral.settled_orders}</dd></div><div><dt>{localizeText('最近结算')}</dt><dd>{hkt(referral.last_settled_at, formatLocale)}</dd></div></dl></article>) : <p className="promotion-empty-cell">{localizeText('暂无可核对的邀请用户记录。')}</p>}</div><header className="promotion-subtable-heading"><div><span>COMMISSIONS / RECHARGES</span><strong>{localizeText('充值与佣金流水')}</strong></div></header><div className="promotion-record-list">{portal.commissions.length ? portal.commissions.map((commission) => <article className="promotion-record promotion-commission-record" key={commission.commission_id}><div><strong>{commission.commission_id}</strong><small>{localizeText('充值 ID')} · {commission.recharge_id}</small><span className={`promotion-status ${commission.status}`}>{commissionStatusLabel(commission.status)}</span></div><dl><div><dt>{localizeText('类型')}</dt><dd>{commissionLabel(commission.commission_type)}</dd></div><div><dt>{localizeText('订单金额')}</dt><dd>{formatMinor(commission.gross_amount_minor, formatLocale)}</dd></div><div><dt>{localizeText('佣金比例')}</dt><dd>{formatBps(commission.rate_bps)}</dd></div><div><dt>{localizeText('原始佣金')}</dt><dd>{formatMinor(commission.earned_amount_minor, formatLocale)}</dd></div><div><dt>{localizeText('佣金回退')}</dt><dd>{formatMinor(commission.clawed_back_minor, formatLocale)}</dd></div><div><dt>{localizeText('净佣金')}</dt><dd>{formatMinor(commission.net_amount_minor, formatLocale)}</dd></div><div><dt>{localizeText('结算时间')}</dt><dd>{hkt(commission.settled_at, formatLocale)}</dd></div><div><dt>{localizeText('可提现时间')}</dt><dd>{hkt(commission.available_at, formatLocale)}</dd></div></dl></article>) : <p className="promotion-empty-cell">{localizeText('暂无可核对的充值与佣金流水。')}</p>}</div></article><article className="promotion-withdrawal-panel"><header><span>WITHDRAWAL / IDEMPOTENT</span><strong>{localizeText('提现申请')}</strong><small>{localizeText('不收集银行账号；管理员人工付款后更新状态。')}</small></header><label><span>{localizeText('申请金额 · HKD（最低')} {formatMinor(portal.program.minimum_withdrawal_minor, formatLocale)}）</span><input aria-label={localizeText('申请金额')} autoComplete="off" inputMode="decimal" min={portal.program.minimum_withdrawal_minor / 100} name="withdrawal_amount" step="0.01" type="number" value={amount} onChange={(event) => { setAmount(event.target.value); pendingWithdrawal.current = null; setNote('') }} /></label><button className="button primary wide" disabled={submitBusy || portal.balances.withdrawable_minor < portal.program.minimum_withdrawal_minor} type="button" onClick={() => void withdraw()}><ArrowUpRight size={16} />{submitBusy ? localizeText('正在提交…') : localizeText('提交提现申请')}</button>{note && <p className="promotion-form-note" role="status">{note}</p>}<section className="promotion-withdrawal-history"><h3>{localizeText('提现记录')}</h3>{portal.withdrawals.length ? portal.withdrawals.map((withdrawal) => <article key={withdrawal.withdrawal_id}><div><strong>{withdrawal.withdrawal_id}</strong><span className={`promotion-status withdrawal-${withdrawal.status}`}>{withdrawalLabel(withdrawal.status)}</span></div><b>{formatMinor(withdrawal.amount_minor, formatLocale)}</b><small>{hkt(withdrawal.submitted_at, formatLocale)}</small>{withdrawal.rejection_reason && <p>{withdrawal.rejection_reason}</p>}</article>) : <p className="promotion-empty-cell">{localizeText('暂无提现记录。')}</p>}</section><div className="promotion-timeline"><h3>{localizeText('审计时间线')}</h3>{portal.timeline.length ? portal.timeline.map((event) => <div key={event.event_id}><i className={timelineTone(event.event_type)} /><span><strong>{eventLabel(event.event_type)}</strong><small>{hkt(event.occurred_at, formatLocale)} · <b>{event.public_reference}</b></small></span>{timelineTone(event.event_type) === 'success' && <Check size={15} />}</div>) : <p className="promotion-empty-cell">{localizeText('暂无审计记录。')}</p>}</div></article></section>
+      <footer className="promotion-policy-strip"><WalletCards size={16} /><span>{localizeText('佣金冻结、退款追回和提现状态均以平台资金账本为准。')}</span></footer>
+    </>}</div>
+}

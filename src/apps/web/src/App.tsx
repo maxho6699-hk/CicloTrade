@@ -6,6 +6,7 @@ import { AppShell } from './components/AppShell'
 import { MarketsPage, TodayPage } from './pages'
 import { AccountPage } from './pages/AccountPage'
 import { MembershipPage } from './pages/MembershipPage'
+import { PromotionCenterPage } from './pages/PromotionCenterPage'
 import { MysticPage } from './pages/MysticPage'
 import { NotificationsPage } from './pages/NotificationsPage'
 import { PortfolioPage } from './pages/PortfolioPage'
@@ -72,6 +73,7 @@ export default function App() {
     <Route path="/feedback" element={<FeedbackPage />} />
     <Route path="/admin" element={<SuperAdminRoute><AdminPage /></SuperAdminRoute>} />
     <Route path="/membership" element={<MembershipPage />} />
+    <Route path="/promotion" element={<PromotionCenterPage />} />
     <Route path="/mystic" element={<MysticPage />} />
     <Route path="*" element={<Navigate to="/today" replace />} />
   </Routes></AppShell></ProtectedConsole>

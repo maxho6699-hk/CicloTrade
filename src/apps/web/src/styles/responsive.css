@@ -345,22 +345,17 @@
   .market-workspace.mobile-evidence-open .mobile-evidence-panel { display: block; border-top: 1px solid var(--border-strong); }
   .chart-settings { position: fixed; z-index: 151; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom)); left: 8px; display: grid; max-height: min(62dvh, 480px); grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px; overflow-y: auto; border: 1px solid var(--border-strong); border-radius: var(--radius-panel); background: color-mix(in srgb, var(--surface-raised) 97%, transparent); box-shadow: 0 -18px 52px var(--shadow-color); backdrop-filter: blur(14px); }
   .chart-settings .button { width: 100%; margin-left: 0; grid-column: 1 / -1; }
-  .multi-chart-toolbar { position: relative; min-height: 44px; grid-template-columns: minmax(0, 1fr) auto auto; grid-template-rows: 44px; gap: 3px; padding: 0 5px; }
+  .multi-chart-toolbar { position: relative; min-height: 44px; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: 44px; gap: 3px; padding: 0 5px; }
   .workbench-title { min-width: 0; overflow: hidden; }
   .workbench-title-label { min-width: 0; padding-inline: 4px; }
   .workbench-title-label strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .workbench-title-label svg { flex: 0 0 auto; }
   .workbench-watchlist-toggle { min-width: 44px; min-height: 44px; flex: 0 1 auto; overflow: hidden; padding-inline: 7px; }
   .workbench-watchlist-toggle > span { max-width: 64px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .multi-chart-layout-picker { grid-column: 2; grid-row: 1; width: auto; align-self: center; padding-inline: 0; border: 0; overflow: visible; }
-  .layout-picker-trigger { min-width: 44px; min-height: 44px; padding-inline: 0; justify-content: center; }
-  .layout-picker-trigger > span { display: none; }
-  .multi-chart-actions { position: static; grid-column: 3; grid-row: 1; align-self: center; padding-left: 0; gap: 0; }
+  .multi-chart-layout-picker { display: none; }
+  .multi-chart-actions { position: static; grid-column: 2; grid-row: 1; align-self: center; padding-left: 0; gap: 0; }
   .multi-chart-utility-actions { display: none; }
-  .mobile-chart-tools { position: relative; display: block; }
-  .mobile-chart-tools > summary, .multi-chart-actions > button { min-width: 44px; width: 44px; height: 44px; }
-  .mobile-chart-tools-popover { position: fixed; z-index: 150; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom)); left: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding: 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-panel); background: color-mix(in srgb, var(--surface-raised) 96%, transparent); box-shadow: 0 -18px 52px var(--shadow-color); backdrop-filter: blur(14px); }
-  .mobile-chart-tools-popover button { display: inline-flex; width: 100%; min-width: 0; height: 48px; align-items: center; justify-content: center; gap: 6px; padding: 0 8px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--workspace); color: var(--text); }
+  .multi-chart-actions > button { min-width: 44px; width: 44px; height: 44px; }
   .chart-workspace-shell.has-workbench-inspector .chart-workbench-body { grid-template-columns: minmax(0, 1fr); }
   .chart-workbench-inspector, .chart-workspace-shell.has-workbench-inspector .chart-workbench-inspector { position: absolute; z-index: 145; top: 8px; right: 8px; bottom: 52px; left: 8px; width: auto; max-height: none; overflow-y: auto; border: 1px solid var(--border-strong); border-radius: var(--radius-panel); background: color-mix(in srgb, var(--surface-raised) 97%, transparent); box-shadow: 0 18px 54px var(--shadow-color); backdrop-filter: blur(14px); }
   .chart-slot, .chart-slot-canvas, .market-chart-stage, .market-chart-canvas { width: 100%; max-width: 100%; min-width: 0; }
@@ -370,6 +365,19 @@
   .layout-picker-popover, .chart-symbol-popover { position: fixed; z-index: 152; top: auto; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom)); left: 8px; width: auto; max-height: min(72dvh, 580px); overflow-y: auto; transform: none; }
   .chart-view-popover { position: fixed; z-index: 152; top: auto; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom)); left: 8px; min-width: 0; }
   .chart-slot-data-status { top: auto; right: 66px; bottom: 30px; max-width: calc(100% - 82px); }
+  .chart-slot-toolbar { grid-template-columns: minmax(48px, auto) minmax(76px, 88px) minmax(0, 1fr); gap: 2px; padding-inline: 3px; }
+  .chart-slot-toolbar .chart-focus-control, .chart-slot-toolbar .chart-view-menu { display: none; }
+  .timeframe-dropdown, .timeframe-dropdown-trigger { min-width: 0; width: 100%; }
+  .timeframe-dropdown-trigger { padding-inline: 8px; white-space: nowrap; word-break: keep-all; }
+  .timeframe-dropdown-trigger > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mobile-chart-inline-actions { display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: 0; }
+  .mobile-chart-inline-actions > button { display: inline-flex; width: 40px; min-width: 40px; height: 44px; min-height: 44px; align-items: center; justify-content: center; padding: 0; border: 1px solid transparent; border-radius: var(--radius-control); background: transparent; color: var(--muted); }
+  .mobile-chart-inline-actions > button:hover, .mobile-chart-inline-actions > button.active, .mobile-chart-inline-actions > button[aria-expanded='true'] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+  .mobile-chart-inline-actions > button > span { display: none; }
+  .chart-crosshair-card { left: 6px; max-width: min(292px, calc(100% - 78px)); gap: 2px; padding: 4px 6px; background: color-mix(in srgb, var(--surface) 66%, transparent); font-size: 9px; box-shadow: 0 5px 14px color-mix(in srgb, var(--shadow-color) 28%, transparent); backdrop-filter: blur(5px); }
+  .chart-crosshair-card header, .chart-crosshair-card > div { gap: 5px; line-height: 1.35; }
+  .chart-crosshair-card header > small, .chart-historical-quote { display: none; }
+  .chart-live-quote time { flex-basis: 100%; }
 }
 
 @media (max-width: 760px) {

@@ -7,6 +7,7 @@ import {
   ChevronRight,
   CircleGauge,
   CreditCard,
+  HandCoins,
   FileChartColumn,
   MessageSquareText,
   FlaskConical,
@@ -57,6 +58,7 @@ const navItems = [
   { to: '/notifications', label: '消息通知', icon: Bell },
   { to: '/account', label: '用户设定', icon: UserRound },
   { to: '/membership', label: '订阅会员', icon: CreditCard },
+  { to: '/promotion', label: '推广中心', icon: HandCoins },
 ]
 
 const mobileNavItems = [
@@ -75,6 +77,7 @@ const mobileMoreItems = [
   { to: '/notifications', label: '消息通知', icon: Bell },
   { to: '/account', label: '用户设定', icon: UserRound },
   { to: '/membership', label: '订阅会员', icon: CreditCard },
+  { to: '/promotion', label: '推广中心', icon: HandCoins },
 ]
 
 const mobileHelpItem = { to: '/help', label: '帮助与支持', icon: HelpCircle }

@@ -862,7 +862,7 @@ code {
 .timeframe-dropdown-trigger:hover, .timeframe-dropdown-trigger[aria-expanded='true'] { border-color: var(--accent); background: var(--surface-raised); color: var(--text); }
 .timeframe-dropdown-trigger:focus-visible, .timeframe-dropdown-menu button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .timeframe-dropdown-menu {
-  position: absolute; z-index: 45; top: calc(100% + 4px); left: 0; width: 180px; max-height: min(320px, 58dvh); overflow-y: auto;
+  position: absolute; z-index: 180; top: calc(100% + 4px); left: 0; width: 180px; max-height: min(320px, 58dvh); overflow-y: auto;
   padding: 5px; border: 1px solid var(--border-strong); border-radius: var(--radius-control); background: var(--surface); box-shadow: var(--shadow-float); scrollbar-width: thin;
 }
 .timeframe-dropdown-menu::-webkit-scrollbar { width: 5px; }

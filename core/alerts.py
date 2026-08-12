@@ -397,6 +397,10 @@ class AlertService:
                WHERE a.user_id=? ORDER BY a.created_at DESC""", (user_id,)
         )
         for row in rows:
+            # SQLite exposes BOOLEAN-compatible columns as 0/1 integers.  Keep
+            # the public alert contract typed so browser clients cannot mistake
+            # 0 for an active alert (`0 !== false` in JavaScript).
+            row["is_active"] = bool(row.get("is_active"))
             if row.get("channels") is None:
                 row["channels"] = '["website","telegram"]'
             try:

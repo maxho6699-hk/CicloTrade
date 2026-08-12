@@ -119,6 +119,9 @@ export function TimeframeDropdown({ value, options, ariaLabel, onChange }: Timef
   }
 
   let optionIndex = -1
+  const portalTarget = document.fullscreenElement
+    ?? rootRef.current?.closest('.chart-workspace-shell')
+    ?? document.body
   return <div className="timeframe-dropdown" ref={rootRef}>
     <button
       ref={triggerRef}
@@ -169,6 +172,6 @@ export function TimeframeDropdown({ value, options, ariaLabel, onChange }: Timef
           ><span>{option.label}</span>{option.value === value && <Check size={13} aria-hidden="true" />}</button>
         })}
       </div>)}
-    </div>, document.body)}
+    </div>, portalTarget)}
   </div>
 }

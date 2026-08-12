@@ -16,6 +16,7 @@ import {
   type UTCTimestamp,
 } from 'lightweight-charts'
 import type { MarketQuotePayload, PortfolioActivity } from '../api/client'
+import { applyFormingBarOverlay, shouldShowRealtimeLabel, type FormingMarketBar, type MarketStreamConnectionState } from '../api/marketStream'
 import { buildChartTradeView, type ChartTradeInterval } from '../data/chartTrades'
 import type { ChartDrawingPoint } from '../data/chartDrawings'
 import type { Candle } from '../types'
@@ -97,6 +98,8 @@ interface MarketChartProps {
   textColor?: string
   dataStatus?: string
   quote?: MarketQuotePayload | null
+  formingBar?: FormingMarketBar | null
+  streamConnectionState?: MarketStreamConnectionState
   officialActivity?: PortfolioActivity | null
   alertPrices?: number[]
   drawingActive: boolean
@@ -190,6 +193,8 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
   textColor: preferredTextColor,
   dataStatus = '界面演示数据',
   quote,
+  formingBar,
+  streamConnectionState,
   officialActivity,
   alertPrices = [],
   drawingActive,
@@ -242,12 +247,14 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
   const [coordinateVersion, setCoordinateVersion] = useState(0)
   const [plotBounds, setPlotBounds] = useState<ChartPlotBounds>(plotBoundsRef.current)
   const [themeToken, setThemeToken] = useState(() => document.documentElement.dataset.theme ?? 'dark')
+  const displayCandles = useMemo(() => applyFormingBarOverlay(candles, formingBar), [candles, formingBar])
+  const realtimeLabelVisible = shouldShowRealtimeLabel(formingBar, streamConnectionState)
   const chartView = useMemo(
     () => buildChartTradeView(candles, officialActivity, market, symbol),
     [candles, market, officialActivity, symbol],
   )
   const chartDescription = `${symbol} ${localizeText(timeframe)}${localizeText('蜡烛图')}${showVolume ? localizeText('与成交量') : ''}，${localizeText(dataStatus)}${chartView.executions.length ? `，${localizeText('包含')} ${chartView.executions.length} ${localizeText('个模拟成交标记')}` : ''}`
-  const latest = candles.at(-1)
+  const latest = displayCandles.at(-1)
 
   const hideActiveRange = useCallback(() => {
     activeIntervalId.current = null
@@ -606,8 +613,8 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
     const identityChanged = dataIdentity.current !== nextIdentity
     if (identityChanged) setHoveredCandle(null)
     dataIdentity.current = nextIdentity
-    latestPriceRef.current = candles.at(-1)?.close ?? 0
-    candleSeries.setData(candles.map(({ time, open, high, low, close }) => ({
+    latestPriceRef.current = displayCandles.at(-1)?.close ?? 0
+    candleSeries.setData(displayCandles.map(({ time, open, high, low, close }) => ({
       time: time as unknown as UTCTimestamp, open, high, low, close,
     })))
     const upColor = preferredUpColor || (market === 'CN' ? '#e4606b' : '#27b487')
@@ -619,7 +626,7 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
         })
         volumeSeriesApi.current.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } })
       }
-      volumeSeriesApi.current.setData(candles.map(({ time, volume, open, close }) => ({
+      volumeSeriesApi.current.setData(displayCandles.map(({ time, volume, open, close }) => ({
         time: time as unknown as UTCTimestamp,
         value: volume,
         color: close >= open ? `${upColor}66` : `${downColor}66`,
@@ -635,13 +642,13 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
         hideActiveRange()
         const savedViewport = initialViewportRef.current
         if (savedViewport && savedViewport.to > savedViewport.from) scale.setVisibleLogicalRange(savedViewport)
-        else if (candles.length) scale.fitContent()
+        else if (displayCandles.length) scale.fitContent()
       } else if (previousRange) {
         scale.setVisibleLogicalRange(previousRange)
       }
       setCoordinateVersion((value) => value + 1)
     })
-  }, [candleDataIdentity, candles, hideActiveRange, market, preferredDownColor, preferredUpColor, showVolume, symbol, timeframe])
+  }, [candleDataIdentity, displayCandles, hideActiveRange, market, preferredDownColor, preferredUpColor, showVolume, symbol, timeframe])
 
   useEffect(() => {
     intervalById.current = new Map(chartView.intervals.map((item) => [item.interval.interval_id, item]))
@@ -689,7 +696,7 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
     const x = Math.max(0, Math.min(rect.width, clientX - rect.left))
     const time = chart.timeScale().coordinateToTime(x)
     if (time === null) return
-    const candle = candles.find((item) => String(item.time) === String(time))
+    const candle = displayCandles.find((item) => String(item.time) === String(time))
     if (!candle) return
     chart.setCrosshairPosition(candle.close, time, series)
     setHoveredCandle(candle)
@@ -761,6 +768,7 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
         aria-label={chartDescription}
       />
       {displayedCandle && <div className="chart-crosshair-card" style={crosshairCardStyle} aria-label="观察 K 线与当前盘口"><header><b>{hongKongTime(displayedCandle.time, timeframe === '日线')}</b><small>{timeframe === '日线' ? '日线以美国交易日归档' : 'Asia/Hong_Kong'}</small></header><div className={`chart-observed-ohlc ${displayedCandleTone}`}><span>开 <b>{displayedCandle.open.toFixed(2)}</b></span><span>高 <b>{displayedCandle.high.toFixed(2)}</b></span><span>低 <b>{displayedCandle.low.toFixed(2)}</b></span><span>收 <b>{displayedCandle.close.toFixed(2)}</b></span></div><div className="chart-live-quote"><small>当前盘口</small><span className="bid">Bid <b>{quote?.bid?.toFixed(2) ?? '—'}</b></span><span className="spread">Spread <b>{quote?.spread?.toFixed(2) ?? '—'}</b></span><span className="ask">Ask <b>{quote?.ask?.toFixed(2) ?? '—'}</b></span><time>{quote?.quote_at ? hongKongTime(quote.quote_at) : '报价时间未记录'}</time></div>{hoveredCandle && <small className="chart-historical-quote">盘口为当前报价，不代表所观察历史 K 线</small>}</div>}
+      {realtimeLabelVisible && <span className="chart-realtime-label" role="status" aria-live="polite">实时成形 K 线</span>}
       <ChartDrawingLayer
         active={drawingActive}
         userId={userId}

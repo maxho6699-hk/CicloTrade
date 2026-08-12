@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import date, datetime, timedelta
+import asyncio
 import hashlib
 import json
 import logging
@@ -22,7 +23,7 @@ from dotenv import load_dotenv
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.datastructures import UploadFile
 from starlette.routing import Route
 from starlette.concurrency import run_in_threadpool
@@ -36,6 +37,7 @@ from src.apps.api.read_model import (
 )
 from src.apps.api.write_service import BrowserWriteService
 from src.apps.api.chart_drawings import ChartDrawingConflict, ChartDrawingError, ChartDrawingService
+from src.apps.api.market_stream import RealtimeCandleTracker
 from src.apps.api.backtest_jobs import (
     backtest_artifact, backtest_cancel, backtest_item, backtests, worker_claim,
     worker_complete, worker_fail, worker_heartbeat, worker_input, worker_output,
@@ -1202,6 +1204,9 @@ _MARKET_BAR_DURATIONS = {
     "1h": timedelta(minutes=60),
     "1d": timedelta(days=1),
 }
+_MARKET_STREAM_POLL_SECONDS = 1.0
+_MARKET_STREAM_MAX_CONNECTIONS = 32
+_MARKET_STREAM_CONNECTIONS = asyncio.BoundedSemaphore(_MARKET_STREAM_MAX_CONNECTIONS)
 
 
 def _is_yahoo_source(source: Any) -> bool:
@@ -1939,6 +1944,91 @@ async def market_candles(request: Request) -> JSONResponse:
     })
 
 
+def _stream_sse(event: str, payload: dict[str, object]) -> bytes:
+    """Serialize one trusted internal payload as a browser SSE event."""
+    return f"event: {event}\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n".encode("utf-8")
+
+
+async def market_stream(request: Request) -> StreamingResponse:
+    """Stream an ephemeral forming-bar overlay; never persist it as history."""
+    identity = _identity(request)
+    symbol = _equity_quote_symbol(request)
+    timeframe = request.query_params.get("timeframe", "1分")
+    valid_timeframes = {
+        "1分", "2分", "3分", "4分", "5分", "10分", "15分", "20分", "30分", "45分",
+        "1小时", "2小时", "3小时", "4小时", "6小时", "8小时", "日线",
+    }
+    if timeframe not in valid_timeframes:
+        raise ApiError("实时 K 线周期无效。")
+    delay = web_market_data_visibility(identity.effective_plan, "stock")["delivery_delay_minutes"]
+    if symbol.isdigit() or delay:
+        async def delayed_stream():
+            # Never use the current OpenD quote to reconstruct a delayed bar.
+            yield _stream_sse("status", {"state": "catching_up"})
+
+        return StreamingResponse(
+            delayed_stream(), media_type="text/event-stream",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
+
+    try:
+        await asyncio.wait_for(_MARKET_STREAM_CONNECTIONS.acquire(), timeout=0.01)
+    except TimeoutError as exc:
+        raise ApiError("实时行情连接已达上限，请稍后重试。", 429) from exc
+
+    async def live_stream():
+        tracker = RealtimeCandleTracker()
+        connected = False
+        try:
+            # One adapter per bounded stream avoids reconnecting on every tick.
+            adapter = OpenDAdapter()
+            while True:
+                try:
+                    quote = await run_in_threadpool(adapter.stock_quote, symbol)
+                    observed_at = _market_datetime(quote.get("quote_at"), "美股")
+                    fresh = _realtime_observation_is_fresh(observed_at)
+                    authorized = bool(
+                        _enabled("MARKET_DATA_REALTIME")
+                        and quote.get("us_realtime_entitlement")
+                        and fresh
+                    )
+                    if not authorized or observed_at is None:
+                        tracker.reset(symbol, timeframe)
+                        yield _stream_sse("status", {"state": "disconnected"})
+                        return
+                    if not connected:
+                        connected = True
+                        yield _stream_sse("status", {"state": "connected"})
+                    forming = tracker.update(
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        observed_at=observed_at,
+                        last=quote.get("last"),
+                        cumulative_volume=quote.get("volume"),
+                    )
+                    if forming is not None:
+                        yield _stream_sse("forming_bar", {
+                            **forming,
+                            "visible_as_of": _visible_as_of(0).isoformat(),
+                            "realtime": True,
+                            "authorized": True,
+                            "stale": False,
+                        })
+                except Exception:
+                    tracker.reset(symbol, timeframe)
+                    yield _stream_sse("status", {"state": "disconnected"})
+                    return
+                await asyncio.sleep(_MARKET_STREAM_POLL_SECONDS)
+        finally:
+            tracker.reset(symbol, timeframe)
+            _MARKET_STREAM_CONNECTIONS.release()
+
+    return StreamingResponse(
+        live_stream(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
 async def market_quote(request: Request) -> JSONResponse:
     """Return a US quote with a truthful delayed-research fallback."""
     identity = _identity(request)
@@ -2263,10 +2353,13 @@ async def market_search(request: Request) -> JSONResponse:
         if not symbol or symbol in seen:
             continue
         seen.add(symbol)
+        exchange = str(item.get("exchange") or "")[:80]
+        if any(name in exchange.casefold() for name in ("opend", "futu", "yahoo", "yfinance", "akshare", "polygon", "wrdata")):
+            exchange = "真实数据来源"
         items.append({
             "symbol": symbol,
             "name": str(item.get("name") or symbol)[:120],
-            "exchange": str(item.get("exchange") or "")[:80],
+            "exchange": exchange,
             "type": str(item.get("type") or "股票")[:40],
             "market": "CN" if re.fullmatch(r"\d{6}(?:\.(?:SS|SZ))?", symbol) else "US",
         })
@@ -2290,7 +2383,14 @@ async def bootstrap(request: Request) -> JSONResponse:
         "performance": repository.performance(identity, limit=200),
         "settings": repository.settings(identity),
         "alerts": {"items": repository.alerts(identity)},
-        "market_data": public_market_status(market="美股"),
+        "market_data": {
+            **{
+                key: value
+                for key, value in public_market_status(market="美股").items()
+                if key not in {"source", "active_source", "fallback_from"}
+            },
+            "display_source": "真实数据来源",
+        },
         "mode": "compatibility",
     }
     return JSONResponse(payload)
@@ -2586,6 +2686,7 @@ routes = [
     Route("/api/rewrite/v1/quant/performance", quant_performance, methods=["GET"]),
     Route("/api/rewrite/v1/portfolio", portfolio, methods=["GET"]),
     Route("/api/rewrite/v1/market/candles", market_candles, methods=["GET"]),
+    Route("/api/rewrite/v1/market/stream", market_stream, methods=["GET"]),
     Route("/api/rewrite/v1/market/quote", market_quote, methods=["GET"]),
     Route("/api/rewrite/v1/market/status", market_status, methods=["GET"]),
     Route("/api/rewrite/v1/options/chain", options_chain, methods=["GET"]),
