@@ -23,7 +23,6 @@ from src.apps.worker.point_in_time_freezer import DailyBar, FrozenDailyOhlcv, Po
 
 EQUITY_TEMPLATES = frozenset({"equity.trend.long_flat.v1", "equity.mean_reversion.long_flat.v1", "equity.breakout.long_flat.v1"})
 BASE_COST_BPS = 5.0
-LOOKBACK = 10
 MINIMUM_BARS = 60
 MAX_REQUEST_BYTES = 32 * 1024 * 1024
 
@@ -40,15 +39,16 @@ def execute_research(manifest: Mapping[str, Any], input_bytes_by_key: Mapping[st
     dataset, input_hashes = _freeze_manifest_input(manifest, input_bytes_by_key, symbols)
     if dataset.row_count < MINIMUM_BARS:
         raise ResearchExecutionError(f"at least {MINIMUM_BARS} frozen daily bars are required")
-    signal, risk, plan = _signal(template, manifest), _risk(manifest), _plan(manifest)
-    costs = {label: _metrics(dataset.bars, signal, multiplier) for label, multiplier in (("1x", 1.0), ("2x", 2.0))}
-    oos_start = max(LOOKBACK + 1, len(dataset.bars) // 2)
-    oos = _metrics(dataset.bars, signal, 1.0, start=oos_start)
-    folds = _chronological_folds(dataset.bars, signal)
+    lookback = _lookback(manifest)
+    signal, risk, plan = _signal(template, lookback), _risk(manifest), _plan(manifest)
+    costs = {label: _metrics(dataset.bars, signal, multiplier, lookback=lookback) for label, multiplier in (("1x", 1.0), ("2x", 2.0))}
+    oos_start = max(lookback + 1, len(dataset.bars) // 2)
+    oos = _metrics(dataset.bars, signal, 1.0, lookback=lookback, start=oos_start)
+    folds = _chronological_folds(dataset.bars, signal, lookback=lookback)
     stress = {
-        "gap": _metrics(dataset.bars, signal, 1.0, gap_penalty=True),
-        "liquidity": _metrics(dataset.bars, signal, 2.0, liquidity_penalty=True),
-        "volatility": _metrics(dataset.bars, signal, 1.0, volatility_penalty=True),
+        "gap": _metrics(dataset.bars, signal, 1.0, lookback=lookback, gap_penalty=True),
+        "liquidity": _metrics(dataset.bars, signal, 2.0, lookback=lookback, liquidity_penalty=True),
+        "volatility": _metrics(dataset.bars, signal, 1.0, lookback=lookback, volatility_penalty=True),
     }
     regimes = _regimes(dataset.bars)
     validation = _validation(dataset, manifest, costs, oos, folds, stress, regimes, risk, plan)
@@ -265,7 +265,7 @@ def _plan(manifest: Mapping[str, Any]) -> Mapping[str, Any]:
     return plan
 
 
-def _signal(template: str, manifest: Mapping[str, Any]) -> Callable[[list[DailyBar]], int]:
+def _lookback(manifest: Mapping[str, Any]) -> int:
     parameters = manifest.get("parameters")
     if not isinstance(parameters, Mapping) or set(parameters) != {"lookback"}:
         raise ResearchExecutionError("one frozen lookback parameter is required")
@@ -280,6 +280,10 @@ def _signal(template: str, manifest: Mapping[str, Any]) -> Callable[[list[DailyB
         or not 2 <= lookback <= 250
     ):
         raise ResearchExecutionError("lookback is outside the frozen candidate search space")
+    return lookback
+
+
+def _signal(template: str, lookback: int) -> Callable[[list[DailyBar]], int]:
     if template == "equity.trend.long_flat.v1":
         return lambda history: int(history[-1].close > fmean(bar.close for bar in history[-lookback:]))
     if template == "equity.mean_reversion.long_flat.v1":
@@ -287,9 +291,13 @@ def _signal(template: str, manifest: Mapping[str, Any]) -> Callable[[list[DailyB
     return lambda history: int(history[-1].close > max(bar.close for bar in history[-lookback:-1]))
 
 
-def _metrics(bars: tuple[DailyBar, ...], signal: Callable[[list[DailyBar]], int], cost_multiplier: float, *, start: int = LOOKBACK + 1, stop: int | None = None, gap_penalty: bool = False, liquidity_penalty: bool = False, volatility_penalty: bool = False) -> dict[str, Any]:
+def _metrics(bars: tuple[DailyBar, ...], signal: Callable[[list[DailyBar]], int], cost_multiplier: float, *, lookback: int, start: int | None = None, stop: int | None = None, gap_penalty: bool = False, liquidity_penalty: bool = False, volatility_penalty: bool = False) -> dict[str, Any]:
+    if not isinstance(lookback, int) or isinstance(lookback, bool) or not 2 <= lookback <= 250:
+        raise ResearchExecutionError("evaluation lookback is invalid")
+    minimum_start = lookback + 1
+    start = minimum_start if start is None else start
     stop = len(bars) if stop is None else stop
-    if start <= LOOKBACK or stop - start < 2:
+    if start < minimum_start or stop > len(bars) or stop - start < 2:
         raise ResearchExecutionError("evaluation slice is too short for the template lookback")
     returns: list[float] = []
     position = trades = 0
@@ -320,11 +328,12 @@ def _metrics(bars: tuple[DailyBar, ...], signal: Callable[[list[DailyBar]], int]
     return {"return_pct": _round(curve[-1] - 1.0), "max_drawdown": _round(_max_drawdown(curve)), "tail_stress_loss_pct": _round(_tail_loss(returns)), "trades": trades, "observations": len(returns)}
 
 
-def _chronological_folds(bars: tuple[DailyBar, ...], signal: Callable[[list[DailyBar]], int]) -> list[dict[str, Any]]:
-    start, width = max(LOOKBACK + 1, len(bars) // 2), (len(bars) - max(LOOKBACK + 1, len(bars) // 2)) // 3
+def _chronological_folds(bars: tuple[DailyBar, ...], signal: Callable[[list[DailyBar]], int], *, lookback: int) -> list[dict[str, Any]]:
+    start = max(lookback + 1, len(bars) // 2)
+    width = (len(bars) - start) // 3
     if width < 3:
         raise ResearchExecutionError("insufficient bars for chronological validation folds")
-    return [{"fold": fold + 1, "metrics": _metrics(bars, signal, 1.0, start=start + fold * width, stop=len(bars) if fold == 2 else start + (fold + 1) * width)} for fold in range(3)]
+    return [{"fold": fold + 1, "metrics": _metrics(bars, signal, 1.0, lookback=lookback, start=start + fold * width, stop=len(bars) if fold == 2 else start + (fold + 1) * width)} for fold in range(3)]
 
 
 def _validation(dataset: FrozenDailyOhlcv, manifest: Mapping[str, Any], costs: Mapping[str, Mapping[str, Any]], oos: Mapping[str, Any], folds: list[Mapping[str, Any]], stress: Mapping[str, Mapping[str, Any]], regimes: Mapping[str, int], risk: Mapping[str, Any], plan: Mapping[str, Any]) -> dict[str, Any]:

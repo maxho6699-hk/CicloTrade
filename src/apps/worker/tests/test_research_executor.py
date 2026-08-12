@@ -28,7 +28,7 @@ def test_open_to_next_open_captures_large_overnight_gap_and_final_exit_cost():
     start = datetime(2025, 1, 1, 14, 30, tzinfo=timezone.utc)
     bars = tuple(DailyBar("AAPL", date(2025, 1, 1) + timedelta(days=index), start + timedelta(days=index), start + timedelta(days=index, hours=6), start + timedelta(days=index, hours=7), 100.0 if index != 12 else 150.0, 151.0, 99.0, 100.0, 1000) for index in range(14))
 
-    metrics = _metrics(bars, lambda history: 1, 1.0, start=11, stop=13)
+    metrics = _metrics(bars, lambda history: 1, 1.0, lookback=10, start=11, stop=13)
 
     assert metrics["return_pct"] > 0.49
     assert metrics["trades"] == 2
@@ -39,7 +39,7 @@ def test_executor_rechecks_decision_availability_and_rejects_forbidden_template(
     bars = [DailyBar("AAPL", date(2025, 1, 1) + timedelta(days=index), start + timedelta(days=index), start + timedelta(days=index, hours=6), start + timedelta(days=index, hours=7), 100.0, 101.0, 99.0, 100.0, 1000) for index in range(14)]
     bars[10] = DailyBar("AAPL", bars[10].session_date, bars[10].session_open_at, bars[10].session_close_at, bars[11].session_open_at + timedelta(seconds=1), 100.0, 101.0, 99.0, 100.0, 1000)
     with pytest.raises(ResearchExecutionError):
-        _metrics(tuple(bars), lambda history: 1, 1.0, start=11)
+        _metrics(tuple(bars), lambda history: 1, 1.0, lookback=10, start=11)
     _, manifest, inputs = _request(96, minimum_coverage_days=252)
     with pytest.raises(ResearchExecutionError):
         execute_research({**manifest, "template_key": "option.long_call.v1"}, inputs)
@@ -97,7 +97,56 @@ def test_negative_open_to_next_open_path_has_negative_oos_style_metrics():
     start = datetime(2025, 1, 1, 14, 30, tzinfo=timezone.utc)
     bars = tuple(DailyBar("AAPL", date(2025, 1, 1) + timedelta(days=index), start + timedelta(days=index), start + timedelta(days=index, hours=6), start + timedelta(days=index, hours=7), 100.0 - index, 101.0, 1.0, 100.0 - index, 1000) for index in range(16))
 
-    assert _metrics(bars, lambda history: 1, 1.0, start=11)["return_pct"] < 0
+    assert _metrics(bars, lambda history: 1, 1.0, lookback=10, start=11)["return_pct"] < 0
+
+
+@pytest.mark.parametrize("lookback", [5, 20, 50])
+def test_metrics_first_decision_uses_the_frozen_lookback(lookback):
+    start = datetime(2025, 1, 1, 14, 30, tzinfo=timezone.utc)
+    bars = tuple(DailyBar("AAPL", date(2025, 1, 1) + timedelta(days=index), start + timedelta(days=index), start + timedelta(days=index, hours=6), start + timedelta(days=index, hours=7), 100.0, 101.0, 99.0, 100.0, 1000) for index in range(lookback + 5))
+    seen_lengths = []
+
+    _metrics(bars, lambda history: seen_lengths.append(len(history)) or 0, 1.0, lookback=lookback)
+
+    assert seen_lengths[0] == lookback + 1
+
+
+def test_metrics_rejects_a_slice_before_the_frozen_lookback():
+    start = datetime(2025, 1, 1, 14, 30, tzinfo=timezone.utc)
+    bars = tuple(DailyBar("AAPL", date(2025, 1, 1) + timedelta(days=index), start + timedelta(days=index), start + timedelta(days=index, hours=6), start + timedelta(days=index, hours=7), 100.0, 101.0, 99.0, 100.0, 1000) for index in range(64))
+
+    with pytest.raises(ResearchExecutionError, match="too short"):
+        _metrics(bars, lambda history: 0, 1.0, lookback=50, start=11)
+
+
+@pytest.mark.parametrize("lookback", [5, 20, 50])
+def test_executor_uses_the_frozen_lookback_for_oos_folds_and_stress(monkeypatch, lookback):
+    _, manifest, inputs = _request(96, minimum_coverage_days=60)
+    manifest = {**manifest, "search_space": {"lookback": [lookback]}, "parameters": {"lookback": lookback}}
+    calls = []
+    original_metrics = _metrics
+
+    def recording_metrics(*args, **kwargs):
+        calls.append(dict(kwargs))
+        return original_metrics(*args, **kwargs)
+
+    monkeypatch.setattr("src.apps.worker.research_executor._metrics", recording_metrics)
+    receipt = execute_research(manifest, inputs)
+
+    expected_start = max(lookback + 1, 48)
+    assert receipt["metrics"]["oos"]["start_index"] == expected_start
+    assert len(calls) == 9
+    assert all(call["lookback"] == lookback for call in calls)
+    assert any(call.get("start") == expected_start for call in calls)
+    assert {key for call in calls for key in ("gap_penalty", "liquidity_penalty", "volatility_penalty") if call.get(key)} == {"gap_penalty", "liquidity_penalty", "volatility_penalty"}
+
+
+def test_executor_rejects_history_too_short_for_the_frozen_lookback():
+    _, manifest, inputs = _request(60, minimum_coverage_days=60)
+    manifest = {**manifest, "search_space": {"lookback": [58]}, "parameters": {"lookback": 58}}
+
+    with pytest.raises(ResearchExecutionError, match="too short"):
+        execute_research(manifest, inputs)
 
 
 def test_compute_gate_requires_all_three_inputs_and_file_ipc_writes_atomically():
