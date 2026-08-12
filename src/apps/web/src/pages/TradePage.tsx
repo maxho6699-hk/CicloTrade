@@ -4,6 +4,7 @@ import {
   Cable,
   CheckCircle2,
   CircleDollarSign,
+  Clock3,
   FileCheck2,
   HelpCircle,
   LockKeyhole,
@@ -11,55 +12,36 @@ import {
   Unplug,
   WalletCards,
 } from 'lucide-react'
-import { useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
+import type { BrokerCatalogEntry } from '../api/client'
 import { useWorkspace } from '../api/workspace-context'
 import { PageHeader } from '../components/PageHeader'
-import { SegmentedControl } from '../components/ui/SegmentedControl'
 
-type BrokerMarket = 'US' | 'HK' | 'CN'
-
-const marketDetails: Record<BrokerMarket, {
+const usMarketDetail: {
   label: string
   currency: string
   execution: string
   shorting: string
-}> = {
-  US: {
-    label: '美股',
-    currency: 'USD',
-    execution: '支持正股买卖与券商允许的订单类型。成交能力以已连接账户为准。',
-    shorting: '可以做空，不需要 CicloTrade 额外审核；券商仍会检查保证金、可借券和账户权限。',
-  },
-  HK: {
-    label: '港股',
-    currency: 'HKD',
-    execution: '港股资金和持仓必须与 USD、CNY 分开显示。当前网页尚未接入港股账户数据。',
-    shorting: '是否可卖空取决于券商、标的与当地市场规则，CicloTrade 不伪造可借券状态。',
-  },
-  CN: {
-    label: 'A股',
-    currency: 'CNY',
-    execution: '支持已连接券商账户的普通买卖；当前网页尚未接入实盘订单通道。',
-    shorting: '普通 A 股账户不提供裸卖空。页面不会把卖出数量穿过空仓。',
-  },
+} = {
+  label: '美股',
+  currency: 'USD',
+  execution: '首期范围只覆盖美股券商接入准备；当前网页尚未开放用户绑定或实盘订单通道。',
+  shorting: '未来是否可做空仍由券商保证金、可借券和账户权限决定，CicloTrade 不伪造可借券状态。',
 }
 
-const marketOptions = [
-  { value: 'US', label: '美股' },
-  { value: 'HK', label: '港股' },
-  { value: 'CN', label: 'A股' },
-] satisfies Array<{ value: BrokerMarket; label: string }>
+const capabilityLabels: Record<BrokerCatalogEntry['capabilities'][number], string> = {
+  market_data: '平台侧行情',
+  us_stock_limit_orders: '受限美股限价单后端',
+}
 
 export function TradePage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const workspace = useWorkspace()
-  const [market, setMarket] = useState<BrokerMarket>('US')
   const symbol = searchParams.get('symbol')?.toUpperCase()
   const eventId = searchParams.get('event_id')
-  const detail = marketDetails[market]
   const authenticated = workspace.mode === 'authenticated'
+  const brokerCatalog = workspace.data?.membership.brokerage.capability_catalog ?? []
 
   return (
     <div className="page operations-page brokerage-page">
@@ -68,19 +50,47 @@ export function TradePage() {
       <section className="brokerage-status-band" aria-label="券商连接状态">
         <span className="brokerage-status-icon"><Unplug size={21} /></span>
         <div><span>当前账户</span><strong>{authenticated ? workspace.user?.display_name : '尚未登录'} · 未连接券商</strong><small>网页未读取、保存或发送任何券商凭据与订单。</small></div>
-        <span className="status-chip research"><ShieldCheck size={14} /> 服务可提供 · 尚未接入</span>
-        <button className="button primary" type="button" onClick={() => navigate('/help')}><Cable size={16} /> 联系接入服务</button>
+        <span className="status-chip research"><ShieldCheck size={14} /> 首期 5 家 · 全部尚未开放</span>
+        <button className="button primary" type="button" disabled><LockKeyhole size={16} /> 暂未开放绑定</button>
       </section>
 
       {(symbol || eventId) && <section className="brokerage-context-note"><FileCheck2 size={17} /><span><strong>你从一条研究或验证记录来到这里</strong><small>{symbol ? `${symbol} · ` : ''}{eventId ? `事件 QE-${eventId} · ` : ''}本页不会把它转换成模拟订单或自动发送到券商。</small></span><button className="button tertiary" type="button" onClick={() => navigate('/portfolio')}>查看模拟验证结果</button></section>}
 
       <section className="brokerage-market-panel data-panel">
         <header className="panel-heading"><div><span>MARKET CAPABILITY</span><h2>市场与账户能力</h2></div><Building2 size={20} /></header>
-        <div className="brokerage-market-controls"><SegmentedControl ariaLabel="选择券商市场" value={market} options={marketOptions} onChange={setMarket} /><span>{detail.currency} 独立账户视图</span></div>
+        <div className="brokerage-market-controls"><strong>美股首发范围</strong><span>{usMarketDetail.currency} 独立账户视图</span></div>
         <div className="brokerage-capability-grid">
-          <article><CircleDollarSign size={18} /><span><strong>{detail.label}执行范围</strong><small>{detail.execution}</small></span></article>
-          <article><ShieldCheck size={18} /><span><strong>做空规则</strong><small>{detail.shorting}</small></span></article>
+          <article><CircleDollarSign size={18} /><span><strong>{usMarketDetail.label}执行范围</strong><small>{usMarketDetail.execution}</small></span></article>
+          <article><ShieldCheck size={18} /><span><strong>做空规则</strong><small>{usMarketDetail.shorting}</small></span></article>
           <article><LockKeyhole size={18} /><span><strong>权限来源</strong><small>会员只决定研究、数据、提醒与回测权益；真实交易权限来自你的券商账户。</small></span></article>
+        </div>
+      </section>
+
+      <section className="brokerage-catalog-panel data-panel" aria-labelledby="broker-catalog-title">
+        <header className="panel-heading"><div><span>US BROKER LAUNCH CATALOG</span><h2 id="broker-catalog-title">首期美股券商列表</h2></div><Building2 size={20} /></header>
+        <div className="brokerage-catalog-summary">
+          <span><ShieldCheck size={16} /> 当前 5 家均不可由用户绑定</span>
+          <small>A 股券商及其他候补平台全部后置。会员资格也不会自动开通任何券商连接。</small>
+        </div>
+        <div className="brokerage-catalog-grid">
+          {brokerCatalog.length ? brokerCatalog.map((broker) => (
+            <article className={`brokerage-provider-card status-${broker.status}`} key={broker.key}>
+              <header>
+                <span className="brokerage-provider-mark" aria-hidden="true">{broker.display_name.slice(0, 1)}</span>
+                <div><strong>{broker.display_name}</strong><small>美股首发范围</small></div>
+                <span className="brokerage-provider-status"><Clock3 size={13} />{broker.status_label}</span>
+              </header>
+              <p>{broker.availability_detail}</p>
+              <div className="brokerage-provider-capabilities">
+                {broker.capabilities.length
+                  ? broker.capabilities.map((capability) => <span key={capability}>{capabilityLabels[capability]}</span>)
+                  : <span>尚无可公开能力</span>}
+              </div>
+              <footer><LockKeyhole size={14} /><span>暂不可申请或绑定</span></footer>
+            </article>
+          )) : (
+            <div className="brokerage-catalog-empty"><Unplug size={20} /><span>券商目录暂未取得，请稍后刷新。页面不会用演示状态代替真实接入能力。</span></div>
+          )}
         </div>
       </section>
 

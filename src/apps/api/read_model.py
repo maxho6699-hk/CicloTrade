@@ -13,6 +13,7 @@ import sqlite3
 from typing import Any, Iterator
 
 from core.auth import AuthError, _decode_token
+from core.broker_catalog import public_us_launch_broker_catalog
 from core.compat import UTC
 from core.broker_authorization import broker_execution_authorized
 from core.plans import (
@@ -33,39 +34,6 @@ from src.apps.api.watchlists import normalize_watchlist_pins, normalize_watchlis
 _PAPER_INTERVAL_LIMIT = 200
 _PAPER_EXECUTION_LIMIT = 500
 _OFFICIAL_PAPER_V2_EVENT_ID_OFFSET = 1_000_000_000
-_BROKER_CAPABILITY_CATALOG = (
-    {
-        "key": "tiger", "display_name": "Tiger Brokers",
-        "status": "limited_manual_onboarding",
-        "capabilities": ("market_data", "us_stock_limit_orders"),
-        # The browser has no self-service connection flow: registration is a
-        # reviewed back-office process and must not be presented as connectable.
-        "connection_available": False,
-    },
-    {
-        "key": "futu", "display_name": "Futu OpenD",
-        "status": "market_data_only", "capabilities": ("market_data",),
-        "connection_available": False,
-    },
-    {
-        "key": "alpaca", "display_name": "Alpaca",
-        "status": "planned", "capabilities": (), "connection_available": False,
-    },
-    {
-        "key": "ibkr", "display_name": "Interactive Brokers",
-        "status": "planned", "capabilities": (), "connection_available": False,
-    },
-    {
-        "key": "qmt", "display_name": "QMT",
-        "status": "evaluating", "capabilities": (), "connection_available": False,
-    },
-    {
-        "key": "ptrade", "display_name": "PTrade",
-        "status": "evaluating", "capabilities": (), "connection_available": False,
-    },
-)
-
-
 class ReadModelError(RuntimeError):
     pass
 
@@ -676,10 +644,7 @@ class ReadOnlyLegacyRepository:
                 "requires_user_authorization": True,
                 "short_eligibility_source": "broker",
                 "subscription_auto_connects_broker": False,
-                "capability_catalog": [
-                    {**provider, "capabilities": list(provider["capabilities"])}
-                    for provider in _BROKER_CAPABILITY_CATALOG
-                ],
+                "capability_catalog": public_us_launch_broker_catalog(),
                 "us_short": {
                     "requires_ciclotrade_manual_approval": False,
                     "requires_broker_authorization": True,

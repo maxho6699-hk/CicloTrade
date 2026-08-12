@@ -300,6 +300,7 @@ td.positive-text, td.negative-text { align-items: center; gap: 4px; }
 .brokerage-context-note .button { margin-left: auto; }
 .brokerage-market-panel { margin-bottom: 12px; }
 .brokerage-market-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.brokerage-market-controls > strong { color: var(--text); font-size: 13px; }
 .brokerage-market-controls > span { color: var(--muted); font: 12px var(--mono); }
 .brokerage-capability-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .brokerage-capability-grid article { display: flex; min-width: 0; gap: 9px; padding: 14px; border-right: 1px solid var(--border); }
@@ -307,6 +308,24 @@ td.positive-text, td.negative-text { align-items: center; gap: 4px; }
 .brokerage-capability-grid article > svg { flex: 0 0 auto; color: var(--accent); }
 .brokerage-capability-grid article > span { display: grid; gap: 5px; }
 .brokerage-capability-grid small { color: var(--muted); font-size: 12px; line-height: 1.55; }
+.brokerage-catalog-panel { margin-bottom: 12px; }
+.brokerage-catalog-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 14px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--surface-subtle); }
+.brokerage-catalog-summary > span { display: inline-flex; align-items: center; gap: 7px; color: var(--warning); font-size: 12px; font-weight: 650; }
+.brokerage-catalog-summary > small { color: var(--muted); font-size: 11px; line-height: 1.5; text-align: right; }
+.brokerage-catalog-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.brokerage-provider-card { display: grid; min-width: 0; grid-template-rows: auto minmax(58px, auto) auto auto; gap: 11px; padding: 14px; border-right: 1px solid var(--border); background: linear-gradient(155deg, color-mix(in srgb, var(--surface-raised) 86%, transparent), var(--surface)); }
+.brokerage-provider-card:last-child { border-right: 0; }
+.brokerage-provider-card > header { display: grid; min-width: 0; grid-template-columns: 34px minmax(0, 1fr); gap: 8px; align-items: center; }
+.brokerage-provider-mark { display: grid; width: 34px; height: 34px; place-items: center; border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border)); border-radius: 50%; background: var(--accent-soft); color: var(--accent); font: 700 13px var(--mono); }
+.brokerage-provider-card header > div { display: grid; min-width: 0; gap: 2px; }
+.brokerage-provider-card header strong { overflow: hidden; color: var(--text); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.brokerage-provider-card header small { color: var(--muted-2); font-size: 10px; }
+.brokerage-provider-status { display: inline-flex; grid-column: 1 / -1; width: max-content; max-width: 100%; align-items: center; gap: 5px; padding: 4px 7px; border: 1px solid color-mix(in srgb, var(--warning) 36%, var(--border)); border-radius: var(--radius-control); background: color-mix(in srgb, var(--warning) 7%, var(--surface)); color: var(--warning); font-size: 10px; }
+.brokerage-provider-card p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.brokerage-provider-capabilities { display: flex; flex-wrap: wrap; align-content: start; gap: 5px; }
+.brokerage-provider-capabilities span { padding: 3px 6px; border: 1px solid var(--border-subtle); border-radius: var(--radius-control); background: var(--surface-inset); color: var(--muted-2); font-size: 9px; }
+.brokerage-provider-card > footer { display: flex; align-items: center; gap: 6px; padding-top: 9px; border-top: 1px solid var(--border-subtle); color: var(--muted-2); font-size: 10px; }
+.brokerage-catalog-empty { display: flex; grid-column: 1 / -1; min-height: 96px; align-items: center; justify-content: center; gap: 9px; padding: 18px; color: var(--muted); font-size: 12px; }
 .brokerage-workflow { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(320px, .85fr); gap: 12px; align-items: start; }
 .brokerage-steps ol { display: grid; margin: 0; padding: 0; list-style: none; }
 .brokerage-steps li { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 10px; padding: 13px 14px; border-top: 1px solid var(--border); }

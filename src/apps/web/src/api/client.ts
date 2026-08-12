@@ -46,6 +46,21 @@ export interface MembershipPlan {
   blocked_reason: string | null
 }
 
+export type BrokerCatalogStatus =
+  | 'market_data_only'
+  | 'limited_backend_capability'
+  | 'integration_in_progress'
+
+export interface BrokerCatalogEntry {
+  key: 'futu_moomoo' | 'tiger' | 'ibkr' | 'webull' | 'longbridge'
+  display_name: string
+  status: BrokerCatalogStatus
+  status_label: string
+  availability_detail: string
+  capabilities: Array<'market_data' | 'us_stock_limit_orders'>
+  connection_available: false
+}
+
 export interface PortfolioPosition {
   symbol: string
   market: 'US' | 'CN'
@@ -255,6 +270,7 @@ export interface BootstrapPayload {
       auto_control_account_limit: number
       accounts_used: number
       accounts: BrokerAccountSummary[]
+      capability_catalog: BrokerCatalogEntry[]
       requires_user_authorization: true
       short_eligibility_source: 'broker'
       subscription_auto_connects_broker?: false
