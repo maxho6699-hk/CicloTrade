@@ -6,6 +6,7 @@ from pathlib import Path
 from datetime import date, datetime, timedelta
 import asyncio
 import hashlib
+import hmac
 import json
 import logging
 import math
@@ -104,12 +105,17 @@ from core.broker_access_applications import (
 )
 from core.database import DatabaseManager
 from core.feedback import FeedbackError, FeedbackService
+from core.referral_affiliate import ReferralService, ReferralWalletService
 from core.official_option_sim_journal import OfficialOptionSimulationJournal
 from core.auth import AuthError, AuthService, email_verification_required
 from core.compat import UTC
 from core.plans import can, effective_plan, plan_display_name, web_market_data_visibility
 from notification.email_sender import send_email, smtp_configured
 from notification.telegram_billing import queue_manual_payment_review_notice
+from notification.telegram_referrals import (
+    queue_withdrawal_review_notice,
+    queue_withdrawal_user_notice,
+)
 from notification.telegram_bot import telegram_configured
 from notification.templates import auth_email
 from payment.order_service import MembershipPlanConflict
@@ -126,6 +132,7 @@ logger = logging.getLogger(__name__)
 
 
 _CORRELATION_ID_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{8,128}")
+_REFERRAL_PUBLIC_ID_PATTERN = re.compile(r"(?:RFR|COM|RCH|WDR|REV|PAY)[A-F0-9]{24}")
 _DEFAULT_ERROR_CODES = {
     400: "invalid_request",
     401: "authentication_required",
@@ -774,6 +781,184 @@ def _admin_identity(request: Request) -> tuple[BrowserIdentity, AdminService]:
     if role != "super_admin":
         raise ApiError("仅超级管理员可使用此管理台。", 403)
     return identity, service
+
+
+def _billing_admin_identity(request: Request) -> tuple[BrowserIdentity, AdminService]:
+    identity = _identity(request)
+    service = _admin_service(request)
+    try:
+        role = service.role_for(identity.id)
+    except PermissionError as exc:
+        raise ApiError("此账户没有可用的后台权限。", 403) from exc
+    if not service.has_permission(role, "billing"):
+        raise ApiError("当前后台角色无权管理推广提款。", 403)
+    return identity, service
+
+
+def _withdrawal_public(row: dict[str, Any]) -> dict[str, Any]:
+    def hkt(value: Any) -> str | None:
+        if not value:
+            return None
+        moment = datetime.fromisoformat(str(value))
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=UTC)
+        return moment.astimezone(ZoneInfo("Asia/Hong_Kong")).isoformat(timespec="seconds")
+    return {
+        "withdrawal_id": row.get("public_id"), "amount_minor": row.get("amount_minor"),
+        "currency": row.get("currency"), "status": row.get("status"),
+        "submitted_at": hkt(row.get("submitted_at")), "reviewed_at": hkt(row.get("reviewed_at")),
+        "approved_at": hkt(row.get("approved_at")),
+        "paid_at": hkt(row.get("paid_at") or row.get("confirmed_at")),
+        "rejection_reason": row.get("rejection_reason"),
+    }
+
+
+async def referral_portal(request: Request) -> JSONResponse:
+    identity = _identity(request)
+    host = request.headers.get("host", "").strip()
+    base_url = f"{request.url.scheme}://{host}" if host else ""
+    try:
+        payload = await run_in_threadpool(
+            ReferralService(_auth_service(request).db).portal,
+            identity.id,
+            base_url=base_url,
+        )
+    except (ValueError, PermissionError) as exc:
+        raise ApiError(str(exc), 403 if isinstance(exc, PermissionError) else 409) from exc
+    return JSONResponse(payload)
+
+
+async def referral_visit(request: Request) -> Response:
+    payload = await _json_body(request, limit=2048)
+    if set(payload) != {"invite_code"} or not isinstance(payload.get("invite_code"), str):
+        raise ApiError("推广访问字段无效。")
+    remote = request.client.host if request.client else "unknown"
+    # Only a daily HMAC is persisted. Raw network and user-agent values never enter storage.
+    day = datetime.now(ZoneInfo("Asia/Hong_Kong")).date().isoformat()
+    secret = os.getenv("REFERRAL_VISIT_HMAC_SECRET") or os.getenv("JWT_SECRET_KEY") or ""
+    if len(secret.encode("utf-8")) < 32:
+        raise ApiError("推广访问统计暂不可用。", 503)
+    user_agent = request.headers.get("user-agent", "")[:512]
+    ua_class = "mobile" if re.search(r"mobile|android|iphone", user_agent, re.I) else "desktop"
+    try:
+        import ipaddress
+        address = ipaddress.ip_address(remote)
+        prefix = str(ipaddress.ip_network(f"{address}/{24 if address.version == 4 else 56}", strict=False).network_address)
+    except ValueError:
+        prefix = "unknown"
+    day_key = hmac.new(secret.encode(), f"referral-visit:{day}".encode(), hashlib.sha256).digest()
+    fingerprint = hmac.new(day_key, f"{prefix}:{ua_class}".encode(), hashlib.sha256).hexdigest()
+    hour = datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%dT%H")
+    rate_key = hmac.new(day_key, f"rate:{prefix}:{hour}".encode(), hashlib.sha256).hexdigest()
+    try:
+        ReferralService(_auth_service(request).db).record_visit(
+            payload["invite_code"], fingerprint, rate_key
+        )
+    except PermissionError as exc:
+        raise ApiError(str(exc), 429) from exc
+    except ValueError as exc:
+        raise ApiError(str(exc), 404) from exc
+    return Response(status_code=204)
+
+
+async def referral_withdrawals(request: Request) -> JSONResponse:
+    identity = _identity(request)
+    if request.method == "GET":
+        payload = ReferralService(_auth_service(request).db).portal(identity.id)
+        return JSONResponse({"items": payload["withdrawals"]})
+    key = request.headers.get("idempotency-key", "").strip()
+    payload = await _json_body(request)
+    if set(payload) != {"amount_minor", "currency"} or payload.get("currency") != "HKD":
+        raise ApiError("提款请求字段无效。")
+    try:
+        row = await run_in_threadpool(
+            ReferralWalletService(_auth_service(request).db).request_withdrawal,
+            identity.id,
+            payload["amount_minor"],
+            key,
+        )
+    except PermissionError as exc:
+        raise ApiError(str(exc), 403) from exc
+    except ValueError as exc:
+        raise ApiError(str(exc), 409) from exc
+    try:
+        queue_withdrawal_review_notice(_auth_service(request).db, row)
+    except Exception as exc:
+        logger.warning("Referral withdrawal notice was not queued (error_type=%s)", type(exc).__name__)
+    refreshed = ReferralService(_auth_service(request).db).portal(identity.id)
+    return JSONResponse(
+        {"withdrawal": _withdrawal_public(row), "balances": {
+            key: refreshed["balances"][key]
+            for key in ("withdrawable_minor", "reserved_minor", "debt_minor")
+        }}, status_code=201
+    )
+
+
+async def admin_referral_withdrawals(request: Request) -> JSONResponse:
+    identity, _ = _billing_admin_identity(request)
+    status = request.query_params.get("status", "submitted")
+    limit = _bounded_int(request, "limit", 100, 500)
+    try:
+        rows = ReferralWalletService(_auth_service(request).db).list_admin(
+            identity.id, status, limit
+        )
+    except ValueError as exc:
+        raise ApiError(str(exc)) from exc
+    return JSONResponse({"items": rows}, headers=_admin_headers())
+
+
+async def admin_referral_withdrawal_review(request: Request) -> JSONResponse:
+    identity, _ = _billing_admin_identity(request)
+    public_id = str(request.path_params.get("withdrawal_id") or "").strip().upper()
+    if not _REFERRAL_PUBLIC_ID_PATTERN.fullmatch(public_id):
+        raise ApiError("提款申请编号无效。")
+    payload = await _json_body(request)
+    decision = payload.get("decision")
+    allowed = {"decision", "password"} if decision == "approve" else {"decision", "password", "reason"}
+    if set(payload) != allowed or decision not in {"approve", "reject"} or not isinstance(payload.get("password"), str):
+        raise ApiError("提款审核字段无效。")
+    client_ip = request.client.host if request.client else "unknown"
+    try:
+        _auth_service(request).verify_password(identity.id, payload["password"], client_ip)
+        row = await run_in_threadpool(
+            ReferralWalletService(_auth_service(request).db).review,
+            identity.id, public_id, decision, str(payload.get("reason") or ""),
+        )
+    except PermissionError as exc:
+        raise ApiError(str(exc), 403) from exc
+    except ValueError as exc:
+        raise ApiError(str(exc), 409) from exc
+    try:
+        queue_withdrawal_user_notice(_auth_service(request).db, row)
+    except Exception as exc:
+        logger.warning("Referral review notice was not queued (error_type=%s)", type(exc).__name__)
+    return JSONResponse(_withdrawal_public(row), headers=_admin_headers())
+
+
+async def admin_referral_withdrawal_paid(request: Request) -> JSONResponse:
+    identity, _ = _billing_admin_identity(request)
+    public_id = str(request.path_params.get("withdrawal_id") or "").strip().upper()
+    if not _REFERRAL_PUBLIC_ID_PATTERN.fullmatch(public_id):
+        raise ApiError("提款申请编号无效。")
+    payload = await _json_body(request)
+    if set(payload) != {"password", "payout_method", "payout_reference"} or not isinstance(payload.get("password"), str):
+        raise ApiError("付款确认字段无效。")
+    client_ip = request.client.host if request.client else "unknown"
+    try:
+        _auth_service(request).verify_password(identity.id, payload["password"], client_ip)
+        row = await run_in_threadpool(
+            ReferralWalletService(_auth_service(request).db).confirm_paid,
+            identity.id, public_id, payload["payout_method"], payload["payout_reference"],
+        )
+    except PermissionError as exc:
+        raise ApiError(str(exc), 403) from exc
+    except ValueError as exc:
+        raise ApiError(str(exc), 409) from exc
+    try:
+        queue_withdrawal_user_notice(_auth_service(request).db, row)
+    except Exception as exc:
+        logger.warning("Referral paid notice was not queued (error_type=%s)", type(exc).__name__)
+    return JSONResponse(_withdrawal_public(row), headers=_admin_headers())
 
 
 def _admin_headers() -> dict[str, str]:
@@ -2664,6 +2849,9 @@ routes = [
     Route("/api/rewrite/v1/session/refresh", session_refresh, methods=["POST"]),
     Route("/api/rewrite/v1/session", session_logout, methods=["DELETE"]),
     Route("/api/rewrite/v1/me", me, methods=["GET"]),
+    Route("/api/rewrite/v1/referrals/portal", referral_portal, methods=["GET"]),
+    Route("/api/rewrite/v1/referrals/visits", referral_visit, methods=["POST"]),
+    Route("/api/rewrite/v1/referrals/withdrawals", referral_withdrawals, methods=["GET", "POST"]),
     Route("/api/rewrite/v1/admin/overview", admin_overview, methods=["GET"]),
     Route(COMPUTE_EVIDENCE_ADMIN_STATUS_PATH, admin_compute_evidence_status, methods=["GET"]),
     Route(COMPUTE_EVIDENCE_ADMIN_LATEST_PATH, admin_compute_evidence_latest, methods=["GET"]),
@@ -2672,6 +2860,9 @@ routes = [
     Route("/api/rewrite/v1/admin/payments/manual-claims", admin_manual_claims, methods=["GET"]),
     Route("/api/rewrite/v1/admin/payments/manual-claims/{claim_id:str}/proof", admin_manual_claim_proof, methods=["GET"]),
     Route("/api/rewrite/v1/admin/payments/manual-claims/{claim_id:str}/review", admin_manual_claim_review, methods=["POST"]),
+    Route("/api/rewrite/v1/admin/referrals/withdrawals", admin_referral_withdrawals, methods=["GET"]),
+    Route("/api/rewrite/v1/admin/referrals/withdrawals/{withdrawal_id:str}/review", admin_referral_withdrawal_review, methods=["POST"]),
+    Route("/api/rewrite/v1/admin/referrals/withdrawals/{withdrawal_id:str}/paid", admin_referral_withdrawal_paid, methods=["POST"]),
     Route("/api/rewrite/v1/admin/brokers", admin_brokers, methods=["GET"]),
     Route("/api/rewrite/v1/admin/broker-access-applications", admin_broker_access_applications, methods=["GET"]),
     Route("/api/rewrite/v1/admin/broker-access-applications/{application_id:str}/review", admin_broker_access_application_review, methods=["POST"]),
