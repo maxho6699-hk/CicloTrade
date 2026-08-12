@@ -34,6 +34,7 @@ from src.apps.api.app import (
     session_password_reset_confirm,
     session_password_reset_request,
     session_register,
+    feedback,
     session_refresh,
     session_verification_request,
     session_verify_email,
@@ -434,6 +435,132 @@ def test_public_registration_fails_closed_before_account_creation_without_smtp(
     assert browser_api["database"].fetch_one(
         "SELECT 1 FROM users WHERE email='smtp-missing@example.com'"
     ) is None
+
+
+def test_feedback_api_is_authenticated_idempotent_and_returns_only_safe_receipts(browser_api):
+    token = _login_token()
+    payload = {
+        "category": "suggestion",
+        "message": ("Please add a compact activity digest. " * 8).strip(),
+        "context_path": "/dashboard",
+        "contact_preference": "none",
+    }
+    initial = _request(
+        "/api/rewrite/v1/feedback", method="POST", payload=payload,
+        authorization=f"Bearer {token}",
+    )
+    initial.scope["headers"].append((b"idempotency-key", b"feedback-replay-01"))
+    first = asyncio.run(feedback(initial))
+    assert first.status_code == 202
+    receipt = _payload(first)
+    assert receipt["accepted"] is True and receipt["replayed"] is False
+    assert set(receipt["item"]) == {
+        "id", "category", "summary", "context_path", "contact_preference", "created_at", "status"
+    }
+    assert receipt["item"]["id"].startswith("fb_")
+    assert "chat" not in json.dumps(receipt)
+    assert receipt["item"]["summary"] == payload["message"][:160]
+    assert payload["message"] not in json.dumps(receipt)
+
+    repeated = _request(
+        "/api/rewrite/v1/feedback", method="POST", payload=payload,
+        authorization=f"Bearer {token}",
+    )
+    repeated.scope["headers"].append((b"idempotency-key", b"feedback-replay-01"))
+    replay = asyncio.run(feedback(repeated))
+    assert _payload(replay)["replayed"] is True
+    listed = asyncio.run(feedback(_request(
+        "/api/rewrite/v1/feedback", authorization=f"Bearer {token}",
+    )))
+    assert _payload(listed)["items"] == [receipt["item"]]
+
+
+def test_feedback_api_rejects_invalid_fields_conflicting_keys_and_unsafe_paths(browser_api):
+    token = _login_token()
+    payload = {"category": "bug", "message": "broken", "contact_preference": "email"}
+    with pytest.raises(ApiError, match="Idempotency-Key"):
+        asyncio.run(feedback(_request(
+            "/api/rewrite/v1/feedback", method="POST", payload=payload, authorization=f"Bearer {token}"
+        )))
+    with pytest.raises(ApiError, match="页面路径"):
+        asyncio.run(feedback(_request(
+            "/api/rewrite/v1/feedback", method="POST", payload={**payload, "context_path": "/../admin"},
+            authorization=f"Bearer {token}",
+        )))
+    request = _request("/api/rewrite/v1/feedback", method="POST", payload={**payload, "message": "different"}, authorization=f"Bearer {token}")
+    request.scope["headers"].append((b"idempotency-key", b"feedback-key-01"))
+    # A key conflict is checked after a valid original request with that exact key.
+    original = _request("/api/rewrite/v1/feedback", method="POST", payload=payload, authorization=f"Bearer {token}")
+    original.scope["headers"].append((b"idempotency-key", b"feedback-key-01"))
+    asyncio.run(feedback(original))
+    with pytest.raises(ApiError) as error:
+        asyncio.run(feedback(request))
+    assert error.value.status == 409
+
+
+def test_feedback_requires_authentication_and_succeeds_without_an_admin_target(browser_api):
+    payload = {"category": "other", "message": "No admin target is configured.", "contact_preference": "none"}
+    unauthenticated = _request("/api/rewrite/v1/feedback", method="POST", payload=payload)
+    unauthenticated.scope["headers"].append((b"idempotency-key", b"feedback-auth-01"))
+    with pytest.raises(ApiError) as error:
+        asyncio.run(feedback(unauthenticated))
+    assert error.value.status == 401
+    token = _login_token()
+    request = _request("/api/rewrite/v1/feedback", method="POST", payload=payload, authorization=f"Bearer {token}")
+    request.scope["headers"].append((b"idempotency-key", b"feedback-no-admin"))
+    assert asyncio.run(feedback(request)).status_code == 202
+    assert browser_api["database"].fetch_one("SELECT 1 FROM telegram_service_outbox") is None
+
+
+def test_feedback_outbox_is_committed_with_feedback_and_safely_escapes_notice(browser_api):
+    database = browser_api["database"]
+    database.execute("UPDATE users SET is_admin=1 WHERE email='browser@example.com'")
+    now = datetime.now(UTC).isoformat()
+    database.execute(
+        "INSERT INTO telegram_accounts(user_id,chat_id,is_active,created_at,updated_at) VALUES (?,?,1,?,?)",
+        (1, "10001", now, now),
+    )
+    from core.admin_service import AdminService
+    AdminService(database).set_role(1, 1, "super_admin")
+    token = _login_token()
+    request = _request("/api/rewrite/v1/feedback", method="POST", authorization=f"Bearer {token}", payload={
+        "category": "experience", "message": "<b>unsafe</b> & untrusted", "contact_preference": "telegram",
+    })
+    request.scope["headers"].append((b"idempotency-key", b"feedback-key-02"))
+    response = asyncio.run(feedback(request))
+    assert response.status_code == 202
+    assert database.fetch_one("SELECT 1 FROM user_feedback WHERE user_id=1") is not None
+    notice = database.fetch_one("SELECT message FROM telegram_service_outbox WHERE dedupe_key LIKE 'feedback:%'")
+    assert notice and "&lt;b&gt;unsafe&lt;/b&gt; &amp; untrusted" in notice["message"]
+
+
+def test_feedback_rate_limit_deduplication_and_concurrent_submission(browser_api):
+    token = _login_token()
+    headers = f"Bearer {token}"
+    def submit(index: int):
+        request = _request("/api/rewrite/v1/feedback", method="POST", authorization=headers, payload={
+            "category": "data", "message": f"feedback item {index}", "contact_preference": "none",
+        })
+        request.scope["headers"].append((b"idempotency-key", f"feedback-burst-{index:02d}".encode()))
+        try:
+            return asyncio.run(feedback(request)).status_code
+        except ApiError as exc:
+            return exc.status
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        statuses = list(executor.map(submit, range(4)))
+    assert statuses.count(202) == 3 and statuses.count(429) == 1
+
+
+def test_feedback_identical_content_with_a_new_key_replays_within_24_hours(browser_api):
+    token = _login_token()
+    payload = {"category": "other", "message": "Same message for deduplication.", "contact_preference": "none"}
+    first = _request("/api/rewrite/v1/feedback", method="POST", payload=payload, authorization=f"Bearer {token}")
+    first.scope["headers"].append((b"idempotency-key", b"feedback-day-one"))
+    initial = _payload(asyncio.run(feedback(first)))
+    repeated = _request("/api/rewrite/v1/feedback", method="POST", payload=payload, authorization=f"Bearer {token}")
+    repeated.scope["headers"].append((b"idempotency-key", b"feedback-day-two"))
+    replay = _payload(asyncio.run(feedback(repeated)))
+    assert replay["replayed"] is True and replay["item"]["id"] == initial["item"]["id"]
 
 
 def test_verification_resend_and_password_reset_are_generic_and_rate_limited_by_auth(

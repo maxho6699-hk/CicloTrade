@@ -79,6 +79,7 @@ from src.apps.api.system_cycle_research_read_model import (
 )
 from core.backtest_queue import BacktestQueueError
 from core.database import DatabaseManager
+from core.feedback import FeedbackError, FeedbackService
 from core.official_option_sim_journal import OfficialOptionSimulationJournal
 from core.auth import AuthError, AuthService, email_verification_required
 from core.compat import UTC
@@ -716,6 +717,20 @@ async def recommendations(request: Request) -> JSONResponse:
             identity, limit=_bounded_int(request, "limit", 20, 100)
         )
     )
+
+
+async def feedback(request: Request) -> JSONResponse:
+    identity = _identity(request)
+    service = FeedbackService(_auth_service(request).db)
+    if request.method == "GET":
+        return JSONResponse({"items": service.list_for_user(identity.id)})
+    try:
+        item, replayed = service.create(
+            identity.id, await _json_body(request), request.headers.get("idempotency-key")
+        )
+    except FeedbackError as exc:
+        raise ApiError(str(exc), exc.status) from exc
+    return JSONResponse({"accepted": True, "item": item, "replayed": replayed}, status_code=202)
 
 
 async def quant_timeline(request: Request) -> JSONResponse:
@@ -2106,6 +2121,7 @@ routes = [
     Route("/api/rewrite/v1/session", session_logout, methods=["DELETE"]),
     Route("/api/rewrite/v1/me", me, methods=["GET"]),
     Route("/api/rewrite/v1/bootstrap", bootstrap, methods=["GET"]),
+    Route("/api/rewrite/v1/feedback", feedback, methods=["GET", "POST"]),
     Route("/api/rewrite/v1/recommendations", recommendations, methods=["GET"]),
     Route("/api/rewrite/v1/quant/timeline", quant_timeline, methods=["GET"]),
     Route("/api/rewrite/v1/quant/performance", quant_performance, methods=["GET"]),
