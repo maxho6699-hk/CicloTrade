@@ -475,12 +475,13 @@ def test_defined_risk_option_capability_denies_advanced_and_allows_professional(
     event_id = seeded["codec"].encode("event", seeded["event"]["id"])
     option_id = seeded["codec"].encode("option", seeded["option"]["id"])
     request = _request({"event_id": event_id, "option_id": option_id})
+    option_visible_at = datetime.fromisoformat(seeded["option"]["recorded_at"])
 
     advanced = SimpleNamespace(id=1, effective_plan="高级版")
     advanced_api = EarningsForecastApi(
         seeded["model"], authenticate=lambda current: advanced,
         has_capability=lambda identity, capability: capability == "earnings_forecast",
-        clock=lambda: AS_OF,
+        clock=lambda: option_visible_at,
     )
     locked = asyncio.run(advanced_api.option_detail(request))
     assert json.loads(locked.body)["required_capability"] == (
@@ -493,7 +494,7 @@ def test_defined_risk_option_capability_denies_advanced_and_allows_professional(
         has_capability=lambda identity, capability: capability in {
             "earnings_forecast", "earnings_option_defined_risk"
         },
-        clock=lambda: AS_OF,
+        clock=lambda: option_visible_at,
     )
     allowed = asyncio.run(professional_api.option_detail(request))
     assert allowed.status_code == 200
