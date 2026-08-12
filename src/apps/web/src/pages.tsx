@@ -254,7 +254,10 @@ export function MarketsPage() {
         const access = deliveryAllowsImmediateAction(payload) ? '可核对即时行动' : '仅供研究，不用于立即交易'
         setQuoteStatus(`${displayDataSource(payload.source)} · ${delivery || displayFreshness(payload.freshness)} · ${access}`)
       } catch {
-        if (active && quoteRequestSequence.current === sequence) setQuoteStatus(safeDataError())
+        if (active && quoteRequestSequence.current === sequence) {
+          setMarketQuote(null)
+          setQuoteStatus(safeDataError())
+        }
       }
     }, 5_000)
     return () => { active = false; stopPolling() }
@@ -327,11 +330,12 @@ export function MarketsPage() {
         : 0
       return { ...selectedBase, price: currentQuote.last, changePct }
     }
+    if (!demoMode) return { ...selectedBase, price: 0, changePct: 0 }
     if (currentLiveCandles.length < 2) return selectedBase
     const latest = currentLiveCandles.at(-1)!
     const previous = currentLiveCandles.at(-2)!
     return { ...selectedBase, price: latest.close, changePct: previous.close ? (latest.close - previous.close) / previous.close * 100 : 0 }
-  }, [currentLiveCandles, marketQuote, selectedBase])
+  }, [currentLiveCandles, demoMode, marketQuote, selectedBase])
   const chartData = useMemo(() => {
     if (currentLiveCandles.length) return currentLiveCandles
     if (!demoMode) return []

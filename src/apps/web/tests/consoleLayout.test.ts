@@ -215,6 +215,8 @@ test('market workspace keeps alert controls explicit and local marker visibility
   assert.match(pagesSource, /typeof currentQuote\?\.last === 'number'/)
   assert.match(pagesSource, /setAlertPrice\(currentPrice\)/)
   assert.doesNotMatch(pagesSource, /setAlertPrice\(selectedBase\.price \|\| 0\)/)
+  assert.match(pagesSource, /setMarketQuote\(null\)\s+setQuoteStatus\(safeDataError\(\)\)/)
+  assert.match(pagesSource, /if \(!demoMode\) return \{ \.\.\.selectedBase, price: 0, changePct: 0 \}/)
 })
 
 test('market discovery caches each market safely while calendar and option data retain explicit groups', () => {
