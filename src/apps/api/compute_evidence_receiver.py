@@ -266,6 +266,7 @@ def build_compute_evidence_receiver(
         "DATABASE_URL",
         "TRADEAI_BACKTEST_DATABASE_URL",
         "TRADEAI_COMPUTE_EVIDENCE_SPOOL_DATABASE",
+        "TRADEAI_SYSTEM_CYCLE_RESEARCH_DATABASE",
     ):
         protected = _sqlite_path(values.get(name, ""))
         if protected is not None and protected == database_path:

@@ -78,6 +78,16 @@ from src.apps.api.system_cycle_research_read_model import (
     MIN_STALE_SECONDS,
     SystemCycleResearchReadModel,
 )
+from src.apps.api.compute_evidence_http import (
+    INTERNAL_PATH as COMPUTE_EVIDENCE_INTERNAL_PATH,
+    ComputeEvidenceHttpError,
+    compute_evidence_accept,
+    compute_evidence_error_handler,
+)
+from src.apps.api.compute_evidence_receiver import (
+    ComputeEvidenceReceiverError,
+    build_compute_evidence_receiver,
+)
 from core.admin_service import AdminService, ROLE_LABELS, ROLE_PERMISSIONS
 from core.backtest_queue import BacktestQueueError
 from core.database import DatabaseManager
@@ -2497,6 +2507,7 @@ routes = [
     Route("/api/rewrite/internal/v1/official-option-simulation/receipts", official_option_sim_receipt, methods=["POST"]),
     Route("/api/rewrite/internal/v1/system-cycle-research/results", system_cycle_research_result, methods=["POST"]),
     Route("/api/rewrite/internal/v1/system-cycle-research/heartbeat", system_cycle_research_heartbeat, methods=["POST"]),
+    Route(COMPUTE_EVIDENCE_INTERNAL_PATH, compute_evidence_accept, methods=["POST"]),
     Route("/api/rewrite/v1/membership", membership, methods=["GET"]),
     Route("/api/rewrite/v1/telegram/status", telegram_status, methods=["GET"]),
     Route("/api/rewrite/v1/settings", settings, methods=["GET"]),
@@ -2536,6 +2547,8 @@ app = Starlette(
         OfficialOptionSimulationUnavailable: official_option_sim_unavailable_handler,
         OfficialOptionSimulationReceiverError: official_option_sim_receiver_error,
         SystemCycleResearchReceiverError: system_cycle_research_receiver_error,
+        ComputeEvidenceHttpError: compute_evidence_error_handler,
+        ComputeEvidenceReceiverError: compute_evidence_error_handler,
         Exception: unexpected_error_handler,
     },
 )
@@ -2544,3 +2557,4 @@ app.state.earnings_forecast_api = _build_earnings_forecast_api()
 app.state.official_option_sim_api = _build_official_option_sim_api()
 app.state.official_option_sim_receiver = _build_official_option_sim_receiver()
 app.state.system_cycle_research_receiver = build_system_cycle_research_receiver()
+app.state.compute_evidence_receiver = build_compute_evidence_receiver()
