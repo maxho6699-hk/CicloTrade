@@ -563,8 +563,9 @@ def test_recommendations_and_timeline_include_official_paper_v2_events(compatibi
     )
     identity = repository.authenticate(login.access_token)
 
-    timeline = repository.timeline(identity)
-    recommendations = repository.recommendations(identity)
+    release_time = datetime.now(UTC) + timedelta(minutes=61)
+    timeline = repository.timeline(identity, now=release_time)
+    recommendations = repository.recommendations(identity, now=release_time)
 
     assert any(
         item["strategy_version"] == "2" and any(leg.get("symbol") == "MSFT" for leg in item["legs"])
