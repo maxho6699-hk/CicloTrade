@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodically publish one fenced compute evidence package
+
+[Timer]
+OnBootSec=12min
+OnUnitActiveSec=1min
+RandomizedDelaySec=15s
+AccuracySec=10s
+Persistent=false
+Unit=ciclotrade-compute-evidence-publisher.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,36 @@
+[Unit]
+Description=CicloTrade fixed-origin compute evidence publisher
+After=network-online.target ciclotrade-compute-evidence-exporter.service
+Wants=network-online.target
+RequiresMountsFor=/var/lib/ciclotrade-worker
+ConditionPathExists=/etc/ciclotrade-worker/enable-compute-evidence.after-integration
+
+[Service]
+Type=oneshot
+User=cicloworker
+Group=cicloworker
+WorkingDirectory=/opt/ciclotrade-worker/current
+EnvironmentFile=/etc/ciclotrade-worker/compute-evidence.env
+ExecStart=/opt/ciclotrade-worker/current/.venv/bin/python -m src.apps.worker.compute_evidence_publisher
+TimeoutStartSec=60
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateNetwork=false
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/ciclotrade-worker/compute-evidence
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryHigh=128M
+MemoryMax=192M
+CPUQuota=25%
+TasksMax=24
+LimitNOFILE=512

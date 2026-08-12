@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import secrets
 import ssl
+import sys
 import time
 from typing import Any, Callable, Mapping
 
@@ -527,3 +528,17 @@ def _integer(value: Any, minimum: int, maximum: int) -> int:
     if not minimum <= parsed <= maximum:
         raise ComputeEvidencePublisherConfigurationError("publisher integer setting is outside its bounds")
     return parsed
+
+
+def main() -> int:
+    try:
+        result = run_compute_evidence_publisher()
+    except (OSError, ValueError, ComputeEvidenceError, ComputeEvidencePublisherError, ComputeEvidenceSpoolError) as exc:
+        print(json.dumps({"state": "error", "error": str(exc)}, sort_keys=True), file=sys.stderr)
+        return 2
+    print(json.dumps(result, sort_keys=True, separators=(",", ":"), allow_nan=False))
+    return 1 if result.get("state") in {"dead", "uncertain"} else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodically export bounded verified compute evidence
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+AccuracySec=15s
+Persistent=false
+Unit=ciclotrade-compute-evidence-exporter.service
+
+[Install]
+WantedBy=timers.target
