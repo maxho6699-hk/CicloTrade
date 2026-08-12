@@ -15,7 +15,7 @@ import {
   type Time,
   type UTCTimestamp,
 } from 'lightweight-charts'
-import type { PortfolioActivity } from '../api/client'
+import type { MarketQuotePayload, PortfolioActivity } from '../api/client'
 import { buildChartTradeView, type ChartTradeInterval } from '../data/chartTrades'
 import type { ChartDrawingPoint } from '../data/chartDrawings'
 import type { Candle } from '../types'
@@ -89,6 +89,7 @@ interface MarketChartProps {
   downColor?: string
   textColor?: string
   dataStatus?: string
+  quote?: MarketQuotePayload | null
   officialActivity?: PortfolioActivity | null
   alertPrices?: number[]
   drawingActive: boolean
@@ -127,8 +128,23 @@ function percentage(value: number) {
 function shortTime(value: string) {
   const date = new Date(value)
   return Number.isNaN(date.valueOf()) ? value : new Intl.DateTimeFormat(getFormatLocale(), {
-    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Hong_Kong',
   }).format(date)
+}
+
+function hongKongTime(value: Time | string | number | undefined, daily = false) {
+  if (value === undefined) return '未记录'
+  const source = typeof value === 'object'
+    ? Date.UTC(value.year, value.month - 1, value.day, 12)
+    : typeof value === 'number'
+      ? value * 1000
+      : Date.parse(value)
+  const date = new Date(source)
+  if (Number.isNaN(date.valueOf())) return String(value)
+  return new Intl.DateTimeFormat(getFormatLocale(), daily
+    ? { timeZone: 'Asia/Hong_Kong', year: 'numeric', month: '2-digit', day: '2-digit' }
+    : { timeZone: 'Asia/Hong_Kong', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false },
+  ).format(date)
 }
 
 function rangeResult(trade: ChartTradeInterval, latestPrice: number) {
@@ -166,6 +182,7 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
   downColor: preferredDownColor,
   textColor: preferredTextColor,
   dataStatus = '界面演示数据',
+  quote,
   officialActivity,
   alertPrices = [],
   drawingActive,
@@ -371,7 +388,8 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
         horzLine: { color: chartBorder, labelBackgroundColor: chartCrosshairLabel },
       },
       rightPriceScale: { borderColor: chartBorder },
-      timeScale: { borderColor: chartBorder, timeVisible: true },
+      localization: { locale: getFormatLocale(), timeFormatter: (value: Time) => hongKongTime(value) },
+      timeScale: { borderColor: chartBorder, timeVisible: true, tickMarkFormatter: (value: Time) => hongKongTime(value) },
     })
     const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor,
@@ -556,7 +574,7 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
         horzLine: { color: chartBorder, labelBackgroundColor: chartCrosshairLabel },
       },
       rightPriceScale: { borderColor: chartBorder },
-      timeScale: { borderColor: chartBorder },
+      timeScale: { borderColor: chartBorder, tickMarkFormatter: (value: Time) => hongKongTime(value) },
     })
     candleSeries.applyOptions({ upColor, downColor, wickUpColor: upColor, wickDownColor: downColor })
   }, [market, preferredDownColor, preferredTextColor, preferredUpColor, showGrid, themeToken])
@@ -647,7 +665,7 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
         role="img"
         aria-label={chartDescription}
       />
-      {displayedCandle && <div className="chart-ohlc-strip" aria-label="当前 K 线开盘、最高、最低和收盘价格"><span>开 <b>{displayedCandle.open.toFixed(2)}</b></span><span>高 <b>{displayedCandle.high.toFixed(2)}</b></span><span>低 <b>{displayedCandle.low.toFixed(2)}</b></span><span>收 <b>{displayedCandle.close.toFixed(2)}</b></span><span className={displayedCandle.close >= displayedCandle.open ? 'positive-text' : 'negative-text'}>{displayedCandle.close >= displayedCandle.open ? '+' : ''}{((displayedCandle.close - displayedCandle.open) / Math.max(displayedCandle.open, 1e-9) * 100).toFixed(2)}%</span></div>}
+      {displayedCandle && <div className="chart-crosshair-card" aria-label="K 线与报价资料"><header><b>{hongKongTime(displayedCandle.time, timeframe === '日线')}</b><small>{timeframe === '日线' ? '日线以美国交易日归档' : 'Asia/Hong_Kong'}</small></header><div><span>开 <b>{displayedCandle.open.toFixed(2)}</b></span><span>高 <b>{displayedCandle.high.toFixed(2)}</b></span><span>低 <b>{displayedCandle.low.toFixed(2)}</b></span><span>收 <b>{displayedCandle.close.toFixed(2)}</b></span></div>{hoveredCandle ? <small className="chart-historical-quote">历史 K 线未归档报价，未记录</small> : <div className="chart-live-quote"><span>Bid <b>{quote?.bid?.toFixed(2) ?? '—'}</b></span><span>Spread <b>{quote?.spread?.toFixed(2) ?? '—'}</b></span><span>Ask <b>{quote?.ask?.toFixed(2) ?? '—'}</b></span><small>{quote?.quote_at ? hongKongTime(quote.quote_at) : '报价未记录'}</small></div>}</div>}
       <ChartDrawingLayer
         active={drawingActive}
         userId={userId}

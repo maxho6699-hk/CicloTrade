@@ -4,7 +4,7 @@ export type Theme = 'dark' | 'light'
 
 export const THEME_CANVAS: Record<Theme, string> = {
   dark: '#0b0d0c',
-  light: '#e9ede4',
+  light: '#dbe2db',
 }
 
 export function readStoredTheme(): Theme {

@@ -7,8 +7,6 @@ import {
   Minimize2,
   PanelRightClose,
   PanelRightOpen,
-  PanelLeftClose,
-  PanelLeftOpen,
   RotateCcw,
   Search,
   Shrink,
@@ -17,7 +15,7 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { MarketQuotePayload, PortfolioActivity } from '../api/client'
-import type { Candle, Instrument, Market } from '../types'
+import type { Candle, Market } from '../types'
 import {
   SharedDrawingToolbar,
   type DrawingCommand,
@@ -54,8 +52,7 @@ interface ChartWorkspaceProps {
   downColor?: string
   textColor?: string
   officialActivity?: PortfolioActivity | null
-  alertPrices?: number[]
-  instruments?: Instrument[]
+  alertPrices?: number[] | ((market: Market, symbol: string) => number[])
   loadCandles?: (symbol: string, timeframe: string, market: Market) => Promise<Candle[]>
   initialQuote?: MarketQuotePayload | null
   loadQuote?: (symbol: string, market: Market) => Promise<MarketQuotePayload>
@@ -67,7 +64,7 @@ interface ChartWorkspaceProps {
   inspectorOpen?: boolean
   onInspectorOpenChange?: (open: boolean) => void
   inspectorExtra?: ReactNode
-  footerActions?: ReactNode
+  toolbarActions?: ReactNode
 }
 
 const STORAGE_KEY = 'ciclotrade:chart-workspace:v2'
@@ -76,7 +73,6 @@ const RANGE_PRESETS = [
   ['1D', '1 天'], ['5D', '5 天'], ['1M', '1 个月'], ['3M', '3 个月'],
   ['6M', '6 个月'], ['YTD', '年初至今'], ['1Y', '1 年'], ['ALL', '全部'],
 ] as const
-const QUICK_TIMEFRAMES = ['1分', '5分', '15分', '1小时', '日线'] as const
 const NARROW_CHART_QUERY = '(max-width: 760px), (max-width: 980px) and (max-height: 560px) and (orientation: landscape)'
 
 function candleIdentity(slot: Pick<ChartSlotState, 'market' | 'symbol' | 'timeframe'>) {
@@ -141,7 +137,6 @@ export function ChartWorkspace({
   textColor,
   officialActivity,
   alertPrices = [],
-  instruments = [],
   loadCandles,
   initialQuote,
   loadQuote,
@@ -153,7 +148,7 @@ export function ChartWorkspace({
   inspectorOpen: controlledInspectorOpen,
   onInspectorOpenChange,
   inspectorExtra,
-  footerActions,
+  toolbarActions,
 }: ChartWorkspaceProps) {
   const initial = useMemo<ChartSlotState>(() => ({
     id: 'chart-1', symbol: initialSymbol, market: initialMarket, timeframe: initialTimeframe,
@@ -175,7 +170,6 @@ export function ChartWorkspace({
     }
   }, [controlledInspectorOpen, onInspectorOpenChange])
   const [workbenchOpen, setWorkbenchOpen] = useState(() => layoutDefinition(workspace.layout).count > 1)
-  const [marketBrowserOpen, setMarketBrowserOpen] = useState(false)
   const [layoutPickerOpen, setLayoutPickerOpen] = useState(false)
   const [isNarrowViewport, setIsNarrowViewport] = useState(() => window.matchMedia(NARROW_CHART_QUERY).matches)
   const [focusedSlotId, setFocusedSlotId] = useState<string | null>(null)
@@ -368,7 +362,7 @@ export function ChartWorkspace({
       slotsToReflow.forEach((slot) => chartRefs.current[slot.id]?.reflow())
     })
     return () => window.cancelAnimationFrame(frame)
-  }, [focusedSlotId, inspectorVisible, marketBrowserOpen, requestedSlots, workbenchOpen, workspace.layout])
+  }, [focusedSlotId, inspectorVisible, requestedSlots, workbenchOpen, workspace.layout])
 
   useEffect(() => {
     const escape = (event: KeyboardEvent) => {
@@ -469,7 +463,6 @@ export function ChartWorkspace({
 
   const openSymbolEditor = (slot: ChartSlotState) => {
     activateSlot(slot.id)
-    setMarketBrowserOpen(false)
     if (inspectorVisible) setInspectorVisible(false)
     setSymbolDraft(slot.symbol)
     setMarketDraft(slot.market)
@@ -519,8 +512,8 @@ export function ChartWorkspace({
           {layoutPickerOpen && <div className="layout-picker-popover" role="dialog" aria-label="K 线多图布局选择"><header><strong>分割视图</strong><small>{isNarrowViewport ? '手机版使用图表标签切换；四图以上请使用桌面版' : '选择后保持每张图的股票和周期'}</small></header><div className="layout-picker-grid">{CHART_LAYOUTS.map((layout) => { const unavailable = isNarrowViewport && layout.desktopOnly; return <button type="button" disabled={unavailable} className={workspace.layout === layout.id ? 'active' : ''} title={unavailable ? `${layout.label} · 仅桌面版` : layout.label} aria-label={`${layout.label}${unavailable ? '，仅桌面版' : ''}`} onClick={() => setLayout(layout.id)} key={layout.id}><span className={`layout-preview layout-preview-${layout.id}`}>{Array.from({ length: layout.count }, (_, index) => <i key={index} />)}</span><b>{layout.label}</b></button> })}</div></div>}
         </div>
         <div className="multi-chart-actions">
-          <button type="button" title={marketBrowserOpen ? '收起市场列表' : '展开市场列表'} aria-label={marketBrowserOpen ? '收起市场列表' : '展开市场列表'} onClick={() => { setMarketBrowserOpen((current) => !current); if (inspectorVisible) setInspectorVisible(false); setSymbolEditorId(null) }}>{marketBrowserOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}</button>
-          <button type="button" title={inspectorVisible ? '收起检查器' : '展开检查器'} aria-label={inspectorVisible ? '收起检查器' : '展开检查器'} aria-expanded={inspectorVisible} onClick={() => { setMarketBrowserOpen(false); setSymbolEditorId(null); setInspectorVisible(!inspectorVisible) }}>{inspectorVisible ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}</button>
+          {toolbarActions && <span className="multi-chart-utility-actions">{toolbarActions}</span>}
+          <button type="button" title={inspectorVisible ? '收起检查器' : '展开检查器'} aria-label={inspectorVisible ? '收起检查器' : '展开检查器'} aria-expanded={inspectorVisible} onClick={() => { setSymbolEditorId(null); setInspectorVisible(!inspectorVisible) }}>{inspectorVisible ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}</button>
           <button type="button" title={workbenchOpen ? '返回行情页' : '打开全屏K线工作图'} aria-label={workbenchOpen ? '返回行情页' : '打开全屏K线工作图'} onClick={() => workbenchOpen ? exitWorkbench() : setWorkbenchOpen(true)}>{workbenchOpen ? <Shrink size={16} /> : <Expand size={16} />}</button>
         </div>
       </header>
@@ -532,16 +525,6 @@ export function ChartWorkspace({
           onChange={(patch) => setDrawingToolState((current) => ({ ...current, ...patch }))}
           onCommand={sendDrawingCommand}
         />
-
-        {marketBrowserOpen && (
-          <aside className="chart-market-browser">
-            <header><span><small>MARKET</small><strong>市场列表</strong></span><button className="icon-button" type="button" aria-label="收起市场列表" onClick={() => setMarketBrowserOpen(false)}><PanelLeftClose size={16} /></button></header>
-            <div className="chart-market-browser-list">
-              {instruments.slice(0, 12).map((instrument) => <button className={instrument.symbol === activeSlot.symbol ? 'active' : ''} type="button" onClick={() => { updateSlot(activeSlot.id, { symbol: instrument.symbol, market: instrument.market, viewport: undefined }); setMarketBrowserOpen(false) }} key={`${instrument.market}-${instrument.symbol}`}><span><strong>{instrument.symbol}</strong><small>{instrument.name}</small></span><span><b>{instrument.price ? instrument.price.toFixed(2) : '—'}</b><small className={instrument.changePct >= 0 ? 'positive-text' : 'negative-text'}>{instrument.changePct >= 0 ? '+' : ''}{instrument.changePct.toFixed(2)}%</small></span><i className={instrument.changePct >= 0 ? 'positive' : 'negative'} style={{ width: `${Math.min(100, Math.max(8, Math.abs(instrument.changePct) * 18))}%` }} /></button>)}
-              {!instruments.length && <div className="chart-pane-state"><strong>暂无市场列表</strong><span>行情来源未连接</span></div>}
-            </div>
-          </aside>
-        )}
 
         <div className={`multi-chart-grid layout-${workspace.layout}`}>
           <nav className="mobile-chart-tabs" aria-label="切换图表">
@@ -580,7 +563,7 @@ export function ChartWorkspace({
                     <button type="button" title="缩小 K 线" aria-label="缩小 K 线" onClick={() => chartRefs.current[slot.id]?.zoomOut()}><ZoomOut size={14} /></button>
                     <button type="button" title="放大 K 线" aria-label="放大 K 线" onClick={() => chartRefs.current[slot.id]?.zoomIn()}><ZoomIn size={14} /></button>
                     <button type="button" title="适配全部 K 线" aria-label="适配全部 K 线" onClick={() => chartRefs.current[slot.id]?.reset()}><RotateCcw size={14} /></button>
-                    <button type="button" title={slotIsFocused ? '恢复多图布局' : '最大化当前图'} aria-label={slotIsFocused ? '恢复多图布局' : '最大化当前图'} onClick={() => toggleFocus(slot.id)}>{slotIsFocused ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>
+                    {definition.count > 1 && <button type="button" title={slotIsFocused ? '恢复多图布局' : '最大化当前图'} aria-label={slotIsFocused ? '恢复多图布局' : '最大化当前图'} onClick={() => toggleFocus(slot.id)}>{slotIsFocused ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>}
                   </div>
                 </header>
                 <div className="chart-slot-canvas">
@@ -599,8 +582,9 @@ export function ChartWorkspace({
                       downColor={downColor}
                       textColor={textColor}
                       dataStatus={slotStatus[slot.id] ?? dataStatus}
+                      quote={quote}
                       officialActivity={officialActivity}
-                      alertPrices={alertPrices}
+                      alertPrices={typeof alertPrices === 'function' ? alertPrices(slot.market, slot.symbol) : alertPrices}
                       drawingActive={slotIsActive}
                       drawingToolState={drawingToolState}
                       drawingCommand={drawingCommand}
@@ -613,12 +597,10 @@ export function ChartWorkspace({
                       onVisibleTimeRangeChange={(range) => syncVisibleTimeRange(slot.id, range)}
                     />
                   ) : (
-                    <div className="chart-pane-state" role="status"><strong>{slotStatus[slot.id] ?? '暂无 K 线'}</strong><span>{slot.symbol} · {slot.timeframe}</span></div>
+                    <div className="chart-pane-state" role="status"><strong>{slotStatus[slot.id] ?? `${marketLabel(slot.market)} ${slot.symbol} 暂无可验证 K 线`}</strong><span>{marketLabel(slot.market)} · {slot.symbol} · {slot.timeframe} · 市场未连接或数据尚未返回</span></div>
                   )}
                 </div>
                 <nav className="chart-range-presets" aria-label={`${slot.symbol} 常用周期与查看范围`}>
-                  <span className="chart-quick-timeframes">{QUICK_TIMEFRAMES.map((value) => <button className={slot.timeframe === value ? 'active' : ''} type="button" onClick={() => updateSlot(slot.id, { timeframe: value, viewport: undefined })} key={value}>{value}</button>)}</span>
-                  <i aria-hidden="true" />
                   <span>{RANGE_PRESETS.map(([value, label]) => <button type="button" onClick={() => chartRefs.current[slot.id]?.setRange(value)} key={value}>{label}</button>)}</span>
                 </nav>
                 {symbolEditorId === slot.id && (
@@ -658,8 +640,6 @@ export function ChartWorkspace({
           </aside>
         )}
       </div>
-
-      <footer className="multi-chart-footer"><span className="multi-chart-footer-context"><b>{visibleSlots.length} 图 · {activeSlot.symbol} · {activeSlot.timeframe}</b><small>{focusedSlotId ? '单图检视' : workbenchOpen ? '全屏K线工作图' : '行情页面'}</small></span>{footerActions && <span className="multi-chart-footer-actions">{footerActions}</span>}</footer>
     </section>
   )
 }

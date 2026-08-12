@@ -206,6 +206,7 @@ export interface PerformanceSnapshot {
 export interface PriceAlert {
   id?: number
   symbol: string
+  market?: 'US' | 'CN' | '美股' | 'A股'
   conditions?: unknown[]
   logic?: 'AND' | 'OR' | string
   trigger_mode?: 'at_or_above' | 'at_or_below' | 'crosses_above' | 'crosses_below' | string
@@ -1061,6 +1062,7 @@ export function saveTelegramEvents(events: Record<string, boolean>) {
 }
 
 export interface PriceAlertOptions {
+  market?: 'US' | 'CN'
   triggerMode?: 'at_or_above' | 'at_or_below' | 'crosses_above' | 'crosses_below'
   repeatMode?: 'once' | 'repeat'
   expiresAt?: string | null
@@ -1072,6 +1074,7 @@ export function createPriceAlert(symbol: string, value: number, options: PriceAl
     method: 'POST',
     body: JSON.stringify({
       symbol,
+      ...(options.market ? { market: options.market } : {}),
       conditions: [{ type: 'price', operator: options.triggerMode === 'at_or_below' || options.triggerMode === 'crosses_below' ? '<=' : '>=', value }],
       logic: 'AND',
       ...(options.triggerMode ? { trigger_mode: options.triggerMode } : {}),

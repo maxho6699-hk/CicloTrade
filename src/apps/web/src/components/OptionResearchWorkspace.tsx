@@ -45,6 +45,7 @@ import type {
   DrawingToolState,
 } from "./ChartDrawingLayer";
 import { SegmentedControl } from "./ui/SegmentedControl";
+import { SelectField } from "./ui/SelectField";
 
 const PAGE_SIZE = 18;
 const OPTION_TIMEFRAMES = [
@@ -525,23 +526,7 @@ export function OptionResearchWorkspace({
             />
           </span>
         </label>
-        <label>
-          <span>到期日</span>
-          <select
-            value={expiry}
-            disabled={!chain?.expiries.length}
-            onChange={(event) => {
-              setExpiry(event.target.value);
-              setLegs([]);
-            }}
-          >
-            {chain?.expiries.map((item) => (
-              <option value={item} key={item}>
-                {item}
-              </option>
-            )) ?? <option>读取中</option>}
-          </select>
-        </label>
+        <SelectField label="到期日" value={expiry} disabled={!chain?.expiries.length} onValueChange={(value) => { setExpiry(value); setLegs([]); }} options={(chain?.expiries ?? ["读取中"]).map((value) => ({ value, label: value }))} />
         <label className="option-direction-control">
           <span>合约方向</span>
           <SegmentedControl
@@ -628,6 +613,13 @@ export function OptionResearchWorkspace({
               <div className="option-chain-scroll">
                 <table>
                   <thead>
+                    <tr className="option-chain-groups">
+                      <th colSpan={2}>合约</th>
+                      <th colSpan={4}>报价</th>
+                      <th colSpan={3}>流动性与波动</th>
+                      <th colSpan={4}>Greeks</th>
+                      <th rowSpan={2}>组合</th>
+                    </tr>
                     <tr>
                       <th>合约</th>
                       <th>执行价</th>
@@ -928,20 +920,7 @@ export function OptionResearchWorkspace({
                     <strong>{leg.contract.strike}</strong>
                     <small>{leg.contract.expiry}</small>
                   </span>
-                  <label>
-                    方向
-                    <select
-                      value={leg.side}
-                      onChange={(event) =>
-                        updateLeg(leg.id, {
-                          side: event.target.value as OptionLegSide,
-                        })
-                      }
-                    >
-                      <option value="BUY">买入</option>
-                      <option value="SELL">卖出</option>
-                    </select>
-                  </label>
+                  <SelectField label="方向" value={leg.side} onValueChange={(value) => updateLeg(leg.id, { side: value as OptionLegSide })} options={[{ value: "BUY", label: "买入" }, { value: "SELL", label: "卖出" }]} />
                   <label>
                     数量
                     <input

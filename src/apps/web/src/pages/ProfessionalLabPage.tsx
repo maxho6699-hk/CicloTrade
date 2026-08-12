@@ -15,6 +15,7 @@ import { useNavigate } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { OptionResearchWorkspace } from "../components/OptionResearchWorkspace";
 import { MetricRing } from "../components/ui/MetricRing";
+import { SelectField } from "../components/ui/SelectField";
 import { useWorkspace } from "../api/workspace-context";
 import { displayDataSource } from "../domain/dataSourcePresentation";
 import { generateStrategyDraft } from "../domain/strategyDraft";
@@ -41,6 +42,8 @@ export function ProfessionalLabPage() {
   const [priceShock, setPriceShock] = useState(-15);
   const [volatilityShock, setVolatilityShock] = useState(35);
   const [slippageShock, setSlippageShock] = useState(100);
+  const [profitTarget, setProfitTarget] = useState("2R");
+  const [gapRisk, setGapRisk] = useState("财报周");
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [code, setCode] = useState(`
 // 示例策略：只用于研究，不会自动下单
@@ -198,17 +201,7 @@ when rsi(14) < 30 and close > sma(50)
                 }
               />
             </label>
-            <label>
-              周期
-              <select
-                value={timeframe}
-                onChange={(event) => setTimeframe(event.target.value)}
-              >
-                <option>日线</option>
-                <option>1小时</option>
-                <option>15分钟</option>
-              </select>
-            </label>
+            <SelectField label="周期" value={timeframe} onValueChange={setTimeframe} options={[{ value: "日线", label: "日线" }, { value: "1小时", label: "1小时" }, { value: "15分钟", label: "15分钟" }]} />
           </div>
           <div className="natural-language-builder">
             <label>
@@ -334,18 +327,7 @@ when rsi(14) < 30 and close > sma(50)
                   }
                 />
               </label>
-              <label>
-                样本期
-                <select
-                  value={lookback}
-                  onChange={(event) => setLookback(event.target.value)}
-                >
-                  <option disabled={maxBacktestYears < 1}>1 年</option>
-                  <option disabled={maxBacktestYears < 3}>3 年</option>
-                  <option disabled={maxBacktestYears < 5}>5 年</option>
-                  <option disabled={maxBacktestYears < 10}>10 年</option>
-                </select>
-              </label>
+              <SelectField label="样本期" value={lookback} onValueChange={setLookback} options={[1, 3, 5, 10].map((years) => ({ value: `${years} 年`, label: `${years} 年`, disabled: maxBacktestYears < years }))} />
               <label>
                 手续费（%）
                 <input
@@ -382,14 +364,7 @@ when rsi(14) < 30 and close > sma(50)
                   step="0.1"
                 />
               </label>
-              <label>
-                分批止盈
-                <select defaultValue="2R">
-                  <option>1.5R</option>
-                  <option>2R</option>
-                  <option>3R</option>
-                </select>
-              </label>
+              <SelectField label="分批止盈" value={profitTarget} onValueChange={setProfitTarget} options={["1.5R", "2R", "3R"].map((value) => ({ value, label: value }))} />
             </div>
             <div className="lab-run-row">
               <button
@@ -489,14 +464,7 @@ when rsi(14) < 30 and close > sma(50)
                 />
                 <output>{(1 + slippageShock / 100).toFixed(1)}×</output>
               </label>
-              <label>
-                跳空风险
-                <select defaultValue="财报周">
-                  <option>正常</option>
-                  <option>财报周</option>
-                  <option>极端事件</option>
-                </select>
-              </label>
+              <SelectField label="跳空风险" value={gapRisk} onValueChange={setGapRisk} options={["正常", "财报周", "极端事件"].map((value) => ({ value, label: value }))} />
             </div>
             <div className="stress-result">
               <strong>尚未生成压力测试结论</strong>

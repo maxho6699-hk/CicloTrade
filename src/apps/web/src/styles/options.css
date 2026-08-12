@@ -236,6 +236,19 @@
   white-space: nowrap;
 }
 
+.option-chain-scroll .option-chain-groups th {
+  top: 0;
+  padding-block: 5px;
+  border-right: 1px solid var(--border-strong);
+  background: var(--surface-inset);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-align: center;
+}
+.option-chain-scroll .option-chain-groups + tr th { top: 29px; }
+
 .option-chain-scroll th:first-child,
 .option-chain-scroll td:first-child { text-align: left; }
 .option-chain-scroll td {

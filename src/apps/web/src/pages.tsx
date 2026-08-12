@@ -3,6 +3,8 @@ import {
   ArrowDownRight,
   ArrowRight,
   ArrowUpRight,
+  Bell,
+  BellOff,
   BellRing,
   Bot,
   CircleAlert,
@@ -11,11 +13,14 @@ import {
   Layers3,
   Newspaper,
   Pin,
+  Eye,
+  EyeOff,
   PinOff,
   SlidersHorizontal,
   Search,
   Settings2,
   ShieldCheck,
+  Trash2,
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -30,10 +35,22 @@ import { useWorkspace } from './api/workspace-context'
 import { createPriceAlert, deactivatePriceAlert, fetchMarketCandles, fetchMarketQuote, searchMarket, type MarketQuotePayload, type PriceAlert } from './api/client'
 import { recommendationToDecision } from './data/adapters'
 import { candles, candidateDecisions, instruments, primaryDecision } from './data/demo'
-import type { Candle, Instrument } from './types'
+import type { Candle, Instrument, Market } from './types'
 import { getFormatLocale } from './i18n/runtime'
 import { useLocale } from './i18n/useLocale'
 import { createVisibilityPolling, deliveryAllowsImmediateAction, displayDataSource, displayDeliveryDelay, displayFreshness, safeDataError } from './domain/dataSourcePresentation'
+
+function alertMarket(item: PriceAlert): Market {
+  if (item.market === 'CN' || item.market === 'A股') return 'CN'
+  if (item.market === 'US' || item.market === '美股') return 'US'
+  // Older records have no market field. Keep their conventional US/CN scope
+  // instead of showing a same-symbol alert in a different market.
+  return /^\d{6}$/.test(item.symbol) ? 'CN' : 'US'
+}
+
+function isAlertForInstrument(item: PriceAlert, market: Market, symbol: string) {
+  return item.symbol === symbol && alertMarket(item) === market
+}
 
 export function TodayPage() {
   const navigate = useNavigate()
@@ -114,6 +131,7 @@ export function MarketsPage() {
   const [alertStatus, setAlertStatus] = useState('')
   const [alertBusy, setAlertBusy] = useState(false)
   const [localAlerts, setLocalAlerts] = useState<PriceAlert[] | null>(null)
+  const [hiddenAlertIds, setHiddenAlertIds] = useState<number[]>([])
   const requestedSymbol = (searchParams.get('symbol') ?? 'AAPL').toUpperCase()
   const timeframe = searchParams.get('timeframe') ?? '日线'
   const activeTab = searchParams.get('tab') ?? '概览'
@@ -318,28 +336,18 @@ export function MarketsPage() {
     return recommendationToDecision(item, 0, formatLocale, quoteOverride)
   }, [formatLocale, marketQuote, searchParams, selected.market, selected.symbol, workspace.data])
   const alerts = useMemo(() => localAlerts ?? workspace.data?.alerts.items ?? [], [localAlerts, workspace.data?.alerts.items])
-  const selectedAlertPrices = useMemo(() => alerts
-    .filter((item) => item.symbol === selected.symbol && item.is_active !== false)
+  const alertPricesForInstrument = useCallback((market: Market, symbol: string) => alerts
+    .filter((item) => isAlertForInstrument(item, market, symbol) && item.is_active !== false && (item.id === undefined || !hiddenAlertIds.includes(item.id)))
     .flatMap((item) => {
       if (typeof item.target_price === 'number' && Number.isFinite(item.target_price)) return [item.target_price]
       const priceCondition = Array.isArray(item.conditions) ? item.conditions.find((condition) => typeof condition === 'object' && condition !== null && (condition as { type?: string }).type === 'price') as { value?: unknown } | undefined : undefined
       return typeof priceCondition?.value === 'number' && Number.isFinite(priceCondition.value) ? [priceCondition.value] : []
-    }), [alerts, selected.symbol])
+    }), [alerts, hiddenAlertIds])
   const loadWorkspaceCandles = useCallback(async (symbol: string, nextTimeframe: string) => {
-    if (!marketDataEnabled) {
-      const base = instruments.find((item) => item.symbol === symbol)?.price ?? selected.price ?? 100
-      const scale = base / 213.45
-      return candles.map((item) => ({
-        ...item,
-        open: item.open * scale,
-        high: item.high * scale,
-        low: item.low * scale,
-        close: item.close * scale,
-      }))
-    }
+    if (!marketDataEnabled) throw new Error('行情连接未启用。')
     const payload = await fetchMarketCandles(symbol, nextTimeframe)
     return payload.items
-  }, [marketDataEnabled, selected.price])
+  }, [marketDataEnabled])
 
   const loadWorkspaceQuote = useCallback(async (symbol: string) => {
     if (!marketDataEnabled) throw new Error('行情连接未启用。')
@@ -374,7 +382,7 @@ export function MarketsPage() {
     setAlertBusy(true)
     setAlertStatus('正在保存预警…')
     try {
-      const payload = await createPriceAlert(selected.symbol, alertPrice)
+      const payload = await createPriceAlert(selected.symbol, alertPrice, { market: selected.market })
       setLocalAlerts(payload.items)
       setAlertStatus(`已在 ${alertPrice.toFixed(2)} 设定价格预警，图上已显示水平线。`)
     } catch (caught) {
@@ -395,6 +403,9 @@ export function MarketsPage() {
     } finally {
       setAlertBusy(false)
     }
+  }
+  const toggleAlertMarker = (id: number) => {
+    setHiddenAlertIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])
   }
   const inspectorDecision = officialDecision ?? {
     ...primaryDecision,
@@ -436,7 +447,7 @@ export function MarketsPage() {
       </div>}
       {inspectorTab === '新闻' && <div className="inspector-panel inspector-placeholder"><Newspaper size={22} /><h2>市场资讯</h2><p>这里显示已验证来源的公司新闻、财报和市场事件。没有来源或时间戳的内容不会伪装成新闻。</p><span>{currentLiveCandles.length ? '当前标的的新闻接口尚未接入' : '暂无可验证行情，暂不显示资讯'}</span></div>}
       {inspectorTab === '盘口' && <div className="inspector-panel inspector-placeholder"><Layers3 size={22} /><h2>价格深度</h2><p>这里预留买卖盘、买一到买五、卖一到卖五和逐笔成交。只有接入 Level 2 数据后才会显示，不用重复成交量占位。</p><span>当前数据源未提供可验证盘口</span></div>}
-      {inspectorTab === '预警' && <div className="inspector-panel alert-panel"><div className="inspector-heading"><span>PRICE ALERT</span><strong>图内预警</strong></div><p>设定后会在 K 线上显示水平线，关闭预警后线也会移除。</p><p className="alert-safety-note"><ShieldCheck size={15} /> 只提醒，不会自动买卖。</p><div className="inline-alert-form"><label><span>提醒价格</span><input aria-label="提醒价格" inputMode="decimal" min="0.01" step="0.01" type="number" value={alertPrice || ''} onChange={(event) => setAlertPrice(Number(event.target.value))} /></label><button className="button primary" type="button" disabled={alertBusy || !alertPrice} onClick={() => void saveAlertInChart()}><BellRing size={16} /> 保存</button></div><p className="form-status" role="status" aria-live="polite">{alertStatus}</p><div className="alert-list">{alerts.filter((item) => item.symbol === selected.symbol).map((item) => <div key={item.id ?? `${item.symbol}-${item.target_price}`}><span><strong>{item.target_price ?? '条件预警'}</strong><small>{item.is_active === false ? '已关闭' : '已开启'}</small></span>{item.id && item.is_active !== false && <button className="icon-button" type="button" aria-label={`关闭 ${item.symbol} ${item.target_price ?? ''} 预警`} title="关闭预警" disabled={alertBusy} onClick={() => void disableAlertInChart(item.id!)}><PinOff size={16} /></button>}</div>)}</div></div>}
+      {inspectorTab === '预警' && <div className="inspector-panel alert-panel"><div className="inspector-heading"><span>PRICE ALERT</span><strong>图内预警</strong></div><p>设定后会在 K 线上显示水平线；隐藏只影响这次查看，关闭会停用预警。</p><p className="alert-safety-note"><ShieldCheck size={15} /> 只提醒，不会自动买卖。</p><div className="inline-alert-form"><label><span>提醒价格</span><input aria-label="提醒价格" inputMode="decimal" min="0.01" step="0.01" type="number" value={alertPrice || ''} onChange={(event) => setAlertPrice(Number(event.target.value))} /></label><button className="button primary" type="button" disabled={alertBusy || !alertPrice} onClick={() => void saveAlertInChart()}><BellRing size={16} /> 保存</button></div><p className="form-status" role="status" aria-live="polite">{alertStatus}</p><div className="alert-list">{alerts.filter((item) => isAlertForInstrument(item, selected.market, selected.symbol)).map((item) => { const isActive = item.is_active !== false; const markerVisible = item.id === undefined || !hiddenAlertIds.includes(item.id); return <div key={item.id ?? `${item.symbol}-${item.target_price}`}><span><strong>{item.target_price ?? '条件预警'}</strong><small>{isActive ? <><Bell size={13} aria-hidden="true" /> 已开启</> : <><BellOff size={13} aria-hidden="true" /> 已关闭</>}</small></span>{item.id && isActive && <span className="alert-list-actions"><button className="icon-button" type="button" aria-label={`${markerVisible ? '隐藏' : '显示'} ${item.symbol} ${item.target_price ?? ''} 预警线`} title={markerVisible ? '隐藏图上预警线' : '显示图上预警线'} onClick={() => toggleAlertMarker(item.id!)}>{markerVisible ? <Eye size={16} /> : <EyeOff size={16} />}</button><button className="icon-button danger" type="button" aria-label={`关闭 ${item.symbol} ${item.target_price ?? ''} 预警`} title="关闭预警并移除价格线" disabled={alertBusy} onClick={() => void disableAlertInChart(item.id!)}><Trash2 size={16} /></button></span>}</div> })}</div></div>}
       {inspectorTab === '资料' && <div className="inspector-panel inspector-placeholder"><SlidersHorizontal size={22} /><h2>数据说明</h2><p>K 线数据：{currentLiveCandles.length ? chartStatus : demoMode ? '界面演示数据' : '尚未取得'}</p><p>当前报价：{quoteStatus || '尚未核对报价权限与来源'}</p><p>账户状态：仅在用户主动授权券商后显示实盘连接；行情连接不等于账户连接。</p><span>延迟或未验证实时权限的数据只用于研究，不会覆盖正式行动的即时交易字段。</span></div>}
     </div>
   )
@@ -446,6 +457,8 @@ export function MarketsPage() {
       market={marketFilter}
       watchlist={currentSavedSymbols}
       authenticated={workspace.mode === 'authenticated'}
+      marketDataEnabled={marketDataEnabled}
+      demoMode={demoMode}
       busySymbol={watchBusy}
       onMarketChange={(market) => {
         const next = new URLSearchParams(searchParams)
@@ -468,8 +481,8 @@ export function MarketsPage() {
       </aside>
 
       <section className="chart-workspace">
-        <header className="instrument-header"><div><span>{selected.name} · {selected.market === 'US' ? '美股' : 'A股'}</span><h1>{selected.symbol}</h1></div><div className="instrument-price"><strong>{selected.price ? selected.price.toFixed(2) : '—'}</strong>{selected.price > 0 && <span className={selected.changePct >= 0 ? 'positive-text' : 'negative-text'}>{selected.changePct >= 0 ? <ArrowUpRight size={16} /> : <ArrowDownRight size={16} />}{Math.abs(selected.changePct).toFixed(2)}%</span>}</div><div className="instrument-actions"><button className="button secondary" type="button" disabled={!selected.price} onClick={() => setInspectorTab('预警')}><BellRing size={16} /> 预警</button><button className="button primary" type="button" onClick={() => navigate('/portfolio')}><CircleDollarSign size={16} /> 官方模拟账户</button></div></header>
-        <div className="chart-frame"><ChartWorkspace userId={workspace.data?.me.id} initialSymbol={selected.symbol} initialMarket={selected.market} initialTimeframe={timeframe} inspectorOpen={inspectorOpen} onInspectorOpenChange={setInspectorOpen} inspectorExtra={auxiliaryInspector} footerActions={<><button type="button" onClick={() => setParam('tab', '技术指标')}><Activity size={15} /> 指标</button><button className={settingsOpen ? 'active' : ''} type="button" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(!settingsOpen)}><Settings2 size={15} /> 图表设置</button></>} candles={chartData} instruments={instruments} showGrid={chartOptions.grid} showVolume={chartOptions.volume} upColor={chartOptions.upColor} downColor={chartOptions.downColor} textColor={chartOptions.textColor} dataStatus={currentLiveCandles.length ? chartStatus : demoMode ? '当前使用界面演示数据' : chartStatus || '暂无行情'} initialQuote={marketQuote?.symbol === selected.symbol ? marketQuote : null} loadQuote={marketDataEnabled ? loadWorkspaceQuote : undefined} officialActivity={workspace.data?.portfolio.activity ?? null} alertPrices={selectedAlertPrices} isWatchlisted={(market, symbol) => (market === 'CN' ? watchlists.a_share : watchlists.us).includes(symbol)} onWatchlistToggle={changeChartWatchlist} watchBusy={watchBusy} loadCandles={loadWorkspaceCandles} onSymbolChange={(symbol, market) => { const next = new URLSearchParams(searchParams); next.set('market', market); next.set('symbol', symbol); next.delete('event_id'); setSearchParams(next) }} onTimeframeChange={(nextTimeframe) => setParam('timeframe', nextTimeframe)} />{!currentLiveCandles.length && !demoMode && <div className="chart-empty-state"><CircleAlert size={22} /><strong>{marketDataEnabled ? '暂时无法读取 K 线' : '行情连接未启用'}</strong><span>{chartStatus || '登录并确认行情服务后可加载真实 K 线。'}</span></div>}</div>
+        <header className="instrument-header"><div><span>{selected.name} · {selected.market === 'US' ? '美股' : 'A股'}</span><h1>{selected.symbol}</h1></div><div className="instrument-price"><strong>{selected.price ? selected.price.toFixed(2) : '—'}</strong>{selected.price > 0 && <span className={selected.changePct >= 0 ? 'positive-text' : 'negative-text'}>{selected.changePct >= 0 ? <ArrowUpRight size={16} /> : <ArrowDownRight size={16} />}{Math.abs(selected.changePct).toFixed(2)}%</span>}</div><div className="instrument-actions"><button className="button primary" type="button" onClick={() => navigate('/portfolio')}><CircleDollarSign size={16} /> 官方模拟账户</button></div></header>
+        <div className="chart-frame"><ChartWorkspace userId={workspace.data?.me.id} initialSymbol={selected.symbol} initialMarket={selected.market} initialTimeframe={timeframe} inspectorOpen={inspectorOpen} onInspectorOpenChange={setInspectorOpen} inspectorExtra={auxiliaryInspector} toolbarActions={<><button type="button" aria-label="打开价格预警" title="价格预警" disabled={!selected.price} onClick={() => setInspectorTab('预警')}><BellRing size={15} /><span>预警</span></button><button type="button" aria-label="查看技术指标" title="技术指标" onClick={() => setParam('tab', '技术指标')}><Activity size={15} /><span>指标</span></button><button className={settingsOpen ? 'active' : ''} type="button" aria-label="图表设置" title="图表设置" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(!settingsOpen)}><Settings2 size={15} /><span>设置</span></button></>} candles={chartData} showGrid={chartOptions.grid} showVolume={chartOptions.volume} upColor={chartOptions.upColor} downColor={chartOptions.downColor} textColor={chartOptions.textColor} dataStatus={currentLiveCandles.length ? chartStatus : demoMode ? '当前使用界面演示数据' : chartStatus || '暂无行情'} initialQuote={marketQuote?.symbol === selected.symbol ? marketQuote : null} loadQuote={marketDataEnabled ? loadWorkspaceQuote : undefined} officialActivity={workspace.data?.portfolio.activity ?? null} alertPrices={alertPricesForInstrument} isWatchlisted={(market, symbol) => (market === 'CN' ? watchlists.a_share : watchlists.us).includes(symbol)} onWatchlistToggle={changeChartWatchlist} watchBusy={watchBusy} loadCandles={marketDataEnabled ? loadWorkspaceCandles : undefined} onSymbolChange={(symbol, market) => { const next = new URLSearchParams(searchParams); next.set('market', market); next.set('symbol', symbol); next.delete('event_id'); setSearchParams(next) }} onTimeframeChange={(nextTimeframe) => setParam('timeframe', nextTimeframe)} />{!currentLiveCandles.length && !demoMode && <div className="chart-empty-state"><CircleAlert size={22} /><strong>{marketDataEnabled ? '暂时无法读取 K 线' : '行情连接未启用'}</strong><span>{chartStatus || '登录并确认行情服务后可加载真实 K 线。'}</span></div>}</div>
         {settingsOpen && <div className="chart-settings" aria-label="图表设置"><label><input type="checkbox" checked={chartOptions.volume} onChange={(event) => setChartOptions({ ...chartOptions, volume: event.target.checked })} />成交量</label><label><input type="checkbox" checked={chartOptions.grid} onChange={(event) => setChartOptions({ ...chartOptions, grid: event.target.checked })} />网格</label><label className="chart-color-setting">上涨颜色<input type="color" value={chartOptions.upColor} onChange={(event) => setChartOptions({ ...chartOptions, upColor: event.target.value })} /></label><label className="chart-color-setting">下跌颜色<input type="color" value={chartOptions.downColor} onChange={(event) => setChartOptions({ ...chartOptions, downColor: event.target.value })} /></label><label className="chart-color-setting">文字颜色<input type="color" value={chartOptions.textColor} onChange={(event) => setChartOptions({ ...chartOptions, textColor: event.target.value })} /></label><button className="button tertiary" type="button" onClick={() => setChartOptions({ volume: true, grid: true, upColor: '#27b487', downColor: '#e4606b', textColor: '#98a2ae' })}>恢复默认</button></div>}
         <nav className="workspace-tabs">{evidenceTabs.map((tab) => <button className={activeTab === tab ? 'active' : ''} type="button" onClick={() => setParam('tab', tab)} key={tab}>{tab}</button>)}{activeTab === '期权证据' && <button className="button secondary options-tab-cta" type="button" onClick={() => navigate('/lab')}>打开期权研究入口</button>}</nav>
         <EvidencePanel tab={activeTab} candles={chartData} decision={officialDecision} source={currentLiveCandles.length ? chartStatus : demoMode ? '界面演示' : '暂无可验证行情'} />

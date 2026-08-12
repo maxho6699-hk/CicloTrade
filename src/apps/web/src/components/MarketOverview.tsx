@@ -9,7 +9,7 @@ import {
   Search,
   Star,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { fetchMarketCandles } from "../api/client";
 import {
@@ -30,9 +30,17 @@ interface OverviewQuote extends Instrument {
   status: string;
 }
 
+interface MarketQuoteCacheEntry {
+  candidatesKey: string;
+  quotes: OverviewQuote[];
+  status: string;
+}
+
 interface MarketOverviewProps {
   market: Market;
   watchlist: string[];
+  marketDataEnabled: boolean;
+  demoMode: boolean;
   authenticated: boolean;
   busySymbol: string;
   onMarketChange: (market: Market) => void;
@@ -52,6 +60,7 @@ const TABS = [
 
 const DESKTOP_CARD_PAGE_SIZE = 8;
 const MOBILE_CARD_LIMIT = 4;
+const marketQuoteCache = new Map<Market, MarketQuoteCacheEntry>();
 const POPULAR: Record<Market, Array<{ symbol: string; name: string }>> = {
   US: [
     { symbol: "AAPL", name: "Apple" },
@@ -152,9 +161,37 @@ function demoQuote(symbol: string, name: string, market: Market) {
   );
 }
 
+function candidatesKey(candidates: Array<{ symbol: string; name: string }>) {
+  return candidates.map((item) => `${item.symbol}:${item.name}`).join("|");
+}
+
+async function fetchOverviewQuotes(market: Market, candidates: Array<{ symbol: string; name: string }>) {
+  const results = await Promise.allSettled(
+    candidates.map(async (item) => {
+      const payload = await fetchMarketCandles(item.symbol, "日线");
+      return quoteFromCandles(
+        item.symbol,
+        item.name,
+        market,
+        payload.items,
+        `${displayDataSource(payload.status.display_source)} · ${displayDeliveryDelay(payload.status.delivery_delay_minutes) || displayFreshness(payload.status.freshness)}`,
+      );
+    }),
+  );
+  const quotes = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+  const status = quotes.length === candidates.length
+    ? (quotes[0]?.status ?? "行情已读取")
+    : `已读取 ${quotes.length}/${candidates.length} 个标的；失败项目未用演示数据替代。`;
+  const entry = { candidatesKey: candidatesKey(candidates), quotes, status };
+  marketQuoteCache.set(market, entry);
+  return entry;
+}
+
 export function MarketOverview({
   market,
   watchlist,
+  marketDataEnabled,
+  demoMode,
   authenticated,
   busySymbol,
   onMarketChange,
@@ -174,6 +211,7 @@ export function MarketOverview({
   const [status, setStatus] = useState("");
   const [cardsPage, setCardsPage] = useState(1);
   const [narrowCards, setNarrowCards] = useState(() => window.matchMedia("(max-width: 760px)").matches);
+  const requestSequence = useRef(0);
   useEffect(() => {
     const media = window.matchMedia("(max-width: 760px)");
     const update = () => setNarrowCards(media.matches);
@@ -202,44 +240,53 @@ export function MarketOverview({
   }, [market, watchlist]);
 
   useEffect(() => {
+    if (!marketDataEnabled) return;
+    const otherMarket: Market = market === "US" ? "CN" : "US";
+    const preloadCandidates = POPULAR[otherMarket].slice(0, 12);
+    const cached = marketQuoteCache.get(otherMarket);
+    if (cached?.candidatesKey === candidatesKey(preloadCandidates)) return;
+    void fetchOverviewQuotes(otherMarket, preloadCandidates).catch(() => undefined);
+  }, [market, marketDataEnabled]);
+
+  useEffect(() => {
     let active = true;
-    if (!authenticated) {
+    const sequence = ++requestSequence.current;
+    if (!marketDataEnabled) {
+      if (demoMode) {
       setQuotes(
         candidates.map((item) => demoQuote(item.symbol, item.name, market)),
       );
       setStatus("当前为界面演示；登录后读取可验证行情。");
+      } else {
+        setQuotes([]);
+        setStatus("行情连接未启用，不显示演示行情。");
+      }
       return () => {
         active = false;
       };
     }
-    setStatus("正在读取榜单行情…");
-    void Promise.allSettled(
-      candidates.map(async (item) => {
-        const payload = await fetchMarketCandles(item.symbol, "日线");
-        return quoteFromCandles(
-          item.symbol,
-          item.name,
-          market,
-          payload.items,
-          `${displayDataSource(payload.status.display_source)} · ${displayDeliveryDelay(payload.status.delivery_delay_minutes) || displayFreshness(payload.status.freshness)}`,
-        );
-      }),
-    ).then((results) => {
-      if (!active) return;
-      const next = results.flatMap((result) =>
-        result.status === "fulfilled" ? [result.value] : [],
-      );
-      setQuotes(next);
-      setStatus(
-        next.length === candidates.length
-          ? (next[0]?.status ?? "行情已读取")
-          : `已读取 ${next.length}/${candidates.length} 个标的；失败项目未用演示数据替代。`,
-      );
+    const key = candidatesKey(candidates);
+    const cached = marketQuoteCache.get(market);
+    if (cached?.candidatesKey === key) {
+      setQuotes(cached.quotes);
+      setStatus(cached.status);
+    } else {
+      setQuotes([]);
+      setStatus("正在读取榜单行情…");
+    }
+    void fetchOverviewQuotes(market, candidates).then((entry) => {
+      if (!active || requestSequence.current !== sequence) return;
+      setQuotes(entry.quotes);
+      setStatus(entry.status);
+    }).catch(() => {
+      if (!active || requestSequence.current !== sequence) return;
+      setQuotes([]);
+      setStatus("行情暂时不可用，不显示演示行情。");
     });
     return () => {
       active = false;
     };
-  }, [authenticated, candidates, market]);
+  }, [candidates, demoMode, market, marketDataEnabled]);
 
   const shown = useMemo(() => {
     const watch = new Set(watchlist);
@@ -365,7 +412,7 @@ export function MarketOverview({
           authenticated={authenticated}
         />
       ) : tab === ("事件日历" as typeof tab) ? (
-        <MarketEventCalendar />
+        <MarketEventCalendar market={market} />
       ) : !shown.length ? (
         <section className="market-overview-empty">
           <Star size={24} />

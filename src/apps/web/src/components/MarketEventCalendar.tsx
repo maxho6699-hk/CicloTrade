@@ -1,8 +1,10 @@
 import { CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, BellOff } from 'lucide-react'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import type { Market } from '../types'
 
 type CalendarRange = '本周' | '本月' | '下周' | '下个月' | '自订'
 type PreviewEvent = {
+  market: Market
   date: string
   dateLabel: string
   time: string
@@ -19,17 +21,12 @@ type PreviewEvent = {
 const RANGES: CalendarRange[] = ['本周', '本月', '下周', '下个月', '自订']
 const WEEKDAYS = ['週一', '週二', '週三', '週四', '週五', '週六', '週日']
 const PREVIEW_EVENTS: PreviewEvent[] = [
-  { date: '2026-08-10', dateLabel: '8月10日 星期一', time: '07:00', flag: '🇦🇺', country: '澳洲', event: '標普全球製造業採購經理人指數（8月）', impact: 1, current: '—', forecast: '—', previous: '—' },
-  { date: '2026-08-10', dateLabel: '8月10日 星期一', time: '07:01', flag: '🇬🇧', country: '英國', event: 'BRC商店物價指數年率（8月）', impact: 1, current: '—', forecast: '—', previous: '0.9%' },
-  { date: '2026-08-10', dateLabel: '8月10日 星期一', time: '07:30', flag: '🇯🇵', country: '日本', event: '求職／求人比（7月）', impact: 1, current: '—', forecast: '—', previous: '1.18' },
-  { date: '2026-08-10', dateLabel: '8月10日 星期一', time: '07:30', flag: '🇯🇵', country: '日本', event: '失業率（7月）', impact: 2, current: '—', forecast: '—', previous: '2.5%' },
-  { date: '2026-08-10', dateLabel: '8月10日 星期一', time: '07:50', flag: '🇯🇵', country: '日本', event: '企業資本支出年率（Q2）', impact: 1, current: '—', forecast: '—', previous: '0%' },
-  { date: '2026-08-10', dateLabel: '8月10日 星期一', time: '07:50', flag: '🇯🇵', country: '日本', event: '零售貿易季調（月率）（7月）', impact: 2, current: '—', forecast: '—', previous: '-4.1%' },
-  { date: '2026-08-11', dateLabel: '8月11日 星期二', time: '09:30', flag: '🇨🇳', country: '中國', event: 'CPI 消費者物價指數年率（7月）', impact: 3, current: '—', forecast: '0.1%', previous: '0.1%' },
-  { date: '2026-08-11', dateLabel: '8月11日 星期二', time: '14:30', flag: '🇺🇸', country: '美國', event: '生產者物價指數 PPI（7月）', impact: 3, current: '—', forecast: '0.2%', previous: '0.1%' },
-  { date: '2026-08-12', dateLabel: '8月12日 星期三', time: '20:30', flag: '🇺🇸', country: '美國', event: '核心消費者物價指數 CPI（月率）', impact: 3, current: '—', forecast: '0.3%', previous: '0.2%' },
-  { date: '2026-08-12', dateLabel: '8月12日 星期三', time: '盤後', flag: '●', country: '美股', event: 'AAPL 財報日期占位（正式日期待来源接入）', impact: 3, current: '—', forecast: '—', previous: '—', symbol: 'AAPL' },
-  { date: '2026-08-13', dateLabel: '8月13日 星期四', time: '盤前', flag: '●', country: '美股', event: 'NVDA 财报日期占位（正式日期待来源接入）', impact: 3, current: '—', forecast: '—', previous: '—', symbol: 'NVDA' },
+  { market: 'CN', date: '2026-08-10', dateLabel: '8月10日 星期一', time: '09:30', flag: '🇨🇳', country: '中國', event: 'CPI 消費者物價指數年率（7月）', impact: 3, current: '—', forecast: '0.1%', previous: '0.1%' },
+  { market: 'CN', date: '2026-08-11', dateLabel: '8月11日 星期二', time: '盤後', flag: '●', country: 'A股', event: '600519 財報日期預覽（正式日期待來源接入）', impact: 2, current: '—', forecast: '—', previous: '—', symbol: '600519' },
+  { market: 'US', date: '2026-08-11', dateLabel: '8月11日 星期二', time: '20:30', flag: '🇺🇸', country: '美國', event: '生產者物價指數 PPI（7月）', impact: 3, current: '—', forecast: '0.2%', previous: '0.1%' },
+  { market: 'US', date: '2026-08-12', dateLabel: '8月12日 星期三', time: '20:30', flag: '🇺🇸', country: '美國', event: '核心消費者物價指數 CPI（月率）', impact: 3, current: '—', forecast: '0.3%', previous: '0.2%' },
+  { market: 'US', date: '2026-08-12', dateLabel: '8月12日 星期三', time: '盤後', flag: '●', country: '美股', event: 'AAPL 財報日期預覽（正式日期待來源接入）', impact: 3, current: '—', forecast: '—', previous: '—', symbol: 'AAPL' },
+  { market: 'US', date: '2026-08-13', dateLabel: '8月13日 星期四', time: '盤前', flag: '●', country: '美股', event: 'NVDA 財報日期預覽（正式日期待來源接入）', impact: 3, current: '—', forecast: '—', previous: '—', symbol: 'NVDA' },
 ]
 
 function toDateKey(date: Date) {
@@ -54,10 +51,11 @@ function ImpactBars({ level }: { level: PreviewEvent['impact'] }) {
 }
 
 interface MarketEventCalendarProps {
+  market: Market
   onRangeChange?: (range: CalendarRange) => void
 }
 
-export function MarketEventCalendar({ onRangeChange }: MarketEventCalendarProps) {
+export function MarketEventCalendar({ market, onRangeChange }: MarketEventCalendarProps) {
   const [range, setRange] = useState<CalendarRange>('本周')
   const [draftDate, setDraftDate] = useState('2026-08-10')
   const [selectedDate, setSelectedDate] = useState('2026-08-10')
@@ -65,12 +63,12 @@ export function MarketEventCalendar({ onRangeChange }: MarketEventCalendarProps)
   const pickerRef = useRef<HTMLDivElement>(null)
   const selected = useMemo(() => new Date(`${draftDate}T00:00:00Z`), [draftDate])
   const months = useMemo(() => [selected, new Date(Date.UTC(selected.getUTCFullYear(), selected.getUTCMonth() + 1, 1))], [selected])
-  const groups = useMemo(() => PREVIEW_EVENTS.reduce<Array<{ date: string; label: string; items: PreviewEvent[] }>>((result, item) => {
+  const groups = useMemo(() => PREVIEW_EVENTS.filter((item) => item.market === market).reduce<Array<{ date: string; label: string; items: PreviewEvent[] }>>((result, item) => {
     const group = result.find((candidate) => candidate.date === item.date)
     if (group) group.items.push(item)
     else result.push({ date: item.date, label: item.dateLabel, items: [item] })
     return result
-  }, []), [])
+  }, []), [market])
 
   useEffect(() => {
     const close = (event: MouseEvent) => { if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) setPickerOpen(false) }
@@ -95,7 +93,7 @@ export function MarketEventCalendar({ onRangeChange }: MarketEventCalendarProps)
   return <section className="market-event-calendar" aria-label="市场事件日历">
     <header className="event-calendar-heading">
       <div><span><CalendarDays size={15} /> ECONOMIC CALENDAR</span><strong>重要事项与宏观数据</strong></div>
-      <small className="event-calendar-source">界面预览 · 正式来源、时区与提醒服务尚未接入</small>
+      <small className="event-calendar-source">{market === 'US' ? '美股' : 'A股'}预览 · 仅显示 US / CN 事件与财报</small>
     </header>
     <div className="event-calendar-controls" ref={pickerRef}>
       <div className="event-range-tabs" role="tablist" aria-label="事件日期范围">{RANGES.map((item) => <button className={range === item ? 'active' : ''} type="button" role="tab" aria-selected={range === item} onClick={() => chooseRange(item)} key={item}>{item}{item === '自订' && <ChevronDown size={14} className={pickerOpen ? 'rotated' : ''} />}</button>)}</div>
