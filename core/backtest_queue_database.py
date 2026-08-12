@@ -96,3 +96,70 @@ class BacktestQueueDatabase:
     def fetch_all(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         with self._lock, closing(self._connect()) as conn:
             return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+
+class ReadOnlyBacktestQueueDatabase:
+    """Read an existing live queue without creating, migrating, or writing it.
+
+    URI ``mode=ro`` and ``immutable=1`` ensure the exporter does not take SQLite
+    locks or create WAL/SHM sidecars beside the canonical queue.  Evidence is
+    therefore read from the last checkpointed queue state; a concurrent worker's
+    uncheckpointed WAL entries are deferred to a later export run.
+    """
+
+    def __init__(self, path: str | Path):
+        raw_path = str(path)
+        if raw_path.startswith("sqlite:///"):
+            raw_path = raw_path[10:]
+        resolved = Path(raw_path).expanduser().resolve()
+        if not resolved.exists() or not resolved.is_file():
+            raise BacktestQueueDatabaseError("read-only backtest queue database does not exist")
+        self._db_path = str(resolved)
+        self._lock = threading.RLock()
+        try:
+            with closing(self._connect()) as conn:
+                conn.execute("SELECT 1").fetchone()
+        except sqlite3.Error as exc:
+            raise BacktestQueueDatabaseError("read-only backtest queue database cannot be opened") from exc
+
+    def _connect(self) -> sqlite3.Connection:
+        uri = f"{Path(self._db_path).as_uri()}?mode=ro&immutable=1"
+        conn = sqlite3.connect(uri, uri=True, timeout=30, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only=ON")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=30000")
+        return conn
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        try:
+            with self._lock, closing(self._connect()) as conn:
+                try:
+                    yield conn
+                except sqlite3.Error as exc:
+                    conn.rollback()
+                    raise BacktestQueueDatabaseError("read-only backtest queue query failed") from exc
+                finally:
+                    conn.rollback()
+        except sqlite3.Error as exc:
+            raise BacktestQueueDatabaseError("read-only backtest queue query failed") from exc
+
+    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> int:
+        del sql, params
+        raise BacktestQueueDatabaseError("read-only backtest queue database rejects writes")
+
+    def fetch_one(self, sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
+        try:
+            with self._lock, closing(self._connect()) as conn:
+                row = conn.execute(sql, params).fetchone()
+                return dict(row) if row else None
+        except sqlite3.Error as exc:
+            raise BacktestQueueDatabaseError("read-only backtest queue query failed") from exc
+
+    def fetch_all(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+        try:
+            with self._lock, closing(self._connect()) as conn:
+                return [dict(row) for row in conn.execute(sql, params).fetchall()]
+        except sqlite3.Error as exc:
+            raise BacktestQueueDatabaseError("read-only backtest queue query failed") from exc

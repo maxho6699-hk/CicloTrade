@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
+import sqlite3
+import stat
 
 import pytest
 
-from core.backtest_queue_database import BacktestQueueDatabase
+from core.backtest_queue_database import (
+    BacktestQueueDatabase,
+    BacktestQueueDatabaseError,
+    ReadOnlyBacktestQueueDatabase,
+)
 from src.apps.worker.compute_evidence_exporter import (
     ComputeEvidenceExporter,
     ComputeEvidenceExporterError,
@@ -55,6 +62,74 @@ def test_exporter_is_bounded_idempotent_and_scans_only_completed_system_candidat
     assert ComputeEvidenceExporter(queue, empty_spool, site_id=SITE_ID).run_once()["state"] == "idle"
 
 
+def test_enabled_exporter_reads_existing_queue_without_modifying_database_or_artifacts(tmp_path):
+    source_root = tmp_path / "source"
+    queue = _completed_queue(source_root)
+    queue_path = Path(queue.db._db_path)
+    artifact_root = queue.artifacts.root
+    protected = [queue_path, *sorted(path for path in artifact_root.rglob("*") if path.is_file())]
+    before = {path: _file_identity(path) for path in protected}
+    before_names = {path.relative_to(source_root).as_posix() for path in source_root.rglob("*")}
+    original_modes = {path: stat.S_IMODE(path.stat().st_mode) for path in protected}
+    for path in protected:
+        path.chmod(stat.S_IREAD)
+    try:
+        result = run_compute_evidence_exporter(
+            env=_enabled_exporter_env(queue_path, artifact_root, tmp_path / "delivery" / "spool.db")
+        )
+    finally:
+        for path, mode in original_modes.items():
+            path.chmod(mode)
+
+    assert result["state"] == "exported" and result["exported"] == 1
+    assert {path: _file_identity(path) for path in protected} == before
+    assert {path.relative_to(source_root).as_posix() for path in source_root.rglob("*")} == before_names
+
+
+def test_enabled_exporter_fails_closed_when_source_queue_or_artifact_root_is_missing(tmp_path):
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    missing_queue = tmp_path / "missing" / "queue.db"
+    spool = tmp_path / "delivery" / "spool.db"
+    with pytest.raises(ComputeEvidenceExporterError, match="does not exist"):
+        run_compute_evidence_exporter(env=_enabled_exporter_env(missing_queue, artifacts, spool))
+    assert not missing_queue.exists() and not spool.exists()
+
+    queue = BacktestQueueDatabase(tmp_path / "queue.db")
+    with pytest.raises(ComputeEvidenceExporterError, match="artifact directory does not exist"):
+        run_compute_evidence_exporter(
+            env=_enabled_exporter_env(Path(queue._db_path), tmp_path / "missing-artifacts", spool)
+        )
+    assert not spool.exists()
+
+
+def test_read_only_queue_adapter_rejects_writes_at_the_sqlite_boundary(tmp_path):
+    writable = BacktestQueueDatabase(tmp_path / "queue.db")
+    readonly = ReadOnlyBacktestQueueDatabase(writable._db_path)
+    before = _file_identity(Path(writable._db_path))
+    with pytest.raises(BacktestQueueDatabaseError, match="rejects writes"):
+        readonly.execute("DELETE FROM schema_migrations")
+    with pytest.raises(BacktestQueueDatabaseError, match="query failed"):
+        with readonly.transaction() as connection:
+            connection.execute("DELETE FROM schema_migrations")
+    assert _file_identity(Path(writable._db_path)) == before
+
+
+def test_enabled_exporter_fails_closed_when_queue_cannot_be_opened_read_only(tmp_path, monkeypatch):
+    queue = _completed_queue(tmp_path / "source")
+    spool = tmp_path / "delivery" / "spool.db"
+
+    def deny_read_only_connection(*_args, **_kwargs):
+        raise sqlite3.OperationalError("permission denied")
+
+    monkeypatch.setattr("core.backtest_queue_database.sqlite3.connect", deny_read_only_connection)
+    with pytest.raises(ComputeEvidenceExporterError, match="cannot be opened"):
+        run_compute_evidence_exporter(
+            env=_enabled_exporter_env(Path(queue.db._db_path), queue.artifacts.root, spool)
+        )
+    assert not spool.exists()
+
+
 @pytest.mark.parametrize(
     ("state", "expected"),
     [("disabled", 0), ("idle", 0), ("delivered", 0), ("retryable", 0), ("dead", 1), ("uncertain", 1)],
@@ -91,3 +166,18 @@ def test_environment_template_is_root_only_guidance_and_disabled_by_default():
     assert "TRADEAI_COMPUTE_EVIDENCE_PUBLISHER_ENABLED=false" in template
     assert "TRADEAI_COMPUTE_EVIDENCE_SHARED_SECRET=" in template
     assert "https://" not in template
+
+
+def _enabled_exporter_env(queue: Path, artifacts: Path, spool: Path) -> dict[str, str]:
+    return {
+        "TRADEAI_COMPUTE_EVIDENCE_EXPORTER_ENABLED": "true",
+        "TRADEAI_STRATEGY_WORKER_QUEUE_DB": str(queue.resolve()),
+        "TRADEAI_STRATEGY_WORKER_ARTIFACT_DIR": str(artifacts.resolve()),
+        "TRADEAI_COMPUTE_EVIDENCE_SPOOL_DATABASE": str(spool.resolve()),
+        "TRADEAI_COMPUTE_EVIDENCE_SITE_ID": SITE_ID,
+    }
+
+
+def _file_identity(path: Path) -> tuple[int, int, str]:
+    metadata = path.stat()
+    return metadata.st_mtime_ns, metadata.st_size, hashlib.sha256(path.read_bytes()).hexdigest()

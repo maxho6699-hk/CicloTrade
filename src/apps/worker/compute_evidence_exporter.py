@@ -12,7 +12,11 @@ from typing import Any, Mapping
 
 from core.backtest_artifacts import ArtifactStore
 from core.backtest_queue import BacktestQueue
-from core.backtest_queue_database import BacktestQueueDatabase
+from core.backtest_queue_database import (
+    BacktestQueueDatabase,
+    BacktestQueueDatabaseError,
+    ReadOnlyBacktestQueueDatabase,
+)
 from core.compute_evidence_contracts import ComputeEvidenceError, package_id
 from src.apps.worker.compute_evidence_package import build_completed_equity_package
 from src.apps.worker.compute_evidence_spool import (
@@ -147,8 +151,14 @@ def run_compute_evidence_exporter(
         return {"state": "disabled", "exported": 0}
     if settings.queue_database is None or settings.artifact_directory is None or settings.spool_database is None:
         raise ComputeEvidenceExporterError("enabled exporter paths are incomplete")
+    if not settings.artifact_directory.exists() or not settings.artifact_directory.is_dir():
+        raise ComputeEvidenceExporterError("compute evidence artifact directory does not exist")
+    try:
+        source_database = ReadOnlyBacktestQueueDatabase(settings.queue_database)
+    except BacktestQueueDatabaseError as exc:
+        raise ComputeEvidenceExporterError(str(exc)) from exc
     queue = BacktestQueue(
-        BacktestQueueDatabase(settings.queue_database),
+        source_database,
         ArtifactStore(settings.artifact_directory),
     )
     spool = PersistentComputeEvidenceSpool(BacktestQueueDatabase(settings.spool_database))
@@ -163,7 +173,14 @@ def run_compute_evidence_exporter(
 def main() -> int:
     try:
         result = run_compute_evidence_exporter()
-    except (OSError, ValueError, ComputeEvidenceError, ComputeEvidenceExporterError, ComputeEvidenceSpoolError) as exc:
+    except (
+        OSError,
+        ValueError,
+        BacktestQueueDatabaseError,
+        ComputeEvidenceError,
+        ComputeEvidenceExporterError,
+        ComputeEvidenceSpoolError,
+    ) as exc:
         print(json.dumps({"state": "error", "error": str(exc)}, sort_keys=True), file=sys.stderr)
         return 2
     print(json.dumps(result, sort_keys=True, separators=(",", ":"), allow_nan=False))
