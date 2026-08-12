@@ -309,6 +309,7 @@ class BrowserIdentity:
     display_name: str
     plan_type: str
     subscription_expire: str | None
+    admin_role: str | None = None
 
     @property
     def effective_plan(self) -> str:
@@ -342,6 +343,7 @@ class ReadOnlyLegacyRepository:
             "quant_equity_snapshots", "subscription_orders", "telegram_accounts",
             "official_paper_events_v2", "official_paper_event_legs_v2",
             "official_paper_equity_snapshots_v2",
+            "admin_roles",
             "user_settings", "orders", "trades", "risk_log", "broker_accounts", "price_alerts",
             "price_alert_metadata", "user_controls", "platform_controls",
             "membership_entitlements",
@@ -455,13 +457,22 @@ class ReadOnlyLegacyRepository:
             raise ReadModelAuthError("登录凭证类型无效。")
         with self.connection() as connection:
             row = connection.execute(
-                """SELECT u.id,u.display_name,u.plan_type,u.subscription_expire
+                """SELECT u.id,u.display_name,u.plan_type,u.subscription_expire,u.is_admin
                    FROM users u JOIN user_sessions s ON s.user_id=u.id
                    WHERE u.id=? AND u.is_active=1 AND s.session_token=? AND s.is_active=1""",
                 (int(payload["sub"]), payload["sid"]),
             ).fetchone()
             resolved = None
+            admin_role = None
             if row is not None:
+                if bool(row["is_admin"]) and self._table_exists(connection, "admin_roles"):
+                    role_row = connection.execute(
+                        "SELECT role FROM admin_roles WHERE user_id=?", (int(row["id"]),)
+                    ).fetchone()
+                    if role_row is not None and role_row["role"] in {
+                        "super_admin", "support", "finance", "research", "risk_audit"
+                    }:
+                        admin_role = str(role_row["role"])
                 resolved = (
                     resolve_membership_snapshot(
                         connection,
@@ -481,6 +492,7 @@ class ReadOnlyLegacyRepository:
             subscription_expire=(resolved or {}).get("subscription_expire")
             if resolved is not None
             else row["subscription_expire"],
+            admin_role=admin_role,
         )
 
     def me(self, identity: BrowserIdentity) -> dict[str, Any]:
@@ -490,6 +502,7 @@ class ReadOnlyLegacyRepository:
             "plan": identity.effective_plan,
             "plan_display_name": plan_display_name(identity.effective_plan),
             "subscription_expire": identity.subscription_expire,
+            "admin_role": identity.admin_role,
         }
 
     def settings(self, identity: BrowserIdentity) -> dict[str, Any]:

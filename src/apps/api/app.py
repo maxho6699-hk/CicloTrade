@@ -6,6 +6,7 @@ from pathlib import Path
 from datetime import date, datetime, timedelta
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -77,6 +78,7 @@ from src.apps.api.system_cycle_research_read_model import (
     MIN_STALE_SECONDS,
     SystemCycleResearchReadModel,
 )
+from core.admin_service import AdminService, ROLE_LABELS, ROLE_PERMISSIONS
 from core.backtest_queue import BacktestQueueError
 from core.database import DatabaseManager
 from core.feedback import FeedbackError, FeedbackService
@@ -85,14 +87,20 @@ from core.auth import AuthError, AuthService, email_verification_required
 from core.compat import UTC
 from core.plans import can, effective_plan, plan_display_name, web_market_data_visibility
 from notification.email_sender import send_email, smtp_configured
+from notification.telegram_billing import queue_manual_payment_review_notice
+from notification.telegram_bot import telegram_configured
 from notification.templates import auth_email
 from payment.order_service import MembershipPlanConflict
+from payment.proof_storage import read_payment_proof
 from data.datasource import DataSourceError, get_resilient_data_source, public_market_status
 from data.opend_adapter import OpenDAdapter, OptionExpiryUnavailableError
 from data.yfinance_adapter import YahooOptionExpiryUnavailableError
 
 
 load_dotenv(Path(__file__).resolve().parents[3] / ".env")
+
+
+logger = logging.getLogger(__name__)
 
 
 _CORRELATION_ID_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{8,128}")
@@ -356,6 +364,9 @@ def _session_user(user: dict[str, Any]) -> dict[str, Any]:
         "plan": plan,
         "plan_display_name": plan_display_name(plan),
         "subscription_expire": user.get("subscription_expire"),
+        "admin_role": user.get("admin_role")
+        if user.get("admin_role") in ROLE_LABELS
+        else None,
     }
 
 
@@ -507,6 +518,7 @@ async def session_login(request: Request) -> JSONResponse:
                     "display_name": identity.display_name,
                     "plan_type": identity.plan_type,
                     "subscription_expire": identity.subscription_expire,
+                    "admin_role": identity.admin_role,
                 }
             ),
             "new_ip": result.new_ip,
@@ -698,6 +710,275 @@ async def session_logout(request: Request) -> JSONResponse:
 async def me(request: Request) -> JSONResponse:
     identity = _identity(request)
     return JSONResponse(_repository(request).me(identity))
+
+
+_ADMIN_AUDIT_DETAIL_KEYS = {
+    "ADMIN_ROLE_CHANGE": frozenset({"user_id", "role"}),
+    "ADMIN_USER_STATUS": frozenset({"user_id", "active"}),
+    "ADMIN_RESET_SESSIONS": frozenset({"user_id"}),
+    "ADMIN_UNLOCK_USER": frozenset({"user_id"}),
+    "ADMIN_REMOVE_IP": frozenset({"user_id", "ip_id"}),
+    "ADMIN_CLEAR_IPS": frozenset({"user_id"}),
+    "ADMIN_SUBSCRIPTION_ADJUST": frozenset({"user_id", "plan", "days", "expiry"}),
+    "ADMIN_MEMBERSHIP_GRANT": frozenset({"user_id", "plan", "days"}),
+    "ADMIN_MANUAL_PAYMENT_CLAIM_APPROVED": frozenset({"claim_id", "order_no"}),
+    "ADMIN_MANUAL_PAYMENT_CLAIM_REJECTED": frozenset({"claim_id", "order_no"}),
+    "ADMIN_RECOMMENDATIONS_STATUS": frozenset({"enabled"}),
+    "ADMIN_ANNUAL_BONUS_STATUS": frozenset({"enabled"}),
+    "ADMIN_USER_AUTO_TRADING_STATUS": frozenset({"enabled", "affected"}),
+    "ADMIN_GLOBAL_OPENING_PAUSE": frozenset({"paused"}),
+    "ADMIN_DATA_SOURCE_VERIFICATION": frozenset({"provider", "action", "success"}),
+    "ADMIN_STRATEGY_CYCLE": frozenset({
+        "strategy_key", "event_created", "leg_count", "snapshots_created",
+    }),
+}
+
+
+def _admin_service(request: Request) -> AdminService:
+    return AdminService(_auth_service(request).db)
+
+
+def _admin_identity(request: Request) -> tuple[BrowserIdentity, AdminService]:
+    identity = _identity(request)
+    service = _admin_service(request)
+    try:
+        role = service.role_for(identity.id)
+    except PermissionError as exc:
+        raise ApiError("此账户没有可用的后台权限。", 403) from exc
+    if role != "super_admin":
+        raise ApiError("仅超级管理员可使用此管理台。", 403)
+    return identity, service
+
+
+def _admin_headers() -> dict[str, str]:
+    return {"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"}
+
+
+def _masked_reference(value: Any) -> str | None:
+    reference = str(value or "").strip()
+    if not reference:
+        return None
+    return "•" * max(2, min(8, len(reference) - 4)) + reference[-4:]
+
+
+def _admin_claim_projection(row: dict[str, Any]) -> dict[str, Any]:
+    status = str(row.get("status") or "")
+    result = {
+        "id": int(row["id"]),
+        "order_no": str(row["order_no"]),
+        "user_id": int(row["user_id"]),
+        "user_email": str(row.get("user_email") or ""),
+        "attempt": int(row.get("attempt") or 1),
+        "status": status,
+        "plan_type": str(row.get("plan_type") or ""),
+        "billing_cycle": str(row.get("billing_cycle") or ""),
+        "amount": float(row.get("amount") or 0),
+        "currency": str(row.get("currency") or ""),
+        "pay_method": str(row.get("pay_method") or ""),
+        "evidence_source": str(row.get("evidence_source") or "telegram"),
+        "has_evidence": bool(row.get("evidence_file_id") or row.get("evidence_storage_key")),
+        "proof_available": bool(row.get("evidence_storage_key") and row.get("evidence_sha256")),
+        "reviewed_by": int(row["reviewed_by"]) if row.get("reviewed_by") is not None else None,
+        "reviewer_email": row.get("reviewer_email"),
+        "reviewed_at": row.get("reviewed_at"),
+        "created_at": row.get("created_at"),
+    }
+    if status == "rejected":
+        result["rejection_reason"] = str(row.get("rejection_reason") or "")[:500]
+    if status == "approved":
+        result["settlement_reference_masked"] = _masked_reference(row.get("settlement_reference"))
+    return result
+
+
+async def admin_overview(request: Request) -> JSONResponse:
+    identity, service = _admin_identity(request)
+    metrics = service.dashboard_metrics(identity.id)
+    role = service.role_for(identity.id)
+    metrics.update({
+        "role": role,
+        "role_label": ROLE_LABELS[role],
+        "permissions": sorted(ROLE_PERMISSIONS[role]),
+        "user_auto_trading_enabled": service.control_enabled("user_auto_trading_enabled", False),
+        "telegram_configured": telegram_configured(),
+        "official_simulation": {
+            "event_count": int((service.db.fetch_one(
+                "SELECT COUNT(*) count FROM official_paper_events_v2"
+            ) or {}).get("count") or 0),
+            "broker_execution": False,
+        },
+        "shadow_candidates": {
+            "publication_ceiling": "shadow",
+            "requires_human_review": True,
+        },
+    })
+    return JSONResponse(metrics, headers=_admin_headers())
+
+
+async def admin_users(request: Request) -> JSONResponse:
+    identity, service = _admin_identity(request)
+    items = [{
+        key: row.get(key)
+        for key in (
+            "id", "email", "display_name", "plan_type", "subscription_expire",
+            "last_login", "failed_attempts", "locked_until", "is_active", "is_admin",
+            "admin_role", "active_sessions", "active_ips",
+        )
+    } for row in service.list_users(identity.id)]
+    return JSONResponse({"items": items}, headers=_admin_headers())
+
+
+async def admin_manual_claims(request: Request) -> JSONResponse:
+    identity, service = _admin_identity(request)
+    status = request.query_params.get("status", "submitted")
+    method = request.query_params.get("method", "全部")
+    limit = _bounded_int(request, "limit", 100, 1000)
+    try:
+        rows = service.list_manual_payment_claims(identity.id, status, limit, method)
+    except ValueError as exc:
+        raise ApiError(str(exc)) from exc
+    return JSONResponse({"items": [_admin_claim_projection(row) for row in rows]}, headers=_admin_headers())
+
+
+async def admin_manual_claim_proof(request: Request) -> Response:
+    identity, service = _admin_identity(request)
+    raw_id = str(request.path_params.get("claim_id") or "")
+    if not raw_id.isdecimal():
+        raise ApiError("付款凭证编号无效。")
+    rows = service.list_manual_payment_claims(identity.id, "all", 1000)
+    row = next((item for item in rows if int(item["id"]) == int(raw_id)), None)
+    if row is None:
+        raise ApiError("付款凭证不存在。", 404)
+    storage_key = str(row.get("evidence_storage_key") or "")
+    digest = str(row.get("evidence_sha256") or "")
+    if not storage_key or not digest:
+        raise ApiError("此凭证只能在原接收通道复核。", 404)
+    try:
+        content = await run_in_threadpool(read_payment_proof, storage_key, digest)
+    except ValueError as exc:
+        raise ApiError("付款凭证暂时无法核验。", 409) from exc
+    return Response(content, media_type="image/jpeg", headers=_admin_headers())
+
+
+async def admin_manual_claim_review(request: Request) -> JSONResponse:
+    identity, service = _admin_identity(request)
+    raw_id = str(request.path_params.get("claim_id") or "")
+    if not raw_id.isdecimal():
+        raise ApiError("付款凭证编号无效。")
+    payload = await _json_body(request)
+    decision = payload.get("decision")
+    allowed = (
+        {"decision", "password", "settlement_reference"}
+        if decision == "approve"
+        else {"decision", "password", "rejection_reason"}
+        if decision == "reject"
+        else set()
+    )
+    if not allowed or set(payload) != allowed or not all(isinstance(payload.get(key), str) for key in allowed):
+        raise ApiError("付款凭证审核字段无效。")
+    client_ip = request.client.host if request.client else "unknown"
+    try:
+        _auth_service(request).verify_password(identity.id, payload["password"], client_ip)
+        reviewed = await run_in_threadpool(
+            service.review_manual_payment_claim,
+            identity.id,
+            int(raw_id),
+            decision == "approve",
+            payload.get("settlement_reference"),
+            payload.get("rejection_reason"),
+        )
+    except AuthError as exc:
+        raise ApiError(str(exc), 403) from exc
+    except PermissionError as exc:
+        raise ApiError(str(exc), 403) from exc
+    except ValueError as exc:
+        raise ApiError(str(exc), 409) from exc
+    try:
+        notification_queued = queue_manual_payment_review_notice(
+            service.db, reviewed, decision == "approve"
+        )
+    except Exception as exc:  # The financial decision is already committed.
+        logger.warning(
+            "Manual payment review notice was not queued (error_type=%s)",
+            type(exc).__name__,
+        )
+        notification_queued = False
+    item = _admin_claim_projection({
+        **reviewed,
+        "user_email": "",
+        "plan_type": "",
+        "billing_cycle": "",
+        "amount": 0,
+        "currency": "",
+        "pay_method": "",
+    })
+    item["notification_queued"] = notification_queued
+    return JSONResponse(item, headers=_admin_headers())
+
+
+async def admin_brokers(request: Request) -> JSONResponse:
+    identity, service = _admin_identity(request)
+    return JSONResponse({"items": service.list_broker_accounts(identity.id)}, headers=_admin_headers())
+
+
+async def admin_audit(request: Request) -> JSONResponse:
+    identity, service = _admin_identity(request)
+    limit = _bounded_int(request, "limit", 100, 500)
+    items = []
+    for row in service.list_audit(identity.id, limit):
+        try:
+            raw_details = json.loads(str(row.get("details") or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_details = {}
+        action_type = str(row.get("action_type") or "ADMIN_ACTION")
+        allowed_detail_keys = _ADMIN_AUDIT_DETAIL_KEYS.get(action_type, frozenset())
+        details = {
+            key: raw_details[key]
+            for key in allowed_detail_keys
+            if key in raw_details and isinstance(raw_details[key], (str, int, float, bool, type(None)))
+        } if isinstance(raw_details, dict) else {}
+        items.append({
+            "id": int(row["id"]),
+            "created_at": row.get("created_at"),
+            "actor_id": int(row["actor_id"]) if row.get("actor_id") is not None else None,
+            "actor_display": "管理员" if row.get("actor_id") is not None else "系统",
+            "action_type": action_type,
+            "details": details,
+        })
+    return JSONResponse({"items": items}, headers=_admin_headers())
+
+
+async def admin_user_auto_trading(request: Request) -> JSONResponse:
+    identity, service = _admin_identity(request)
+    if request.method == "GET":
+        return JSONResponse(
+            {"enabled": service.control_enabled("user_auto_trading_enabled", False)},
+            headers=_admin_headers(),
+        )
+    payload = await _json_body(request)
+    if set(payload) != {"enabled", "confirmation", "password"} or type(payload.get("enabled")) is not bool or not all(
+        isinstance(payload.get(key), str) for key in ("confirmation", "password")
+    ):
+        raise ApiError("用户实盘服务请求字段无效。")
+    expected = "恢复用户实盘服务" if payload["enabled"] else "暂停用户实盘服务"
+    if payload["confirmation"] != expected:
+        raise ApiError(f"请输入“{expected}”完成明确确认。")
+    client_ip = request.client.host if request.client else "unknown"
+    before = service.control_enabled("user_auto_trading_enabled", False)
+    try:
+        _auth_service(request).verify_password(identity.id, payload["password"], client_ip)
+        result = await run_in_threadpool(
+            service.set_user_auto_trading_enabled, identity.id, payload["enabled"]
+        )
+    except AuthError as exc:
+        raise ApiError(str(exc), 403) from exc
+    except PermissionError as exc:
+        raise ApiError(str(exc), 403) from exc
+    return JSONResponse({
+        "enabled": payload["enabled"],
+        "changed": before != payload["enabled"],
+        "affected_users": int(result.get("affected") or 0),
+        "notified": int(result.get("notified") or 0),
+    }, headers=_admin_headers())
 
 
 async def membership(request: Request) -> JSONResponse:
@@ -2060,8 +2341,9 @@ async def membership_order_payment_qr(request: Request) -> Response:
 
 
 async def api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
+    headers = _admin_headers() if request.url.path.startswith("/api/rewrite/v1/admin/") else None
     return _public_error_response(
-        request, code=exc.code, message=str(exc), status=exc.status
+        request, code=exc.code, message=str(exc), status=exc.status, headers=headers
     )
 
 
@@ -2100,11 +2382,13 @@ async def earnings_forecast_unavailable_handler(
 
 
 async def unexpected_error_handler(request: Request, _exc: Exception) -> JSONResponse:
+    headers = _admin_headers() if request.url.path.startswith("/api/rewrite/v1/admin/") else None
     return _public_error_response(
         request,
         code="internal_error",
         message="服务暂时无法处理请求，请稍后重试。",
         status=500,
+        headers=headers,
     )
 
 
@@ -2120,6 +2404,14 @@ routes = [
     Route("/api/rewrite/v1/session/refresh", session_refresh, methods=["POST"]),
     Route("/api/rewrite/v1/session", session_logout, methods=["DELETE"]),
     Route("/api/rewrite/v1/me", me, methods=["GET"]),
+    Route("/api/rewrite/v1/admin/overview", admin_overview, methods=["GET"]),
+    Route("/api/rewrite/v1/admin/users", admin_users, methods=["GET"]),
+    Route("/api/rewrite/v1/admin/payments/manual-claims", admin_manual_claims, methods=["GET"]),
+    Route("/api/rewrite/v1/admin/payments/manual-claims/{claim_id:str}/proof", admin_manual_claim_proof, methods=["GET"]),
+    Route("/api/rewrite/v1/admin/payments/manual-claims/{claim_id:str}/review", admin_manual_claim_review, methods=["POST"]),
+    Route("/api/rewrite/v1/admin/brokers", admin_brokers, methods=["GET"]),
+    Route("/api/rewrite/v1/admin/audit", admin_audit, methods=["GET"]),
+    Route("/api/rewrite/v1/admin/user-auto-trading", admin_user_auto_trading, methods=["GET", "PUT"]),
     Route("/api/rewrite/v1/bootstrap", bootstrap, methods=["GET"]),
     Route("/api/rewrite/v1/feedback", feedback, methods=["GET", "POST"]),
     Route("/api/rewrite/v1/recommendations", recommendations, methods=["GET"]),

@@ -170,6 +170,22 @@ def test_auth_rejects_incomplete_tokens_blank_names_and_admin_email_squatting(db
         auth.verify(incomplete)
 
 
+def test_bootstrap_admin_persists_super_admin_role_before_web_login(db, monkeypatch):
+    auth = AuthService(db)
+    monkeypatch.setenv("TRADEAI_ADMIN_EMAIL", "bootstrap-admin@example.com")
+    monkeypatch.setenv("TRADEAI_ADMIN_PASSWORD", "BootstrapAdmin123")
+
+    auth.bootstrap_admin()
+
+    admin = db.fetch_one(
+        """SELECT u.id,u.is_admin,r.role FROM users u
+           LEFT JOIN admin_roles r ON r.user_id=u.id WHERE u.email=?""",
+        ("bootstrap-admin@example.com",),
+    )
+    assert admin["is_admin"] == 1
+    assert admin["role"] == "super_admin"
+
+
 def test_login_failures_do_not_globally_lock_victim_and_reset_has_cooldown(db):
     auth = AuthService(db)
     user = _user(auth, "rate-limited")

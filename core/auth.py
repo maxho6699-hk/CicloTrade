@@ -656,16 +656,31 @@ class AuthService:
         if existing:
             if not existing["is_admin"]:
                 raise AuthError("管理员邮箱已被普通账户占用；为防止提权，自动引导已停止。")
-            self.db.execute(
-                "UPDATE users SET email_verified_at=COALESCE(email_verified_at,?) WHERE id=?",
-                (_iso(), existing["id"]),
-            )
+            now = _iso()
+            with self.db.transaction() as conn:
+                conn.execute(
+                    "UPDATE users SET email_verified_at=COALESCE(email_verified_at,?) WHERE id=?",
+                    (now, existing["id"]),
+                )
+                conn.execute(
+                    """INSERT OR IGNORE INTO admin_roles(user_id,role,updated_at)
+                       VALUES (?,'super_admin',?)""",
+                    (existing["id"], now),
+                )
             return
         if not password:
             raise AuthError("已配置管理员邮箱但缺少 TRADEAI_ADMIN_PASSWORD；自动引导已停止。")
         self.register(email, password, "系统管理员", True)
-        self.db.execute(
-            """UPDATE users SET is_admin=1,plan_type='专业版',
-               email_verified_at=COALESCE(email_verified_at,?) WHERE email=?""",
-            (_iso(), email),
-        )
+        now = _iso()
+        with self.db.transaction() as conn:
+            conn.execute(
+                """UPDATE users SET is_admin=1,plan_type='专业版',
+                   email_verified_at=COALESCE(email_verified_at,?) WHERE email=?""",
+                (now, email),
+            )
+            admin = conn.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()
+            conn.execute(
+                """INSERT OR IGNORE INTO admin_roles(user_id,role,updated_at)
+                   VALUES (?,'super_admin',?)""",
+                (int(admin["id"]), now),
+            )

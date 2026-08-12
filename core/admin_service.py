@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from core.compat import UTC
 import ipaddress
 import json
@@ -13,6 +13,7 @@ from typing import Any
 import unicodedata
 
 from core.auth import AuthService
+from core.broker_authorization import broker_execution_authorized
 from core.database import DatabaseManager, get_database
 from core.membership import (
     add_membership_entitlement,
@@ -143,16 +144,16 @@ class AdminService:
         return role
 
     @staticmethod
-    def _require_billing_in_transaction(conn: Any, actor_id: int) -> str:
-        """Re-check a reviewer's role after acquiring the SQLite write lock."""
+    def _require_super_admin_in_transaction(conn: Any, actor_id: int) -> str:
+        """Re-check the exact privileged role after acquiring the SQLite write lock."""
         row = conn.execute(
             """SELECT u.is_admin,u.is_active,r.role FROM users u
                LEFT JOIN admin_roles r ON r.user_id=u.id WHERE u.id=?""",
             (actor_id,),
         ).fetchone()
         role = str(row["role"]) if row and row["role"] else ""
-        if not row or not row["is_admin"] or not row["is_active"] or not AdminService.has_permission(role, "billing"):
-            raise PermissionError("当前后台角色无权执行此操作。")
+        if not row or not row["is_admin"] or not row["is_active"] or role != "super_admin":
+            raise PermissionError("仅超级管理员可执行此操作。")
         return role
 
     @staticmethod
@@ -205,6 +206,36 @@ class AdminService:
                       (SELECT COUNT(*) FROM user_ip_whitelist i WHERE i.user_id=u.id AND i.is_active=1) active_ips
                FROM users u LEFT JOIN admin_roles r ON r.user_id=u.id ORDER BY u.created_at DESC"""
         )
+
+    def list_broker_accounts(self, actor_id: int) -> list[dict[str, Any]]:
+        """Return an operator projection with server-verified execution authority."""
+        self._require(actor_id, "system")
+        rows = self.db.fetch_all(
+            """SELECT b.*,u.email user_email FROM broker_accounts b
+               JOIN users u ON u.id=b.user_id ORDER BY b.created_at DESC,b.id DESC"""
+        )
+        return [
+            {
+                "id": int(row["id"]),
+                "user_id": int(row["user_id"]),
+                "user_email": str(row["user_email"]),
+                "broker": str(row["provider"]),
+                "account_alias": str(row["account_alias"]),
+                "account_masked": (
+                    "••••"
+                    if len(str(row["external_account_id"] or "")) <= 4
+                    else f"•••• {str(row['external_account_id'])[-4:]}"
+                ),
+                "mode": str(row["mode"]),
+                "status": str(row["status"]),
+                "is_active": bool(row["is_active"]),
+                "authorized": broker_execution_authorized(row),
+                "last_checked": row.get("last_checked"),
+                "updated_at": row.get("last_checked") or row.get("created_at"),
+                "created_at": row.get("created_at"),
+            }
+            for row in rows
+        ]
 
     def list_admins(self, actor_id: int) -> list[dict[str, Any]]:
         self._require(actor_id, "roles")
@@ -590,7 +621,7 @@ class AdminService:
         now = datetime.now(UTC)
         with self.db.transaction() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            self._require_billing_in_transaction(conn, actor_id)
+            self._require_super_admin_in_transaction(conn, actor_id)
             claim_row = conn.execute(
                 "SELECT * FROM manual_payment_claims WHERE id=?", (claim_id,)
             ).fetchone()
@@ -753,8 +784,6 @@ class AdminService:
         )
 
     def set_user_auto_trading_enabled(self, actor_id: int, enabled: bool) -> dict[str, int]:
-        if self._role_for_id(actor_id) != "super_admin":
-            raise PermissionError("仅超级管理员可控制用户实盘自动交易服务。")
         from notification.telegram_bot import send_telegram, telegram_configured, verified_user_target
         from notification.templates import telegram_live_service_paused, telegram_live_service_resumed
 
@@ -762,6 +791,8 @@ class AdminService:
         targets: list[str] = []
         affected = 0
         with self.db.transaction() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._require_super_admin_in_transaction(conn, actor_id)
             current_row = conn.execute(
                 "SELECT control_value FROM platform_controls WHERE control_key='user_auto_trading_enabled'"
             ).fetchone()
@@ -983,8 +1014,8 @@ class AdminService:
     def list_audit(self, actor_id: int, limit: int = 500) -> list[dict[str, Any]]:
         self._require(actor_id, "audit")
         return self.db.fetch_all(
-            """SELECT l.id,l.created_at,COALESCE(u.email,'系统') actor,l.action_type,l.details
-               FROM user_action_logs l LEFT JOIN users u ON u.id=l.user_id
+            """SELECT l.id,l.created_at,l.user_id actor_id,l.action_type,l.details
+               FROM user_action_logs l
                WHERE l.action_type LIKE 'ADMIN_%' ORDER BY l.created_at DESC LIMIT ?""",
             (max(1, min(int(limit), 1000)),),
         )

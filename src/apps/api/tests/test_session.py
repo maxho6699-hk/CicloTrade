@@ -15,6 +15,14 @@ from starlette.requests import Request
 from core.compat import UTC
 from payment.order_service import OrderService
 from src.apps.api.app import (
+    admin_audit,
+    admin_brokers,
+    admin_manual_claim_proof,
+    admin_manual_claim_review,
+    admin_manual_claims,
+    admin_overview,
+    admin_user_auto_trading,
+    admin_users,
     ApiError,
     alert_item,
     alerts,
@@ -101,6 +109,36 @@ def _login_token() -> str:
     return _payload(response)["access_token"]
 
 
+def _super_admin_token(browser_api) -> str:
+    database = browser_api["database"]
+    user = database.fetch_one("SELECT id FROM users WHERE email='browser@example.com'")
+    database.execute("UPDATE users SET is_admin=1 WHERE id=?", (user["id"],))
+    from core.admin_service import AdminService
+
+    AdminService(database)
+    result = browser_api["auth"].login(
+        "browser@example.com", "StrongPass123", "127.0.0.1", "pytest-admin"
+    )
+    return result.access_token
+
+
+def test_admin_role_migration_is_available_before_first_login(browser_api):
+    database = browser_api["database"]
+    user = database.fetch_one("SELECT id FROM users WHERE email='browser@example.com'")
+    database.execute("UPDATE users SET is_admin=1 WHERE id=?", (user["id"],))
+    database.execute("DELETE FROM admin_roles WHERE user_id=?", (user["id"],))
+    database.execute(
+        "INSERT INTO admin_roles(user_id,role,updated_at) VALUES (?,?,?)",
+        (user["id"], "super_admin", datetime.now(UTC).isoformat()),
+    )
+
+    result = browser_api["auth"].login(
+        "browser@example.com", "StrongPass123", "127.0.0.1", "pytest-first-admin-login"
+    )
+    identity = app.state.repository.authenticate(result.access_token)
+    assert identity.admin_role == "super_admin"
+
+
 def _captured_auth_token(messages: list[tuple[str, str, str, str]]) -> str:
     text = messages[-1][2]
     return next(line.split("：", 1)[1] for line in text.splitlines() if line.startswith("驗證碼："))
@@ -185,6 +223,261 @@ def test_login_uses_http_only_refresh_cookie_and_returns_no_refresh_token(browse
     assert "refresh_token" not in payload
     assert "HttpOnly" in response.headers["set-cookie"]
     assert _refresh_cookie(response).startswith(f"{REFRESH_COOKIE}=")
+
+
+def test_super_admin_console_is_server_gated_and_projects_safe_fields(browser_api):
+    with pytest.raises(ApiError) as unauthenticated:
+        asyncio.run(admin_overview(_request("/api/rewrite/v1/admin/overview")))
+    assert unauthenticated.value.status == 401
+
+    ordinary_token = _login_token()
+    with pytest.raises(ApiError) as forbidden:
+        asyncio.run(admin_overview(_request(
+            "/api/rewrite/v1/admin/overview",
+            authorization=f"Bearer {ordinary_token}",
+        )))
+    assert forbidden.value.status == 403
+
+    token = _super_admin_token(browser_api)
+    authorization = f"Bearer {token}"
+    overview = _payload(asyncio.run(admin_overview(_request(
+        "/api/rewrite/v1/admin/overview", authorization=authorization,
+    ))))
+    assert overview["role"] == "super_admin"
+    assert overview["official_simulation"]["broker_execution"] is False
+    assert overview["shadow_candidates"] == {
+        "publication_ceiling": "shadow", "requires_human_review": True,
+    }
+    users = _payload(asyncio.run(admin_users(_request(
+        "/api/rewrite/v1/admin/users", authorization=authorization,
+    ))))["items"]
+    assert users and set(users[0]) == {
+        "id", "email", "display_name", "plan_type", "subscription_expire",
+        "last_login", "failed_attempts", "locked_until", "is_active", "is_admin",
+        "admin_role", "active_sessions", "active_ips",
+    }
+    serialized = json.dumps({"overview": overview, "users": users}, ensure_ascii=False)
+    assert all(secret not in serialized for secret in (
+        "password_hash", "session_token", "refresh_token_hash", "chat_id", "metadata_json",
+    ))
+
+
+def test_super_admin_brokers_and_audit_are_redacted(browser_api, monkeypatch):
+    token = _super_admin_token(browser_api)
+    authorization = f"Bearer {token}"
+    database = browser_api["database"]
+    user = database.fetch_one("SELECT id FROM users WHERE email='browser@example.com'")
+    monkeypatch.setenv("TIGER_ACCOUNT", "SECRET-ACCOUNT-1234")
+    database.execute(
+        """INSERT INTO broker_accounts
+           (user_id,provider,account_alias,external_account_id,mode,is_active,status,last_checked,metadata_json,created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,datetime('now'))""",
+        (
+            user["id"], "Tiger", "primary", "SECRET-ACCOUNT-1234", "live", 1,
+            "authorized", datetime.now(UTC).isoformat(),
+            json.dumps({"execution_authorized": True, "authorization_verified_at": datetime.now(UTC).isoformat(), "token": "never-return"}),
+        ),
+    )
+    database.execute(
+        "INSERT INTO user_action_logs(user_id,action_type,details,created_at) VALUES (?,?,?,?)",
+        (user["id"], "ADMIN_UNKNOWN_TEST", json.dumps({"enabled": True, "secret": "never-return"}), datetime.now(UTC).isoformat()),
+    )
+    brokers = _payload(asyncio.run(admin_brokers(_request(
+        "/api/rewrite/v1/admin/brokers", authorization=authorization,
+    ))))["items"]
+    audit = _payload(asyncio.run(admin_audit(_request(
+        "/api/rewrite/v1/admin/audit", authorization=authorization,
+    ))))["items"]
+    encoded = json.dumps({"brokers": brokers, "audit": audit}, ensure_ascii=False)
+    assert brokers[0]["account_masked"].endswith("1234")
+    assert brokers[0]["authorized"] is True
+    assert "SECRET-ACCOUNT-1234" not in encoded
+    assert "never-return" not in encoded
+    assert audit[0]["details"] == {}
+    assert set(audit[0]) == {
+        "id", "created_at", "actor_id", "actor_display", "action_type", "details",
+    }
+
+
+def test_super_admin_auto_trading_requires_password_and_fixed_confirmation(browser_api, monkeypatch):
+    token = _super_admin_token(browser_api)
+    authorization = f"Bearer {token}"
+
+    def request(payload):
+        return _request(
+            "/api/rewrite/v1/admin/user-auto-trading", method="PUT",
+            payload=payload, authorization=authorization,
+        )
+    with pytest.raises(ApiError):
+        asyncio.run(admin_user_auto_trading(request({
+            "enabled": False, "confirmation": "wrong", "password": "StrongPass123",
+        })))
+    with pytest.raises(ApiError) as bad_password:
+        asyncio.run(admin_user_auto_trading(request({
+            "enabled": False, "confirmation": "暂停用户实盘服务", "password": "wrong-password",
+        })))
+    assert bad_password.value.status == 403
+    monkeypatch.setattr("notification.telegram_bot.telegram_configured", lambda *_args, **_kwargs: False)
+    response = _payload(asyncio.run(admin_user_auto_trading(request({
+        "enabled": False, "confirmation": "暂停用户实盘服务", "password": "StrongPass123",
+    }))))
+    assert response["enabled"] is False
+    assert set(response) == {"enabled", "changed", "affected_users", "notified"}
+
+
+@pytest.mark.parametrize("invalid_enabled", [1, "true", None])
+def test_super_admin_auto_trading_rejects_non_boolean_values(browser_api, invalid_enabled):
+    token = _super_admin_token(browser_api)
+    with pytest.raises(ApiError):
+        asyncio.run(admin_user_auto_trading(_request(
+            "/api/rewrite/v1/admin/user-auto-trading",
+            method="PUT",
+            authorization=f"Bearer {token}",
+            payload={
+                "enabled": invalid_enabled,
+                "confirmation": "暂停用户实盘服务",
+                "password": "StrongPass123",
+            },
+        )))
+
+
+def test_super_admin_writes_recheck_exact_role_inside_transaction(browser_api, monkeypatch):
+    _super_admin_token(browser_api)
+    database = browser_api["database"]
+    admin = database.fetch_one("SELECT id FROM users WHERE email='browser@example.com'")
+    claimant = browser_api["auth"].register(
+        "transaction-claimant@example.com", "StrongPass456", "Claimant", True
+    )
+    database.execute(
+        """INSERT INTO subscription_orders
+           (order_no,user_id,plan_type,billing_cycle,amount,currency,pay_method,status,created_at)
+           VALUES (?,?,?,?,?,?,?,'pending',?)""",
+        ("TAADMINDOWNGRADE", claimant["id"], "标准版", "monthly", 168, "HKD", "fps", datetime.now(UTC).isoformat()),
+    )
+    database.execute(
+        """INSERT INTO manual_payment_claims
+           (order_no,user_id,attempt,status,evidence_file_id,evidence_file_unique_id,
+            evidence_message_id,source_update_id,created_at,evidence_source)
+           VALUES (?,?,1,'submitted','file-secret','unique-secret','123','update-secret',?,'telegram')""",
+        ("TAADMINDOWNGRADE", claimant["id"], datetime.now(UTC).isoformat()),
+    )
+    from core.admin_service import AdminService
+
+    service = AdminService(database)
+    original_require = service._require
+
+    def downgrade_after_entry(actor_id, permission):
+        role = original_require(actor_id, permission)
+        database.execute("UPDATE admin_roles SET role='finance' WHERE user_id=?", (actor_id,))
+        return role
+
+    monkeypatch.setattr(service, "_require", downgrade_after_entry)
+    with pytest.raises(PermissionError, match="超级管理员"):
+        service.review_manual_payment_claim(
+            admin["id"], 1, False, rejection_reason="未核对到账"
+        )
+    assert database.fetch_one("SELECT status FROM manual_payment_claims WHERE id=1")["status"] == "submitted"
+
+    database.execute("UPDATE admin_roles SET role='finance' WHERE user_id=?", (admin["id"],))
+    with pytest.raises(PermissionError, match="超级管理员"):
+        service.set_user_auto_trading_enabled(admin["id"], False)
+    assert service.control_enabled("user_auto_trading_enabled", False) is False
+
+
+def test_super_admin_manual_claim_list_and_review_are_redacted_and_reauthenticated(browser_api, monkeypatch):
+    token = _super_admin_token(browser_api)
+    authorization = f"Bearer {token}"
+    database = browser_api["database"]
+    claimant = browser_api["auth"].register(
+        "claimant@example.com", "StrongPass456", "Claimant", True
+    )
+    database.execute(
+        """INSERT INTO subscription_orders
+           (order_no,user_id,plan_type,billing_cycle,amount,currency,pay_method,status,created_at)
+           VALUES (?,?,?,?,?,?,?,'pending',?)""",
+        ("TAADMINCLAIM01", claimant["id"], "标准版", "monthly", 168, "HKD", "fps", datetime.now(UTC).isoformat()),
+    )
+    database.execute(
+        """INSERT INTO manual_payment_claims
+           (order_no,user_id,attempt,status,evidence_file_id,evidence_file_unique_id,
+            evidence_message_id,source_update_id,created_at,evidence_source)
+           VALUES (?,?,1,'submitted','file-secret','unique-secret','123','update-secret',?,'telegram')""",
+        ("TAADMINCLAIM01", claimant["id"], datetime.now(UTC).isoformat()),
+    )
+    claims = _payload(asyncio.run(admin_manual_claims(_request(
+        "/api/rewrite/v1/admin/payments/manual-claims", authorization=authorization,
+    ))))["items"]
+    assert len(claims) == 1
+    encoded = json.dumps(claims, ensure_ascii=False)
+    assert all(secret not in encoded for secret in (
+        "file-secret", "unique-secret", "update-secret", "evidence_storage_key", "evidence_sha256",
+    ))
+    assert claims[0]["has_evidence"] is True
+
+    path = "/api/rewrite/v1/admin/payments/manual-claims/1/review"
+    def review_request(payload):
+        request = _request(path, method="POST", authorization=authorization, payload=payload)
+        request.scope["path_params"] = {"claim_id": "1"}
+        return request
+
+    with pytest.raises(ApiError) as bad_password:
+        asyncio.run(admin_manual_claim_review(review_request(
+            {"decision": "reject", "password": "wrong-password", "rejection_reason": "未核对到账"}
+        )))
+    assert bad_password.value.status == 403
+    api_module = importlib.import_module("src.apps.api.app")
+    def failed_notice(*_args, **_kwargs):
+        raise RuntimeError("simulated Telegram outage")
+
+    monkeypatch.setattr(api_module, "queue_manual_payment_review_notice", failed_notice)
+    reviewed = _payload(asyncio.run(admin_manual_claim_review(review_request(
+        {"decision": "reject", "password": "StrongPass123", "rejection_reason": "未核对到账"}
+    ))))
+    assert reviewed["status"] == "rejected"
+    assert reviewed["notification_queued"] is False
+    assert "settlement_reference" not in reviewed
+    persisted = database.fetch_one("SELECT status FROM manual_payment_claims WHERE id=1")
+    assert persisted["status"] == "rejected"
+
+
+def test_super_admin_proof_download_fails_closed_on_missing_or_invalid_sha(browser_api):
+    token = _super_admin_token(browser_api)
+    database = browser_api["database"]
+    claimant = browser_api["auth"].register(
+        "proof-claimant@example.com", "StrongPass456", "Proof Claimant", True
+    )
+    database.execute(
+        """INSERT INTO subscription_orders
+           (order_no,user_id,plan_type,billing_cycle,amount,currency,pay_method,status,created_at)
+           VALUES (?,?,?,?,?,?,?,'pending',?)""",
+        ("TAADMINPROOF01", claimant["id"], "标准版", "monthly", 168, "HKD", "fps", datetime.now(UTC).isoformat()),
+    )
+    database.execute(
+        """INSERT INTO manual_payment_claims
+           (order_no,user_id,attempt,status,evidence_storage_key,evidence_sha256,created_at,evidence_source)
+           VALUES (?,?,1,'submitted',?,?,?,'web')""",
+        ("TAADMINPROOF01", claimant["id"], f"{'0' * 32}.jpg", "0" * 64, datetime.now(UTC).isoformat()),
+    )
+    request = _request(
+        "/api/rewrite/v1/admin/payments/manual-claims/1/proof",
+        authorization=f"Bearer {token}",
+    )
+    request.scope["path_params"] = {"claim_id": "1"}
+    with pytest.raises(ApiError) as invalid_proof:
+        asyncio.run(admin_manual_claim_proof(request))
+    assert invalid_proof.value.status == 409
+
+
+def test_admin_asgi_errors_keep_private_no_store_security_headers(browser_api):
+    ordinary_token = _login_token()
+    status, headers, payload = asyncio.run(_asgi_json(
+        "/api/rewrite/v1/admin/overview",
+        headers=(("authorization", f"Bearer {ordinary_token}"),),
+    ))
+    assert status == 403
+    assert headers["cache-control"] == "private, no-store"
+    assert headers["x-content-type-options"] == "nosniff"
+    assert payload["code"] == "forbidden"
 
 
 def test_public_registration_uses_asgi_route_middleware_and_error_mapping(browser_api, monkeypatch):
