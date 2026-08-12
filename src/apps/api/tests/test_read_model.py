@@ -10,7 +10,7 @@ from core.compat import UTC
 from core.database import DatabaseManager
 from core.membership import MembershipPlanConflict, add_membership_entitlement
 from core.plans import PLAN_ORDER, PLANS, plan_display_name
-from core.quant_journal import QuantJournal
+from core.quant_journal import OfficialPaperJournalV2, QuantJournal
 from payment.order_service import OrderService
 from src.apps.api.read_model import ReadModelAuthError, ReadOnlyLegacyRepository
 
@@ -228,6 +228,39 @@ def test_membership_orders_are_customer_owned_and_provider_fields_are_redacted(c
         "requires_user_authorization": True,
         "short_eligibility_source": "broker",
         "subscription_auto_connects_broker": False,
+        "capability_catalog": [
+            {
+                "key": "tiger", "display_name": "Tiger Brokers",
+                "status": "limited_manual_onboarding",
+                "capabilities": ["market_data", "us_stock_limit_orders"],
+                "connection_available": False,
+            },
+            {
+                "key": "futu", "display_name": "Futu OpenD",
+                "status": "market_data_only", "capabilities": ["market_data"],
+                "connection_available": False,
+            },
+            {
+                "key": "alpaca", "display_name": "Alpaca",
+                "status": "planned", "capabilities": [],
+                "connection_available": False,
+            },
+            {
+                "key": "ibkr", "display_name": "Interactive Brokers",
+                "status": "planned", "capabilities": [],
+                "connection_available": False,
+            },
+            {
+                "key": "qmt", "display_name": "QMT",
+                "status": "evaluating", "capabilities": [],
+                "connection_available": False,
+            },
+            {
+                "key": "ptrade", "display_name": "PTrade",
+                "status": "evaluating", "capabilities": [],
+                "connection_available": False,
+            },
+        ],
         "us_short": {
             "requires_ciclotrade_manual_approval": False,
             "requires_broker_authorization": True,
@@ -245,6 +278,12 @@ def test_membership_orders_are_customer_owned_and_provider_fields_are_redacted(c
     assert "external_id" not in order
     assert "external_capture_id" not in order
     assert "request_fingerprint" not in order
+    unavailable = {
+        "planned", "evaluating", "unsupported",
+    }
+    for provider in payload["brokerage"]["capability_catalog"]:
+        if provider["status"] in unavailable:
+            assert not any("action" in key for key in provider)
 
 
 def test_membership_order_behavior_matrix_uses_authoritative_entitlements(compatibility):
@@ -396,9 +435,9 @@ def test_portfolio_uses_system_ledger_and_excludes_customer_paper_orders(compati
         "trade_id": "TRADE-READ-1", "order_id": "PAPER-READ-1", "symbol": "AAPL",
         "side": "BUY", "quantity": 5, "price": 200, "commission": 0, "trade_time": now,
     })
-    journal = QuantJournal(database)
+    journal = OfficialPaperJournalV2(database)
     journal.append_event(
-        ledger_key="tradeai-system", source="pytest", external_event_id="official-read-1",
+        ledger_key="tradeai-official-paper-v2", source="pytest", external_event_id="official-read-1",
         strategy_name="official-validation", strategy_version="1", occurred_at=now,
         legs=[{
             "market": "US", "instrument_type": "stock", "symbol": "MSFT",
@@ -406,8 +445,8 @@ def test_portfolio_uses_system_ledger_and_excludes_customer_paper_orders(compati
         }],
     )
     journal.append_equity_snapshot(
-        ledger_key="tradeai-system", source="pytest", external_snapshot_id="official-usd-1",
-        currency="USD", initial_cash=100_000, cash=98_650, market_value=1_350,
+        ledger_key="tradeai-official-paper-v2", source="pytest", external_snapshot_id="official-usd-1",
+        market="US", currency="USD", initial_cash=10_000, cash=8_650, market_value=1_350,
         realized_pnl=0, unrealized_pnl=0, captured_at=now,
     )
     identity = repository.authenticate(login.access_token)
@@ -421,13 +460,17 @@ def test_portfolio_uses_system_ledger_and_excludes_customer_paper_orders(compati
     assert payload["positions"][0]["market"] == "US"
     assert payload["positions"][0]["currency"] == "USD"
     assert {item["symbol"] for item in payload["orders"]} == {"MSFT"}
-    assert payload["accounts"]["US"]["total_equity"] == 100_000
-    assert payload["accounts"]["HK"]["status"] == "not_connected"
-    assert payload["mark_source"] == "immutable_quant_journal_last_recorded_price"
+    assert payload["accounts"]["US"]["total_equity"] == 10_000
+    assert payload["accounts"]["HK"]["status"] == "recorded"
+    assert payload["accounts"]["HK"]["initial_cash"] == 10_000
+    assert payload["accounts"]["CN"]["initial_cash"] == 10_000
+    assert payload["mark_source"] == "official_paper_v2_last_recorded_price"
     assert payload["fresh_marks"] is False
     assert payload["activity"]["pnl_method"] == "weighted_average"
     assert payload["activity"]["executions"][0]["side"] == "BUY"
     assert payload["activity"]["intervals"][0]["status"] == "OPEN"
+    performance = repository.performance(identity)
+    assert {item["market"] for item in performance["items"]} == {"US", "HK", "CN"}
 
 
 def test_portfolio_activity_groups_official_ledger_events(compatibility):
@@ -438,10 +481,10 @@ def test_portfolio_activity_groups_official_ledger_events(compatibility):
         ("OFFICIAL-CYCLE-3", 7, -8, 120, "2026-08-03T10:00:00+00:00"),
         ("OFFICIAL-CYCLE-4", 0, -7, 130, "2026-08-04T10:00:00+00:00"),
     ]
-    journal = QuantJournal(database)
+    journal = OfficialPaperJournalV2(database)
     for event_id, target, delta, price, occurred_at in rows:
         journal.append_event(
-            ledger_key="tradeai-system", source="pytest", external_event_id=event_id,
+            ledger_key="tradeai-official-paper-v2", source="pytest", external_event_id=event_id,
             strategy_name="official-cycle", strategy_version="1", occurred_at=occurred_at,
             legs=[{
                 "market": "US", "instrument_type": "stock", "symbol": "AAPL",
@@ -471,13 +514,13 @@ def test_portfolio_activity_groups_official_ledger_events(compatibility):
 def test_portfolio_activity_keeps_option_prices_per_contract_unit(compatibility):
     database, user, login, repository = compatibility
     del user
-    journal = QuantJournal(database)
+    journal = OfficialPaperJournalV2(database)
     for event_id, target, delta, price, occurred_at in (
         ("OPTION-OPEN", 1, 1, 5, "2026-08-01T10:00:00+00:00"),
         ("OPTION-CLOSE", 0, -1, 6, "2026-08-02T10:00:00+00:00"),
     ):
         journal.append_event(
-            ledger_key="tradeai-system", source="pytest", external_event_id=event_id,
+            ledger_key="tradeai-official-paper-v2", source="pytest", external_event_id=event_id,
             strategy_name="official-option-cycle", strategy_version="1", occurred_at=occurred_at,
             legs=[{
                 "market": "US", "instrument_type": "option", "symbol": "AAPL",
@@ -498,9 +541,9 @@ def test_portfolio_activity_keeps_option_prices_per_contract_unit(compatibility)
 def test_portfolio_activity_reports_full_per_market_execution_counts_before_preview_limit(compatibility):
     database, user, login, repository = compatibility
     del user
-    journal = QuantJournal(database)
+    journal = OfficialPaperJournalV2(database)
     journal.append_event(
-        ledger_key="tradeai-system", source="pytest", external_event_id="OFFICIAL-CN-1",
+        ledger_key="tradeai-official-paper-v2", source="pytest", external_event_id="OFFICIAL-CN-1",
         strategy_name="official-volume", strategy_version="1", occurred_at="2026-07-31T10:00:00+00:00",
         legs=[{
             "market": "CN", "instrument_type": "stock", "symbol": "600519",
@@ -509,7 +552,7 @@ def test_portfolio_activity_reports_full_per_market_execution_counts_before_prev
     )
     for index in range(501):
         journal.append_event(
-            ledger_key="tradeai-system", source="pytest", external_event_id=f"OFFICIAL-US-{index}",
+            ledger_key="tradeai-official-paper-v2", source="pytest", external_event_id=f"OFFICIAL-US-{index}",
             strategy_name="official-volume", strategy_version="1",
             occurred_at=f"2026-08-01T10:{index // 60:02d}:{index % 60:02d}+00:00",
             legs=[{

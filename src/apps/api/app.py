@@ -12,6 +12,7 @@ import re
 import threading
 import time
 from typing import Any
+import uuid
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -93,10 +94,58 @@ from data.yfinance_adapter import YahooOptionExpiryUnavailableError
 load_dotenv(Path(__file__).resolve().parents[3] / ".env")
 
 
+_CORRELATION_ID_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{8,128}")
+_DEFAULT_ERROR_CODES = {
+    400: "invalid_request",
+    401: "authentication_required",
+    403: "forbidden",
+    404: "not_found",
+    409: "conflict",
+    413: "payload_too_large",
+    429: "rate_limited",
+    503: "service_unavailable",
+}
+
+
+def _correlation_id(request: Request | None) -> str:
+    supplied = request.headers.get("x-correlation-id", "").strip() if request is not None else ""
+    if _CORRELATION_ID_PATTERN.fullmatch(supplied):
+        return supplied
+    return uuid.uuid4().hex
+
+
+def _public_error_response(
+    request: Request | None,
+    *,
+    code: str,
+    message: str,
+    status: int,
+    context: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+) -> JSONResponse:
+    safe_context = dict(context or {})
+    # Success payloads may disclose a source for research provenance.  Failure
+    # payloads must not expose provider topology or fallback behavior.
+    if status >= 500:
+        for key in ("source", "fallback_from", "provider", "provider_name"):
+            safe_context.pop(key, None)
+    return JSONResponse(
+        {
+            **safe_context,
+            "code": code,
+            "error": message,
+            "correlation_id": _correlation_id(request),
+        },
+        status_code=status,
+        headers=headers,
+    )
+
+
 class ApiError(RuntimeError):
-    def __init__(self, message: str, status: int = 400):
+    def __init__(self, message: str, status: int = 400, *, code: str | None = None):
         super().__init__(message)
         self.status = status
+        self.code = code or _DEFAULT_ERROR_CODES.get(status, "request_failed")
 
 
 def _build_earnings_forecast_api() -> EarningsForecastApi | None:
@@ -218,7 +267,12 @@ class PaymentProofBodyLimit:
         if raw_length:
             try:
                 if int(raw_length) > self.max_bytes:
-                    await JSONResponse({"error": "付款凭证请求过大。"}, status_code=413)(scope, receive, send)
+                    await _public_error_response(
+                        None,
+                        code="payload_too_large",
+                        message="付款凭证请求过大。",
+                        status=413,
+                    )(scope, receive, send)
                     return
             except ValueError:
                 pass
@@ -236,7 +290,12 @@ class PaymentProofBodyLimit:
         try:
             await self.app(scope, limited_receive, send)
         except ProofBodyTooLarge:
-            await JSONResponse({"error": "付款凭证请求过大。"}, status_code=413)(scope, receive, send)
+            await _public_error_response(
+                None,
+                code="payload_too_large",
+                message="付款凭证请求过大。",
+                status=413,
+            )(scope, receive, send)
 
 
 REFRESH_COOKIE = "tradeai_refresh"
@@ -829,9 +888,24 @@ def _clip_market_frame_for_delivery(
     return frame.iloc[positions], observed_at, visible_as_of
 
 
-def _market_source_realtime(source: Any, market: str) -> bool:
-    """Verify upstream real-time entitlement without treating it as user access."""
+def _realtime_observation_is_fresh(
+    observed_at: datetime | None, *, now: datetime | None = None
+) -> bool:
+    """Fail closed unless a provider observation is recent and time-zone aware."""
+    if observed_at is None:
+        return False
+    current = (now or datetime.now(UTC)).astimezone(UTC)
+    value = observed_at.astimezone(UTC)
+    return -timedelta(minutes=1) <= current - value <= timedelta(minutes=2)
+
+
+def _market_source_realtime(
+    source: Any, market: str, *, observed_at: datetime | None
+) -> bool:
+    """Verify upstream entitlement and fresh data without treating it as user access."""
     if market != "美股" or not bool(getattr(source, "supports_realtime", False)):
+        return False
+    if not _realtime_observation_is_fresh(observed_at):
         return False
     upstream = _upstream_market_status()
     return bool(
@@ -1144,16 +1218,21 @@ def _option_text(row: Any, column: str) -> str | None:
     return text if text and text.casefold() not in {"nan", "nat", "<na>"} else None
 
 
-def _opend_option_status(rights: dict[str, object], has_executable_quotes: bool) -> dict[str, object]:
+def _opend_option_status(
+    rights: dict[str, object], has_executable_quotes: bool, *, observed_at: datetime | None
+) -> dict[str, object]:
     configured = bool(os.getenv("MARKET_DATA_REALTIME", "").strip().lower() in {"1", "true", "yes", "on"})
     qot_right = str(rights.get("us_option_qot_right") or "N/A").strip().upper()
     entitlement = bool(rights.get("us_option_realtime_entitlement"))
-    realtime = configured and entitlement
+    fresh = _realtime_observation_is_fresh(observed_at)
+    realtime = configured and entitlement and fresh
     known = qot_right in {"BMP", "LV1", "LV2", "LV3", "SF", "NO"}
-    if entitlement:
+    if entitlement and fresh:
         freshness = f"OpenD · 美股期权 {qot_right} 实时权限已验证"
         if not configured:
             freshness += "；平台实时开关未启用"
+    elif entitlement:
+        freshness = "期权实时权限已验证，但报价时间戳不新鲜，仅供研究"
     elif known:
         freshness = f"OpenD · 美股期权权限 {qot_right}，仅供研究"
     else:
@@ -1224,17 +1303,20 @@ def _option_rows(frame: Any, option_type: str, expiry: str) -> list[dict[str, An
     return items
 
 
-def _opend_unavailable(message: str, **context: Any) -> JSONResponse:
+def _opend_unavailable(_message: str, **context: Any) -> JSONResponse:
     """Return a truthful, empty state; option data is never substituted."""
-    return JSONResponse(
-        {**context, "items": [], "status": "unavailable", "error": message},
-        status_code=503,
+    return _public_error_response(
+        None,
+        code="option_market_data_unavailable",
+        message="期权行情暂时不可用，请稍后重试。",
+        status=503,
+        context={**context, "items": [], "status": "unavailable"},
     )
 
 
 def _opend_quote_unavailable(
     symbol: str,
-    message: str,
+    _message: str,
     source: str = "OpenD",
     *,
     delivery_delay_minutes: int = 0,
@@ -1242,32 +1324,37 @@ def _opend_quote_unavailable(
     observed_at: datetime | None = None,
 ) -> JSONResponse:
     """Expose a complete, non-actionable shape when no research quote succeeds."""
-    return JSONResponse({
-        "symbol": symbol,
-        "last": None,
-        "bid": None,
-        "ask": None,
-        "spread": None,
-        "open": None,
-        "high": None,
-        "low": None,
-        "prev_close": None,
-        "volume": None,
-        "quote_at": None,
-        "source": source,
-        "is_realtime": False,
-        "actionable_quote": False,
-        "freshness": "无可用研究报价",
-        "verification": "request_failed",
-        "configuration_allows_realtime": bool(os.getenv("MARKET_DATA_REALTIME", "").strip().lower() in {"1", "true", "yes", "on"}),
-        "delivery_delay_minutes": max(0, int(delivery_delay_minutes)),
-        "visible_as_of": (visible_as_of or _visible_as_of(delivery_delay_minutes)).isoformat(),
-        "observed_at": observed_at.isoformat() if observed_at is not None else None,
-        "provider_realtime": False,
-        "request_succeeded": False,
-        "status": "unavailable",
-        "error": message,
-    }, status_code=503)
+    return _public_error_response(
+        None,
+        code="market_data_unavailable",
+        message="行情服务暂时不可用，请稍后重试。",
+        status=503,
+        context={
+            "symbol": symbol,
+            "last": None,
+            "bid": None,
+            "ask": None,
+            "spread": None,
+            "open": None,
+            "high": None,
+            "low": None,
+            "prev_close": None,
+            "volume": None,
+            "quote_at": None,
+            "source": source,
+            "is_realtime": False,
+            "actionable_quote": False,
+            "freshness": "无可用研究报价",
+            "verification": "request_failed",
+            "configuration_allows_realtime": bool(os.getenv("MARKET_DATA_REALTIME", "").strip().lower() in {"1", "true", "yes", "on"}),
+            "delivery_delay_minutes": max(0, int(delivery_delay_minutes)),
+            "visible_as_of": (visible_as_of or _visible_as_of(delivery_delay_minutes)).isoformat(),
+            "observed_at": observed_at.isoformat() if observed_at is not None else None,
+            "provider_realtime": False,
+            "request_succeeded": False,
+            "status": "unavailable",
+        },
+    )
 
 
 def _resample_market_bars(frame: Any, rule: str | None) -> Any:
@@ -1327,7 +1414,11 @@ async def market_candles(request: Request) -> JSONResponse:
         if assembled_daily:
             observed_at = delayed_daily_observed_at
     except DataSourceError as exc:
-        raise ApiError(str(exc), 503) from exc
+        raise ApiError(
+            "行情服务暂时不可用，请稍后重试。",
+            503,
+            code="market_data_unavailable",
+        ) from exc
     items = []
     for index, row in frame.tail(600).iterrows():
         timestamp = _market_datetime(index, market_name)
@@ -1344,7 +1435,9 @@ async def market_candles(request: Request) -> JSONResponse:
         })
     if not items:
         raise ApiError("行情服务没有返回可用 K 线。", 503)
-    provider_realtime = await run_in_threadpool(_market_source_realtime, source, market_name)
+    provider_realtime = await run_in_threadpool(
+        _market_source_realtime, source, market_name, observed_at=observed_at
+    )
     status = public_market_status(
         market=market_name,
         source=source,
@@ -1464,18 +1557,23 @@ async def market_quote(request: Request) -> JSONResponse:
     configured_realtime = bool(os.getenv("MARKET_DATA_REALTIME", "").strip().lower() in {"1", "true", "yes", "on"})
     qot_right = str(quote.get("us_qot_right") or "N/A").strip().upper()
     entitlement_realtime = bool(quote.get("us_realtime_entitlement"))
-    realtime_verified = configured_realtime and entitlement_realtime
+    quote_at = _iso_market_datetime(quote.get("quote_at"), market_name)
+    fresh_snapshot = _realtime_observation_is_fresh(
+        _market_datetime(quote.get("quote_at"), market_name)
+    )
+    realtime_verified = configured_realtime and entitlement_realtime and fresh_snapshot
     actionable_quote = realtime_verified and bool(quote.get("actionable_snapshot"))
     right_verified = qot_right in {"BMP", "LV1", "LV2", "LV3", "SF", "NO"}
-    if entitlement_realtime:
+    if entitlement_realtime and fresh_snapshot:
         freshness = f"OpenD 快照 · 美股 {qot_right} 实时权限已验证"
         if not configured_realtime:
             freshness += "；平台实时开关未启用"
+    elif entitlement_realtime:
+        freshness = "美股实时权限已验证，但快照时间戳不新鲜，仅供研究"
     elif right_verified:
         freshness = f"OpenD 快照 · 美股权限 {qot_right}，仅供研究"
     else:
         freshness = "OpenD 快照已返回；实时等级未验证"
-    quote_at = _iso_market_datetime(quote.get("quote_at"), market_name)
     return JSONResponse({
         "symbol": symbol,
         **quote,
@@ -1533,7 +1631,9 @@ async def options_chain(request: Request) -> JSONResponse:
             adapter.option_chain_with_expiries, symbol, expiry
         )
     except OptionExpiryUnavailableError as exc:
-        raise ApiError(str(exc), 404) from exc
+        raise ApiError(
+            "请求的期权到期日暂不可用。", 404, code="option_expiry_unavailable"
+        ) from exc
     except DataSourceError as opend_exc:
         fallback = get_resilient_data_source("yfinance")
         try:
@@ -1541,7 +1641,9 @@ async def options_chain(request: Request) -> JSONResponse:
                 fallback.option_chain_with_expiries, symbol, expiry
             )
         except YahooOptionExpiryUnavailableError as exc:
-            raise ApiError(str(exc), 404) from exc
+            raise ApiError(
+                "请求的期权到期日暂不可用。", 404, code="option_expiry_unavailable"
+            ) from exc
         except DataSourceError as fallback_exc:
             return _opend_unavailable(
                 f"OpenD 期权链不可用：{opend_exc}；Yahoo Finance 回退失败：{fallback_exc}",
@@ -1561,7 +1663,17 @@ async def options_chain(request: Request) -> JSONResponse:
             and _option_text(row, "lastTradeDate") is not None
             for row in all_rows
         )
-        source_status = _opend_option_status(rights, has_quotes)
+        observed_at = max(
+            (
+                timestamp
+                for row in all_rows
+                if (timestamp := _market_datetime(_option_text(row, "lastTradeDate"), "美股")) is not None
+            ),
+            default=None,
+        )
+        source_status = _opend_option_status(
+            rights, has_quotes, observed_at=observed_at
+        )
     call_items = _option_rows(calls, "CALL", selected)
     put_items = _option_rows(puts, "PUT", selected)
     return JSONResponse({
@@ -1607,7 +1719,11 @@ async def option_candles(request: Request) -> JSONResponse:
             rights = await run_in_threadpool(adapter.quote_rights)
         except (AttributeError, DataSourceError, TypeError, ValueError):
             rights = _unknown_opend_rights()
-        source_status = _opend_option_status(rights, has_executable_quotes=False)
+        source_status = _opend_option_status(
+            rights,
+            has_executable_quotes=False,
+            observed_at=_frame_observed_at(frame, "美股"),
+        )
     required = {"Open", "High", "Low", "Close", "Volume"}
     if frame.empty or not required.issubset(frame.columns):
         return _opend_unavailable(
@@ -1679,7 +1795,11 @@ async def market_search(request: Request) -> JSONResponse:
         for scope in scopes:
             raw_items.extend(await run_in_threadpool(search_one, scope))
     except DataSourceError as exc:
-        raise ApiError(str(exc), 503) from exc
+        raise ApiError(
+            "行情搜索暂时不可用，请稍后重试。",
+            503,
+            code="market_search_unavailable",
+        ) from exc
     items: list[dict[str, str]] = []
     seen: set[str] = set()
     for item in raw_items:
@@ -1924,29 +2044,52 @@ async def membership_order_payment_qr(request: Request) -> Response:
     )
 
 
-async def api_error_handler(_: Request, exc: ApiError) -> JSONResponse:
-    return JSONResponse({"error": str(exc)}, status_code=exc.status)
+async def api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
+    return _public_error_response(
+        request, code=exc.code, message=str(exc), status=exc.status
+    )
 
 
-async def read_model_error_handler(_: Request, exc: ReadModelError) -> JSONResponse:
-    return JSONResponse({"error": str(exc)}, status_code=503)
+async def read_model_error_handler(request: Request, _exc: ReadModelError) -> JSONResponse:
+    return _public_error_response(
+        request,
+        code="read_model_unavailable",
+        message="账户资料暂时不可用，请稍后重试。",
+        status=503,
+    )
 
 
-async def backtest_queue_error_handler(_: Request, exc: BacktestQueueError) -> JSONResponse:
-    return JSONResponse({"error": str(exc)}, status_code=exc.status)
+async def backtest_queue_error_handler(request: Request, exc: BacktestQueueError) -> JSONResponse:
+    return _public_error_response(
+        request,
+        code="backtest_request_failed",
+        message="回测服务暂时无法处理请求。",
+        status=exc.status,
+    )
 
 
 async def earnings_forecast_unavailable_handler(
-    _: Request, exc: EarningsForecastUnavailable
+    request: Request, _exc: EarningsForecastUnavailable
 ) -> JSONResponse:
-    return JSONResponse(
-        {"error": str(exc)},
-        status_code=503,
+    return _public_error_response(
+        request,
+        code="earnings_forecast_unavailable",
+        message="业绩预测研究暂时不可用。",
+        status=503,
         headers={
             "Cache-Control": "private, no-store",
             "Pragma": "no-cache",
             "Vary": "Cookie, Authorization",
         },
+    )
+
+
+async def unexpected_error_handler(request: Request, _exc: Exception) -> JSONResponse:
+    return _public_error_response(
+        request,
+        code="internal_error",
+        message="服务暂时无法处理请求，请稍后重试。",
+        status=500,
     )
 
 
@@ -2025,6 +2168,7 @@ app = Starlette(
         OfficialOptionSimulationUnavailable: official_option_sim_unavailable_handler,
         OfficialOptionSimulationReceiverError: official_option_sim_receiver_error,
         SystemCycleResearchReceiverError: system_cycle_research_receiver_error,
+        Exception: unexpected_error_handler,
     },
 )
 app.state.repository = ReadOnlyLegacyRepository()

@@ -19,8 +19,12 @@ _EVENT_TYPES = {"signal", "correction", "reversal"}
 _SOURCE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}")
 _KEY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}")
 _US_SYMBOL_RE = re.compile(r"[A-Z][A-Z0-9.-]{0,14}")
+_HK_SYMBOL_RE = re.compile(r"\d{5}")
 _CN_SYMBOL_RE = re.compile(r"\d{6}")
 _MAX_NUMBER = 1e12
+_LEGACY_MARKET_CURRENCIES = {"US": "USD", "CN": "CNY"}
+_OFFICIAL_PAPER_V2_MARKET_CURRENCIES = {"US": "USD", "HK": "HKD", "CN": "CNY"}
+OFFICIAL_PAPER_V2_INITIAL_CASH = {"USD": 10_000.0, "HKD": 10_000.0, "CNY": 10_000.0}
 
 
 def _text(value: Any, name: str, max_length: int, pattern: re.Pattern[str] | None = None) -> str:
@@ -88,7 +92,10 @@ def _strike_token(value: float) -> str:
     return format(value, ".12g")
 
 
-def _normalize_leg(raw: Any) -> dict[str, Any]:
+def _normalize_leg(
+    raw: Any,
+    market_currencies: Mapping[str, str] = _LEGACY_MARKET_CURRENCIES,
+) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("each leg must be an object")
     allowed = {
@@ -101,16 +108,20 @@ def _normalize_leg(raw: Any) -> dict[str, Any]:
 
     market = str(raw.get("market", "")).strip().upper()
     instrument_type = str(raw.get("instrument_type", "")).strip().lower()
-    if market not in {"US", "CN"}:
-        raise ValueError("market must be US or CN")
+    if market not in market_currencies:
+        raise ValueError(f"market must be one of {', '.join(market_currencies)}")
     if instrument_type not in {"stock", "option"}:
         raise ValueError("instrument_type must be stock or option")
     symbol = str(raw.get("symbol", "")).strip().upper()
-    symbol_pattern = _US_SYMBOL_RE if market == "US" else _CN_SYMBOL_RE
+    symbol_pattern = {
+        "US": _US_SYMBOL_RE,
+        "HK": _HK_SYMBOL_RE,
+        "CN": _CN_SYMBOL_RE,
+    }[market]
     if not symbol_pattern.fullmatch(symbol):
         raise ValueError("symbol does not match market")
 
-    expected_currency = "USD" if market == "US" else "CNY"
+    expected_currency = market_currencies[market]
     currency = str(raw.get("currency", expected_currency)).strip().upper()
     if currency != expected_currency:
         raise ValueError("currency does not match market")
@@ -221,14 +232,15 @@ def _rows_to_events(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return events
 
 
-_EVENT_SELECT = """
+def _event_select(event_table: str, leg_table: str) -> str:
+    return f"""
 SELECT e.id event_id,e.ledger_key,e.source,e.external_event_id,e.event_type,
        e.strategy_name,e.strategy_version,e.corrects_event_id,e.occurred_at,e.recorded_at,
        e.leg_count,e.metadata_json,e.payload_hash,
        l.id leg_id,l.leg_no,l.market,l.instrument_type,l.instrument_key,l.symbol,l.currency,
        l.option_expiry,l.option_right,l.option_strike,l.target_quantity,l.quantity_delta,
        l.price,l.multiplier,l.commission
-FROM quant_events e LEFT JOIN quant_event_legs l ON l.event_id=e.id
+FROM {event_table} e LEFT JOIN {leg_table} l ON l.event_id=e.id
 """
 
 
@@ -291,17 +303,30 @@ def _fold(events: Sequence[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], 
 class QuantJournal:
     """Atomic append and deterministic replay over the immutable SQLite journal."""
 
+    _EVENT_TABLE = "quant_events"
+    _LEG_TABLE = "quant_event_legs"
+    _SNAPSHOT_TABLE = "quant_equity_snapshots"
+    _MARKET_CURRENCIES = _LEGACY_MARKET_CURRENCIES
+    _SNAPSHOT_HAS_MARKET = False
+    _DEFAULT_INITIAL_CASH = 100_000.0
+    _REQUIRED_INITIAL_CASH: float | None = None
+
     def __init__(self, database: DatabaseManager | None = None):
         self.db = database or get_database()
 
-    @staticmethod
-    def _load(conn: sqlite3.Connection, ledger_key: str) -> list[dict[str, Any]]:
-        rows = conn.execute(_EVENT_SELECT + " WHERE e.ledger_key=? ORDER BY e.id,l.leg_no", (ledger_key,)).fetchall()
+    def _load(self, conn: sqlite3.Connection, ledger_key: str) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            _event_select(self._EVENT_TABLE, self._LEG_TABLE)
+            + " WHERE e.ledger_key=? ORDER BY e.id,l.leg_no",
+            (ledger_key,),
+        ).fetchall()
         return _rows_to_events([dict(row) for row in rows])
 
-    @staticmethod
-    def _one(conn: sqlite3.Connection, event_id: int) -> dict[str, Any]:
-        rows = conn.execute(_EVENT_SELECT + " WHERE e.id=? ORDER BY l.leg_no", (event_id,)).fetchall()
+    def _one(self, conn: sqlite3.Connection, event_id: int) -> dict[str, Any]:
+        rows = conn.execute(
+            _event_select(self._EVENT_TABLE, self._LEG_TABLE) + " WHERE e.id=? ORDER BY l.leg_no",
+            (event_id,),
+        ).fetchall()
         events = _rows_to_events([dict(row) for row in rows])
         if not events:
             raise ValueError("quant event does not exist")
@@ -331,7 +356,7 @@ class QuantJournal:
             raise ValueError("event_type must be signal, correction, or reversal")
         if isinstance(legs, (str, bytes)) or not isinstance(legs, Sequence):
             raise ValueError("legs must be a sequence")
-        normalized_legs = [_normalize_leg(leg) for leg in legs]
+        normalized_legs = [_normalize_leg(leg, self._MARKET_CURRENCIES) for leg in legs]
         instrument_keys = [leg["instrument_key"] for leg in normalized_legs]
         if len(instrument_keys) != len(set(instrument_keys)):
             raise ValueError("an event cannot repeat an instrument")
@@ -351,7 +376,8 @@ class QuantJournal:
             with self.db.transaction() as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 existing = conn.execute(
-                    "SELECT id,occurred_at,payload_hash FROM quant_events WHERE source=? AND external_event_id=?",
+                    f"SELECT id,occurred_at,payload_hash FROM {self._EVENT_TABLE} "
+                    "WHERE source=? AND external_event_id=?",
                     (source, external_event_id),
                 ).fetchone()
                 normalized_occurred = explicit_occurred or (str(existing["occurred_at"]) if existing else _utc_iso(None))
@@ -383,12 +409,12 @@ class QuantJournal:
                 extra_superseded: set[int] = set()
                 if corrects_event_id is not None:
                     target = conn.execute(
-                        "SELECT id,ledger_key FROM quant_events WHERE id=?", (corrects_event_id,)
+                        f"SELECT id,ledger_key FROM {self._EVENT_TABLE} WHERE id=?", (corrects_event_id,)
                     ).fetchone()
                     if not target or target["ledger_key"] != ledger_key:
                         raise ValueError("corrected event must exist in the same ledger")
                     if conn.execute(
-                        "SELECT 1 FROM quant_events WHERE corrects_event_id=?", (corrects_event_id,)
+                        f"SELECT 1 FROM {self._EVENT_TABLE} WHERE corrects_event_id=?", (corrects_event_id,)
                     ).fetchone():
                         raise ValueError("quant event has already been superseded")
                     extra_superseded.add(corrects_event_id)
@@ -408,10 +434,10 @@ class QuantJournal:
                         raise ValueError("instrument identity cannot change across events")
 
                 cursor = conn.execute(
-                    """INSERT INTO quant_events
-                       (ledger_key,source,external_event_id,event_type,strategy_name,strategy_version,
-                        corrects_event_id,occurred_at,recorded_at,leg_count,metadata_json,payload_hash)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    f"""INSERT INTO {self._EVENT_TABLE}
+                        (ledger_key,source,external_event_id,event_type,strategy_name,strategy_version,
+                         corrects_event_id,occurred_at,recorded_at,leg_count,metadata_json,payload_hash)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         ledger_key, source, external_event_id, event_type, strategy_name, strategy_version,
                         corrects_event_id, normalized_occurred, _utc_iso(None), len(normalized_legs),
@@ -420,11 +446,11 @@ class QuantJournal:
                 )
                 event_id = int(cursor.lastrowid)
                 conn.executemany(
-                    """INSERT INTO quant_event_legs
-                       (event_id,leg_no,market,instrument_type,instrument_key,symbol,currency,
-                        option_expiry,option_right,option_strike,target_quantity,quantity_delta,
-                        price,multiplier,commission)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    f"""INSERT INTO {self._LEG_TABLE}
+                        (event_id,leg_no,market,instrument_type,instrument_key,symbol,currency,
+                         option_expiry,option_right,option_strike,target_quantity,quantity_delta,
+                         price,multiplier,commission)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     [
                         (
                             event_id, leg_no, leg["market"], leg["instrument_type"], leg["instrument_key"],
@@ -453,7 +479,8 @@ class QuantJournal:
         if isinstance(corrects_event_id, bool) or not isinstance(corrects_event_id, int) or corrects_event_id <= 0:
             raise ValueError("corrects_event_id must be a positive integer")
         row = self.db.fetch_one(
-            "SELECT ledger_key,strategy_name,strategy_version FROM quant_events WHERE id=?", (corrects_event_id,)
+            f"SELECT ledger_key,strategy_name,strategy_version FROM {self._EVENT_TABLE} WHERE id=?",
+            (corrects_event_id,),
         )
         if not row:
             raise ValueError("quant event does not exist")
@@ -471,7 +498,11 @@ class QuantJournal:
 
     def list_events(self, ledger_key: str) -> list[dict[str, Any]]:
         ledger_key = _text(ledger_key, "ledger_key", 128, _KEY_RE)
-        rows = self.db.fetch_all(_EVENT_SELECT + " WHERE e.ledger_key=? ORDER BY e.id,l.leg_no", (ledger_key,))
+        rows = self.db.fetch_all(
+            _event_select(self._EVENT_TABLE, self._LEG_TABLE)
+            + " WHERE e.ledger_key=? ORDER BY e.id,l.leg_no",
+            (ledger_key,),
+        )
         events = _rows_to_events(rows)
         superseded = {event["corrects_event_id"] for event in events if event["corrects_event_id"] is not None}
         for event in events:
@@ -482,7 +513,9 @@ class QuantJournal:
         """Derive the position adjustment caused by an immutable event."""
         if isinstance(event_id, bool) or not isinstance(event_id, int) or event_id <= 0:
             raise ValueError("event_id must be a positive integer")
-        row = self.db.fetch_one("SELECT ledger_key FROM quant_events WHERE id=?", (event_id,))
+        row = self.db.fetch_one(
+            f"SELECT ledger_key FROM {self._EVENT_TABLE} WHERE id=?", (event_id,)
+        )
         if not row:
             raise ValueError("quant event does not exist")
         events = self.list_events(row["ledger_key"])
@@ -537,8 +570,11 @@ class QuantJournal:
             if not isinstance(initial_cash, Mapping):
                 raise ValueError("initial_cash must be an object keyed by currency")
             for currency, value in initial_cash.items():
-                if currency not in {"USD", "CNY"}:
-                    raise ValueError("initial_cash currency must be USD or CNY")
+                if currency not in set(self._MARKET_CURRENCIES.values()):
+                    raise ValueError(
+                        "initial_cash currency must be one of "
+                        + ", ".join(self._MARKET_CURRENCIES.values())
+                    )
                 initial[currency] = _number(value, f"initial_cash {currency}", nonnegative=True)
 
         output_positions: dict[str, dict[str, Any]] = {}
@@ -602,20 +638,35 @@ class QuantJournal:
         source: str,
         external_snapshot_id: str,
         currency: str,
+        market: str | None = None,
         cash: int | float,
         market_value: int | float,
         realized_pnl: int | float,
         unrealized_pnl: int | float,
-        initial_cash: int | float = 100_000,
+        initial_cash: int | float | None = None,
         captured_at: datetime | str | None = None,
     ) -> dict[str, Any]:
         ledger_key = _text(ledger_key, "ledger_key", 128, _KEY_RE)
         source = _text(source, "source", 64, _SOURCE_RE)
         external_snapshot_id = _text(external_snapshot_id, "external_snapshot_id", 128)
         currency = str(currency).strip().upper()
-        if currency not in {"USD", "CNY"}:
-            raise ValueError("currency must be USD or CNY")
+        allowed_currencies = set(self._MARKET_CURRENCIES.values())
+        if currency not in allowed_currencies:
+            raise ValueError("currency must be one of " + ", ".join(self._MARKET_CURRENCIES.values()))
+        normalized_market: str | None = None
+        if self._SNAPSHOT_HAS_MARKET:
+            normalized_market = str(market or "").strip().upper()
+            if self._MARKET_CURRENCIES.get(normalized_market) != currency:
+                raise ValueError("market and currency do not match")
+        elif market is not None:
+            raise ValueError("market is not supported by this journal contract")
+        if initial_cash is None:
+            initial_cash = self._DEFAULT_INITIAL_CASH
         initial = _number(initial_cash, "initial_cash", nonnegative=True)
+        if self._REQUIRED_INITIAL_CASH is not None and not math.isclose(
+            initial, self._REQUIRED_INITIAL_CASH, rel_tol=0, abs_tol=0.001
+        ):
+            raise ValueError(f"initial_cash must equal {self._REQUIRED_INITIAL_CASH:g}")
         cash_value = _number(cash, "cash")
         market_value_value = _number(market_value, "market_value")
         realized = _number(realized_pnl, "realized_pnl")
@@ -639,6 +690,8 @@ class QuantJournal:
             "total_equity": equity,
             "total_pnl": total_pnl,
         }
+        if normalized_market is not None:
+            payload["market"] = normalized_market
         payload_hash = hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
         ).hexdigest()
@@ -646,8 +699,8 @@ class QuantJournal:
             with self.db.transaction() as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 existing = conn.execute(
-                    """SELECT * FROM quant_equity_snapshots
-                       WHERE source=? AND external_snapshot_id=? AND currency=?""",
+                    f"""SELECT * FROM {self._SNAPSHOT_TABLE}
+                        WHERE source=? AND external_snapshot_id=? AND currency=?""",
                     (source, external_snapshot_id, currency),
                 ).fetchone()
                 if existing:
@@ -655,25 +708,32 @@ class QuantJournal:
                         raise ValueError("snapshot idempotency key was reused with different content")
                     return {**dict(existing), "created": False}
                 latest = conn.execute(
-                    """SELECT captured_at FROM quant_equity_snapshots
-                       WHERE ledger_key=? AND currency=? ORDER BY captured_at DESC,id DESC LIMIT 1""",
+                    f"""SELECT captured_at FROM {self._SNAPSHOT_TABLE}
+                        WHERE ledger_key=? AND currency=? ORDER BY captured_at DESC,id DESC LIMIT 1""",
                     (ledger_key, currency),
                 ).fetchone()
                 if latest and captured < latest["captured_at"]:
                     raise ValueError("captured_at cannot precede the latest equity snapshot")
-                cursor = conn.execute(
-                    """INSERT INTO quant_equity_snapshots
-                       (ledger_key,source,external_snapshot_id,captured_at,currency,initial_cash,
-                        cash,market_value,realized_pnl,unrealized_pnl,total_equity,total_pnl,
-                        recorded_at,payload_hash)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (
-                        ledger_key, source, external_snapshot_id, captured, currency, initial,
-                        cash_value, market_value_value, realized, unrealized, equity, total_pnl,
-                        _utc_iso(None), payload_hash,
-                    ),
+                columns = (
+                    "ledger_key,source,external_snapshot_id,captured_at,"
+                    + ("market," if self._SNAPSHOT_HAS_MARKET else "")
+                    + "currency,initial_cash,cash,market_value,realized_pnl,unrealized_pnl,"
+                    "total_equity,total_pnl,recorded_at,payload_hash"
                 )
-                row = conn.execute("SELECT * FROM quant_equity_snapshots WHERE id=?", (cursor.lastrowid,)).fetchone()
+                values = (
+                    ledger_key, source, external_snapshot_id, captured,
+                    *((normalized_market,) if self._SNAPSHOT_HAS_MARKET else ()),
+                    currency, initial, cash_value, market_value_value, realized, unrealized,
+                    equity, total_pnl, _utc_iso(None), payload_hash,
+                )
+                placeholders = ",".join("?" for _ in values)
+                cursor = conn.execute(
+                    f"INSERT INTO {self._SNAPSHOT_TABLE} ({columns}) VALUES ({placeholders})",
+                    values,
+                )
+                row = conn.execute(
+                    f"SELECT * FROM {self._SNAPSHOT_TABLE} WHERE id=?", (cursor.lastrowid,)
+                ).fetchone()
                 return {**dict(row), "created": True}
         except sqlite3.IntegrityError as exc:
             raise ValueError(f"quant equity snapshot constraint failed: {exc}") from exc
@@ -681,13 +741,13 @@ class QuantJournal:
     def list_equity_snapshots(self, ledger_key: str, currency: str, limit: int = 20_000) -> list[dict[str, Any]]:
         ledger_key = _text(ledger_key, "ledger_key", 128, _KEY_RE)
         currency = str(currency).strip().upper()
-        if currency not in {"USD", "CNY"}:
-            raise ValueError("currency must be USD or CNY")
+        if currency not in set(self._MARKET_CURRENCIES.values()):
+            raise ValueError("currency must be one of " + ", ".join(self._MARKET_CURRENCIES.values()))
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20_000:
             raise ValueError("limit must be between 1 and 20000")
         rows = self.db.fetch_all(
-            """SELECT * FROM quant_equity_snapshots WHERE ledger_key=? AND currency=?
-               ORDER BY captured_at DESC,id DESC LIMIT ?""",
+            f"""SELECT * FROM {self._SNAPSHOT_TABLE} WHERE ledger_key=? AND currency=?
+                ORDER BY captured_at DESC,id DESC LIMIT ?""",
             (ledger_key, currency, limit),
         )
         return list(reversed(rows))
@@ -719,3 +779,49 @@ class QuantJournal:
                 "return": change / base_equity if base_equity else None,
             }
         return {"current": latest, "windows": windows, "snapshot_count": len(snapshots)}
+
+
+class OfficialPaperJournalV2(QuantJournal):
+    """Independent three-market paper ledger with a fixed 10,000-unit genesis."""
+
+    _EVENT_TABLE = "official_paper_events_v2"
+    _LEG_TABLE = "official_paper_event_legs_v2"
+    _SNAPSHOT_TABLE = "official_paper_equity_snapshots_v2"
+    _MARKET_CURRENCIES = _OFFICIAL_PAPER_V2_MARKET_CURRENCIES
+    _SNAPSHOT_HAS_MARKET = True
+    _DEFAULT_INITIAL_CASH = 10_000.0
+    _REQUIRED_INITIAL_CASH = 10_000.0
+    _DEFAULT_LEDGER_KEY = "tradeai-official-paper-v2"
+    _GENESIS_SOURCE = "ciclotrade-official-paper-v2"
+    _GENESIS_AT = "1970-01-01T00:00:00.000000+00:00"
+
+    def ensure_genesis(self, ledger_key: str = _DEFAULT_LEDGER_KEY) -> list[dict[str, Any]]:
+        ledger_key = _text(ledger_key, "ledger_key", 128, _KEY_RE)
+        external_snapshot_id = (
+            "genesis"
+            if ledger_key == self._DEFAULT_LEDGER_KEY
+            else "genesis-" + hashlib.sha256(ledger_key.encode("utf-8")).hexdigest()[:24]
+        )
+        rows = self.db.fetch_all(
+            f"""SELECT * FROM {self._SNAPSHOT_TABLE}
+                WHERE ledger_key=? AND source=? AND external_snapshot_id=?""",
+            (ledger_key, self._GENESIS_SOURCE, external_snapshot_id),
+        )
+        present = {str(row["market"]): row for row in rows}
+        for market, currency in self._MARKET_CURRENCIES.items():
+            if market in present:
+                continue
+            present[market] = self.append_equity_snapshot(
+                ledger_key=ledger_key,
+                source=self._GENESIS_SOURCE,
+                external_snapshot_id=external_snapshot_id,
+                market=market,
+                currency=currency,
+                initial_cash=OFFICIAL_PAPER_V2_INITIAL_CASH[currency],
+                cash=OFFICIAL_PAPER_V2_INITIAL_CASH[currency],
+                market_value=0,
+                realized_pnl=0,
+                unrealized_pnl=0,
+                captured_at=self._GENESIS_AT,
+            )
+        return [dict(present[market]) for market in self._MARKET_CURRENCIES]

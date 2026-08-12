@@ -527,7 +527,9 @@ def test_rewrite_app_registers_private_earnings_routes_and_preserves_401(
         _asgi_get("/api/rewrite/v1/earnings-forecasts")
     )
     assert status == 401
-    assert payload == {"error": "缺少 Bearer Access Token。"}
+    assert payload["error"] == "缺少 Bearer Access Token。"
+    assert payload["code"] == "authentication_required"
+    assert len(payload["correlation_id"]) == 32
     assert headers["cache-control"] == "no-store"
 
 
@@ -539,7 +541,9 @@ def test_rewrite_app_fails_closed_when_earnings_api_is_not_configured(monkeypatc
         _asgi_get("/api/rewrite/v1/earnings-forecasts")
     )
     assert status == 503
-    assert payload == {"error": "业绩预测研究暂时不可用。"}
+    assert payload["error"] == "业绩预测研究暂时不可用。"
+    assert payload["code"] == "earnings_forecast_unavailable"
+    assert len(payload["correlation_id"]) == 32
     assert headers["cache-control"] == "private, no-store"
     assert headers["vary"] == "Cookie, Authorization"
 

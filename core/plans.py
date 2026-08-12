@@ -119,7 +119,7 @@ def telegram_timeline_limits(plan: str) -> dict[str, int]:
     return {
         "免费版": {"stock": 10, "option": 0, "stock_delay_minutes": 60, "option_delay_minutes": 15, "pnl_stock": 10, "pnl_option": 10, "pnl_stock_delay_minutes": 60, "pnl_option_delay_minutes": 15, "per_minute": 2, "per_day": 5},
         "标准版": {"stock": 30, "option": 0, "stock_delay_minutes": 60, "option_delay_minutes": 15, "pnl_stock": 30, "pnl_option": 30, "pnl_stock_delay_minutes": 60, "pnl_option_delay_minutes": 15, "per_minute": 6, "per_day": 30},
-        "高级版": {"stock": 100, "option": 0, "stock_delay_minutes": 0, "option_delay_minutes": 0, "pnl_stock": 100, "pnl_option": 30, "pnl_stock_delay_minutes": 0, "pnl_option_delay_minutes": 15, "per_minute": 10, "per_day": 100},
+        "高级版": {"stock": 100, "option": 0, "stock_delay_minutes": 0, "option_delay_minutes": 15, "pnl_stock": 100, "pnl_option": 30, "pnl_stock_delay_minutes": 0, "pnl_option_delay_minutes": 15, "per_minute": 10, "per_day": 100},
         "专业版": {"stock": 100, "option": 100, "stock_delay_minutes": 0, "option_delay_minutes": 0, "pnl_stock": 100, "pnl_option": 100, "pnl_stock_delay_minutes": 0, "pnl_option_delay_minutes": 0, "per_minute": 12, "per_day": 200},
         "定制版": {"stock": 100, "option": 100, "stock_delay_minutes": 0, "option_delay_minutes": 0, "pnl_stock": 100, "pnl_option": 100, "pnl_stock_delay_minutes": 0, "pnl_option_delay_minutes": 0, "per_minute": 12, "per_day": 200},
     }.get(
@@ -144,14 +144,14 @@ def web_market_data_visibility(plan: str, instrument_type: str = "stock") -> dic
     delays = {
         "stock": {
             "免费版": 15,
-            "标准版": 15,
+            "标准版": 0,
             "高级版": 0,
             "专业版": 0,
             "定制版": 0,
         },
         "option": {
             "免费版": 15,
-            "标准版": 15,
+            "标准版": 0,
             "高级版": 0,
             "专业版": 0,
             "定制版": 0,

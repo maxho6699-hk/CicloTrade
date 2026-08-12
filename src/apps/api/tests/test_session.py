@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import importlib
 import json
 from http.cookies import SimpleCookie
+import re
 import threading
 from urllib.parse import urlencode
 
@@ -110,6 +111,7 @@ async def _asgi_json(
     method: str = "GET",
     payload: dict | None = None,
     headers: tuple[tuple[str, str], ...] = (),
+    query: dict[str, str] | None = None,
 ) -> tuple[int, dict[str, str], dict]:
     body = json.dumps(payload).encode() if payload is not None else b""
     request_headers = [
@@ -141,7 +143,7 @@ async def _asgi_json(
             "scheme": "http",
             "path": path,
             "raw_path": path.encode(),
-            "query_string": b"",
+            "query_string": urlencode(query or {}).encode(),
             "headers": request_headers,
             "client": ("127.0.0.1", 50000),
             "server": ("testserver", 80),
@@ -204,7 +206,9 @@ def test_public_registration_uses_asgi_route_middleware_and_error_mapping(browse
         "/api/rewrite/v1/session/register", method="POST", payload={}
     ))
     assert invalid_status == 400
-    assert invalid == {"error": "注册字段不完整或包含未知字段。"}
+    assert invalid["error"] == "注册字段不完整或包含未知字段。"
+    assert invalid["code"] == "invalid_request"
+    assert re.fullmatch(r"[0-9a-f]{32}", invalid["correlation_id"])
     _assert_asgi_security_headers(invalid_headers)
 
 
@@ -806,6 +810,36 @@ def test_authenticated_market_candles_use_bounded_read_adapter(browser_api, monk
     assert payload["status"]["is_realtime"] is False
 
 
+def test_public_market_error_redacts_provider_details_and_returns_correlation_id(
+    browser_api, monkeypatch
+):
+    from data.datasource import DataSourceError
+
+    api_module = importlib.import_module("src.apps.api.app")
+    leaked = r"C:\secret\token.db upstream_response={'access_token':'do-not-leak'} SQL SELECT * FROM users"
+
+    def fail_market_data(*_args, **_kwargs):
+        raise DataSourceError(leaked)
+
+    monkeypatch.setattr(api_module, "_market_bars_with_fallback", fail_market_data)
+    access_token = _login_token()
+
+    status, _, payload = asyncio.run(_asgi_json(
+        "/api/rewrite/v1/market/candles",
+        headers=(("authorization", f"Bearer {access_token}"),),
+        query={"symbol": "AAPL", "timeframe": "日线"},
+    ))
+
+    assert status == 503
+    assert payload["code"] == "market_data_unavailable"
+    assert payload["error"] == "行情服务暂时不可用，请稍后重试。"
+    assert re.fullmatch(r"[0-9a-f]{32}", payload["correlation_id"])
+    encoded = json.dumps(payload, ensure_ascii=False)
+    assert not any(secret in encoded for secret in (
+        "C:\\secret", "access_token", "SELECT * FROM users", "upstream_response",
+    ))
+
+
 def test_authenticated_market_candles_resample_real_hour_bars(browser_api, monkeypatch):
     access_token = _login_token()
 
@@ -1012,10 +1046,11 @@ def test_authenticated_market_quote_marks_unverified_opend_snapshot_non_actionab
 def test_authenticated_market_quote_accepts_verified_opend_realtime_right(browser_api, monkeypatch):
     class VerifiedOpenD:
         def stock_quote(self, symbol):
+            quote_at = datetime.now(UTC).isoformat()
             return {
                 "symbol": symbol, "last": 211.5, "bid": 211.4, "ask": 211.6, "spread": 0.2,
                 "open": 208.0, "high": 212.0, "low": 207.5, "prev_close": 209.0,
-                "volume": 1_234_567, "quote_at": "2026-08-11 15:59:59", "source": "OpenD",
+                "volume": 1_234_567, "quote_at": quote_at, "source": "OpenD",
                 "us_qot_right": "LV2", "us_option_qot_right": "LV1",
                 "us_realtime_entitlement": True, "us_option_realtime_entitlement": True,
                 "actionable_snapshot": True,
@@ -1038,6 +1073,36 @@ def test_authenticated_market_quote_accepts_verified_opend_realtime_right(browse
     assert payload["is_realtime"] is True and payload["actionable_quote"] is True
     assert payload["verification"] == "opend_qot_right_lv2"
     assert "LV2 实时权限已验证" in payload["freshness"]
+
+
+def test_authenticated_market_quote_never_labels_a_stale_entitled_snapshot_realtime(
+    browser_api, monkeypatch
+):
+    class StaleEntitledOpenD:
+        def stock_quote(self, symbol):
+            return {
+                "symbol": symbol, "last": 211.5, "bid": 211.4, "ask": 211.6, "spread": 0.2,
+                "open": 208.0, "high": 212.0, "low": 207.5, "prev_close": 209.0,
+                "volume": 1_234_567, "quote_at": "2020-01-01T00:00:00+00:00", "source": "OpenD",
+                "us_qot_right": "LV2", "us_realtime_entitlement": True,
+                "actionable_snapshot": True,
+            }
+
+    api_module = importlib.import_module("src.apps.api.app")
+    monkeypatch.setattr(api_module, "OpenDAdapter", StaleEntitledOpenD)
+    monkeypatch.setenv("MARKET_DATA_REALTIME", "true")
+    browser_api["database"].execute(
+        "UPDATE users SET plan_type='高级版', subscription_expire=? WHERE email=?",
+        ("2099-01-01T00:00:00+00:00", "browser@example.com"),
+    )
+    payload = _payload(asyncio.run(market_quote(_request(
+        "/api/rewrite/v1/market/quote", authorization=f"Bearer {_login_token()}",
+        query={"symbol": "AAPL"},
+    ))))
+
+    assert payload["is_realtime"] is False
+    assert payload["actionable_quote"] is False
+    assert "不新鲜" in payload["freshness"]
 
 
 def test_free_market_quote_is_built_from_bars_before_the_website_delay_cutoff(browser_api, monkeypatch):
@@ -1684,7 +1749,8 @@ def test_options_opend_failure_uses_delayed_yahoo_chain_but_never_guesses_contra
 
     assert candles.status_code == 503
     assert _payload(candles)["items"] == []
-    assert "无法安全映射" in _payload(candles)["error"]
+    assert _payload(candles)["error"] == "期权行情暂时不可用，请稍后重试。"
+    assert _payload(candles)["code"] == "option_market_data_unavailable"
 
 
 def test_options_return_explicit_503_when_opend_and_yahoo_are_both_unavailable(browser_api, monkeypatch):
@@ -1724,7 +1790,10 @@ def test_options_return_explicit_503_when_opend_and_yahoo_are_both_unavailable(b
     assert chain.status_code == candles.status_code == 503
     assert _payload(chain)["expiries"] == _payload(chain)["calls"] == _payload(chain)["puts"] == _payload(chain)["items"] == []
     assert _payload(candles)["items"] == []
-    assert "Yahoo Finance" in _payload(chain)["error"] and "Yahoo Finance" in _payload(candles)["error"]
+    assert _payload(chain)["error"] == _payload(candles)["error"] == "期权行情暂时不可用，请稍后重试。"
+    assert _payload(chain)["code"] == _payload(candles)["code"] == "option_market_data_unavailable"
+    assert "OpenD" not in json.dumps(_payload(chain), ensure_ascii=False)
+    assert "Yahoo" not in json.dumps(_payload(candles), ensure_ascii=False)
 
 
 def test_authenticated_market_search_finds_arbitrary_symbol(browser_api, monkeypatch):

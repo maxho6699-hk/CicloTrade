@@ -17,7 +17,7 @@ from core.compat import UTC
 from core.broker_authorization import broker_execution_authorized
 from core.plans import CAPABILITIES, PLAN_ORDER, PLANS, can, effective_plan, plan_display_name, trading_limits
 from core.membership import membership_purchase_state, resolve_membership_snapshot
-from core.quant_journal import QuantJournal
+from core.quant_journal import OFFICIAL_PAPER_V2_INITIAL_CASH, OfficialPaperJournalV2
 from core.trade_timeline import project_trade_cycles
 from payment.receiving_profile import ReceivingProfileService, payment_profile_public
 from src.apps.api.watchlists import normalize_watchlist_pins, normalize_watchlists
@@ -25,6 +25,37 @@ from src.apps.api.watchlists import normalize_watchlist_pins, normalize_watchlis
 
 _PAPER_INTERVAL_LIMIT = 200
 _PAPER_EXECUTION_LIMIT = 500
+_BROKER_CAPABILITY_CATALOG = (
+    {
+        "key": "tiger", "display_name": "Tiger Brokers",
+        "status": "limited_manual_onboarding",
+        "capabilities": ("market_data", "us_stock_limit_orders"),
+        # The browser has no self-service connection flow: registration is a
+        # reviewed back-office process and must not be presented as connectable.
+        "connection_available": False,
+    },
+    {
+        "key": "futu", "display_name": "Futu OpenD",
+        "status": "market_data_only", "capabilities": ("market_data",),
+        "connection_available": False,
+    },
+    {
+        "key": "alpaca", "display_name": "Alpaca",
+        "status": "planned", "capabilities": (), "connection_available": False,
+    },
+    {
+        "key": "ibkr", "display_name": "Interactive Brokers",
+        "status": "planned", "capabilities": (), "connection_available": False,
+    },
+    {
+        "key": "qmt", "display_name": "QMT",
+        "status": "evaluating", "capabilities": (), "connection_available": False,
+    },
+    {
+        "key": "ptrade", "display_name": "PTrade",
+        "status": "evaluating", "capabilities": (), "connection_available": False,
+    },
+)
 
 
 class ReadModelError(RuntimeError):
@@ -309,6 +340,8 @@ class ReadOnlyLegacyRepository:
         allowed = {
             "users", "user_sessions", "quant_events", "quant_event_legs",
             "quant_equity_snapshots", "subscription_orders", "telegram_accounts",
+            "official_paper_events_v2", "official_paper_event_legs_v2",
+            "official_paper_equity_snapshots_v2",
             "user_settings", "orders", "trades", "risk_log", "broker_accounts", "price_alerts",
             "price_alert_metadata", "user_controls", "platform_controls",
             "membership_entitlements",
@@ -607,6 +640,10 @@ class ReadOnlyLegacyRepository:
                 "requires_user_authorization": True,
                 "short_eligibility_source": "broker",
                 "subscription_auto_connects_broker": False,
+                "capability_catalog": [
+                    {**provider, "capabilities": list(provider["capabilities"])}
+                    for provider in _BROKER_CAPABILITY_CATALOG
+                ],
                 "us_short": {
                     "requires_ciclotrade_manual_approval": False,
                     "requires_broker_authorization": True,
@@ -807,12 +844,12 @@ class ReadOnlyLegacyRepository:
 
     def performance(self, identity: BrowserIdentity, *, limit: int = 200) -> dict[str, Any]:
         bounded = max(1, min(int(limit), 500))
-        ledger_key = os.getenv("TRADEAI_SYSTEM_LEDGER_KEY", "tradeai-system")
+        ledger_key = os.getenv("TRADEAI_OFFICIAL_PAPER_V2_LEDGER_KEY", "tradeai-official-paper-v2")
         with self.connection() as connection:
             rows = connection.execute(
-                """SELECT id,captured_at,currency,initial_cash,cash,market_value,realized_pnl,
-                          unrealized_pnl,total_equity,total_pnl,recorded_at
-                   FROM quant_equity_snapshots WHERE ledger_key=?
+                """SELECT id,captured_at,market,currency,initial_cash,cash,market_value,realized_pnl,
+                           unrealized_pnl,total_equity,total_pnl,recorded_at
+                   FROM official_paper_equity_snapshots_v2 WHERE ledger_key=?
                    ORDER BY captured_at DESC,id DESC LIMIT ?""",
                 (ledger_key, bounded),
             ).fetchall()
@@ -822,16 +859,16 @@ class ReadOnlyLegacyRepository:
 
     def portfolio(self, identity: BrowserIdentity) -> dict[str, Any]:
         del identity
-        ledger_key = os.getenv("TRADEAI_SYSTEM_LEDGER_KEY", "tradeai-system")
+        ledger_key = os.getenv("TRADEAI_OFFICIAL_PAPER_V2_LEDGER_KEY", "tradeai-official-paper-v2")
         with self.connection() as connection:
-            journal = QuantJournal(_ReadOnlyJournalAdapter(connection))
+            journal = OfficialPaperJournalV2(_ReadOnlyJournalAdapter(connection))
             events = journal.list_events(ledger_key)
-            replay = journal.replay(ledger_key)
+            replay = journal.replay(ledger_key, initial_cash=OFFICIAL_PAPER_V2_INITIAL_CASH)
             snapshots = connection.execute(
-                """SELECT s.* FROM quant_equity_snapshots s
-                   JOIN (SELECT currency,MAX(id) id FROM quant_equity_snapshots
-                         WHERE ledger_key=? GROUP BY currency) latest ON latest.id=s.id
-                   ORDER BY s.currency""",
+                """SELECT s.* FROM official_paper_equity_snapshots_v2 s
+                   JOIN (SELECT market,MAX(id) id FROM official_paper_equity_snapshots_v2
+                         WHERE ledger_key=? GROUP BY market) latest ON latest.id=s.id
+                   ORDER BY CASE s.market WHEN 'US' THEN 1 WHEN 'HK' THEN 2 ELSE 3 END""",
                 (ledger_key,),
             ).fetchall()
 
@@ -867,11 +904,11 @@ class ReadOnlyLegacyRepository:
             "created_at": execution["executed_at"],
         } for execution in activity["executions"][:100]]
 
-        latest = {str(row["currency"]): dict(row) for row in snapshots}
+        latest = {str(row["market"]): dict(row) for row in snapshots}
         currency_totals = replay.get("currencies", {})
 
         def account(market: str, currency: str) -> dict[str, Any]:
-            snapshot = latest.get(currency)
+            snapshot = latest.get(market)
             replay_total = currency_totals.get(currency, {})
             return {
                 "market": market,
@@ -894,15 +931,10 @@ class ReadOnlyLegacyRepository:
             "orders": orders,
             "accounts": {
                 "US": account("US", "USD"),
+                "HK": account("HK", "HKD"),
                 "CN": account("CN", "CNY"),
-                "HK": {
-                    "market": "HK", "currency": "HKD", "status": "not_connected",
-                    "captured_at": None, "initial_cash": None, "cash": None,
-                    "market_value": None, "realized_pnl": None, "unrealized_pnl": None,
-                    "total_equity": None, "total_pnl": None,
-                },
             },
             "fresh_marks": False,
-            "mark_source": "immutable_quant_journal_last_recorded_price",
+            "mark_source": "official_paper_v2_last_recorded_price",
             "activity": activity,
         }

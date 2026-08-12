@@ -16,7 +16,7 @@ import pandas as pd
 from backtest.engine import BacktestEngine
 from core.database import DatabaseManager, get_database
 from core.membership import authoritative_membership_user
-from core.quant_journal import QuantJournal
+from core.quant_journal import OFFICIAL_PAPER_V2_INITIAL_CASH, OfficialPaperJournalV2
 from core.strategy_registry import StrategyRegistry
 from core.strategy_scoring import StrategyScorer
 from core.strategy_tracking import StrategyPerformanceTracker
@@ -29,6 +29,7 @@ SYSTEM_UNIVERSE = {
     "CN": ("000001", "000858", "300750", "510050", "510300", "600519", "601318"),
 }
 SYSTEM_INITIAL_CASH = {"USD": 100_000.0, "CNY": 100_000.0}
+OFFICIAL_PAPER_V2_ACCOUNTS = {"US": "USD", "HK": "HKD", "CN": "CNY"}
 _ADAPTIVE_SOURCE = "ciclotrade-adaptive"
 _CYCLE_LABELS = {
     "premarket": "盤前",
@@ -347,9 +348,10 @@ def run_system_quant_cycle(
     if winner is None:
         raise ValueError("没有可用于系统组合的正股策略。")
     definition = definitions[winner["strategy_key"]]
-    ledger_key = os.getenv("TRADEAI_SYSTEM_LEDGER_KEY", "tradeai-system")
-    journal = QuantJournal(db)
-    state = journal.replay(ledger_key, initial_cash=SYSTEM_INITIAL_CASH)
+    ledger_key = os.getenv("TRADEAI_OFFICIAL_PAPER_V2_LEDGER_KEY", "tradeai-official-paper-v2")
+    journal = OfficialPaperJournalV2(db)
+    journal.ensure_genesis(ledger_key)
+    state = journal.replay(ledger_key, initial_cash=OFFICIAL_PAPER_V2_INITIAL_CASH)
     symbols = tuple(symbol for market_symbols in SYSTEM_UNIVERSE.values() for symbol in market_symbols)
     current = {
         item["symbol"]: float(item["quantity"])
@@ -373,7 +375,7 @@ def run_system_quant_cycle(
                 strength = float(price / close.iloc[-lookback - 1] - 1) if lookback else 0.0
                 candidates.append((strength, symbol, price))
         for _, symbol, price in sorted(candidates, reverse=True)[:3]:
-            selected[symbol] = current.get(symbol) or float(max(1, math.floor(20_000 / price)))
+            selected[symbol] = current.get(symbol) or float(max(1, math.floor(2_000 / price)))
 
     legs = []
     risk_levels: dict[str, dict[str, float | str]] = {}
@@ -417,7 +419,7 @@ def run_system_quant_cycle(
     cycle_label = _CYCLE_LABELS.get(slot, "每日收盤後")
     external_event_id = f"adaptive-{day}{f'-{slot}' if slot else ''}"
     if legs and not db.fetch_one(
-        "SELECT id FROM quant_events WHERE source=? AND external_event_id=?",
+        "SELECT id FROM official_paper_events_v2 WHERE source=? AND external_event_id=?",
         (_ADAPTIVE_SOURCE, external_event_id),
     ):
         event = journal.append_event(
@@ -446,19 +448,20 @@ def run_system_quant_cycle(
     replay = journal.replay(
         ledger_key,
         marks={key: value for key, value in marks.items() if key in position_keys},
-        initial_cash=SYSTEM_INITIAL_CASH,
+        initial_cash=OFFICIAL_PAPER_V2_INITIAL_CASH,
     )
     snapshots_created = 0
     captured_at = datetime.now(UTC)
-    for currency in ("USD", "CNY"):
+    for market, currency in OFFICIAL_PAPER_V2_ACCOUNTS.items():
         snapshot_id = external_event_id
         if db.fetch_one(
-            "SELECT id FROM quant_equity_snapshots WHERE source=? AND external_snapshot_id=? AND currency=?",
+            """SELECT id FROM official_paper_equity_snapshots_v2
+               WHERE source=? AND external_snapshot_id=? AND currency=?""",
             (_ADAPTIVE_SOURCE, snapshot_id, currency),
         ):
             continue
         totals = replay["currencies"].get(currency) or {
-            "cash": SYSTEM_INITIAL_CASH[currency],
+            "cash": OFFICIAL_PAPER_V2_INITIAL_CASH[currency],
             "market_value": 0.0,
             "realized_pnl": 0.0,
             "unrealized_pnl": 0.0,
@@ -467,8 +470,9 @@ def run_system_quant_cycle(
             ledger_key=ledger_key,
             source=_ADAPTIVE_SOURCE,
             external_snapshot_id=snapshot_id,
+            market=market,
             currency=currency,
-            initial_cash=SYSTEM_INITIAL_CASH[currency],
+            initial_cash=OFFICIAL_PAPER_V2_INITIAL_CASH[currency],
             cash=totals["cash"],
             market_value=totals["market_value"],
             realized_pnl=totals["realized_pnl"],

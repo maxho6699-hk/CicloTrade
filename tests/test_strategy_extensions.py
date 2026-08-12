@@ -14,7 +14,7 @@ from core.plans import (
 )
 from core.sandbox import SandboxClient, validate_user_code
 from core.signal_imports import DISCLAIMER, SignalImportService, parse_csv
-from core.quant_journal import QuantJournal
+from core.quant_journal import OfficialPaperJournalV2
 from core.strategy_evaluation import (
     _system_history,
     _option_metrics,
@@ -157,15 +157,17 @@ def test_adaptive_cycle_writes_one_idempotent_event_and_daily_nav(db, monkeypatc
 
     first = run_system_quant_cycle(db, data_source=Source(), eval_date="2026-03-24")
     second = run_system_quant_cycle(db, data_source=Source(), eval_date="2026-03-24")
-    state = QuantJournal(db).replay(
-        "tradeai-system", initial_cash={"USD": 100_000, "CNY": 100_000}
+    state = OfficialPaperJournalV2(db).replay(
+        "tradeai-official-paper-v2", initial_cash={"USD": 10_000, "HKD": 10_000, "CNY": 10_000}
     )
 
     assert first["event_created"] is True and first["leg_count"] == 6
-    assert first["snapshots_created"] == 2
+    assert first["snapshots_created"] == 3
     assert second["event_created"] is False and second["snapshots_created"] == 0
     assert state["event_count"] == 1
-    assert db.fetch_one("SELECT COUNT(*) count FROM quant_equity_snapshots")["count"] == 2
+    assert db.fetch_one("SELECT COUNT(*) count FROM official_paper_equity_snapshots_v2")["count"] == 6
+    assert db.fetch_one("SELECT COUNT(*) count FROM quant_events")["count"] == 0
+    assert db.fetch_one("SELECT COUNT(*) count FROM quant_equity_snapshots")["count"] == 0
 
 
 def test_adaptive_cycle_is_idempotent_per_market_checkpoint(db, monkeypatch):
@@ -207,8 +209,10 @@ def test_adaptive_cycle_is_idempotent_per_market_checkpoint(db, monkeypatch):
     assert premarket["event_created"] is True
     assert after_close["event_created"] is True
     assert repeated["event_created"] is False
-    assert db.fetch_one("SELECT COUNT(*) count FROM quant_events")["count"] == 2
-    assert db.fetch_one("SELECT COUNT(*) count FROM quant_equity_snapshots")["count"] == 4
+    assert db.fetch_one("SELECT COUNT(*) count FROM official_paper_events_v2")["count"] == 2
+    assert db.fetch_one("SELECT COUNT(*) count FROM official_paper_equity_snapshots_v2")["count"] == 9
+    assert db.fetch_one("SELECT COUNT(*) count FROM quant_events")["count"] == 0
+    assert db.fetch_one("SELECT COUNT(*) count FROM quant_equity_snapshots")["count"] == 0
 
 
 def test_system_history_routes_us_and_a_shares_to_supported_sources(monkeypatch):

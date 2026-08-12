@@ -7,7 +7,7 @@ import pytest
 
 from core.database import DatabaseManager
 from core.exceptions import DatabaseError
-from core.quant_journal import QuantJournal
+from core.quant_journal import OfficialPaperJournalV2, QuantJournal
 
 
 NOW = datetime(2026, 8, 6, 12, 0, tzinfo=UTC)
@@ -451,3 +451,42 @@ def test_equity_snapshot_rejects_inconsistent_and_out_of_order_values(db):
             unrealized_pnl=0,
             captured_at=NOW - timedelta(days=1),
         )
+
+
+def test_official_paper_v2_has_three_10000_genesis_accounts_and_is_append_only(db):
+    journal = OfficialPaperJournalV2(db)
+    accounts = journal.ensure_genesis("tradeai-official-paper-v2")
+
+    assert [(row["market"], row["currency"], row["initial_cash"]) for row in accounts] == [
+        ("US", "USD", 10_000),
+        ("HK", "HKD", 10_000),
+        ("CN", "CNY", 10_000),
+    ]
+    assert all(row["cash"] == row["total_equity"] == 10_000 for row in accounts)
+    assert all(
+        len(row["payload_hash"]) == 64
+        and set(row["payload_hash"]) <= set("0123456789abcdef")
+        for row in accounts
+    )
+    assert db.fetch_one("SELECT COUNT(*) count FROM quant_events")["count"] == 0
+    assert db.fetch_one("SELECT COUNT(*) count FROM quant_equity_snapshots")["count"] == 0
+
+    event = journal.append_event(
+        ledger_key="tradeai-official-paper-v2",
+        source="pytest",
+        external_event_id="hk-stock-open",
+        strategy_name="official-paper-v2",
+        strategy_version="2",
+        occurred_at=NOW,
+        legs=[{
+            "market": "HK", "instrument_type": "stock", "symbol": "00700",
+            "target_quantity": 10, "quantity_delta": 10, "price": 300,
+        }],
+    )
+
+    assert event["legs"][0]["currency"] == "HKD"
+    assert db.fetch_one("SELECT COUNT(*) count FROM quant_events")["count"] == 0
+    with pytest.raises(DatabaseError, match="append-only"):
+        db.execute("UPDATE official_paper_events_v2 SET strategy_version='3'")
+    with pytest.raises(DatabaseError, match="append-only"):
+        db.execute("DELETE FROM official_paper_equity_snapshots_v2")
