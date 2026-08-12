@@ -1,5 +1,5 @@
 .promotion-page { position: relative; max-width: 1500px; isolation: isolate; }
-.promotion-page::before { position: absolute; z-index: -1; inset: -28px -16px auto; height: 300px; background: linear-gradient(118deg, color-mix(in srgb, #5875d8 14%, transparent), transparent 42%), radial-gradient(ellipse at 82% 7%, color-mix(in srgb, var(--positive) 12%, transparent), transparent 52%); content: ''; opacity: .86; pointer-events: none; }
+.promotion-page::before { position: absolute; z-index: -1; inset: 0 0 auto; height: 272px; background: linear-gradient(118deg, color-mix(in srgb, #5875d8 14%, transparent), transparent 42%), radial-gradient(ellipse at 82% 7%, color-mix(in srgb, var(--positive) 12%, transparent), transparent 52%); content: ''; opacity: .86; pointer-events: none; }
 .promotion-title-row { display: flex; align-items: start; justify-content: space-between; gap: 18px; }
 .promotion-title-row .page-header { margin-bottom: 22px; }
 .promotion-preview-badge { display: flex; max-width: 390px; align-items: start; gap: 9px; padding: 10px 11px; border: 1px solid color-mix(in srgb, var(--warning) 42%, var(--border)); border-radius: var(--radius-panel); background: color-mix(in srgb, var(--surface) 74%, transparent); box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 9%, transparent); color: var(--warning); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
@@ -48,6 +48,7 @@
 .promotion-kpi-matrix dd { overflow: hidden; margin: 3px 0 0; font: 600 13px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .promotion-trend-panel footer { display: flex; justify-content: space-between; padding: 10px 17px; border-top: 1px solid var(--border-subtle); }
 .promotion-assets-panel header { grid-template-columns: minmax(0, 1fr) auto; }
+.promotion-assets-panel > header > div, .promotion-table-panel > header > div { display: grid; gap: 4px; }
 .promotion-copy-row, .promotion-code-row { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 17px 0; padding: 11px; border: 1px solid var(--border-subtle); border-radius: var(--radius-control); background: var(--surface-inset); }
 .promotion-code-row { margin-bottom: 17px; }
 .promotion-copy-row > span, .promotion-code-row > span { display: grid; min-width: 0; gap: 3px; }
@@ -124,7 +125,6 @@
 }
 
 @media (max-width: 600px) {
-  .promotion-page::before { inset-inline: -8px; }
   .promotion-balance-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .promotion-balance-card { min-height: 104px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
   .promotion-balance-card:nth-child(2n) { border-right: 0; }
