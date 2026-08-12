@@ -455,6 +455,9 @@ def test_systemd_unit_is_local_only_disabled_by_configuration_and_single_shot():
     assert "--once --execute-one" in service and "candidate-sources" in service
     assert "OnSuccess=" not in service
     assert "ReadOnlyPaths=/var/lib/ciclotrade-worker/candidate-sources" in service
-    assert "OnUnitActiveSec=30min" in timer and "Persistent=false" in timer
+    assert "OnUnitActiveSec=" not in timer and "Persistent=false" in timer
+    assert timer.count("OnCalendar=*-*-*") == 12
+    assert "OnCalendar=*-*-* 00:50:00 Asia/Hong_Kong" in timer
+    assert "OnCalendar=*-*-* 06:20:00 Asia/Hong_Kong" in timer
     assert "TRADEAI_CANDIDATE_PRODUCER_ENABLED=false" in environment
     assert "There is no demo/synthetic/network fallback" in environment
