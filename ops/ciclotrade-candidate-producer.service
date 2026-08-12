@@ -2,6 +2,7 @@
 Description=CicloTrade bounded local autonomous candidate producer
 After=local-fs.target
 RequiresMountsFor=/var/lib/ciclotrade-worker
+ConditionPathExists=/etc/ciclotrade-worker/enable-candidate-producer.after-integration
 ConditionPathIsDirectory=/var/lib/ciclotrade-worker/candidate-sources
 ConditionPathIsDirectory=/var/lib/ciclotrade-worker/inbox
 

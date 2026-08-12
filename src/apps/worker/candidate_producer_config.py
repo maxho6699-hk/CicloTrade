@@ -7,6 +7,7 @@ from datetime import time
 import math
 import os
 from pathlib import Path
+import stat
 from typing import Mapping
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -21,6 +22,9 @@ from src.apps.worker.compute_gate_config import (
 
 
 MINIMUM_FREE_BYTES = 2 * 1024 * 1024 * 1024
+CANDIDATE_PRODUCER_INTEGRATION_MARKER = Path(
+    "/etc/ciclotrade-worker/enable-candidate-producer.after-integration"
+)
 
 
 class CandidateProducerError(RuntimeError):
@@ -83,6 +87,8 @@ class CandidateProducerSettings:
         enabled = _as_bool(env.get("TRADEAI_CANDIDATE_PRODUCER_ENABLED", "false"))
         if not enabled:
             return cls(False, None, None, None, None, frozenset())
+        if not _integration_marker_ready(CANDIDATE_PRODUCER_INTEGRATION_MARKER):
+            return cls(False, None, None, None, None, frozenset())
         if _as_bool(env.get("TRADEAI_STRATEGY_WORKER_OUTBOUND_PUBLISH_ENABLED", "false")) or _as_bool(env.get("TRADEAI_STRATEGY_WORKER_PUBLISH", "false")):
             raise CandidateProducerError("candidate production is unavailable while publication is enabled")
         symbols = frozenset(item.strip().upper() for item in env.get("TRADEAI_COMPUTE_ALLOWED_SYMBOLS", "").split(",") if item.strip())
@@ -102,3 +108,20 @@ class CandidateProducerSettings:
             _integer(env.get("TRADEAI_CANDIDATE_MAX_DAILY", env.get("TRADEAI_COMPUTE_MAX_DAILY_JOBS", "12")), "candidate daily budget"),
             _integer(env.get("TRADEAI_COMPUTE_MAX_PENDING_JOBS", "4"), "pending job budget"),
         )
+
+
+def _integration_marker_ready(marker: Path, *, platform_name: str | None = None) -> bool:
+    """Verify the fixed integration receipt before runtime paths are parsed."""
+    try:
+        metadata = marker.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise CandidateProducerError("candidate producer integration marker cannot be inspected") from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise CandidateProducerError("candidate producer integration marker must be a regular file")
+    if (os.name if platform_name is None else platform_name) != "posix":
+        raise CandidateProducerError("candidate producer integration marker ownership cannot be verified")
+    if metadata.st_uid != 0 or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise CandidateProducerError("candidate producer integration marker is not root-controlled")
+    return True

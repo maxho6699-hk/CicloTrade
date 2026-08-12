@@ -5,8 +5,10 @@ from datetime import date, datetime, timedelta, timezone
 import io
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import subprocess
 import sys
+import stat
 
 import pytest
 
@@ -20,7 +22,11 @@ from src.apps.worker.autonomous_candidate_producer import (
 )
 from src.apps.worker.backtest_runtime import ResourceSnapshot
 from src.apps.worker.candidate_input_contracts import CandidateInputError, validate_candidate_spec
-from src.apps.worker.candidate_producer_config import CandidateProducerError, CandidateProducerSettings
+from src.apps.worker.candidate_producer_config import (
+    CandidateProducerError,
+    CandidateProducerSettings,
+    _integration_marker_ready,
+)
 from src.apps.worker.compute_gate import ComputeGate, ComputeGateSettings
 
 
@@ -414,6 +420,68 @@ def test_disabled_environment_has_no_path_or_database_side_effect(tmp_path):
     assert not list(tmp_path.iterdir())
 
 
+class Marker:
+    def __init__(self, mode: int, owner: int = 0):
+        self.mode = mode
+        self.owner = owner
+
+    def lstat(self):
+        return SimpleNamespace(st_mode=self.mode, st_uid=self.owner)
+
+
+def test_enabled_environment_requires_a_root_controlled_integration_marker(monkeypatch, tmp_path):
+    environment = {
+        "TRADEAI_CANDIDATE_PRODUCER_ENABLED": "true",
+        "TRADEAI_COMPUTE_ALLOWED_SYMBOLS": "AAPL",
+        "TRADEAI_CANDIDATE_SOURCE_DIR": str((tmp_path / "sources").resolve()),
+        "TRADEAI_COMPUTE_DROP_DIR": str((tmp_path / "inbox").resolve()),
+        "TRADEAI_STRATEGY_WORKER_QUEUE_DB": str((tmp_path / "queue.db").resolve()),
+        "TRADEAI_STRATEGY_WORKER_ARTIFACT_DIR": str((tmp_path / "artifacts").resolve()),
+    }
+
+    monkeypatch.setattr("src.apps.worker.candidate_producer_config._integration_marker_ready", lambda _marker: False)
+    missing = CandidateProducerSettings.from_environment(environment)
+    assert missing.enabled is False
+    assert missing.queue_db is None and missing.source_dir is None
+    assert not list(tmp_path.iterdir())
+
+    monkeypatch.setattr("src.apps.worker.candidate_producer_config._integration_marker_ready", lambda _marker: True)
+    ready = CandidateProducerSettings.from_environment(environment)
+    assert ready.enabled is True
+    assert ready.queue_db == (tmp_path / "queue.db").resolve()
+
+
+@pytest.mark.parametrize(
+    ("marker", "message"),
+    [
+        (Marker(stat.S_IFLNK | 0o777), "regular file"),
+        (Marker(stat.S_IFREG | 0o660), "root-controlled"),
+        (Marker(stat.S_IFREG | 0o640, owner=1000), "root-controlled"),
+    ],
+)
+def test_integration_marker_rejects_symlinks_writable_files_and_non_root_owners(marker, message):
+    with pytest.raises(CandidateProducerError, match=message):
+        _integration_marker_ready(marker, platform_name="posix")
+
+
+def test_integration_marker_missing_is_disabled(tmp_path):
+    assert _integration_marker_ready(tmp_path / "missing", platform_name="posix") is False
+
+
+def test_enabled_env_without_marker_exits_before_runtime_construction(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("TRADEAI_CANDIDATE_PRODUCER_ENABLED", "true")
+    monkeypatch.setenv("TRADEAI_CANDIDATE_SOURCE_DIR", str(tmp_path / "must-not-be-created"))
+    monkeypatch.setattr("src.apps.worker.candidate_producer_config._integration_marker_ready", lambda _marker: False)
+    monkeypatch.setattr("src.apps.worker.autonomous_candidate_producer.ComputeGateSettings.from_environment", lambda: pytest.fail("Compute Gate settings opened"))
+    monkeypatch.setattr("src.apps.worker.autonomous_candidate_producer.BacktestQueueDatabase", lambda *_: pytest.fail("database opened"))
+    monkeypatch.setattr("src.apps.worker.autonomous_candidate_producer.ArtifactStore", lambda *_: pytest.fail("artifact directory opened"))
+    monkeypatch.setattr("src.apps.worker.autonomous_candidate_producer.AutonomousCandidateProducer", lambda *_: pytest.fail("producer constructed"))
+
+    assert main(["--once", "--execute-one"]) == 0
+    assert json.loads(capsys.readouterr().out)["state"] == "disabled"
+    assert not list(tmp_path.iterdir())
+
+
 def test_cli_parser_accepts_the_exact_systemd_orchestrator_command():
     completed = subprocess.run(
         [sys.executable, "-m", "src.apps.worker.autonomous_candidate_producer", "--help"],
@@ -491,6 +559,7 @@ def test_systemd_unit_is_local_only_disabled_by_configuration_and_single_shot():
     environment = (root / "config" / "strategy-worker.env.example").read_text(encoding="utf-8")
 
     assert "PrivateNetwork=true" in service
+    assert "ConditionPathExists=/etc/ciclotrade-worker/enable-candidate-producer.after-integration" in service
     assert "--once --execute-one" in service and "candidate-sources" in service
     assert "OnSuccess=" not in service
     assert "ReadOnlyPaths=/var/lib/ciclotrade-worker/candidate-sources" in service
@@ -499,4 +568,5 @@ def test_systemd_unit_is_local_only_disabled_by_configuration_and_single_shot():
     assert "OnCalendar=*-*-* 00:50:00 Asia/Hong_Kong" in timer
     assert "OnCalendar=*-*-* 06:20:00 Asia/Hong_Kong" in timer
     assert "TRADEAI_CANDIDATE_PRODUCER_ENABLED=false" in environment
+    assert "enable-candidate-producer.after-integration" in environment
     assert "There is no demo/synthetic/network fallback" in environment
