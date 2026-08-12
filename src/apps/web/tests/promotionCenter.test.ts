@@ -24,6 +24,9 @@ test('promotion states, copy feedback, and audit tones remain truthful', () => {
   assert.match(page, /`referral:\$\{referral\.referral_id\}`/)
   assert.match(page, /withdrawal_rejected[\s\S]*?'danger'/)
   assert.doesNotMatch(page, /index === portal\.timeline\.length - 1/)
+  assert.match(page, /sessionStorage\.setItem\(WITHDRAWAL_IDEMPOTENCY_STORAGE_KEY/)
+  assert.match(page, /刷新后再次提交相同金额仍会安全复用/)
+  assert.doesNotMatch(page, /changeAmount[\s\S]{0,400}sessionStorage\.removeItem/)
 })
 
 test('promotion UI is routed, responsive, touch safe, and avoids desktop-table overflow', () => {

@@ -2,9 +2,10 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createReferralApi, decodeReferralPortal, type ReferralPortal } from '../src/api/promotion.ts'
 import { withdrawalIdempotencyKey } from '../src/domain/referralWithdrawal.ts'
+import { localizeText, setRuntimeLocale } from '../src/i18n/runtime.ts'
 
 const portal: ReferralPortal = {
-  program: { enabled: true, currency: 'HKD', policy_version: 'cash-affiliate-v1', first_rate_bps: 2000, renewal_rate_bps: 1000, upgrade_rate_bps: 1000, hold_days: 14, minimum_withdrawal_minor: 10000 },
+  program: { enabled: true, cutover_at: '2026-08-12T12:00:00+08:00', currency: 'HKD', policy_version: 'cash-affiliate-v1', first_rate_bps: 2000, renewal_rate_bps: 1000, upgrade_rate_bps: 1000, hold_days: 14, minimum_withdrawal_minor: 10000 },
   invite: { invite_code: 'CT8K2M9Q', invite_link: 'https://app.example/login?ref=CT8K2M9Q', qr_payload: 'https://app.example/login?ref=CT8K2M9Q' },
   balances: { earned_total_minor: 12000, pending_minor: 1000, withdrawable_minor: 10000, reserved_minor: 0, paid_minor: 0, clawed_back_total_minor: 0, debt_minor: 0 },
   trends: { windows: [7, 30, 90].map((days) => ({ days: days as 7 | 30 | 90, visits: 1, registrations: 1, settled_orders: 1, gross_amount_minor: 100, earned_amount_minor: 20, clawed_back_minor: 0 })) },
@@ -37,8 +38,18 @@ test('withdrawal client sends only HKD integer minor units and idempotency key',
 
 test('a response-lost withdrawal retry reuses its idempotency key until amount changes', () => {
   const first = withdrawalIdempotencyKey(10000, null)
+  for (const partialInput of [100, 1000]) assert.equal(withdrawalIdempotencyKey(partialInput, first).amountMinor, partialInput)
   const retry = withdrawalIdempotencyKey(10000, first)
   const changed = withdrawalIdempotencyKey(20000, first)
   assert.equal(retry.key, first.key)
   assert.notEqual(changed.key, first.key)
+})
+
+test('referral money states have complete Traditional Chinese runtime copy', () => {
+  setRuntimeLocale('zh-Hant')
+  assert.deepEqual(
+    ['已付款', '已批准', '已回退', '部分回退', '佣金回退', '已人工付款', '正在提交…', '冻结佣金'].map(localizeText),
+    ['已撥款', '已核准', '已追回', '部分追回', '傭金追回', '已人工撥款', '正在送出…', '凍結傭金'],
+  )
+  setRuntimeLocale('zh-Hans')
 })
