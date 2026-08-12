@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import json
 from pathlib import Path
 
 import pytest
@@ -302,35 +303,39 @@ def test_membership_orders_are_customer_owned_and_provider_fields_are_redacted(c
         "subscription_auto_connects_broker": False,
         "capability_catalog": [
             {
+                "key": "futu_moomoo", "display_name": "Futu / moomoo",
+                "status": "market_data_only", "status_label": "仅行情能力",
+                "availability_detail": "当前仅用于平台侧美股行情，不代表用户券商账户已经连接。",
+                "capabilities": ["market_data"],
+                "connection_available": False,
+            },
+            {
                 "key": "tiger", "display_name": "Tiger Brokers",
-                "status": "limited_manual_onboarding",
+                "status": "limited_backend_capability", "status_label": "有限后端能力",
+                "availability_detail": "已有受限后端封装，但尚未开放用户申请、绑定或网页下单。",
                 "capabilities": ["market_data", "us_stock_limit_orders"],
                 "connection_available": False,
             },
             {
-                "key": "futu", "display_name": "Futu OpenD",
-                "status": "market_data_only", "capabilities": ["market_data"],
+                "key": "ibkr", "display_name": "Interactive Brokers (IBKR)",
+                "status": "integration_in_progress", "status_label": "接入中",
+                "availability_detail": "美股接入正在开发，当前不能申请、绑定或交易。",
                 "connection_available": False,
+                "capabilities": [],
             },
             {
-                "key": "alpaca", "display_name": "Alpaca",
-                "status": "planned", "capabilities": [],
+                "key": "webull", "display_name": "Webull",
+                "status": "integration_in_progress", "status_label": "接入中",
+                "availability_detail": "美股接入正在开发，当前不能申请、绑定或交易。",
                 "connection_available": False,
+                "capabilities": [],
             },
             {
-                "key": "ibkr", "display_name": "Interactive Brokers",
-                "status": "planned", "capabilities": [],
+                "key": "longbridge", "display_name": "Longbridge",
+                "status": "integration_in_progress", "status_label": "接入中",
+                "availability_detail": "美股接入正在开发，当前不能申请、绑定或交易。",
                 "connection_available": False,
-            },
-            {
-                "key": "qmt", "display_name": "QMT",
-                "status": "evaluating", "capabilities": [],
-                "connection_available": False,
-            },
-            {
-                "key": "ptrade", "display_name": "PTrade",
-                "status": "evaluating", "capabilities": [],
-                "connection_available": False,
+                "capabilities": [],
             },
         ],
         "us_short": {
@@ -350,12 +355,13 @@ def test_membership_orders_are_customer_owned_and_provider_fields_are_redacted(c
     assert "external_id" not in order
     assert "external_capture_id" not in order
     assert "request_fingerprint" not in order
-    unavailable = {
-        "planned", "evaluating", "unsupported",
-    }
     for provider in payload["brokerage"]["capability_catalog"]:
-        if provider["status"] in unavailable:
-            assert not any("action" in key for key in provider)
+        assert provider["connection_available"] is False
+        assert not any("action" in key for key in provider)
+    serialized = json.dumps(payload["brokerage"]["capability_catalog"], ensure_ascii=False)
+    assert "Alpaca" not in serialized
+    assert "QMT" not in serialized
+    assert "PTrade" not in serialized
 
 
 def test_membership_order_behavior_matrix_uses_authoritative_entitlements(compatibility):
