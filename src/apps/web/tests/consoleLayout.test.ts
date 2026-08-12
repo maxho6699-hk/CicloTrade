@@ -210,6 +210,11 @@ test('market workspace keeps alert controls explicit and local marker visibility
   assert.match(chartWorkspaceSource, /typeof alertPrices === 'function' \? alertPrices\(slot\.market, slot\.symbol\)/)
   assert.match(pagesSource, /isAlertForInstrument\(item, market, symbol\)/)
   assert.match(pagesSource, /createPriceAlert\(selected\.symbol, alertPrice, \{ market: selected\.market \}\)/)
+  assert.match(pagesSource, /price: demoMode \? catalogItem\?\.price \?\? 0 : 0/)
+  assert.match(pagesSource, /marketQuote\?\.symbol === instrument\.symbol/)
+  assert.match(pagesSource, /typeof currentQuote\?\.last === 'number'/)
+  assert.match(pagesSource, /setAlertPrice\(currentPrice\)/)
+  assert.doesNotMatch(pagesSource, /setAlertPrice\(selectedBase\.price \|\| 0\)/)
 })
 
 test('market discovery caches each market safely while calendar and option data retain explicit groups', () => {

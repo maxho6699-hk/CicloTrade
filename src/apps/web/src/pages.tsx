@@ -144,9 +144,17 @@ export function MarketsPage() {
   const currentSavedSymbols = marketFilter === 'CN' ? watchlists.a_share : watchlists.us
   const currentPinnedSymbols = marketFilter === 'CN' ? watchlistPins.a_share : watchlistPins.us
   const catalog = useMemo(() => [...instruments, ...remoteInstruments.filter((item) => !instruments.some((existing) => existing.symbol === item.symbol))], [remoteInstruments])
-  const savedInstruments = useMemo<Instrument[]>(() => currentSavedSymbols.map((symbol) => catalog.find((item) => item.symbol === symbol) ?? {
-    symbol, name: symbol, market: marketFilter, price: 0, changePct: 0, currency: marketFilter === 'CN' ? 'CNY' : 'USD',
-  }), [catalog, currentSavedSymbols, marketFilter])
+  const savedInstruments = useMemo<Instrument[]>(() => currentSavedSymbols.map((symbol) => {
+    const catalogItem = catalog.find((item) => item.symbol === symbol)
+    return {
+      symbol,
+      name: catalogItem?.name ?? symbol,
+      market: catalogItem?.market ?? marketFilter,
+      price: demoMode ? catalogItem?.price ?? 0 : 0,
+      changePct: demoMode ? catalogItem?.changePct ?? 0 : 0,
+      currency: catalogItem?.currency ?? (marketFilter === 'CN' ? 'CNY' : 'USD'),
+    }
+  }), [catalog, currentSavedSymbols, demoMode, marketFilter])
   const allInstruments = useMemo(() => demoMode ? catalog : [...savedInstruments, ...remoteInstruments], [catalog, demoMode, remoteInstruments, savedInstruments])
   const selectedBase = useMemo<Instrument>(() => allInstruments.find((item) => item.symbol === requestedSymbol) ?? ({
     symbol: requestedSymbol,
@@ -173,11 +181,20 @@ export function MarketsPage() {
   }
   const visibleInstruments = demoMode
     ? instruments.filter((instrument) => instrument.market === marketFilter)
-    : savedInstruments
+    : savedInstruments.map((instrument) => instrument.symbol === selectedBase.symbol
+      && marketQuote?.symbol === instrument.symbol
+      && typeof marketQuote.last === 'number'
+      && Number.isFinite(marketQuote.last)
+      ? { ...instrument, price: marketQuote.last, changePct: typeof marketQuote.prev_close === 'number' && marketQuote.prev_close ? (marketQuote.last - marketQuote.prev_close) / marketQuote.prev_close * 100 : 0 }
+      : instrument)
 
   useEffect(() => {
-    setAlertPrice(selectedBase.price || 0)
-  }, [selectedBase.price, selectedBase.symbol])
+    const currentQuote = marketQuote?.symbol === selectedBase.symbol ? marketQuote : null
+    const currentPrice = typeof currentQuote?.last === 'number' && Number.isFinite(currentQuote.last) && currentQuote.last > 0
+      ? currentQuote.last
+      : 0
+    setAlertPrice(currentPrice)
+  }, [marketQuote, selectedBase.symbol])
 
   useEffect(() => {
     setLocalAlerts(workspace.data?.alerts.items ?? [])
