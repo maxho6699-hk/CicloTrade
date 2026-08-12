@@ -5,6 +5,9 @@ import {
   LayoutGrid,
   Maximize2,
   Minimize2,
+  MoreHorizontal,
+  PencilRuler,
+  SlidersHorizontal,
   PanelRightClose,
   PanelRightOpen,
   RotateCcw,
@@ -58,6 +61,7 @@ interface ChartWorkspaceProps {
   loadQuote?: (symbol: string, market: Market) => Promise<MarketQuotePayload>
   onSymbolChange?: (symbol: string, market: Market) => void
   onTimeframeChange?: (timeframe: string) => void
+  watchlistSymbols?: Partial<Record<Market, readonly string[]>> | ((market: Market) => readonly string[])
   isWatchlisted?: (market: Market, symbol: string) => boolean
   onWatchlistToggle?: (market: Market, symbol: string, remove: boolean) => void | Promise<void>
   watchBusy?: string
@@ -70,6 +74,10 @@ interface ChartWorkspaceProps {
 const STORAGE_KEY = 'ciclotrade:chart-workspace:v2'
 const LEGACY_STORAGE_KEY = 'ciclotrade:chart-workspace:v1'
 const NARROW_CHART_QUERY = '(max-width: 760px), (max-width: 980px) and (max-height: 560px) and (orientation: landscape)'
+const MULTI_CHART_POPULAR: Record<Market, string[]> = {
+  US: ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'META', 'TSLA', 'SPY', 'QQQ', 'NBIS', 'CRWV', 'COHR', 'CSCO', 'AMAT'],
+  CN: ['600519', '000001', '000858', '300750', '601318', '600036', '510300', '159915'],
+}
 
 function candleIdentity(slot: Pick<ChartSlotState, 'market' | 'symbol' | 'timeframe'>) {
   return `${slot.market}:${slot.symbol}:${slot.timeframe}`
@@ -138,6 +146,7 @@ export function ChartWorkspace({
   loadQuote,
   onSymbolChange,
   onTimeframeChange,
+  watchlistSymbols,
   isWatchlisted,
   onWatchlistToggle,
   watchBusy = '',
@@ -167,6 +176,7 @@ export function ChartWorkspace({
   }, [controlledInspectorOpen, onInspectorOpenChange])
   const [workbenchOpen, setWorkbenchOpen] = useState(() => layoutDefinition(workspace.layout).count > 1)
   const [layoutPickerOpen, setLayoutPickerOpen] = useState(false)
+  const [mobileDrawingToolsOpen, setMobileDrawingToolsOpen] = useState(false)
   const [isNarrowViewport, setIsNarrowViewport] = useState(() => window.matchMedia(NARROW_CHART_QUERY).matches)
   const [focusedSlotId, setFocusedSlotId] = useState<string | null>(null)
   const [symbolEditorId, setSymbolEditorId] = useState<string | null>(null)
@@ -188,6 +198,8 @@ export function ChartWorkspace({
   const slotQuotesRef = useRef(slotQuotes)
   const slotQuoteIdentityRef = useRef(slotQuoteIdentity)
   const layoutPickerRef = useRef<HTMLDivElement>(null)
+  const symbolEditorRef = useRef<HTMLElement>(null)
+  const mobileToolsRef = useRef<HTMLDetailsElement>(null)
   const timeRangeSyncLock = useRef(false)
   const focusOpenedWorkbench = useRef(false)
   const viewportDrafts = useRef<Record<string, { from: number; to: number }>>({})
@@ -338,6 +350,15 @@ export function ChartWorkspace({
     return () => document.removeEventListener('pointerdown', closeOutside)
   }, [layoutPickerOpen])
 
+  useEffect(() => {
+    if (!symbolEditorId) return
+    const closeOutside = (event: PointerEvent) => {
+      if (!symbolEditorRef.current?.contains(event.target as Node)) setSymbolEditorId(null)
+    }
+    document.addEventListener('pointerdown', closeOutside)
+    return () => document.removeEventListener('pointerdown', closeOutside)
+  }, [symbolEditorId])
+
   useLayoutEffect(() => {
     if (!workbenchOpen) return
     const previousOverflow = document.body.style.overflow
@@ -393,6 +414,7 @@ export function ChartWorkspace({
     if (isNarrowViewport && layoutDefinition(layout).desktopOnly) return
     setWorkspace((current) => ensureLayoutSlots(current, layout))
     setFocusedSlotId(null)
+    setSymbolEditorId(null)
     setLayoutPickerOpen(false)
     if (layoutDefinition(layout).count > 1) setWorkbenchOpen(true)
   }
@@ -472,6 +494,11 @@ export function ChartWorkspace({
     setSymbolEditorId(null)
   }
 
+  const chooseSymbol = (slotId: string, symbol: string, market: Market) => {
+    updateSlot(slotId, { symbol, market, viewport: undefined })
+    setSymbolEditorId(null)
+  }
+
   const toggleFocus = (slotId: string) => {
     activateSlot(slotId)
     if (focusedSlotId === slotId) {
@@ -497,10 +524,14 @@ export function ChartWorkspace({
   }
 
   const completeDrawing = useCallback(() => setDrawingToolState((current) => ({ ...current, tool: 'cursor' })), [])
+  const toggleMobileDrawingTools = () => {
+    setMobileDrawingToolsOpen((current) => !current)
+    mobileToolsRef.current?.removeAttribute('open')
+  }
   const latest = slotLatest(activeCandles)
 
   return (
-    <section className={`chart-workspace-shell ${workbenchOpen ? 'is-workbench-open' : ''} ${focusedSlotId ? 'is-pane-focused' : ''} ${inspectorVisible ? 'has-workbench-inspector' : ''}`} aria-label="多图 K线工作图">
+    <section className={`chart-workspace-shell ${workbenchOpen ? 'is-workbench-open' : ''} ${focusedSlotId ? 'is-pane-focused' : ''} ${inspectorVisible ? 'has-workbench-inspector' : ''} ${mobileDrawingToolsOpen ? 'mobile-drawing-tools-open' : ''}`} aria-label="多图 K线工作图">
       <header className="multi-chart-toolbar">
         <div className="workbench-title"><span className="workbench-title-label"><LayoutGrid size={16} /><strong>K线工作图</strong></span>{onWatchlistToggle && <WatchlistToggle symbol={activeSlot.symbol} saved={isWatchlisted?.(activeSlot.market, activeSlot.symbol) ?? false} busy={watchBusy === activeSlot.symbol} variant="label" className="workbench-watchlist-toggle" onToggle={(remove) => onWatchlistToggle(activeSlot.market, activeSlot.symbol, remove)} />}</div>
         <div className="multi-chart-layout-picker" ref={layoutPickerRef}>
@@ -508,7 +539,7 @@ export function ChartWorkspace({
           {layoutPickerOpen && <div className="layout-picker-popover" role="dialog" aria-label="K 线多图布局选择"><header><strong>分割视图</strong><small>{isNarrowViewport ? '手机版使用图表标签切换；四图以上请使用桌面版' : '选择后保持每张图的股票和周期'}</small></header><div className="layout-picker-grid">{CHART_LAYOUTS.map((layout) => { const unavailable = isNarrowViewport && layout.desktopOnly; return <button type="button" disabled={unavailable} className={workspace.layout === layout.id ? 'active' : ''} title={unavailable ? `${layout.label} · 仅桌面版` : layout.label} aria-label={`${layout.label}${unavailable ? '，仅桌面版' : ''}`} onClick={() => setLayout(layout.id)} key={layout.id}><span className={`layout-preview layout-preview-${layout.id}`}>{Array.from({ length: layout.count }, (_, index) => <i key={index} />)}</span><b>{layout.label}</b></button> })}</div></div>}
         </div>
         <div className="multi-chart-actions">
-          {toolbarActions && <span className="multi-chart-utility-actions">{toolbarActions}</span>}
+          {toolbarActions && <><span className="multi-chart-utility-actions">{toolbarActions}</span><details className="mobile-chart-tools" ref={mobileToolsRef}><summary aria-label="打开图表工具" title="图表工具"><SlidersHorizontal size={16} /></summary><div className="mobile-chart-tools-popover" role="group" aria-label="图表工具">{toolbarActions}<button className={mobileDrawingToolsOpen ? 'active' : ''} type="button" aria-expanded={mobileDrawingToolsOpen} onClick={toggleMobileDrawingTools}><PencilRuler size={16} /><span>{mobileDrawingToolsOpen ? '收起画图' : '展开画图'}</span></button></div></details></>}
           <button type="button" title={inspectorVisible ? '收起检查器' : '展开检查器'} aria-label={inspectorVisible ? '收起检查器' : '展开检查器'} aria-expanded={inspectorVisible} onClick={() => { setSymbolEditorId(null); setInspectorVisible(!inspectorVisible) }}>{inspectorVisible ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}</button>
           <button type="button" title={workbenchOpen ? '返回行情页' : '打开全屏K线工作图'} aria-label={workbenchOpen ? '返回行情页' : '打开全屏K线工作图'} onClick={() => workbenchOpen ? exitWorkbench() : setWorkbenchOpen(true)}>{workbenchOpen ? <Shrink size={16} /> : <Expand size={16} />}</button>
         </div>
@@ -523,9 +554,9 @@ export function ChartWorkspace({
         />
 
         <div className={`multi-chart-grid layout-${workspace.layout}`}>
-          <nav className="mobile-chart-tabs" aria-label="切换图表">
+          {definition.count > 1 && <nav className="mobile-chart-tabs" aria-label="切换图表">
             {visibleSlots.map((slot, index) => <button className={slot.id === workspace.activeSlotId ? 'active' : ''} type="button" onClick={() => activateSlot(slot.id)} key={slot.id}>{index + 1} · {slot.symbol}</button>)}
-          </nav>
+          </nav>}
           {workspace.slots.map((slot, slotIndex) => {
             const chartData = slotCandles[slot.id] ?? (slotIndex === 0 ? candles : [])
             const quote = slotQuoteIdentity[slot.id] === quoteIdentity(slot) ? slotQuotes[slot.id] : null
@@ -533,6 +564,21 @@ export function ChartWorkspace({
             const slotIsActive = workspace.activeSlotId === slot.id
             const slotIsVisible = slotIndex < definition.count && (!isNarrowViewport || slotIsActive)
             const visibleDataStatus = slotStatus[slot.id]?.includes('K 线') ? slotStatus[slot.id] : null
+            const authoritativeWatchlist = typeof watchlistSymbols === 'function'
+              ? watchlistSymbols(marketDraft)
+              : watchlistSymbols?.[marketDraft] ?? []
+            const symbolCandidates = Array.from(new Set([
+              ...workspace.slots.filter((item) => item.market === marketDraft).map((item) => item.symbol),
+              initialMarket === marketDraft ? initialSymbol : '',
+              ...MULTI_CHART_POPULAR[marketDraft],
+            ].filter(Boolean)))
+            const savedSymbols = Array.from(new Set(authoritativeWatchlist
+              .map((symbol) => symbol.trim().toUpperCase())
+              .filter(Boolean)))
+            const fallbackSavedSymbols = savedSymbols.length || watchlistSymbols
+              ? savedSymbols
+              : symbolCandidates.filter((symbol) => isWatchlisted?.(marketDraft, symbol))
+            const popularSymbols = symbolCandidates.filter((symbol) => !fallbackSavedSymbols.includes(symbol))
             return (
               <article
                 className={`chart-slot ${slotIsActive ? 'is-active' : ''} ${slotIsFocused ? 'is-focused' : ''} ${slotIsVisible ? '' : 'is-layout-hidden'}`}
@@ -541,28 +587,24 @@ export function ChartWorkspace({
                 onPointerDownCapture={() => activateSlot(slot.id)}
               >
                 <header className="chart-slot-toolbar">
-                  <button className="chart-symbol-trigger" type="button" aria-label={`更换 ${slot.symbol}`} title="更换股票" onClick={() => openSymbolEditor(slot)}><Search size={13} /><strong>{slot.symbol}</strong></button>
+                  {definition.count > 1
+                    ? <button className="chart-symbol-trigger" type="button" aria-haspopup="dialog" aria-expanded={symbolEditorId === slot.id} aria-label={`更换 ${slot.symbol}`} title="从自选或热门股票更换" onClick={(event) => { event.stopPropagation(); openSymbolEditor(slot) }}><Search size={13} /><strong>{slot.symbol}</strong></button>
+                    : <span className="chart-symbol-label" aria-label={`当前股票 ${slot.symbol}`}><strong>{slot.symbol}</strong></span>}
                   <TimeframeDropdown value={slot.timeframe} options={TIMEFRAME_OPTIONS} ariaLabel={`${slot.symbol} 时间周期`} onChange={(timeframe) => updateSlot(slot.id, { timeframe, viewport: undefined })} />
-                  <span className="chart-slot-meta">
-                    <span className="chart-slot-market">{marketLabel(slot.market)}</span>
-                    {visibleDataStatus && <span className="chart-slot-data-status" role="status" title={visibleDataStatus}>{visibleDataStatus}</span>}
-                  </span>
-                  <div className="quote-spread-strip" aria-label="当前价格和买卖报价">
-                    <span>现价 <b>{quoteNumber(quote?.last)}</b></span>
-                    <span>卖出 Bid <b>{quoteNumber(quote?.bid)}</b></span>
-                    <span>买入 Ask <b>{quoteNumber(quote?.ask)}</b></span>
-                    <span title="买入价减卖出价；不是成交滑点">价差 <b>{quoteNumber(quote?.spread)}</b></span>
-                  </div>
-                  <div className="chart-view-controls">
-                    <button type="button" title="向左移动" aria-label="向左移动" onClick={() => chartRefs.current[slot.id]?.panLeft()}><ArrowLeft size={14} /></button>
-                    <button type="button" title="向右移动" aria-label="向右移动" onClick={() => chartRefs.current[slot.id]?.panRight()}><ArrowRight size={14} /></button>
-                    <button type="button" title="缩小 K 线" aria-label="缩小 K 线" onClick={() => chartRefs.current[slot.id]?.zoomOut()}><ZoomOut size={14} /></button>
-                    <button type="button" title="放大 K 线" aria-label="放大 K 线" onClick={() => chartRefs.current[slot.id]?.zoomIn()}><ZoomIn size={14} /></button>
-                    <button type="button" title="适配全部 K 线" aria-label="适配全部 K 线" onClick={() => chartRefs.current[slot.id]?.reset()}><RotateCcw size={14} /></button>
-                    {definition.count > 1 && <button type="button" title={slotIsFocused ? '恢复多图布局' : '最大化当前图'} aria-label={slotIsFocused ? '恢复多图布局' : '最大化当前图'} onClick={() => toggleFocus(slot.id)}>{slotIsFocused ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>}
-                  </div>
+                  {definition.count > 1 && <button className="chart-focus-control" type="button" title={slotIsFocused ? '恢复多图布局' : '最大化当前图'} aria-label={slotIsFocused ? '恢复多图布局' : '最大化当前图'} onClick={() => toggleFocus(slot.id)}>{slotIsFocused ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>}
+                  <details className="chart-view-menu">
+                    <summary title="缩放与适配" aria-label="打开缩放与适配工具"><MoreHorizontal size={16} /></summary>
+                    <div className="chart-view-popover" role="group" aria-label="缩放与适配">
+                      <button type="button" onClick={() => chartRefs.current[slot.id]?.panLeft()}><ArrowLeft size={14} /><span>左移</span></button>
+                      <button type="button" onClick={() => chartRefs.current[slot.id]?.panRight()}><ArrowRight size={14} /><span>右移</span></button>
+                      <button type="button" onClick={() => chartRefs.current[slot.id]?.zoomOut()}><ZoomOut size={14} /><span>缩小</span></button>
+                      <button type="button" onClick={() => chartRefs.current[slot.id]?.zoomIn()}><ZoomIn size={14} /><span>放大</span></button>
+                      <button type="button" onClick={() => chartRefs.current[slot.id]?.reset()}><RotateCcw size={14} /><span>适配全部</span></button>
+                    </div>
+                  </details>
                 </header>
                 <div className="chart-slot-canvas">
+                  {visibleDataStatus && <span className="chart-slot-data-status" role="status" title={visibleDataStatus}>{visibleDataStatus}</span>}
                   {chartData.length ? (
                     <MarketChart
                       ref={(handle) => { chartRefs.current[slot.id] = handle }}
@@ -597,12 +639,13 @@ export function ChartWorkspace({
                   )}
                 </div>
                 {symbolEditorId === slot.id && (
-                  <form className="chart-symbol-editor" onSubmit={(event) => { event.preventDefault(); applySymbol() }}>
-                    <header><strong>更换当前图表</strong><button className="icon-button" type="button" aria-label="关闭" onClick={() => setSymbolEditorId(null)}>×</button></header>
+                  <aside className="chart-symbol-popover" ref={symbolEditorRef} role="dialog" aria-label={`更换 ${slot.symbol}`}>
+                    <header><strong>更换图表</strong><button className="icon-button" type="button" aria-label="关闭" onClick={() => setSymbolEditorId(null)}>×</button></header>
                     <div className="market-tabs"><button className={marketDraft === 'US' ? 'active' : ''} type="button" onClick={() => setMarketDraft('US')}>美股</button><button className={marketDraft === 'CN' ? 'active' : ''} type="button" onClick={() => setMarketDraft('CN')}>A股</button></div>
-                    <label><span>股票代码</span><input autoFocus value={symbolDraft} onChange={(event) => setSymbolDraft(event.target.value.toUpperCase())} placeholder={marketDraft === 'US' ? '例如 AAPL' : '例如 600519'} /></label>
-                    <button className="button primary wide" type="submit">打开图表</button>
-                  </form>
+                    {fallbackSavedSymbols.length > 0 && <section><small>我的自选</small><div className="chart-symbol-chips">{fallbackSavedSymbols.map((symbol) => <button type="button" className={symbol === slot.symbol && marketDraft === slot.market ? 'active' : ''} onClick={() => chooseSymbol(slot.id, symbol, marketDraft)} key={`saved-${symbol}`}>{symbol}</button>)}</div></section>}
+                    <section><small>热门股票</small><div className="chart-symbol-chips">{popularSymbols.slice(0, 10).map((symbol) => <button type="button" className={symbol === slot.symbol && marketDraft === slot.market ? 'active' : ''} onClick={() => chooseSymbol(slot.id, symbol, marketDraft)} key={symbol}>{symbol}</button>)}</div></section>
+                    <details className="chart-symbol-manual"><summary>输入其他股票代码</summary><form onSubmit={(event) => { event.preventDefault(); applySymbol() }}><input aria-label="股票代码" value={symbolDraft} onChange={(event) => setSymbolDraft(event.target.value.toUpperCase())} placeholder={marketDraft === 'US' ? '例如 AAPL' : '例如 600519'} /><button className="button primary" type="submit">打开</button></form></details>
+                  </aside>
                 )}
               </article>
             )

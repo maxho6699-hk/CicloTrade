@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import {
   CandlestickSeries,
   ColorType,
@@ -28,6 +28,13 @@ import {
   type DrawingHistoryStatus,
   type DrawingToolState,
 } from './ChartDrawingLayer'
+import {
+  CHART_TOUCH_LONG_PRESS_MS,
+  chartTouchReleaseAction,
+  createChartTouchSession,
+  updateChartTouchSession,
+  type ChartTouchSession,
+} from './marketChartTouch'
 
 export interface MarketChartHandle {
   zoomIn: () => void
@@ -226,6 +233,9 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
     preferredDownColor,
     preferredTextColor,
   })
+  const coarsePointerRef = useRef(false)
+  const touchSessionRef = useRef<ChartTouchSession | null>(null)
+  const touchLongPressTimer = useRef(0)
   const [activeRange, setActiveRange] = useState<ActiveRange | null>(null)
   const [hoveredCandle, setHoveredCandle] = useState<Candle | null>(null)
   const [coordinateApi, setCoordinateApi] = useState<ChartCoordinateApi | null>(null)
@@ -387,7 +397,7 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
         vertLine: { color: chartBorder, labelBackgroundColor: chartCrosshairLabel },
         horzLine: { color: chartBorder, labelBackgroundColor: chartCrosshairLabel },
       },
-      rightPriceScale: { borderColor: chartBorder },
+      rightPriceScale: { borderColor: chartBorder, minimumWidth: 62 },
       localization: { locale: getFormatLocale(), timeFormatter: (value: Time) => hongKongTime(value) },
       timeScale: { borderColor: chartBorder, timeVisible: true, tickMarkFormatter: (value: Time) => hongKongTime(value) },
     })
@@ -424,12 +434,15 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
     })
 
     const coarsePointer = window.matchMedia('(hover: none), (pointer: coarse)').matches
+    coarsePointerRef.current = coarsePointer
     const hoveredInterval = (objectId: unknown) => (
       typeof objectId === 'string' ? markerIntervals.current.get(objectId) : undefined
     )
     const onCrosshairMove = (parameter: MouseEventParams<Time>) => {
       const seriesValue = parameter.seriesData.get(candleSeries) as { open?: number; high?: number; low?: number; close?: number } | undefined
-      if (parameter.time !== undefined && seriesValue && [seriesValue.open, seriesValue.high, seriesValue.low, seriesValue.close].every(Number.isFinite)) {
+      const touchObservationInProgress = coarsePointer && touchSessionRef.current?.observing === true
+      const acceptsSourceObservation = !coarsePointer || !parameter.sourceEvent || touchObservationInProgress
+      if (acceptsSourceObservation && parameter.time !== undefined && seriesValue && [seriesValue.open, seriesValue.high, seriesValue.low, seriesValue.close].every(Number.isFinite)) {
         setHoveredCandle((current) => current?.time === parameter.time ? current : {
           time: parameter.time as unknown as Candle['time'],
           open: Number(seriesValue.open),
@@ -438,13 +451,14 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
           close: Number(seriesValue.close),
           volume: 0,
         })
-      } else {
+      } else if (acceptsSourceObservation) {
         setHoveredCandle(null)
       }
-      if (parameter.sourceEvent) {
+      if (parameter.sourceEvent && acceptsSourceObservation) {
         const price = parameter.point ? candleSeries.coordinateToPrice(parameter.point.y) : null
         crosshairCallback.current?.(parameter.time !== undefined && price !== null ? { time: parameter.time, price: Number(price) } : null)
       }
+      if (touchObservationInProgress) return
       if (coarsePointer || lockedIntervalId.current) return
       const intervalId = hoveredInterval(parameter.hoveredInfo?.objectId ?? parameter.hoveredObjectId)
       if (intervalId) showActiveRange(intervalId)
@@ -544,11 +558,14 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
       markerIntervals.current.clear()
       activeIntervalId.current = null
       lockedIntervalId.current = null
+      coarsePointerRef.current = false
       resizeChartRef.current = () => {}
       setCoordinateApi(null)
       chart.remove()
     }
   }, [hideActiveRange, showActiveRange])
+
+  useEffect(() => () => window.clearTimeout(touchLongPressTimer.current), [])
 
   useEffect(() => {
     const chart = chartApi.current
@@ -573,7 +590,7 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
         vertLine: { color: chartBorder, labelBackgroundColor: chartCrosshairLabel },
         horzLine: { color: chartBorder, labelBackgroundColor: chartCrosshairLabel },
       },
-      rightPriceScale: { borderColor: chartBorder },
+      rightPriceScale: { borderColor: chartBorder, minimumWidth: 62 },
       timeScale: { borderColor: chartBorder, tickMarkFormatter: (value: Time) => hongKongTime(value) },
     })
     candleSeries.applyOptions({ upColor, downColor, wickUpColor: upColor, wickDownColor: downColor })
@@ -656,16 +673,94 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
   useEffect(() => () => window.cancelAnimationFrame(dataRangeFrame.current), [])
 
   const displayedCandle = hoveredCandle ?? latest
+  const displayedCandleTone = displayedCandle && displayedCandle.close >= displayedCandle.open ? 'up' : 'down'
+  const crosshairCardStyle = {
+    '--chart-card-text': preferredTextColor || 'var(--text)',
+    '--chart-card-up': preferredUpColor || (market === 'CN' ? '#e4606b' : '#27b487'),
+    '--chart-card-down': preferredDownColor || (market === 'CN' ? '#27b487' : '#e4606b'),
+  } as CSSProperties
+
+  const observeTouchPoint = (clientX: number) => {
+    const host = chartHost.current
+    const chart = chartApi.current
+    const series = candleSeriesApi.current
+    if (!host || !chart || !series) return
+    const rect = host.getBoundingClientRect()
+    const x = Math.max(0, Math.min(rect.width, clientX - rect.left))
+    const time = chart.timeScale().coordinateToTime(x)
+    if (time === null) return
+    const candle = candles.find((item) => String(item.time) === String(time))
+    if (!candle) return
+    chart.setCrosshairPosition(candle.close, time, series)
+    setHoveredCandle(candle)
+    crosshairCallback.current?.({ time, price: candle.close })
+  }
+
+  const clearTouchObservation = () => {
+    window.clearTimeout(touchLongPressTimer.current)
+    touchSessionRef.current = null
+  }
+
+  const onChartPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!coarsePointerRef.current || event.pointerType === 'mouse' || drawingToolState.tool !== 'cursor') return
+    clearTouchObservation()
+    const session = createChartTouchSession(event.pointerId, { x: event.clientX, y: event.clientY }, event.timeStamp)
+    touchSessionRef.current = session
+    touchLongPressTimer.current = window.setTimeout(() => {
+      const current = touchSessionRef.current
+      if (!current || current.pointerId !== event.pointerId || current.moved) return
+      touchSessionRef.current = { ...current, observing: true }
+      chartHost.current?.setPointerCapture?.(event.pointerId)
+      observeTouchPoint(current.latest.x)
+    }, CHART_TOUCH_LONG_PRESS_MS)
+  }
+
+  const onChartPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const current = touchSessionRef.current
+    if (!current || current.pointerId !== event.pointerId) return
+    const next = updateChartTouchSession(current, { x: event.clientX, y: event.clientY })
+    touchSessionRef.current = next
+    if (next.moved && !next.observing) window.clearTimeout(touchLongPressTimer.current)
+    if (!next.observing) return
+    event.preventDefault()
+    event.stopPropagation()
+    observeTouchPoint(event.clientX)
+  }
+
+  const onChartPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const current = touchSessionRef.current
+    if (!current || current.pointerId !== event.pointerId) return
+    const action = chartTouchReleaseAction(current)
+    if (action === 'observe') observeTouchPoint(event.clientX)
+    if (action === 'release') {
+      event.preventDefault()
+      event.stopPropagation()
+    }
+    if (chartHost.current?.hasPointerCapture?.(event.pointerId)) chartHost.current.releasePointerCapture(event.pointerId)
+    clearTouchObservation()
+  }
+
+  const onChartPointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (touchSessionRef.current?.pointerId !== event.pointerId) return
+    if (chartHost.current?.hasPointerCapture?.(event.pointerId)) chartHost.current.releasePointerCapture(event.pointerId)
+    clearTouchObservation()
+  }
 
   return (
-    <div className="market-chart-stage">
+    <div
+      className="market-chart-stage"
+      onPointerDownCapture={onChartPointerDown}
+      onPointerMoveCapture={onChartPointerMove}
+      onPointerUpCapture={onChartPointerUp}
+      onPointerCancelCapture={onChartPointerCancel}
+    >
       <div
         className="market-chart-canvas"
         ref={chartHost}
         role="img"
         aria-label={chartDescription}
       />
-      {displayedCandle && <div className="chart-crosshair-card" aria-label="K 线与报价资料"><header><b>{hongKongTime(displayedCandle.time, timeframe === '日线')}</b><small>{timeframe === '日线' ? '日线以美国交易日归档' : 'Asia/Hong_Kong'}</small></header><div><span>开 <b>{displayedCandle.open.toFixed(2)}</b></span><span>高 <b>{displayedCandle.high.toFixed(2)}</b></span><span>低 <b>{displayedCandle.low.toFixed(2)}</b></span><span>收 <b>{displayedCandle.close.toFixed(2)}</b></span></div>{hoveredCandle ? <small className="chart-historical-quote">历史 K 线未归档报价，未记录</small> : <div className="chart-live-quote"><span>Bid <b>{quote?.bid?.toFixed(2) ?? '—'}</b></span><span>Spread <b>{quote?.spread?.toFixed(2) ?? '—'}</b></span><span>Ask <b>{quote?.ask?.toFixed(2) ?? '—'}</b></span><small>{quote?.quote_at ? hongKongTime(quote.quote_at) : '报价未记录'}</small></div>}</div>}
+      {displayedCandle && <div className="chart-crosshair-card" style={crosshairCardStyle} aria-label="观察 K 线与当前盘口"><header><b>{hongKongTime(displayedCandle.time, timeframe === '日线')}</b><small>{timeframe === '日线' ? '日线以美国交易日归档' : 'Asia/Hong_Kong'}</small></header><div className={`chart-observed-ohlc ${displayedCandleTone}`}><span>开 <b>{displayedCandle.open.toFixed(2)}</b></span><span>高 <b>{displayedCandle.high.toFixed(2)}</b></span><span>低 <b>{displayedCandle.low.toFixed(2)}</b></span><span>收 <b>{displayedCandle.close.toFixed(2)}</b></span></div><div className="chart-live-quote"><small>当前盘口</small><span className="bid">Bid <b>{quote?.bid?.toFixed(2) ?? '—'}</b></span><span className="spread">Spread <b>{quote?.spread?.toFixed(2) ?? '—'}</b></span><span className="ask">Ask <b>{quote?.ask?.toFixed(2) ?? '—'}</b></span><time>{quote?.quote_at ? hongKongTime(quote.quote_at) : '报价时间未记录'}</time></div>{hoveredCandle && <small className="chart-historical-quote">盘口为当前报价，不代表所观察历史 K 线</small>}</div>}
       <ChartDrawingLayer
         active={drawingActive}
         userId={userId}
