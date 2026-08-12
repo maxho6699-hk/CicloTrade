@@ -14,7 +14,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from core.plans import effective_plan, plan_display_name, telegram_suggestion_name, telegram_timeline_limits
-from core.quant_journal import QuantJournal
+from core.official_paper_consumers import active_events as official_consumer_events
 from core.trade_timeline import project_trade_cycles, summarize_trade_cycles
 from notification.telegram_models import TelegramDeskResponse
 from notification.telegram_security import consume_telegram_timeline_quota
@@ -107,7 +107,7 @@ def _cycles(database, kind: str, *, include_marks: bool = True) -> tuple[list[di
         cached = _CACHE.get(cache_key)
         if cached and now - cached[0] < ttl:
             return cached[1], cached[2]
-    events = QuantJournal(database).list_events(_SYSTEM_LEDGER)
+    events = official_consumer_events(database)
     max_events = max(500, min(int(os.getenv("TELEGRAM_TIMELINE_MAX_EVENTS", "5000")), 20_000))
     if len(events) > max_events:
         raise RuntimeError("交易記錄正在建立索引，請稍後再試。")

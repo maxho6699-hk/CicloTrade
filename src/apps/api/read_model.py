@@ -17,6 +17,10 @@ from core.compat import UTC
 from core.broker_authorization import broker_execution_authorized
 from core.plans import CAPABILITIES, PLAN_ORDER, PLANS, can, effective_plan, plan_display_name, trading_limits
 from core.membership import membership_purchase_state, resolve_membership_snapshot
+from core.official_paper_consumers import (
+    OFFICIAL_PAPER_V2,
+    active_events as official_consumer_events,
+)
 from core.quant_journal import OFFICIAL_PAPER_V2_INITIAL_CASH, OfficialPaperJournalV2
 from core.trade_timeline import project_trade_cycles
 from payment.receiving_profile import ReceivingProfileService, payment_profile_public
@@ -25,6 +29,7 @@ from src.apps.api.watchlists import normalize_watchlist_pins, normalize_watchlis
 
 _PAPER_INTERVAL_LIMIT = 200
 _PAPER_EXECUTION_LIMIT = 500
+_OFFICIAL_PAPER_V2_EVENT_ID_OFFSET = 1_000_000_000
 _BROKER_CAPABILITY_CATALOG = (
     {
         "key": "tiger", "display_name": "Tiger Brokers",
@@ -694,49 +699,59 @@ class ReadOnlyLegacyRepository:
             "updated_at": account["updated_at"] if account else None,
         }
 
-    def _event_rows(self, *, limit: int, cursor: int | None = None) -> list[sqlite3.Row]:
+    @staticmethod
+    def _consumer_event_id(event: dict[str, Any]) -> int:
+        raw_id = int(event["id"])
+        return raw_id + _OFFICIAL_PAPER_V2_EVENT_ID_OFFSET if event.get("_consumer_store") == OFFICIAL_PAPER_V2 else raw_id
+
+    def _event_rows(self, *, limit: int, cursor: int | None = None) -> list[dict[str, Any]]:
         bounded = max(1, min(int(limit), 100))
-        cursor_clause = " AND e.id<?" if cursor is not None else ""
-        params: tuple[Any, ...] = (
-            os.getenv("TRADEAI_SYSTEM_LEDGER_KEY", "tradeai-system"),
-            *((cursor,) if cursor is not None else ()),
-            bounded,
-        )
         with self.connection() as connection:
-            return connection.execute(
-                f"""SELECT e.id,e.source,e.event_type,e.strategy_name,e.strategy_version,
-                           e.corrects_event_id,e.occurred_at,e.recorded_at,
-                           CASE WHEN e.event_type='reversal' OR EXISTS(
-                             SELECT 1 FROM quant_events later WHERE later.corrects_event_id=e.id
-                           ) THEN 0 ELSE 1 END active
-                    FROM quant_events e WHERE e.ledger_key=?{cursor_clause}
-                    ORDER BY e.id DESC LIMIT ?""",
-                params,
-            ).fetchall()
+            adapter = _ReadOnlyJournalAdapter(connection)
+            events = official_consumer_events(
+                adapter,
+                include_legacy=self._table_exists(connection, "quant_events"),
+                include_v2=self._table_exists(connection, "official_paper_events_v2"),
+            )
+        rows: list[dict[str, Any]] = []
+        for event in events:
+            if not event.get("active") and event.get("event_type") != "reversal":
+                continue
+            public_id = self._consumer_event_id(event)
+            if cursor is not None and public_id >= cursor:
+                continue
+            rows.append({
+                "id": public_id,
+                "_raw_event_id": int(event["id"]),
+                "_consumer_store": event["_consumer_store"],
+                "_metadata": event.get("metadata") or {},
+                "event_type": event["event_type"],
+                "strategy_name": event["strategy_name"],
+                "strategy_version": event["strategy_version"],
+                "corrects_event_id": event.get("corrects_event_id"),
+                "occurred_at": event["occurred_at"],
+                "recorded_at": event["recorded_at"],
+                "active": bool(event.get("active")),
+                "_legs": event.get("legs") or [],
+            })
+        return sorted(rows, key=lambda row: (str(row["recorded_at"]), int(row["id"])), reverse=True)[:bounded]
 
     def _legs_for_events(
-        self, event_ids: list[int], *, include_stocks: bool, include_options: bool
+        self, event_rows: list[dict[str, Any]], *, include_stocks: bool, include_options: bool
     ) -> dict[int, list[dict[str, Any]]]:
-        output = {event_id: [] for event_id in event_ids}
-        if not event_ids:
-            return output
-        placeholders = ",".join("?" for _ in event_ids)
-        with self.connection() as connection:
-            rows = connection.execute(
-                f"""SELECT event_id,market,instrument_type,symbol,currency,option_expiry,
-                            option_right,option_strike,target_quantity,quantity_delta,price,multiplier
-                     FROM quant_event_legs WHERE event_id IN ({placeholders})
-                     ORDER BY event_id,leg_no""",
-                tuple(event_ids),
-            ).fetchall()
-        for row in rows:
-            item = dict(row)
-            instrument_type = str(item["instrument_type"])
-            if (instrument_type == "stock" and not include_stocks) or (
-                instrument_type == "option" and not include_options
-            ):
-                item = {"instrument_type": instrument_type, "locked": True}
-            output[int(row["event_id"])].append(item)
+        output = {int(event["id"]): [] for event in event_rows}
+        for event in event_rows:
+            for leg in event["_legs"]:
+                item = dict(leg)
+                item.pop("id", None)
+                item.pop("leg_no", None)
+                event_id = int(event["id"])
+                instrument_type = str(item["instrument_type"])
+                if (instrument_type == "stock" and not include_stocks) or (
+                    instrument_type == "option" and not include_options
+                ):
+                    item = {"instrument_type": instrument_type, "locked": True}
+                output[event_id].append(item)
         return output
 
     def timeline(
@@ -746,30 +761,24 @@ class ReadOnlyLegacyRepository:
         include_stocks = can(identity.effective_plan, "signal_web")
         include_options = can(identity.effective_plan, "tg_option_signal")
         legs = self._legs_for_events(
-            [int(row["id"]) for row in rows],
+            rows,
             include_stocks=include_stocks,
             include_options=include_options,
         )
-        items = [{**dict(row), "active": bool(row["active"]), "legs": legs[int(row["id"])]} for row in rows]
+        items = [{
+            key: value for key, value in row.items() if not key.startswith("_")
+        } | {"active": bool(row["active"]), "legs": legs[int(row["id"])]} for row in rows]
         return {"items": items, "next_cursor": items[-1]["id"] if len(items) == limit else None}
 
     def recommendations(self, identity: BrowserIdentity, *, limit: int = 20) -> dict[str, Any]:
-        timeline = self.timeline(identity, limit=min(max(limit * 3, limit), 100))
-        event_ids = [int(event["id"]) for event in timeline["items"]]
-        metadata_by_event: dict[int, dict[str, Any]] = {}
-        if event_ids:
-            placeholders = ",".join("?" for _ in event_ids)
-            with self.connection() as connection:
-                rows = connection.execute(
-                    f"SELECT id,metadata_json FROM quant_events WHERE id IN ({placeholders})",
-                    tuple(event_ids),
-                ).fetchall()
-            metadata_by_event = {
-                int(row["id"]): _json_object(row["metadata_json"])
-                for row in rows
-            }
+        rows = self._event_rows(limit=min(max(limit * 3, limit), 100))
+        include_stocks = can(identity.effective_plan, "signal_web")
+        include_options = can(identity.effective_plan, "tg_option_signal")
+        legs_by_event = self._legs_for_events(rows, include_stocks=include_stocks, include_options=include_options)
         items = []
-        for event in timeline["items"]:
+        for row in rows:
+            event = {key: value for key, value in row.items() if not key.startswith("_")}
+            event["legs"] = legs_by_event[int(event["id"])]
             if not event["active"]:
                 continue
             locked_types = sorted({
@@ -810,7 +819,7 @@ class ReadOnlyLegacyRepository:
                     else "REDUCE"
                 )
                 contract = _recommendation_contract(
-                    metadata_by_event.get(int(event["id"]), {}), leg
+                    row["_metadata"], leg
                 )
                 required_fields = {
                     "stop_price": contract["stop_price"],

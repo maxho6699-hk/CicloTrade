@@ -490,3 +490,28 @@ def test_official_paper_v2_has_three_10000_genesis_accounts_and_is_append_only(d
         db.execute("UPDATE official_paper_events_v2 SET strategy_version='3'")
     with pytest.raises(DatabaseError, match="append-only"):
         db.execute("DELETE FROM official_paper_equity_snapshots_v2")
+
+
+def test_official_paper_v2_database_rejects_correction_forks(db):
+    journal = OfficialPaperJournalV2(db)
+    original = journal.append_event(
+        ledger_key="tradeai-official-paper-v2", source="v2-fork", external_event_id="original",
+        strategy_name="trend", strategy_version="1", occurred_at="2026-08-01T10:00:00+00:00",
+        legs=[{"market": "US", "instrument_type": "stock", "symbol": "AAPL", "target_quantity": 1, "quantity_delta": 1, "price": 100}],
+    )
+    journal.append_event(
+        ledger_key="tradeai-official-paper-v2", source="v2-fork", external_event_id="correction-one",
+        event_type="correction", corrects_event_id=original["id"], strategy_name="trend", strategy_version="2",
+        occurred_at="2026-08-01T11:00:00+00:00",
+        legs=[{"market": "US", "instrument_type": "stock", "symbol": "AAPL", "target_quantity": 2, "quantity_delta": 2, "price": 101}],
+    )
+
+    with pytest.raises(DatabaseError, match="UNIQUE constraint failed"):
+        db.execute(
+            """INSERT INTO official_paper_events_v2
+               (ledger_key,source,external_event_id,event_type,strategy_name,strategy_version,corrects_event_id,
+                occurred_at,recorded_at,leg_count,metadata_json,payload_hash)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ("tradeai-official-paper-v2", "v2-fork", "correction-two", "reversal", "trend", "2", original["id"],
+             "2026-08-01T12:00:00+00:00", "2026-08-01T12:00:00+00:00", 0, "{}", "a" * 64),
+        )

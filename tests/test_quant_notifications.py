@@ -7,7 +7,7 @@ from core.compat import UTC
 
 from core.auth import AuthService
 from core.database import DatabaseManager
-from core.quant_journal import QuantJournal
+from core.quant_journal import OfficialPaperJournalV2, QuantJournal
 from core.user_settings import merge_user_settings
 from notification.telegram_bot import TelegramDeliveryUncertain
 from scheduler.jobs import (
@@ -76,6 +76,61 @@ def _event(db: DatabaseManager) -> dict:
             },
         ],
     )
+
+
+def _official_v2_event(
+    db: DatabaseManager, *, external_event_id: str = "official-v2-signal-1", source: str = "official-pytest"
+) -> dict:
+    return OfficialPaperJournalV2(db).append_event(
+        ledger_key="tradeai-official-paper-v2",
+        source=source,
+        external_event_id=external_event_id,
+        strategy_name="官方模拟验证",
+        strategy_version="v2",
+        occurred_at="2026-08-06T01:30:00+00:00",
+        metadata={"risk_levels": {"US:STOCK:AAPL": {"stop_loss": 180, "target_price": 240}}},
+        legs=[{
+            "market": "US", "instrument_type": "stock", "symbol": "AAPL",
+            "target_quantity": 10, "quantity_delta": 10, "price": 200,
+        }],
+    )
+
+
+def test_official_paper_v2_events_reach_private_telegram_outbox_without_duplicate(tmp_path):
+    db = DatabaseManager(str(tmp_path / "official-v2-private-delivery.db"))
+    _paid_user(db, "official-v2", "高级版", "91001")
+    _official_v2_event(db)
+
+    assert enqueue_quant_signal_deliveries(db) == 1
+    assert enqueue_quant_signal_deliveries(db) == 0
+    assert db.fetch_one("SELECT event_id,symbol FROM official_paper_event_deliveries_v2") == {
+        "event_id": 1, "symbol": "AAPL"
+    }
+    assert db.fetch_one("SELECT 1 FROM quant_event_deliveries") is None
+
+
+def test_v2_source_identity_supersedes_legacy_consumer_delivery(tmp_path):
+    db = DatabaseManager(str(tmp_path / "official-v2-legacy-dedupe.db"))
+    _paid_user(db, "official-v2-legacy", "高级版", "91002")
+    _event(db)
+    _official_v2_event(db, external_event_id="mixed-signal-1", source="pytest")
+
+    assert enqueue_quant_signal_deliveries(db) == 1
+    assert db.fetch_one("SELECT 1 FROM quant_event_deliveries") is None
+    assert db.fetch_one("SELECT 1 FROM official_paper_event_deliveries_v2") is not None
+
+
+def test_official_paper_v2_events_use_group_and_free_delay_contracts(tmp_path, monkeypatch):
+    db = DatabaseManager(str(tmp_path / "official-v2-group-delivery.db"))
+    _official_v2_event(db)
+    monkeypatch.setenv("TELEGRAM_GROUP_SIGNALS_ENABLED", "true")
+    monkeypatch.setenv("TELEGRAM_FREE_DELAYED_SIGNALS_ENABLED", "true")
+
+    assert enqueue_quant_group_deliveries(db) == 2
+    assert enqueue_delayed_free_group_deliveries(db) == 1
+    assert db.fetch_one(
+        "SELECT instrument_type,delay_minutes FROM official_paper_delayed_group_deliveries_v2"
+    ) == {"instrument_type": "stock", "delay_minutes": 60}
 
 
 def test_signal_outbox_enforces_tiers_and_is_idempotent(tmp_path, monkeypatch):

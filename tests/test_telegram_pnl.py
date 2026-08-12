@@ -10,7 +10,9 @@ import pytest
 from core.auth import AuthService
 from core.compat import UTC
 from core.database import DatabaseManager
+from core.quant_journal import OfficialPaperJournalV2
 from notification.telegram_desk import telegram_desk_response
+from notification.telegram_timeline import _cycles
 
 
 @pytest.fixture
@@ -46,6 +48,18 @@ def _bound_user(db: DatabaseManager, name: str, chat_id: str) -> dict:
 def _hong_kong_midday(days_ago: int = 0) -> str:
     local = datetime.now(ZoneInfo("Asia/Hong_Kong")) - timedelta(days=days_ago)
     return local.replace(hour=12, minute=0, second=0, microsecond=0).astimezone(UTC).isoformat()
+
+
+def test_private_timeline_reads_official_paper_v2_events(db):
+    OfficialPaperJournalV2(db).append_event(
+        ledger_key="tradeai-official-paper-v2", source="timeline-v2", external_event_id="timeline-v2-open",
+        strategy_name="official", strategy_version="2", occurred_at="2026-08-01T10:00:00+00:00",
+        legs=[{"market": "US", "instrument_type": "stock", "symbol": "MSFT", "target_quantity": 2, "quantity_delta": 2, "price": 450}],
+    )
+
+    cycles, _ = _cycles(db, "stock", include_marks=False)
+
+    assert cycles[0]["symbol"] == "MSFT"
 
 
 def test_closed_pnl_query_filters_by_hong_kong_close_date_and_renders_fills(db, monkeypatch):

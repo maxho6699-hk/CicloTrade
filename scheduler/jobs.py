@@ -14,6 +14,12 @@ from core.alerts import AlertService
 from core.database import get_database
 from core.membership import authoritative_membership_user, resolve_membership
 from core.plans import TELEGRAM_CHANNEL_NAMES, can, effective_plan, plan_display_name
+from core.official_paper_consumers import (
+    LEGACY,
+    OFFICIAL_PAPER_V2,
+    active_events as official_consumer_events,
+    journal_for as official_consumer_journal,
+)
 from core.quant_journal import QuantJournal
 from core.user_settings import load_user_settings
 from core.strategy_evaluation import run_system_quant_cycle, update_saved_strategy_performance
@@ -53,6 +59,80 @@ class NoMaterialRecommendationChange(RuntimeError):
 
 FREE_GROUP_SIGNAL_DELAY_MINUTES = {"stock": 60, "option": 15}
 FREE_GROUP_MAX_DELAY_MINUTES = max(FREE_GROUP_SIGNAL_DELAY_MINUTES.values())
+
+
+_DELIVERY_TABLES = {
+    LEGACY: "quant_event_deliveries",
+    OFFICIAL_PAPER_V2: "official_paper_event_deliveries_v2",
+}
+
+
+def _consumer_store(delivery: dict) -> str:
+    return str(delivery.get("_consumer_store") or LEGACY)
+
+
+def _consumer_delivery_table(delivery: dict) -> str:
+    return _DELIVERY_TABLES[_consumer_store(delivery)]
+
+
+def _consumer_event_targets(database) -> list[dict]:
+    """Active official events plus terminal reversals, across v2 and history."""
+    targets: list[dict] = []
+    for event in official_consumer_events(database):
+        store = str(event["_consumer_store"])
+        # An active signal/correction changes the official position.  A terminal
+        # reversal is inactive by definition but must still be communicated.
+        if not event.get("active") and event.get("event_type") != "reversal":
+            continue
+        journal = official_consumer_journal(database, store)
+        for leg in journal.execution_legs(int(event["id"])):
+            # Corrections are themselves deliverable audit records.  Preserve
+            # a zero net-delta correction so rendering can explicitly decide
+            # it is a no-material-change, rather than silently losing it.
+            if not float(leg.get("quantity_delta") or 0) and event.get("event_type") != "correction":
+                continue
+            targets.append({
+                "event_id": int(event["id"]),
+                "event_type": event["event_type"],
+                "recorded_at": event["recorded_at"],
+                "instrument_type": leg["instrument_type"],
+                "symbol": leg["symbol"],
+                "market": leg["market"],
+                "_consumer_store": store,
+            })
+    return targets
+
+
+def _due_consumer_deliveries(database, *, group: bool = False, delayed: bool = False, due: str, limit: int) -> list[dict]:
+    if delayed:
+        legacy, v2 = "telegram_delayed_group_deliveries", "official_paper_delayed_group_deliveries_v2"
+    elif group:
+        legacy, v2 = "telegram_group_deliveries", "official_paper_group_deliveries_v2"
+    else:
+        legacy, v2 = "quant_event_deliveries", "official_paper_event_deliveries_v2"
+    # A copied legacy event may already have an unsent row when v2 is adopted.
+    # Prefer the v2 immutable source identity at claim time as well as enqueue
+    # time, so deployment timing cannot create a duplicate Telegram delivery.
+    legacy_filter = """ AND NOT EXISTS (
+            SELECT 1 FROM official_paper_events_v2 v2
+            JOIN quant_events legacy_event ON legacy_event.id=legacy.event_id
+            WHERE v2.ledger_key=? AND v2.source=legacy_event.source
+              AND v2.external_event_id=legacy_event.external_event_id
+         )"""
+    params: tuple = (
+        due,
+        os.getenv("TRADEAI_OFFICIAL_PAPER_V2_LEDGER_KEY", "tradeai-official-paper-v2"),
+        due,
+    )
+    return database.fetch_all(
+        f"""SELECT legacy.*, '{LEGACY}' AS _consumer_store FROM {legacy} legacy
+             WHERE status IN ('pending','failed','sending') AND next_attempt_at<=?{legacy_filter}
+             UNION ALL
+             SELECT *, '{OFFICIAL_PAPER_V2}' AS _consumer_store FROM {v2}
+             WHERE status IN ('pending','failed','sending') AND next_attempt_at<=?
+             ORDER BY next_attempt_at,_consumer_store,id LIMIT ?""",
+        params + (max(1, min(int(limit), 500)),),
+    )
 
 
 def _settings_json(value) -> dict:
@@ -100,21 +180,7 @@ def _newer_than_eligibility(recorded_at: str, user: dict) -> bool:
 def enqueue_quant_signal_deliveries(database=None) -> int:
     """Create deduplicated Telegram outbox rows from immutable model events."""
     db = database or get_database()
-    ledger_key = os.getenv("TRADEAI_SYSTEM_LEDGER_KEY", "tradeai-system")
-    event_targets = db.fetch_all(
-        """SELECT DISTINCT e.id event_id,e.event_type,e.recorded_at,l.instrument_type,l.symbol,l.market
-           FROM quant_events e JOIN quant_event_legs l ON l.event_id=e.id
-           WHERE e.ledger_key=?
-             AND NOT EXISTS (SELECT 1 FROM quant_events newer WHERE newer.corrects_event_id=e.id)
-           UNION
-           SELECT DISTINCT e.id event_id,e.event_type,e.recorded_at,l.instrument_type,l.symbol,l.market
-           FROM quant_events e
-           JOIN quant_event_legs l ON l.event_id=e.corrects_event_id
-           WHERE e.ledger_key=? AND e.event_type IN ('correction','reversal')
-             AND NOT EXISTS (SELECT 1 FROM quant_events newer WHERE newer.corrects_event_id=e.id)
-           ORDER BY event_id""",
-        (ledger_key, ledger_key),
-    )
+    event_targets = _consumer_event_targets(db)
     if not event_targets:
         return 0
     users = [
@@ -146,8 +212,9 @@ def enqueue_quant_signal_deliveries(database=None) -> int:
                     or not _newer_than_eligibility(target["recorded_at"], user)
                 ):
                     continue
+                table = _DELIVERY_TABLES[str(target["_consumer_store"])]
                 cursor = conn.execute(
-                    """INSERT OR IGNORE INTO quant_event_deliveries
+                    f"""INSERT OR IGNORE INTO {table}
                        (event_id,user_id,channel,instrument_type,symbol,status,attempts,
                         next_attempt_at,last_error,created_at,updated_at,sent_at)
                        VALUES (?,?,'telegram',?,?, 'pending',0,?,NULL,?,?,NULL)""",
@@ -215,14 +282,14 @@ def _quant_message(
     audience: str | None = None,
     delay_minutes: int | None = None,
 ) -> str:
-    event = database.fetch_one(
-        """SELECT id,ledger_key,source,event_type,strategy_name,strategy_version,corrects_event_id,
-                  occurred_at,recorded_at,metadata_json FROM quant_events WHERE id=?""",
-        (delivery["event_id"],),
-    )
-    if not event:
+    store = _consumer_store(delivery)
+    journal = official_consumer_journal(database, store)
+    event = next((item for item in journal.list_events(
+        os.getenv("TRADEAI_OFFICIAL_PAPER_V2_LEDGER_KEY", "tradeai-official-paper-v2")
+        if store == OFFICIAL_PAPER_V2 else os.getenv("TRADEAI_SYSTEM_LEDGER_KEY", "tradeai-system")
+    ) if int(item["id"]) == int(delivery["event_id"])), None)
+    if event is None:
         raise RuntimeError("量化事件不存在")
-    journal = QuantJournal(database)
     all_legs = journal.execution_legs(event["id"])
     if audience == "professional":
         allowed_types = {"stock", "option"}
@@ -241,7 +308,7 @@ def _quant_message(
         ]
     if not legs:
         raise RuntimeError("量化事件没有匹配的交易腿")
-    metadata = _settings_json(event["metadata_json"])
+    metadata = event.get("metadata") or {}
     changed_legs: list[dict] = []
     change_kinds: dict[str, RecommendationChange] = {}
     contents = {}
@@ -263,11 +330,7 @@ def _quant_message(
         if position["instrument_type"] in allowed_types
         and (audience is not None or position["symbol"] == delivery["symbol"])
     ]
-    source_label = (
-        "CicloTrade 官方模擬帳戶（Tiger）"
-        if str(event["source"]).startswith("tiger")
-        else "CicloTrade 官方模擬帳戶"
-    )
+    source_label = "CicloTrade 官方模擬帳戶"
     delay_note = None
     if delay_minutes:
         delay_note = "期權建議延遲 15 分鐘" if delivery["instrument_type"] == "option" else "正股建議延遲 1 小時"
@@ -324,18 +387,13 @@ def dispatch_quant_signal_deliveries(database=None, limit: int = 100) -> int:
     db = database or get_database()
     now = datetime.now(UTC)
     due = now.isoformat(timespec="seconds")
-    deliveries = db.fetch_all(
-        """SELECT * FROM quant_event_deliveries
-           WHERE channel='telegram'
-             AND status IN ('pending','failed','sending') AND next_attempt_at<=?
-           ORDER BY id LIMIT ?""",
-        (due, max(1, min(int(limit), 500))),
-    )
+    deliveries = _due_consumer_deliveries(db, due=due, limit=limit)
     sent = 0
     for delivery in deliveries:
+        table = _consumer_delivery_table(delivery)
         lease_until = (now + timedelta(minutes=10)).isoformat(timespec="seconds")
         claimed = db.execute(
-            """UPDATE quant_event_deliveries
+            f"""UPDATE {table}
                SET status='sending',attempts=attempts+1,next_attempt_at=?,updated_at=?
                WHERE id=? AND channel='telegram'
                  AND status IN ('pending','failed','sending') AND next_attempt_at<=?""",
@@ -360,7 +418,7 @@ def dispatch_quant_signal_deliveries(database=None, limit: int = 100) -> int:
             or not _watches(settings, delivery["symbol"], market)
         ):
             db.execute(
-                """UPDATE quant_event_deliveries SET status='skipped',last_error='entitlement_or_consent',
+                f"""UPDATE {table} SET status='skipped',last_error='entitlement_or_consent',
                    updated_at=? WHERE id=? AND status='sending'""",
                 (due, delivery["id"]),
             )
@@ -371,14 +429,14 @@ def dispatch_quant_signal_deliveries(database=None, limit: int = 100) -> int:
             _send_quant_card(_quant_message(db, delivery), target)
         except NoMaterialRecommendationChange:
             db.execute(
-                """UPDATE quant_event_deliveries SET status='skipped',last_error='no_material_change',
+                f"""UPDATE {table} SET status='skipped',last_error='no_material_change',
                    updated_at=? WHERE id=? AND status='sending'""",
                 (due, delivery["id"]),
             )
             continue
         except TelegramDeliveryUncertain as exc:
             db.execute(
-                """UPDATE quant_event_deliveries SET status='skipped',last_error=?,updated_at=?
+                f"""UPDATE {table} SET status='skipped',last_error=?,updated_at=?
                    WHERE id=? AND status='sending'""",
                 (f"delivery_uncertain_manual_retry: {exc}"[:300], due, delivery["id"]),
             )
@@ -389,13 +447,13 @@ def dispatch_quant_signal_deliveries(database=None, limit: int = 100) -> int:
             token = telegram_token()
             error = str(exc).replace(token, "[redacted]") if token else str(exc)
             db.execute(
-                """UPDATE quant_event_deliveries SET status='failed',next_attempt_at=?,last_error=?,
+                f"""UPDATE {table} SET status='failed',next_attempt_at=?,last_error=?,
                    updated_at=? WHERE id=? AND status='sending'""",
                 (retry_at, error[:300], due, delivery["id"]),
             )
             continue
         db.execute(
-            """UPDATE quant_event_deliveries SET status='sent',sent_at=?,updated_at=?,last_error=NULL
+            f"""UPDATE {table} SET status='sent',sent_at=?,updated_at=?,last_error=NULL
                WHERE id=? AND status='sending'""",
             (due, due, delivery["id"]),
         )
@@ -419,26 +477,15 @@ def enqueue_quant_group_deliveries(database=None) -> int:
     if os.getenv("TELEGRAM_GROUP_SIGNALS_ENABLED", "false").strip().lower() != "true":
         return 0
     db = database or get_database()
-    ledger_key = os.getenv("TRADEAI_SYSTEM_LEDGER_KEY", "tradeai-system")
-    targets = db.fetch_all(
-        """SELECT DISTINCT e.id event_id,l.instrument_type
-           FROM quant_events e JOIN quant_event_legs l ON l.event_id=e.id
-           WHERE e.ledger_key=?
-             AND NOT EXISTS (SELECT 1 FROM quant_events newer WHERE newer.corrects_event_id=e.id)
-           UNION
-           SELECT DISTINCT e.id event_id,l.instrument_type
-           FROM quant_events e JOIN quant_event_legs l ON l.event_id=e.corrects_event_id
-           WHERE e.ledger_key=? AND e.event_type IN ('correction','reversal')
-             AND NOT EXISTS (SELECT 1 FROM quant_events newer WHERE newer.corrects_event_id=e.id)""",
-        (ledger_key, ledger_key),
-    )
-    event_types: dict[int, set[str]] = {}
+    targets = _consumer_event_targets(db)
+    event_types: dict[tuple[str, int], set[str]] = {}
     for target in targets:
-        event_types.setdefault(int(target["event_id"]), set()).add(str(target["instrument_type"]))
+        event_types.setdefault((str(target["_consumer_store"]), int(target["event_id"])), set()).add(str(target["instrument_type"]))
     now = datetime.now(UTC).isoformat(timespec="seconds")
     queued = 0
     with db.transaction() as conn:
-        for event_id, instrument_types in event_types.items():
+        for (store, event_id), instrument_types in event_types.items():
+            table = "official_paper_group_deliveries_v2" if store == OFFICIAL_PAPER_V2 else "telegram_group_deliveries"
             routes = []
             if "stock" in instrument_types:
                 routes.append(("advanced", "stock"))
@@ -448,12 +495,12 @@ def enqueue_quant_group_deliveries(database=None) -> int:
                 if not chat_id:
                     continue
                 if conn.execute(
-                    "SELECT 1 FROM telegram_group_deliveries WHERE event_id=? AND group_name=? LIMIT 1",
+                    f"SELECT 1 FROM {table} WHERE event_id=? AND group_name=? LIMIT 1",
                     (event_id, group),
                 ).fetchone():
                     continue
                 cursor = conn.execute(
-                    """INSERT OR IGNORE INTO telegram_group_deliveries
+                    f"""INSERT OR IGNORE INTO {table}
                        (event_id,group_name,chat_id,instrument_type,symbol,status,attempts,
                         next_attempt_at,last_error,created_at,updated_at,sent_at)
                        VALUES (?,?,?,?,?,'pending',0,?,NULL,?,?,NULL)""",
@@ -469,17 +516,13 @@ def dispatch_quant_group_deliveries(database=None, limit: int = 100) -> int:
     db = database or get_database()
     now = datetime.now(UTC)
     due = now.isoformat(timespec="seconds")
-    rows = db.fetch_all(
-        """SELECT * FROM telegram_group_deliveries
-           WHERE status IN ('pending','failed','sending') AND next_attempt_at<=?
-           ORDER BY id LIMIT ?""",
-        (due, max(1, min(int(limit), 500))),
-    )
+    rows = _due_consumer_deliveries(db, group=True, due=due, limit=limit)
     sent = 0
     for delivery in rows:
+        table = "official_paper_group_deliveries_v2" if _consumer_store(delivery) == OFFICIAL_PAPER_V2 else "telegram_group_deliveries"
         lease_until = (now + timedelta(minutes=10)).isoformat(timespec="seconds")
         if not db.execute(
-            """UPDATE telegram_group_deliveries
+            f"""UPDATE {table}
                SET status='sending',attempts=attempts+1,next_attempt_at=?,updated_at=?
                WHERE id=? AND status IN ('pending','failed','sending') AND next_attempt_at<=?""",
             (lease_until, due, delivery["id"], due),
@@ -488,7 +531,7 @@ def dispatch_quant_group_deliveries(database=None, limit: int = 100) -> int:
         target = telegram_group(delivery["group_name"])
         if not target:
             db.execute(
-                "UPDATE telegram_group_deliveries SET status='skipped',last_error='group_not_configured',updated_at=? WHERE id=?",
+                f"UPDATE {table} SET status='skipped',last_error='group_not_configured',updated_at=? WHERE id=?",
                 (due, delivery["id"]),
             )
             continue
@@ -498,13 +541,13 @@ def dispatch_quant_group_deliveries(database=None, limit: int = 100) -> int:
             _send_quant_card(_quant_message(db, delivery, audience=delivery["group_name"]), target)
         except NoMaterialRecommendationChange:
             db.execute(
-                "UPDATE telegram_group_deliveries SET status='skipped',last_error='no_material_change',updated_at=? WHERE id=?",
+                f"UPDATE {table} SET status='skipped',last_error='no_material_change',updated_at=? WHERE id=?",
                 (due, delivery["id"]),
             )
             continue
         except TelegramDeliveryUncertain as exc:
             db.execute(
-                "UPDATE telegram_group_deliveries SET status='skipped',last_error=?,updated_at=? WHERE id=?",
+                f"UPDATE {table} SET status='skipped',last_error=?,updated_at=? WHERE id=?",
                 (f"delivery_uncertain_manual_retry: {exc}"[:300], due, delivery["id"]),
             )
             continue
@@ -513,13 +556,13 @@ def dispatch_quant_group_deliveries(database=None, limit: int = 100) -> int:
             token = telegram_token()
             error = str(exc).replace(token, "[redacted]") if token else str(exc)
             db.execute(
-                """UPDATE telegram_group_deliveries SET status='failed',next_attempt_at=?,last_error=?,updated_at=?
+                f"""UPDATE {table} SET status='failed',next_attempt_at=?,last_error=?,updated_at=?
                    WHERE id=?""",
                 (retry_at, error[:300], due, delivery["id"]),
             )
             continue
         db.execute(
-            "UPDATE telegram_group_deliveries SET status='sent',sent_at=?,updated_at=?,last_error=NULL WHERE id=?",
+            f"UPDATE {table} SET status='sent',sent_at=?,updated_at=?,last_error=NULL WHERE id=?",
             (due, due, delivery["id"]),
         )
         sent += 1
@@ -533,23 +576,12 @@ def enqueue_delayed_free_group_deliveries(database=None) -> int:
     target = telegram_group("daily")
     if not target:
         return 0
-    ledger_key = os.getenv("TRADEAI_SYSTEM_LEDGER_KEY", "tradeai-system")
-    rows = db.fetch_all(
-        """SELECT DISTINCT e.id event_id,e.recorded_at,l.instrument_type
-           FROM quant_events e JOIN quant_event_legs l ON l.event_id=e.id
-           WHERE e.ledger_key=?
-             AND NOT EXISTS (SELECT 1 FROM quant_events newer WHERE newer.corrects_event_id=e.id)
-           UNION
-           SELECT DISTINCT e.id event_id,e.recorded_at,l.instrument_type
-           FROM quant_events e JOIN quant_event_legs l ON l.event_id=e.corrects_event_id
-           WHERE e.ledger_key=? AND e.event_type IN ('correction','reversal')
-             AND NOT EXISTS (SELECT 1 FROM quant_events newer WHERE newer.corrects_event_id=e.id)""",
-        (ledger_key, ledger_key),
-    )
+    rows = _consumer_event_targets(db)
     now = datetime.now(UTC)
     queued = 0
     with db.transaction() as conn:
         for row in rows:
+            table = "official_paper_delayed_group_deliveries_v2" if row["_consumer_store"] == OFFICIAL_PAPER_V2 else "telegram_delayed_group_deliveries"
             delay = FREE_GROUP_SIGNAL_DELAY_MINUTES.get(
                 str(row["instrument_type"]), FREE_GROUP_MAX_DELAY_MINUTES
             )
@@ -558,7 +590,7 @@ def enqueue_delayed_free_group_deliveries(database=None) -> int:
                 recorded = recorded.replace(tzinfo=UTC)
             release = recorded.astimezone(UTC) + timedelta(minutes=delay)
             cursor = conn.execute(
-                """INSERT OR IGNORE INTO telegram_delayed_group_deliveries
+                f"""INSERT OR IGNORE INTO {table}
                    (event_id,chat_id,instrument_type,delay_minutes,status,attempts,next_attempt_at,
                     last_error,created_at,updated_at,sent_at)
                    VALUES (?,?,?,?,'pending',0,?,NULL,?,?,NULL)""",
@@ -578,17 +610,13 @@ def dispatch_delayed_free_group_deliveries(database=None, limit: int = 100) -> i
     db = database or get_database()
     now = datetime.now(UTC)
     due = now.isoformat(timespec="seconds")
-    rows = db.fetch_all(
-        """SELECT * FROM telegram_delayed_group_deliveries
-           WHERE status IN ('pending','failed','sending') AND next_attempt_at<=?
-           ORDER BY id LIMIT ?""",
-        (due, max(1, min(int(limit), 500))),
-    )
+    rows = _due_consumer_deliveries(db, delayed=True, due=due, limit=limit)
     sent = 0
     for delivery in rows:
+        table = "official_paper_delayed_group_deliveries_v2" if _consumer_store(delivery) == OFFICIAL_PAPER_V2 else "telegram_delayed_group_deliveries"
         lease_until = (now + timedelta(minutes=10)).isoformat(timespec="seconds")
         if not db.execute(
-            """UPDATE telegram_delayed_group_deliveries
+            f"""UPDATE {table}
                SET status='sending',attempts=attempts+1,next_attempt_at=?,updated_at=?
                WHERE id=? AND status IN ('pending','failed','sending') AND next_attempt_at<=?""",
             (lease_until, due, delivery["id"], due),
@@ -606,13 +634,13 @@ def dispatch_delayed_free_group_deliveries(database=None, limit: int = 100) -> i
             _send_quant_card(message, delivery["chat_id"], upgrade=True)
         except NoMaterialRecommendationChange:
             db.execute(
-                "UPDATE telegram_delayed_group_deliveries SET status='skipped',last_error='no_material_change',updated_at=? WHERE id=?",
+                f"UPDATE {table} SET status='skipped',last_error='no_material_change',updated_at=? WHERE id=?",
                 (due, delivery["id"]),
             )
             continue
         except TelegramDeliveryUncertain as exc:
             db.execute(
-                "UPDATE telegram_delayed_group_deliveries SET status='skipped',last_error=?,updated_at=? WHERE id=?",
+                f"UPDATE {table} SET status='skipped',last_error=?,updated_at=? WHERE id=?",
                 (f"delivery_uncertain_manual_retry: {exc}"[:300], due, delivery["id"]),
             )
             continue
@@ -621,13 +649,13 @@ def dispatch_delayed_free_group_deliveries(database=None, limit: int = 100) -> i
             token = telegram_token()
             error = str(exc).replace(token, "[redacted]") if token else str(exc)
             db.execute(
-                """UPDATE telegram_delayed_group_deliveries SET status='failed',next_attempt_at=?,
+                f"""UPDATE {table} SET status='failed',next_attempt_at=?,
                    last_error=?,updated_at=? WHERE id=?""",
                 (retry_at, error[:300], due, delivery["id"]),
             )
             continue
         db.execute(
-            "UPDATE telegram_delayed_group_deliveries SET status='sent',sent_at=?,updated_at=?,last_error=NULL WHERE id=?",
+            f"UPDATE {table} SET status='sent',sent_at=?,updated_at=?,last_error=NULL WHERE id=?",
             (due, due, delivery["id"]),
         )
         sent += 1

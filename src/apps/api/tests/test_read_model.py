@@ -473,6 +473,34 @@ def test_portfolio_uses_system_ledger_and_excludes_customer_paper_orders(compati
     assert {item["market"] for item in performance["items"]} == {"US", "HK", "CN"}
 
 
+def test_recommendations_and_timeline_include_official_paper_v2_events(compatibility):
+    database, user, login, repository = compatibility
+    now = datetime.now(UTC).isoformat()
+    database.execute(
+        "UPDATE users SET plan_type='标准版',subscription_expire=? WHERE id=?",
+        ((datetime.now(UTC) + timedelta(days=30)).isoformat(), user["id"]),
+    )
+    OfficialPaperJournalV2(database).append_event(
+        ledger_key="tradeai-official-paper-v2", source="official-read", external_event_id="official-consumer-v2",
+        strategy_name="official-validation", strategy_version="2", occurred_at=now,
+        metadata={"risk_levels": {"US:STOCK:MSFT": {"stop_loss": 400, "target_price": 500}}},
+        legs=[{
+            "market": "US", "instrument_type": "stock", "symbol": "MSFT",
+            "target_quantity": 3, "quantity_delta": 3, "price": 450,
+        }],
+    )
+    identity = repository.authenticate(login.access_token)
+
+    timeline = repository.timeline(identity)
+    recommendations = repository.recommendations(identity)
+
+    assert any(
+        item["strategy_version"] == "2" and any(leg.get("symbol") == "MSFT" for leg in item["legs"])
+        for item in timeline["items"]
+    )
+    assert any(item["strategy_version"] == "2" and item["symbol"] == "MSFT" for item in recommendations["items"])
+
+
 def test_portfolio_activity_groups_official_ledger_events(compatibility):
     database, user, login, repository = compatibility
     rows = [
