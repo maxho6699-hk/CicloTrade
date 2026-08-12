@@ -30,6 +30,7 @@ MAX_ENV_BYTES = 1024 * 1024
 MIN_SECRET_BYTES = 32
 MAX_SECRET_BYTES = 1024
 ENV_KEY = re.compile(r"[A-Z_][A-Z0-9_]*\Z")
+ENV_SECRET = re.compile(rb"[A-Za-z0-9_-]+\Z")
 
 
 @dataclass(frozen=True)
@@ -103,8 +104,13 @@ def _validate_request(
         raise SecretUpdateError("environment key is outside the fixed Compute Evidence contract")
     if not isinstance(secret, bytes) or not MIN_SECRET_BYTES <= len(secret) <= MAX_SECRET_BYTES:
         raise SecretUpdateError("secret length is outside the permitted range")
-    if any(byte in secret for byte in (0, 10, 13)):
-        raise SecretUpdateError("secret contains a forbidden control character")
+    # The exact bytes must survive both systemd EnvironmentFile parsing and
+    # the application's deliberately simple dotenv parser.  Unquoted
+    # base64url is the shared, unambiguous subset; accepting shell syntax,
+    # whitespace, comments, escapes, padding, or arbitrary UTF-8 would let the
+    # installer probe and the publisher sign with different byte strings.
+    if ENV_SECRET.fullmatch(secret) is None:
+        raise SecretUpdateError("secret must use unpadded base64url characters only")
 
 
 def _assert_safe_parent(path: Path) -> None:

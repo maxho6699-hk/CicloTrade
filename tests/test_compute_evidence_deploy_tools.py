@@ -87,6 +87,69 @@ def test_atomic_env_update_fails_closed_for_duplicate_key_or_invalid_request(tmp
     assert target.read_bytes() == content
 
 
+@pytest.mark.parametrize(
+    "secret",
+    [
+        b"s" * 31 + b" ",
+        b"s" * 31 + b"#",
+        b"s" * 31 + b'\"',
+        b"s" * 31 + b"'",
+        b"s" * 31 + b"\\",
+        b"s" * 31 + b"=",
+        b"s" * 31 + b"\t",
+        b"s" * 31 + b"\xff",
+    ],
+)
+def test_atomic_env_update_rejects_values_with_ambiguous_environment_syntax(
+    tmp_path, monkeypatch, secret
+):
+    target = tmp_path / "compute-evidence.env"
+    original = b"TRADEAI_COMPUTE_EVIDENCE_SHARED_SECRET=old-value\n"
+    target.write_bytes(original)
+    monkeypatch.setattr(atomic_env_secret, "_uid", lambda _value: 1000)
+    monkeypatch.setattr(atomic_env_secret, "_gid", lambda _value: 1000)
+    _portable_metadata(monkeypatch)
+
+    with pytest.raises(atomic_env_secret.SecretUpdateError, match="base64url"):
+        atomic_env_secret.update_secret(
+            policy=_policy(target),
+            owner="test-owner",
+            group="test-group",
+            mode="0600",
+            key="TRADEAI_COMPUTE_EVIDENCE_SHARED_SECRET",
+            secret=secret,
+            require_root=False,
+        )
+
+    assert target.read_bytes() == original
+
+
+def test_atomic_env_update_emits_the_exact_value_read_by_the_probe_parser(tmp_path, monkeypatch):
+    target = tmp_path / "compute-evidence.env"
+    target.write_bytes(
+        b"TRADEAI_COMPUTE_EVIDENCE_SITE_ID=hk-strategy-worker\n"
+        b"TRADEAI_COMPUTE_EVIDENCE_PUBLISHER_ID=compute-evidence-publisher\n"
+        b"TRADEAI_COMPUTE_EVIDENCE_SHARED_SECRET=old-value\n"
+    )
+    secret = b"AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-ab"
+    monkeypatch.setattr(atomic_env_secret, "_uid", lambda _value: 1000)
+    monkeypatch.setattr(atomic_env_secret, "_gid", lambda _value: 1000)
+    _portable_metadata(monkeypatch)
+
+    atomic_env_secret.update_secret(
+        policy=_policy(target),
+        owner="test-owner",
+        group="test-group",
+        mode="0600",
+        key="TRADEAI_COMPUTE_EVIDENCE_SHARED_SECRET",
+        secret=secret,
+        require_root=False,
+    )
+
+    parsed = auth_probe._parse_env(target.read_bytes())
+    assert parsed["TRADEAI_COMPUTE_EVIDENCE_SHARED_SECRET"].encode("ascii") == secret
+
+
 def test_atomic_env_update_rejects_symlink_target(tmp_path, monkeypatch):
     real = tmp_path / "real.env"
     real.write_bytes(b"OTHER=value\n")
