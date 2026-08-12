@@ -6,10 +6,26 @@ import os
 from pathlib import Path
 import stat
 import sys
+from types import SimpleNamespace
 
 import pytest
 
 from core.compute_evidence_contracts import delivery_signature
+from core.backtest_queue_database import BacktestQueueDatabase
+from core.compute_evidence_contracts import canonical_json, sha256_bytes
+from src.apps.worker.compute_evidence_publisher import (
+    ComputeEvidencePublisher,
+    ComputeEvidencePublisherSettings,
+    PublisherResponse,
+    PublisherUncertainTransportError,
+)
+from src.apps.worker.compute_evidence_spool import PersistentComputeEvidenceSpool
+from tests.test_compute_evidence_acceptance import (
+    Clock,
+    PUBLISHER_ID,
+    SECRET,
+    package_fixture,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +42,10 @@ def _load(name: str, relative: str):
 
 atomic_env_secret = _load("atomic_env_secret", "ops/scripts/atomic_env_secret.py")
 auth_probe = _load("compute_evidence_auth_probe", "ops/scripts/compute_evidence_auth_probe.py")
+replay_acceptance = _load(
+    "compute_evidence_replay_acceptance",
+    "ops/scripts/compute_evidence_replay_acceptance.py",
+)
 
 
 def _policy(path: Path):
@@ -248,6 +268,204 @@ def test_auth_probe_rejects_duplicate_or_malformed_environment_data():
         )
     with pytest.raises(auth_probe.ProbeError, match="invalid"):
         auth_probe._parse_env(b"not an env assignment\n")
+
+
+class _ReplayTransport:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def post(self, path, headers, body, **limits):
+        self.calls.append((path, headers, body, limits))
+        response = self.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+
+def _receipt(package: dict) -> dict:
+    return {
+        "accepted": True,
+        "created": True,
+        "receipt_key": package["package_id"],
+        "package_id": package["package_id"],
+        "package_sha256": sha256_bytes(canonical_json(package)),
+        "publication_state": "quarantine",
+        "research_only": True,
+        "actionable": False,
+        "user_visible": False,
+    }
+
+
+def _publisher_settings(path: Path) -> ComputeEvidencePublisherSettings:
+    return ComputeEvidencePublisherSettings(
+        enabled=True,
+        database_path=path,
+        shared_secret=SECRET,
+        publisher_id=PUBLISHER_ID,
+        connect_timeout_seconds=2,
+        total_timeout_seconds=5,
+        max_response_bytes=64 * 1024,
+        lease_seconds=30,
+        delivery_expiry_seconds=120,
+        max_retry_after_seconds=3_600,
+    )
+
+
+def test_replay_acceptance_completes_spool_only_after_exact_same_request_returns_201_then_409(tmp_path):
+    clock = Clock()
+    package = package_fixture()
+    spool = PersistentComputeEvidenceSpool(BacktestQueueDatabase(tmp_path / "spool.db"), clock=clock)
+    row, _ = spool.enqueue(package)
+    first = PublisherResponse(
+        201,
+        {"content-type": "application/json"},
+        canonical_json(_receipt(package)),
+    )
+    raw = _ReplayTransport([first, PublisherResponse(409, {}, b"")])
+    guarded = replay_acceptance.ReplayAcceptanceTransport(raw)
+
+    result = ComputeEvidencePublisher(
+        spool,
+        _publisher_settings(tmp_path / "spool.db"),
+        guarded,
+        clock=clock,
+    ).run_once()
+
+    assert result["state"] == "delivered" and result["http_status"] == 201
+    assert (guarded.first_http_status, guarded.replay_http_status) == (201, 409)
+    assert len(raw.calls) == 2
+    assert raw.calls[0][0] == raw.calls[1][0]
+    assert raw.calls[0][1] is raw.calls[1][1]
+    assert raw.calls[0][2] is raw.calls[1][2]
+    assert raw.calls[0][3] == raw.calls[1][3]
+    assert raw.calls[0][1]["x-ciclotrade-nonce"] == raw.calls[1][1]["x-ciclotrade-nonce"]
+    stored = spool.database.fetch_one(
+        "SELECT state,last_http_status,delivery_receipt_json FROM compute_evidence_spool WHERE id=?",
+        (row["id"],),
+    )
+    assert stored["state"] == "delivered" and stored["last_http_status"] == 201
+    assert stored["delivery_receipt_json"]
+
+
+@pytest.mark.parametrize(
+    "responses",
+    [
+        [PublisherResponse(200, {"content-type": "application/json"}, b"{}")],
+        [
+            PublisherResponse(201, {"content-type": "application/json"}, b"{}"),
+            PublisherResponse(200, {"content-type": "application/json"}, b"{}"),
+        ],
+        [
+            PublisherResponse(201, {"content-type": "application/json"}, b"{}"),
+            PublisherUncertainTransportError("response unavailable"),
+        ],
+    ],
+)
+def test_replay_acceptance_fails_closed_without_persisting_first_receipt(tmp_path, responses):
+    clock = Clock()
+    package = package_fixture("candidate-job-replay-failure")
+    spool = PersistentComputeEvidenceSpool(BacktestQueueDatabase(tmp_path / "spool.db"), clock=clock)
+    row, _ = spool.enqueue(package)
+    guarded = replay_acceptance.ReplayAcceptanceTransport(_ReplayTransport(responses))
+
+    result = ComputeEvidencePublisher(
+        spool,
+        _publisher_settings(tmp_path / "spool.db"),
+        guarded,
+        clock=clock,
+    ).run_once()
+
+    assert result["state"] == "uncertain"
+    stored = spool.database.fetch_one(
+        "SELECT state,delivery_receipt_json FROM compute_evidence_spool WHERE id=?",
+        (row["id"],),
+    )
+    assert stored == {"state": "uncertain", "delivery_receipt_json": None}
+
+
+def test_replay_acceptance_cli_emits_only_sanitized_status(monkeypatch, capsys):
+    monkeypatch.setattr(
+        replay_acceptance,
+        "run_acceptance",
+        lambda: {
+            "state": "delivered",
+            "origin": "https://ciclotrade.com",
+            "spool_id": 7,
+            "attempts": 1,
+            "first_http_status": 201,
+            "replay_http_status": 409,
+        },
+    )
+    assert replay_acceptance.main() == 0
+    output = capsys.readouterr()
+    assert output.err == ""
+    assert output.out == (
+        '{"attempts":1,"first_http_status":201,"origin":"https://ciclotrade.com",'
+        '"replay_http_status":409,"spool_id":7,"state":"delivered"}\n'
+    )
+    assert "secret" not in output.out.lower()
+
+
+def test_replay_acceptance_cli_fails_without_echoing_exception(monkeypatch, capsys):
+    monkeypatch.setattr(
+        replay_acceptance,
+        "run_acceptance",
+        lambda: (_ for _ in ()).throw(ValueError("signature=do-not-print")),
+    )
+    assert replay_acceptance.main() == 2
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err == '{"state":"error"}\n'
+    assert "signature" not in output.err
+
+
+def test_replay_acceptance_drops_to_existing_publisher_service_account():
+    identity = {"uid": 0, "gid": 0}
+    calls = []
+
+    def setgid(value):
+        calls.append(("gid", value))
+        identity["gid"] = value
+
+    def setuid(value):
+        calls.append(("uid", value))
+        identity["uid"] = value
+
+    replay_acceptance._drop_service_privileges(
+        platform="posix",
+        geteuid=lambda: identity["uid"],
+        getegid=lambda: identity["gid"],
+        account_lookup=lambda user: SimpleNamespace(pw_uid=1201, pw_gid=1202),
+        initgroups=lambda user, gid: calls.append(("groups", user, gid)),
+        setgid=setgid,
+        setuid=setuid,
+    )
+
+    assert calls == [
+        ("groups", "cicloworker", 1202),
+        ("gid", 1202),
+        ("uid", 1201),
+    ]
+
+
+def test_replay_acceptance_refuses_non_root_or_failed_service_account_transition():
+    with pytest.raises(replay_acceptance.ProbeError, match="begin as root"):
+        replay_acceptance._drop_service_privileges(
+            platform="posix",
+            geteuid=lambda: 1000,
+        )
+
+    with pytest.raises(replay_acceptance.ProbeError, match="transition failed"):
+        replay_acceptance._drop_service_privileges(
+            platform="posix",
+            geteuid=lambda: 0,
+            getegid=lambda: 0,
+            account_lookup=lambda user: SimpleNamespace(pw_uid=1201, pw_gid=1202),
+            initgroups=lambda user, gid: None,
+            setgid=lambda gid: None,
+            setuid=lambda uid: None,
+        )
 
 
 def test_atomic_env_update_rejects_missing_target(tmp_path, monkeypatch):
