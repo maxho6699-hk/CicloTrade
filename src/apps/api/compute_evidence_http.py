@@ -6,6 +6,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from core.compute_evidence_contracts import RECEIVER_HTTP_PATH
 from src.apps.api.compute_evidence_receiver import (
     MAX_PACKAGE_BYTES,
     ComputeEvidenceReceiver,
@@ -13,7 +14,7 @@ from src.apps.api.compute_evidence_receiver import (
 )
 
 
-INTERNAL_PATH = "/api/rewrite/internal/v1/compute-evidence/equity-shadow"
+INTERNAL_PATH = RECEIVER_HTTP_PATH
 HTTP_HEADERS = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
 
 

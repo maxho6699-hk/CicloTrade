@@ -18,7 +18,12 @@ from typing import Any, Callable, Mapping
 
 from core.backtest_queue_database import BacktestQueueDatabase
 from core.compat import UTC
-from core.compute_evidence_contracts import ComputeEvidenceError, canonical_json, validate_package
+from core.compute_evidence_contracts import (
+    RECEIVER_HTTP_PATH,
+    ComputeEvidenceError,
+    canonical_json,
+    validate_package,
+)
 from src.apps.worker.compute_evidence_spool import (
     ComputeEvidenceSpoolError,
     PersistentComputeEvidenceSpool,
@@ -28,7 +33,7 @@ from src.apps.worker.compute_evidence_spool import (
 PUBLISH_ORIGIN = "https://ciclotrade.com"
 PUBLISH_HOST = "ciclotrade.com"
 PUBLISH_PORT = 443
-PUBLISH_PATH = "/api/rewrite/internal/v1/compute-evidence/equity-shadow"
+PUBLISH_PATH = RECEIVER_HTTP_PATH
 PUBLISHER_ID = "compute-evidence-publisher"
 REQUEST_LIMIT = 512 * 1024
 RETRYABLE_HTTP_STATUSES = frozenset({408, 429})

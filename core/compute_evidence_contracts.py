@@ -22,6 +22,7 @@ from core.compat import UTC
 
 PACKAGE_KIND = "compute.equity-shadow.package.v1"
 RECEIVER_ENDPOINT = "compute-equity-shadow-package"
+RECEIVER_HTTP_PATH = "/api/rewrite/internal/v1/compute-evidence/equity-shadow"
 PUBLICATION_STATES = frozenset({"quarantine", "shadow"})
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
