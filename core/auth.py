@@ -202,6 +202,8 @@ class AuthService:
         referral: str = "",
         *,
         ip_address: str | None = None,
+        referral_claim: str = "",
+        referral_claim_fingerprint: str = "",
     ) -> dict[str, Any] | None:
         email = email.strip().lower()
         if len(email) > 254 or not EMAIL_RE.fullmatch(email):
@@ -233,9 +235,14 @@ class AuthService:
                     (email, password_hash, display_name, now, None if email_verification_required() else now),
                 )
                 user_id = int(cursor.lastrowid)
-                ReferralService.attach_at_registration(
+                attribution = ReferralService.attach_at_registration(
                     conn, user_id, referral, source="web"
                 )
+                if referral_claim:
+                    if not attribution or not ReferralService.consume_link_claim_in_transaction(
+                        conn, int(attribution["id"]), referral_claim, referral_claim_fingerprint, datetime.now(UTC)
+                    ):
+                        raise AuthError("推广链接证明无效、已过期或已被使用。")
                 conn.execute(
                     "INSERT INTO user_action_logs (user_id,action_type,details,created_at) VALUES (?,?,?,?)",
                     (user_id, "REGISTER", "用户同意协议并完成邮箱注册", _iso()),
