@@ -105,7 +105,12 @@ sudo install -m 0644 /opt/ciclotrade-worker/current/ops/ciclotrade-system-cycle-
 sudo install -m 0644 /opt/ciclotrade-worker/current/ops/ciclotrade-system-cycle-producer.timer /etc/systemd/system/
 sudo install -m 0644 /opt/ciclotrade-worker/current/ops/ciclotrade-system-cycle-publisher.service /etc/systemd/system/
 sudo install -m 0644 /opt/ciclotrade-worker/current/ops/ciclotrade-system-cycle-publisher.timer /etc/systemd/system/
-sudo systemctl daemon-reload
+```
+
+System manager refresh is outside this release contract; do not add a
+copyable lifecycle command for it to this release surface.
+
+```bash
 sudo systemd-analyze verify /etc/systemd/system/ciclotrade-system-cycle-producer.service /etc/systemd/system/ciclotrade-system-cycle-publisher.service
 ```
 
@@ -145,12 +150,10 @@ have all passed the preceding checks.
 ```bash
 sudo install -m 0644 /dev/null /etc/ciclotrade-worker/enable-system-cycle-producer.after-integration
 sudo install -m 0644 /dev/null /etc/ciclotrade-worker/enable-system-cycle-publisher.after-integration
-sudo systemctl start ciclotrade-system-cycle-producer.service
-sudo systemctl start ciclotrade-system-cycle-publisher.service
-sudo systemctl is-active --quiet ciclotrade-rewrite-api.service
-sudo systemctl status --no-pager ciclotrade-system-cycle-producer.service
-sudo systemctl status --no-pager ciclotrade-system-cycle-publisher.service
 ```
+
+Worker activation and status checks are outside this release contract. The
+single permitted lifecycle action remains the Rewrite API restart above.
 
 Inspect only service state, bounded journal output, and the authenticated
 website research view. Confirm one accepted shadow receipt or an explicit,
@@ -161,11 +164,8 @@ official-simulation, Telegram, or standard quant-event paths.
 
 After this manual run has a valid website receipt, enable the timers:
 
-```bash
-sudo systemctl enable --now ciclotrade-system-cycle-producer.timer
-sudo systemctl enable --now ciclotrade-system-cycle-publisher.timer
-sudo systemctl list-timers --all 'ciclotrade-system-cycle-*'
-```
+Worker timer activation and inspection are outside this release contract; no
+copyable worker lifecycle command belongs in this release surface.
 
 The producer timer offers a run every 15 minutes but stable New York slot
 idempotency means it cannot create more than one result for a slot. The
@@ -180,8 +180,10 @@ failure as a stop condition; do not bypass a gate or retry by changing payloads.
 
 To stop further compute and delivery immediately:
 
+Worker timer rollback is outside this release contract; no copyable lifecycle
+command for it belongs in this release surface.
+
 ```bash
-sudo systemctl disable --now ciclotrade-system-cycle-producer.timer ciclotrade-system-cycle-publisher.timer
 sudo rm -f /etc/ciclotrade-worker/enable-system-cycle-producer.after-integration
 sudo rm -f /etc/ciclotrade-worker/enable-system-cycle-publisher.after-integration
 ```

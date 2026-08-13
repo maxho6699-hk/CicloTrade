@@ -125,7 +125,13 @@ prints row content, payload JSON, a database path, or credentials.
 ```bash
 sudo test ! -e /etc/ciclotrade-worker/enable-compute-evidence.after-integration
 sudo install -m 0644 /dev/null /etc/ciclotrade-worker/enable-compute-evidence.after-integration
-sudo systemctl start ciclotrade-compute-evidence-exporter.service
+```
+
+The compute-evidence exporter's first activation is outside this release
+contract; this release surface intentionally contains no worker lifecycle
+command.
+
+```bash
 sudo /opt/ciclotrade-worker/current/ops/scripts/compute_evidence_replay_acceptance.py
 ```
 
@@ -156,11 +162,8 @@ payload, or start the ordinary publisher oneshot during this acceptance.
 Only after the single-candidate acceptance and replay check both pass may the
 operator enable timers:
 
-```bash
-sudo systemctl enable --now ciclotrade-compute-evidence-exporter.timer
-sudo systemctl enable --now ciclotrade-compute-evidence-publisher.timer
-sudo systemctl list-timers --all 'ciclotrade-compute-evidence-*'
-```
+Timer activation and inspection are outside this release contract. The
+authorized worker procedure must not be copied into this release surface.
 
 ## Rollback
 
@@ -172,10 +175,10 @@ previous reviewed release and environment files only through the existing
 protected backup/release process; do not inspect or print a secret while doing
 so.
 
+Worker timer/service rollback is outside this release contract. No copyable
+lifecycle command for these units belongs in this release surface.
+
 ```bash
-sudo systemctl disable --now ciclotrade-compute-evidence-exporter.timer
-sudo systemctl disable --now ciclotrade-compute-evidence-publisher.timer
-sudo systemctl stop ciclotrade-compute-evidence-exporter.service ciclotrade-compute-evidence-publisher.service
 sudo rm -f /etc/ciclotrade-worker/enable-compute-evidence.after-integration
 ```
 

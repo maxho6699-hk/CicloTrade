@@ -65,7 +65,19 @@ The historical artifact above predates the current billing-concurrency release a
 - SHA-256: recorded beside the artifact after packaging
 - status: built and locally validated; not uploaded or activated on the production server
 - required production inputs: valid SSH account/key with deploy rights, FPS receiving details, Alipay receiving instructions/QR, WeChat receiving instructions/QR, and a production database backup
-- deployment order: backup database and current release, apply migrations 0009 through 0011, install Python dependencies, install the React dist, reload API and legacy services, then run the smoke checklist in the manifest
+- deployment order: run `python ops/scripts/verify_release_safety.py --artifact <candidate.tar.gz> --manifest <candidate.MANIFEST.txt>` locally; record the read-only receipt below; back up database and current release; apply migrations 0009 through 0011; install Python dependencies and React dist; then perform the one approved Rewrite API restart and run the manifest smoke checklist. OpenD, FutuOpenD, `futu-opend.service`, reload variants, and every other service lifecycle action are prohibited.
+
+## Zero-touch OpenD release gate (P0)
+
+The static gate reads only tracked release-surface files (`ops`, `config`, and every `docs/rewrite` file) plus an optional candidate tar/zip. It never connects to production, starts/stops/reloads a service, or prints IPs, accounts, or secrets. Repository-owned `ops/opend/` source is intentionally excluded from static source scanning because it contains legitimate control implementation; it is always forbidden in a release artifact.
+
+Before packaging and after unpacking, retain this read-only receipt contract for the single permitted website service. Collection is performed by the authorized deployment operator with existing read-only tooling; the gate only defines the comparison and does not collect it.
+
+```json
+{"schema":"ciclotrade.release-readonly-receipt.v1","service":"ciclotrade-rewrite-api.service","allowed_action":"restart","read_only_fields":["MainPID","ActiveEnterTimestamp","QOTRIGHT"],"forbidden_fields":["host","ip","account","secret","token"]}
+```
+
+Record pre/post values verbatim, compare them as part of the release receipt, and do not attach connection information or credentials. A gate rejection blocks the cutover; it is never overridden by a reload, restart, migration, relogin, kill, or lifecycle action for OpenD/FutuOpenD or any unlisted unit.
 
 ## External gates still closed
 

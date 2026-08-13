@@ -33,9 +33,11 @@ After that review, an administrator may enable one controlled probe:
 sudo install -m 0644 -o root -g root /dev/null \
   /etc/ciclotrade-worker/enable-candidate-producer.after-integration
 sudoedit /etc/ciclotrade-worker/worker.env
-sudo systemctl start ciclotrade-candidate-producer.service
-sudo systemctl status --no-pager ciclotrade-candidate-producer.service
 ```
+
+The candidate producer's first activation and status checks are outside this
+release contract. This release surface contains no copyable lifecycle command
+for that worker unit.
 
 Set `TRADEAI_CANDIDATE_PRODUCER_ENABLED=true` during the `sudoedit` step. Check
 that the run emits at most one bounded request and still reports publication as
@@ -48,6 +50,8 @@ make direct CLI invocation fail closed even if the environment value drifts
 back to true.
 
 ```bash
-sudo systemctl disable --now ciclotrade-candidate-producer.timer
 sudo rm -f /etc/ciclotrade-worker/enable-candidate-producer.after-integration
 ```
+
+The candidate producer's timer rollback is outside this release contract. Do
+not place a lifecycle command for that unit in this release surface.
