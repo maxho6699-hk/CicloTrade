@@ -16,11 +16,12 @@ from core.referral_affiliate import (
     _ledger_batch,
 )
 from payment.order_service import OrderService
+from payment.promotion_adapter import PromotionOrderAdapter
 
-# These are the pre-V2 OrderService end-to-end expectations.  The canonical
-# contract deliberately replaces their repeat/upgrade and plain-code cash
-# behaviour.  Equivalent V2 rules are covered by test_promotion_core_contract.
-pytestmark = pytest.mark.skip(reason="legacy OrderService integration awaits promotion adapter wiring")
+ORDER_SERVICE_V2_ACTIVATION = (
+    "等待 payment.order_service.OrderService 在创建、支付和逆转回调中接入 "
+    "PromotionOrderAdapter 后启用。"
+)
 
 
 @pytest.fixture
@@ -39,9 +40,12 @@ def db(tmp_path):
     return database
 
 
-def _user(auth: AuthService, name: str, referral: str = "") -> dict:
+def _user(
+    auth: AuthService, name: str, referral: str = "", *, claim: str = "", fingerprint: str = ""
+) -> dict:
     user = auth.register(
-        f"{name}@example.com", "CorrectHorse123", name.title(), True, referral
+        f"{name}@example.com", "CorrectHorse123", name.title(), True, referral,
+        referral_claim=claim, referral_claim_fingerprint=fingerprint,
     )
     assert user
     return user
@@ -57,6 +61,43 @@ def _admin(db: DatabaseManager, auth: AuthService, name: str) -> dict:
     return user
 
 
+def _eligible_pair(db: DatabaseManager, auth: AuthService, referrer_name: str, referred_name: str) -> tuple[dict, dict]:
+    referrer = _user(auth, referrer_name)
+    invite = ReferralService(db).ensure_profile(referrer["id"])["invite_code"]
+    fingerprint = "f" * 64
+    claim = ReferralService(db).issue_link_claim(invite, fingerprint)
+    return referrer, _user(auth, referred_name, invite, claim=claim, fingerprint=fingerprint)
+
+
+def _settle_promotion(
+    db: DatabaseManager, user_id: int, order_no: str, *, amount_minor: int = 200_000,
+    hold_days: int = 1, eligible: bool = True,
+) -> tuple[dict, dict | None]:
+    now = datetime.now(UTC)
+    snapshot = {
+        "list_price_minor": amount_minor, "coupon_discount_minor": 0,
+        "referral_discount_minor": 0, "final_amount_minor": amount_minor,
+        "coupon_code_snapshot": None, "coupon_version_snapshot": None,
+        "referral_policy_version": "membership-promotions-v2:1",
+        "referral_eligible_snapshot": int(eligible), "commission_rate_bps": 1000,
+        "commission_cap_minor": 100_000, "hold_days": hold_days, "bonus_policy_snapshot": None,
+    }
+    with db.transaction() as conn:
+        conn.execute(
+            """INSERT INTO subscription_orders(order_no,user_id,plan_type,billing_cycle,amount,currency,pay_method,status,created_at,paid_at,amount_minor,list_price_minor,coupon_discount_minor,referral_discount_minor,final_amount_minor,coupon_code_snapshot,coupon_version_snapshot,referral_policy_version,referral_eligible_snapshot,referral_commission_rate_bps_snapshot,referral_commission_cap_minor_snapshot,referral_hold_days_snapshot,promotion_snapshot_sha256)
+               VALUES (?,?,'高级版','yearly',?,'HKD','fps','paid',?,?,?,?,?,?,?,?,?,'membership-promotions-v2:1',?,1000,100000,?,?)""",
+            (order_no, user_id, amount_minor / 100, now.isoformat(), now.isoformat(), amount_minor,
+             amount_minor, 0, 0, amount_minor, None, None, int(eligible),
+             hold_days, PromotionOrderAdapter.promotion_snapshot_sha256(snapshot)),
+        )
+        order = dict(conn.execute("SELECT * FROM subscription_orders WHERE order_no=?", (order_no,)).fetchone())
+        PromotionOrderAdapter.activate_paid(conn, order=order, pre_membership={"plan_type": "免费版"}, now=now)
+        commission = conn.execute(
+            "SELECT * FROM referral_commissions WHERE source_order_no=?", (order_no,)
+        ).fetchone()
+        return order, dict(commission) if commission else None
+
+
 def _settle(service: OrderService, user_id: int, plan: str, cycle: str, key: str) -> dict:
     order = service.create_order(
         user_id, plan, cycle, "paypal", terms_accepted=True,
@@ -66,13 +107,13 @@ def _settle(service: OrderService, user_id: int, plan: str, cycle: str, key: str
     return service.get_order(order["order_no"])
 
 
-def test_permanent_random_attribution_and_cash_rates_without_legacy_days(db):
+@pytest.mark.skip(reason=ORDER_SERVICE_V2_ACTIVATION)
+def test_order_service_settles_only_verified_link_first_paid_order(db):
     auth = AuthService(db)
-    referrer = _user(auth, "referrer")
+    referrer, referred = _eligible_pair(db, auth, "referrer", "referred")
     profile = ReferralService(db).ensure_profile(referrer["id"])
     assert len(profile["invite_code"]) >= 20
     assert profile == ReferralService(db).ensure_profile(referrer["id"])
-    referred = _user(auth, "referred", profile["invite_code"])
 
     orders = OrderService(db)
     first = _settle(orders, referred["id"], "标准版", "monthly", "cash-first")
@@ -84,26 +125,13 @@ def test_permanent_random_attribution_and_cash_rates_without_legacy_days(db):
                   gross_amount_minor,commission_amount_minor
            FROM referral_commissions ORDER BY settlement_sequence"""
     )
-    assert commissions == [
-        {
-            "source_order_no": first["order_no"], "settlement_sequence": 1,
-            "order_kind": "initial_purchase", "rate_bps": 2000,
-            "gross_amount_minor": first["amount_minor"],
-            "commission_amount_minor": first["amount_minor"] * 20 // 100,
-        },
-        {
-            "source_order_no": renewal["order_no"], "settlement_sequence": 2,
-            "order_kind": "renewal", "rate_bps": 1000,
-            "gross_amount_minor": renewal["amount_minor"],
-            "commission_amount_minor": renewal["amount_minor"] * 10 // 100,
-        },
-        {
-            "source_order_no": upgrade["order_no"], "settlement_sequence": 3,
-            "order_kind": "upgrade", "rate_bps": 1000,
-            "gross_amount_minor": upgrade["amount_minor"],
-            "commission_amount_minor": upgrade["amount_minor"] * 10 // 100,
-        },
-    ]
+    assert commissions == [{
+        "source_order_no": first["order_no"], "settlement_sequence": 1,
+        "order_kind": "initial_purchase", "rate_bps": 1000,
+        "gross_amount_minor": first["final_amount_minor"],
+        "commission_amount_minor": first["final_amount_minor"] * 10 // 100,
+    }]
+    assert renewal["order_no"] != first["order_no"] != upgrade["order_no"]
     assert db.fetch_one("SELECT COUNT(*) count FROM rewards")["count"] == 0
     assert db.fetch_one(
         "SELECT COUNT(*) count FROM membership_entitlements WHERE source_kind='referral_reward'"
@@ -117,12 +145,9 @@ def test_permanent_random_attribution_and_cash_rates_without_legacy_days(db):
 
 def test_hold_release_full_clawback_and_no_requalification(db):
     auth = AuthService(db)
-    referrer = _user(auth, "hold-referrer")
-    profile = ReferralService(db).ensure_profile(referrer["id"])
-    referred = _user(auth, "hold-referred", profile["invite_code"])
-    orders = OrderService(db)
-    first = _settle(orders, referred["id"], "标准版", "monthly", "hold-first")
-    commission = db.fetch_one("SELECT * FROM referral_commissions WHERE source_order_no=?", (first["order_no"],))
+    referrer, referred = _eligible_pair(db, auth, "hold-referrer", "hold-referred")
+    first, commission = _settle_promotion(db, referred["id"], "hold-first")
+    assert commission
     wallet = ReferralWalletService(db)
     balances = wallet.balances(referrer["id"])
     assert balances["pending"] == commission["commission_amount_minor"]
@@ -132,36 +157,33 @@ def test_hold_release_full_clawback_and_no_requalification(db):
     assert ReferralCommissionService(db).release_due(referrer["id"], released_at) == 1
     assert wallet.balances(referrer["id"])["available"] == commission["commission_amount_minor"]
 
-    assert orders.process_reversal(
-        "cash-reversal-first", first["order_no"], {}, "provider_chargeback"
-    )
+    with db.transaction() as conn:
+        assert ReferralCommissionService.record_reversal(
+            conn, event_key="cash-reversal-first", order=first,
+            amount_minor=first["amount_minor"], reason="provider_chargeback", now=released_at,
+        )
     balances = wallet.balances(referrer["id"])
     assert balances["pending"] == 0
     assert balances["available"] == 0
 
-    replacement = _settle(
-        orders, referred["id"], "标准版", "monthly", "hold-replacement"
-    )
+    replacement, _ = _settle_promotion(db, referred["id"], "hold-replacement", eligible=False)
     next_commission = db.fetch_one(
         "SELECT settlement_sequence,rate_bps FROM referral_commissions WHERE source_order_no=?",
         (replacement["order_no"],),
     )
-    assert next_commission == {"settlement_sequence": 2, "rate_bps": 1000}
+    assert next_commission is None
 
 
 def test_withdrawal_reservation_review_paid_and_clawback_debt(db):
     auth = AuthService(db)
-    referrer = _user(auth, "wallet-referrer")
-    profile = ReferralService(db).ensure_profile(referrer["id"])
-    referred = _user(auth, "wallet-referred", profile["invite_code"])
-    orders = OrderService(db)
-    order = _settle(orders, referred["id"], "高级版", "yearly", "wallet-first")
-    commission = db.fetch_one("SELECT * FROM referral_commissions WHERE source_order_no=?", (order["order_no"],))
+    referrer, referred = _eligible_pair(db, auth, "wallet-referrer", "wallet-referred")
+    order, commission = _settle_promotion(db, referred["id"], "wallet-first")
+    assert commission
     ReferralCommissionService(db).release_due(
         referrer["id"], datetime.fromisoformat(commission["available_at"]) + timedelta(seconds=1)
     )
     wallet = ReferralWalletService(db)
-    amount = 10000
+    amount = 20_000
     request = wallet.request_withdrawal(referrer["id"], amount, "withdraw-wallet-0001")
     assert wallet.request_withdrawal(referrer["id"], amount, "withdraw-wallet-0001")["id"] == request["id"]
     balances = wallet.balances(referrer["id"])
@@ -179,7 +201,11 @@ def test_withdrawal_reservation_review_paid_and_clawback_debt(db):
     assert balances["reserved"] == 0
     assert balances["paid"] == amount
 
-    orders.process_reversal("wallet-chargeback", order["order_no"], {}, "chargeback")
+    with db.transaction() as conn:
+        ReferralCommissionService.record_reversal(
+            conn, event_key="wallet-chargeback", order=order,
+            amount_minor=order["amount_minor"], reason="chargeback", now=datetime.now(UTC),
+        )
     assert wallet.balances(referrer["id"])["available"] < 0
     confirmation = db.fetch_one("SELECT payout_method,payout_reference FROM referral_payout_confirmations")
     assert confirmation == {"payout_method": "fps", "payout_reference": "PAYOUT001"}
@@ -187,11 +213,9 @@ def test_withdrawal_reservation_review_paid_and_clawback_debt(db):
 
 def test_concurrent_withdrawal_only_reserves_once(db):
     auth = AuthService(db)
-    referrer = _user(auth, "race-referrer")
-    profile = ReferralService(db).ensure_profile(referrer["id"])
-    referred = _user(auth, "race-referred", profile["invite_code"])
-    order = _settle(OrderService(db), referred["id"], "高级版", "yearly", "race-first")
-    commission = db.fetch_one("SELECT * FROM referral_commissions WHERE source_order_no=?", (order["order_no"],))
+    referrer, referred = _eligible_pair(db, auth, "race-referrer", "race-referred")
+    _order, commission = _settle_promotion(db, referred["id"], "race-first")
+    assert commission
     ReferralCommissionService(db).release_due(
         referrer["id"], datetime.fromisoformat(commission["available_at"]) + timedelta(seconds=1)
     )
@@ -201,7 +225,7 @@ def test_concurrent_withdrawal_only_reserves_once(db):
     def request(key: str):
         barrier.wait()
         try:
-            ReferralWalletService(db).request_withdrawal(referrer["id"], 10000, key)
+            ReferralWalletService(db).request_withdrawal(referrer["id"], 20_000, key)
             outcomes.append("created")
         except ValueError:
             outcomes.append("blocked")
@@ -218,7 +242,7 @@ def test_concurrent_withdrawal_only_reserves_once(db):
     assert db.fetch_one(
         "SELECT COUNT(*) count FROM referral_withdrawal_requests WHERE status='submitted'"
     )["count"] == 1
-    assert ReferralWalletService(db).balances(referrer["id"])["reserved"] == 10000
+    assert ReferralWalletService(db).balances(referrer["id"])["reserved"] == 20_000
 
 
 def test_append_only_ledger_and_strict_minimum(db):
@@ -256,7 +280,8 @@ def test_append_only_ledger_and_strict_minimum(db):
             )
 
 
-def test_cutover_does_not_backpay_and_legacy_paid_history_makes_next_cash_order_repeat(db):
+@pytest.mark.skip(reason=ORDER_SERVICE_V2_ACTIVATION)
+def test_order_service_cutover_does_not_backpay_legacy_history(db):
     auth = AuthService(db)
     referrer = _user(auth, "cutover-referrer")
     referred = _user(auth, "cutover-referred")
@@ -284,12 +309,10 @@ def test_cutover_does_not_backpay_and_legacy_paid_history_makes_next_cash_order_
         (referrer["id"], now),
     )
     order = _settle(OrderService(db), referred["id"], "高级版", "monthly", "cutover-new")
-    cash = db.fetch_one(
-        "SELECT settlement_sequence,order_kind,rate_bps FROM referral_commissions WHERE source_order_no=?",
-        (order["order_no"],),
-    )
-    assert cash == {"settlement_sequence": 2, "order_kind": "upgrade", "rate_bps": 1000}
-    assert db.fetch_one("SELECT COUNT(*) count FROM referral_commissions")["count"] == 1
+    assert db.fetch_one(
+        "SELECT 1 FROM referral_commissions WHERE source_order_no=?", (order["order_no"],)
+    ) is None
+    assert db.fetch_one("SELECT COUNT(*) count FROM referral_commissions")["count"] == 0
     assert db.fetch_one("SELECT COUNT(*) count FROM rewards")["count"] == 1
 
 
@@ -321,10 +344,8 @@ def test_fresh_database_applies_0025_profile_schema_and_portal_serializes_hkt(tm
 
 def test_portal_all_emitted_timestamps_are_hong_kong_iso(db):
     auth = AuthService(db)
-    referrer = _user(auth, "hkt-referrer")
-    profile = ReferralService(db).ensure_profile(referrer["id"])
-    referred = _user(auth, "hkt-referred", profile["invite_code"])
-    _settle(OrderService(db), referred["id"], "标准版", "monthly", "hkt-first")
+    referrer, referred = _eligible_pair(db, auth, "hkt-referrer", "hkt-referred")
+    _settle_promotion(db, referred["id"], "hkt-first")
     portal = ReferralService(db).portal(referrer["id"])
     timestamp_fields = []
     timestamp_fields.extend(item["joined_at"] for item in portal["referrals"])
@@ -356,18 +377,14 @@ def test_direct_cycle_insert_is_rejected_by_database(db):
 
 def test_journal_reconciles_batches_platform_and_open_withdrawals(db):
     auth = AuthService(db)
-    referrer = _user(auth, "reconcile-referrer")
-    profile = ReferralService(db).ensure_profile(referrer["id"])
-    referred = _user(auth, "reconcile-referred", profile["invite_code"])
-    order = _settle(OrderService(db), referred["id"], "高级版", "yearly", "reconcile-first")
-    commission = db.fetch_one(
-        "SELECT * FROM referral_commissions WHERE source_order_no=?", (order["order_no"],)
-    )
+    referrer, referred = _eligible_pair(db, auth, "reconcile-referrer", "reconcile-referred")
+    _order, commission = _settle_promotion(db, referred["id"], "reconcile-first")
+    assert commission
     ReferralCommissionService(db).release_due(
         referrer["id"], datetime.fromisoformat(commission["available_at"]) + timedelta(seconds=1)
     )
     ReferralWalletService(db).request_withdrawal(
-        referrer["id"], 10000, "reconcile-withdrawal-1"
+        referrer["id"], 20_000, "reconcile-withdrawal-1"
     )
 
     assert db.fetch_one(
@@ -399,30 +416,35 @@ def test_journal_reconciles_batches_platform_and_open_withdrawals(db):
            WHERE user_id=? AND status IN ('submitted','approved')""",
         (referrer["id"],),
     )["amount"]
-    assert reserved == open_requests == 10000
+    assert reserved == open_requests == 20_000
 
 
-def test_partial_commission_reversal_is_rejected_without_financial_changes(db):
+def test_partial_commission_reversal_is_proportional(db):
     auth = AuthService(db)
-    referrer = _user(auth, "partial-referrer")
-    profile = ReferralService(db).ensure_profile(referrer["id"])
-    referred = _user(auth, "partial-referred", profile["invite_code"])
-    order = _settle(OrderService(db), referred["id"], "标准版", "monthly", "partial-first")
-    before = {
-        "commission": db.fetch_one("SELECT * FROM referral_commissions WHERE source_order_no=?", (order["order_no"],)),
-        "reversals": db.fetch_one("SELECT COUNT(*) count FROM referral_reversal_events")["count"],
-        "ledger": db.fetch_one("SELECT COUNT(*) count FROM referral_ledger_entries")["count"],
-        "withdrawals": db.fetch_one("SELECT COUNT(*) count FROM referral_withdrawal_requests")["count"],
+    _referrer, referred = _eligible_pair(db, auth, "partial-referrer", "partial-referred")
+    order, commission = _settle_promotion(db, referred["id"], "partial-first")
+    assert commission
+    with db.transaction() as conn:
+        assert ReferralCommissionService.record_reversal(
+            conn, event_key="partial-reversal", order=order,
+            amount_minor=order["amount_minor"] // 2, reason="provider_refund",
+            now=datetime.now(UTC),
+        )
+    after = db.fetch_one("SELECT reversed_amount_minor,clawed_back_minor FROM referral_commissions WHERE source_order_no=?", (order["order_no"],))
+    assert after == {
+        "reversed_amount_minor": order["amount_minor"] // 2,
+        "clawed_back_minor": commission["commission_amount_minor"] // 2,
     }
-    with pytest.raises(ValueError, match="全额逆转"):
+    with db.transaction() as conn:
+        assert not ReferralCommissionService.record_reversal(
+            conn, event_key="partial-reversal", order=order,
+            amount_minor=order["amount_minor"], reason="provider_refund",
+            now=datetime.now(UTC),
+        )
+    with pytest.raises(ValueError, match="推广佣金逆转金额无效"):
         with db.transaction() as conn:
             ReferralCommissionService.record_reversal(
-                conn, event_key="partial-reversal", order=order,
-                amount_minor=order["amount_minor"] - 1, reason="provider_refund",
+                conn, event_key="partial-reversal-over-remaining", order=order,
+                amount_minor=order["amount_minor"], reason="provider_refund",
                 now=datetime.now(UTC),
             )
-    after = db.fetch_one("SELECT * FROM referral_commissions WHERE source_order_no=?", (order["order_no"],))
-    assert after == before["commission"]
-    assert db.fetch_one("SELECT COUNT(*) count FROM referral_reversal_events")["count"] == before["reversals"]
-    assert db.fetch_one("SELECT COUNT(*) count FROM referral_ledger_entries")["count"] == before["ledger"]
-    assert db.fetch_one("SELECT COUNT(*) count FROM referral_withdrawal_requests")["count"] == before["withdrawals"]
