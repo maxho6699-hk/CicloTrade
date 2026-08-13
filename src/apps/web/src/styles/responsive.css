@@ -461,7 +461,15 @@
   :root { --sidebar-width: 0px; --topbar-height: 50px; --status-height: 31px; }
   .sidebar { display: none; }
   .shell-content { margin-left: 0; padding-bottom: 0; }
+  .command-search { min-height: 44px; }
+  .locale-button,
+  .theme-button,
+  .user-menu,
+  .mobile-menu-button { min-width: 44px; min-height: 44px; height: 44px; }
+  .locale-button { padding-inline: 6px; }
   .mobile-menu-button { display: grid; }
+  .account-popover a,
+  .account-popover button { min-height: 44px; }
   .mobile-nav { display: none; }
   .market-workspace { position: relative; display: block; min-height: 0; }
   .market-workspace .watchlist-panel, .market-workspace .instrument-header, .market-workspace .mobile-evidence-panel { display: none; }

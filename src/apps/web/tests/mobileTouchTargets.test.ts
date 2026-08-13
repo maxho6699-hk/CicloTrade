@@ -15,6 +15,16 @@ test('phone shell keeps search, account utilities, and fixed navigation at a 44p
   assert.match(phoneRules, /\.mobile-nav a,[\s\S]*?\.mobile-nav button \{[^}]*min-height: 44px/)
 })
 
+test('844px landscape shell keeps every topbar interaction at least 44px', () => {
+  const start = responsive.indexOf('@media (max-width: 980px) and (max-height: 560px) and (orientation: landscape)')
+  const end = responsive.indexOf('@media (max-width: 420px)', start)
+  const landscapeRules = responsive.slice(start, end)
+  assert.ok(start >= 0 && end > start)
+  assert.match(landscapeRules, /\.command-search \{[^}]*min-height: 44px/)
+  assert.match(landscapeRules, /\.locale-button,[\s\S]*?\.theme-button,[\s\S]*?\.user-menu,[\s\S]*?\.mobile-menu-button \{[^}]*min-width: 44px;[^}]*min-height: 44px;[^}]*height: 44px/)
+  assert.match(landscapeRules, /\.account-popover a,[\s\S]*?\.account-popover button \{[^}]*min-height: 44px/)
+})
+
 test('More feature tools retain a compact 44px mobile hit area', () => {
   const phoneRules = more.slice(more.indexOf('@media (max-width: 760px)'))
   assert.match(phoneRules, /\.more-search input \{ min-height: 44px; \}/)
