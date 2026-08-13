@@ -18,6 +18,7 @@ from core.admin_service import AdminService
 from core.auth import AuthError, AuthService
 from core.broker_authorization import broker_execution_authorized
 from core.database import DatabaseManager
+from core.membership import add_membership_entitlement
 from core.strategy_registry import StrategyRegistry
 from core.user_settings import merge_user_settings
 from notification.email_sender import send_email
@@ -425,12 +426,17 @@ def test_broker_connection_requires_user_authorization_and_enforces_member_capac
         )
 
     paid_user = _user(auth, "paid-broker")
-    service = OrderService(db)
-    order = service.create_order(
-        paid_user["id"], "专业版", "monthly", "paypal", terms_accepted=True, source="legacy"
-    )
-    assert service.process_callback("broker-plan-paid", order["order_no"], "paid", {})
-    assert service.refund_eligibility(order["order_no"])[0] is False
+    now = datetime.now(UTC).replace(microsecond=0)
+    with db.transaction() as conn:
+        add_membership_entitlement(
+            conn,
+            paid_user["id"],
+            "专业版",
+            30,
+            source_kind="legacy_import",
+            source_ref=f"test:paid-broker:{paid_user['id']}",
+            now=now,
+        )
     OrderManager(db).add_broker_account(
         paid_user["id"], "Tiger", "模拟账户", "PAPER-2", "paper"
     )
@@ -453,7 +459,6 @@ def test_broker_connection_requires_user_authorization_and_enforces_member_capac
         "SELECT COUNT(*) count FROM broker_accounts WHERE user_id=? AND is_active=1",
         (paid_user["id"],),
     )["count"] == 5
-    assert service.refund_eligibility(order["order_no"])[0] is False
 
 
 def test_alert_limits_and_risk_filter(db):

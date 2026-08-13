@@ -19,6 +19,7 @@ import asgi_app
 from core.auth import AuthService
 from core.admin_service import AdminService
 from core.database import DatabaseManager
+from core.membership import add_membership_entitlement
 from core.plans import referral_code
 from core.referral_affiliate import ReferralProgramService
 from payment.order_service import (
@@ -114,20 +115,43 @@ def test_active_member_can_renew_or_upgrade_but_cannot_buy_lower_plan(db):
     user = _user(db, "membership-order-guard")
     expiry = (datetime.now(UTC) + timedelta(days=30)).isoformat(timespec="seconds")
     db.execute(
-        "UPDATE users SET plan_type='专业版',subscription_expire=? WHERE id=?",
+        "UPDATE users SET plan_type='高级版',subscription_expire=? WHERE id=?",
         (expiry, user["id"]),
     )
     service = OrderService(db)
 
     with pytest.raises(MembershipPlanConflict, match="当前会员已覆盖"):
         service.create_order(
-            user["id"], "高级版", "monthly", "fps", terms_accepted=True
+            user["id"], "标准版", "monthly", "fps", terms_accepted=True
         )
 
     renewal = service.create_order(
-        user["id"], "专业版", "monthly", "fps", terms_accepted=True
+        user["id"], "高级版", "monthly", "fps", terms_accepted=True
     )
-    assert renewal["plan_type"] == "专业版"
+    assert renewal["plan_type"] == "高级版"
+
+
+@pytest.mark.parametrize("plan,cycle", [("专业版", "monthly"), ("定制版", "project")])
+def test_retired_plans_reject_new_purchase_and_renewal(db, plan, cycle):
+    user = _user(db, f"retired-{plan}")
+    service = OrderService(db)
+
+    with pytest.raises(ValueError, match="当前会员策略不允许"):
+        service.create_order(user["id"], plan, cycle, "fps", terms_accepted=True)
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    with db.transaction() as conn:
+        add_membership_entitlement(
+            conn,
+            user["id"],
+            plan,
+            30,
+            source_kind="legacy_import",
+            source_ref=f"test:retired:{user['id']}:{plan}",
+            now=now,
+        )
+    with pytest.raises(ValueError, match="当前会员策略不允许"):
+        service.create_order(user["id"], plan, cycle, "fps", terms_accepted=True)
 
 
 def test_stale_lower_order_cannot_downgrade_member_when_payment_arrives(db):
@@ -138,17 +162,17 @@ def test_stale_lower_order_cannot_downgrade_member_when_payment_arrives(db):
     )
     expiry = (datetime.now(UTC) + timedelta(days=30)).isoformat(timespec="seconds")
     db.execute(
-        "UPDATE users SET plan_type='专业版',subscription_expire=? WHERE id=?",
+        "UPDATE users SET plan_type='高级版',subscription_expire=? WHERE id=?",
         (expiry, user["id"]),
     )
 
-    with pytest.raises(MembershipPlanConflict, match="当前会员已覆盖"):
+    with pytest.raises(ValueError, match="会员状态已变化"):
         service.process_callback("stale-lower-paid", stale["order_no"], "paid", {})
 
     assert service.get_order(stale["order_no"])["status"] == "pending"
     assert db.fetch_one(
         "SELECT plan_type,subscription_expire FROM users WHERE id=?", (user["id"],)
-    ) == {"plan_type": "专业版", "subscription_expire": expiry}
+    ) == {"plan_type": "高级版", "subscription_expire": expiry}
 
 
 def test_stale_lower_manual_order_cannot_accept_new_payment_proof(db):
@@ -159,7 +183,7 @@ def test_stale_lower_manual_order_cannot_accept_new_payment_proof(db):
     )
     expiry = (datetime.now(UTC) + timedelta(days=30)).isoformat(timespec="seconds")
     db.execute(
-        "UPDATE users SET plan_type='专业版',subscription_expire=? WHERE id=?",
+        "UPDATE users SET plan_type='高级版',subscription_expire=? WHERE id=?",
         (expiry, user["id"]),
     )
 
@@ -199,7 +223,7 @@ def test_upgrade_cancels_unclaimed_lower_pending_orders_but_keeps_submitted_clai
     )
     higher = service.create_order(
         user["id"],
-        "专业版",
+        "高级版",
         "monthly",
         "paypal",
         terms_accepted=True,
@@ -267,7 +291,7 @@ def test_distinct_pending_manual_orders_are_bounded_across_channels(db):
     purchases = [
         ("标准版", "monthly", "fps", "web"),
         ("高级版", "monthly", "alipay", "telegram"),
-        ("专业版", "monthly", "wechat", "web"),
+        ("标准版", "quarterly", "wechat", "web"),
     ]
     for index, (plan, cycle, method, source) in enumerate(purchases):
         service.create_order(
@@ -277,7 +301,7 @@ def test_distinct_pending_manual_orders_are_bounded_across_channels(db):
 
     with pytest.raises(ValueError, match="待付款订单过多"):
         service.create_order(
-            user["id"], "定制版", "project", "fps", terms_accepted=True,
+            user["id"], "高级版", "quarterly", "fps", terms_accepted=True,
             idempotency_key="bounded-fourth", source="telegram",
         )
 
@@ -480,7 +504,7 @@ def test_terminal_callbacks_and_provider_reversal_restore_entitlement(db):
     first_expiry = db.fetch_one("SELECT subscription_expire FROM users WHERE id=?", (user["id"],))["subscription_expire"]
 
     second = service.create_order(
-        user["id"], "专业版", "monthly", "paypal", terms_accepted=True, source="legacy"
+        user["id"], "高级版", "monthly", "paypal", terms_accepted=True, source="legacy"
     )
     assert service.process_callback(
         "paid-2", second["order_no"], "paid", {},
@@ -638,7 +662,7 @@ def test_reversing_older_order_preserves_later_subscription(db):
     service.attach_external_id(first["order_no"], "PAYPAL-FIRST")
     assert service.process_callback("older-first-paid", first["order_no"], "paid", {})
     second = service.create_order(
-        user["id"], "专业版", "monthly", "paypal", terms_accepted=True, source="legacy"
+        user["id"], "高级版", "monthly", "paypal", terms_accepted=True, source="legacy"
     )
     service.attach_external_id(second["order_no"], "PAYPAL-SECOND")
     before_second = datetime.now(UTC)
@@ -654,7 +678,7 @@ def test_reversing_older_order_preserves_later_subscription(db):
     current = db.fetch_one(
         "SELECT plan_type,subscription_expire FROM users WHERE id=?", (user["id"],)
     )
-    assert current["plan_type"] == "专业版"
+    assert current["plan_type"] == "高级版"
     remaining = datetime.fromisoformat(current["subscription_expire"]) - before_second
     assert timedelta(days=29) < remaining < timedelta(days=31)
 
@@ -676,7 +700,7 @@ def test_reversing_older_order_only_removes_unused_overlap_and_keeps_manual_exte
         ((anchor + timedelta(days=10)).isoformat(timespec="seconds"), user["id"]),
     )
     second = service.create_order(
-        user["id"], "专业版", "monthly", "paypal", terms_accepted=True, source="legacy"
+        user["id"], "高级版", "monthly", "paypal", terms_accepted=True, source="legacy"
     )
     assert service.process_callback("overlap-second-paid", second["order_no"], "paid", {})
     db.execute(
@@ -691,7 +715,7 @@ def test_reversing_older_order_only_removes_unused_overlap_and_keeps_manual_exte
     current = db.fetch_one(
         "SELECT plan_type,subscription_expire FROM users WHERE id=?", (user["id"],)
     )
-    assert current["plan_type"] == "专业版"
+    assert current["plan_type"] == "高级版"
     remaining = datetime.fromisoformat(current["subscription_expire"]).replace(tzinfo=UTC) - anchor
     assert timedelta(days=36, hours=23) < remaining < timedelta(days=37, minutes=1)
 
@@ -713,7 +737,7 @@ def test_reversing_expired_older_order_does_not_touch_later_purchase(db):
         ((anchor - timedelta(days=10)).isoformat(timespec="seconds"), user["id"]),
     )
     second = service.create_order(
-        user["id"], "专业版", "monthly", "paypal", terms_accepted=True, source="legacy"
+        user["id"], "高级版", "monthly", "paypal", terms_accepted=True, source="legacy"
     )
     assert service.process_callback("expired-old-second-paid", second["order_no"], "paid", {})
     before = db.fetch_one("SELECT subscription_expire FROM users WHERE id=?", (user["id"],))["subscription_expire"]
@@ -725,7 +749,7 @@ def test_reversing_expired_older_order_does_not_touch_later_purchase(db):
     current = db.fetch_one(
         "SELECT plan_type,subscription_expire FROM users WHERE id=?", (user["id"],)
     )
-    assert current == {"plan_type": "专业版", "subscription_expire": before}
+    assert current == {"plan_type": "高级版", "subscription_expire": before}
 
 
 def test_reversal_preserves_later_manual_subscription_adjustment(db):
@@ -811,7 +835,7 @@ def test_expired_referrer_plan_does_not_receive_legacy_days_and_yearly_cash_is_t
     referrer = _user(db, "expired-reward")
     expired = (datetime.now(UTC) - timedelta(days=1)).isoformat(timespec="seconds")
     db.execute(
-        "UPDATE users SET plan_type='专业版',subscription_expire=? WHERE id=?",
+        "UPDATE users SET plan_type='高级版',subscription_expire=? WHERE id=?",
         (expired, referrer["id"]),
     )
     with db.transaction() as conn:
