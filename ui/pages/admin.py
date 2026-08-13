@@ -47,14 +47,23 @@ def _intent_idempotency_key(intent: str, *payload: object) -> str:
     request = json.dumps([intent, *payload], ensure_ascii=False, separators=(",", ":"))
     fingerprint = hashlib.sha256(request.encode("utf-8")).hexdigest()
     stored = st.session_state.get(state_key)
-    if not isinstance(stored, dict) or stored.get("fingerprint") != fingerprint:
-        stored = {"fingerprint": fingerprint, "key": token_urlsafe(24)}
+    if not isinstance(stored, dict):
+        stored = {}
         st.session_state[state_key] = stored
-    return str(stored["key"])
+    if fingerprint not in stored:
+        stored[fingerprint] = token_urlsafe(24)
+    return str(stored[fingerprint])
 
 
-def _clear_intent_idempotency_key(intent: str) -> None:
-    st.session_state.pop(f"admin_idempotency_{intent}", None)
+def _clear_intent_idempotency_key(intent: str, *payload: object) -> None:
+    state_key = f"admin_idempotency_{intent}"
+    request = json.dumps([intent, *payload], ensure_ascii=False, separators=(",", ":"))
+    fingerprint = hashlib.sha256(request.encode("utf-8")).hexdigest()
+    stored = st.session_state.get(state_key)
+    if isinstance(stored, dict):
+        stored.pop(fingerprint, None)
+        if not stored:
+            st.session_state.pop(state_key, None)
 
 
 def _run_action(
@@ -221,7 +230,15 @@ def _render_users(service: AdminService, actor_id: int, role: str) -> None:
                     idempotency_key=idempotency_key,
                 ),
                 "体验权益已赠送并记录日志。",
-                lambda: _clear_intent_idempotency_key("support_membership_trial"),
+                lambda: _clear_intent_idempotency_key(
+                    "support_membership_trial",
+                    actor_id,
+                    selected_id,
+                    trial_plan,
+                    int(trial_days),
+                    trial_reason,
+                    trial_note,
+                ),
             )
         logs = service.list_membership_logs(actor_id, 100)
         with st.expander(f"会员变更日志 · {len(logs)} 条", icon=":material/history:"):
@@ -360,7 +377,9 @@ def _render_billing(service: AdminService, actor_id: int) -> None:
                 idempotency_key=idempotency_key,
             ),
             "订阅权益已更新。",
-            lambda: _clear_intent_idempotency_key("admin_subscription_adjust"),
+            lambda: _clear_intent_idempotency_key(
+                "admin_subscription_adjust", actor_id, selected_id, plan, int(days), reason, note
+            ),
         )
 
     if service.has_permission(service.role_for(actor_id), "membership_grant"):
@@ -392,7 +411,15 @@ def _render_billing(service: AdminService, actor_id: int) -> None:
                     idempotency_key=idempotency_key,
                 ),
                 "体验权益已赠送并记录日志。",
-                lambda: _clear_intent_idempotency_key("admin_membership_trial"),
+                lambda: _clear_intent_idempotency_key(
+                    "admin_membership_trial",
+                    actor_id,
+                    selected_id,
+                    trial_plan,
+                    int(trial_days),
+                    trial_reason,
+                    trial_note,
+                ),
             )
 
     logs = service.list_membership_logs(actor_id, 100)

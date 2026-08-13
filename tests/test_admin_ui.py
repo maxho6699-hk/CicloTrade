@@ -22,11 +22,8 @@ def test_membership_intent_idempotency_key_reuses_key_for_repeated_submission(mo
 
     assert 8 <= len(first) <= 128
     assert admin._intent_idempotency_key("admin_membership_trial", *payload) == first
-    assert state["admin_idempotency_admin_membership_trial"] == {
-        "fingerprint": state["admin_idempotency_admin_membership_trial"]["fingerprint"],
-        "key": first,
-    }
-    admin._clear_intent_idempotency_key("admin_membership_trial")
+    assert list(state["admin_idempotency_admin_membership_trial"].values()) == [first]
+    admin._clear_intent_idempotency_key("admin_membership_trial", *payload)
     assert admin._intent_idempotency_key("admin_membership_trial", *payload) != first
 
 
@@ -42,6 +39,33 @@ def test_membership_intent_idempotency_key_rotates_for_changed_payload_or_target
     assert admin._intent_idempotency_key("admin_membership_trial", 7, 12, "标准版", 8, "原因", "备注") != first
     assert admin._intent_idempotency_key("admin_membership_trial", 7, 12, "标准版", 7, "新原因", "备注") != first
     assert admin._intent_idempotency_key("admin_membership_trial", 7, 12, "标准版", 7, "原因", "新备注") != first
+
+
+def test_membership_intent_idempotency_key_reuses_pending_key_after_input_changes(monkeypatch):
+    state = _SessionState()
+    monkeypatch.setattr(admin, "st", SimpleNamespace(session_state=state))
+    first_payload = (7, 12, "标准版", 7, "原因 A", "备注")
+    second_payload = (7, 13, "高级版", 14, "原因 B", "新备注")
+    first = admin._intent_idempotency_key("admin_membership_trial", *first_payload)
+
+    second = admin._intent_idempotency_key("admin_membership_trial", *second_payload)
+
+    assert second != first
+    assert admin._intent_idempotency_key("admin_membership_trial", *first_payload) == first
+
+
+def test_clear_membership_intent_idempotency_key_removes_only_completed_request(monkeypatch):
+    state = _SessionState()
+    monkeypatch.setattr(admin, "st", SimpleNamespace(session_state=state))
+    first_payload = (7, 12, "标准版", 7, "原因 A", "备注")
+    second_payload = (7, 13, "高级版", 14, "原因 B", "新备注")
+    first = admin._intent_idempotency_key("admin_membership_trial", *first_payload)
+    second = admin._intent_idempotency_key("admin_membership_trial", *second_payload)
+
+    admin._clear_intent_idempotency_key("admin_membership_trial", *first_payload)
+
+    assert admin._intent_idempotency_key("admin_membership_trial", *second_payload) == second
+    assert admin._intent_idempotency_key("admin_membership_trial", *first_payload) != first
 
 
 def test_run_action_clears_membership_key_after_success_or_business_rejection(monkeypatch):
@@ -90,7 +114,7 @@ def test_run_action_keeps_membership_key_after_unknown_failure(monkeypatch):
     admin._run_action(
         lambda: (_ for _ in ()).throw(OSError("connection lost")),
         "done",
-        lambda: admin._clear_intent_idempotency_key("admin_membership_trial"),
+        lambda: admin._clear_intent_idempotency_key("admin_membership_trial", *payload),
     )
 
     assert admin._intent_idempotency_key("admin_membership_trial", *payload) == first
@@ -114,7 +138,7 @@ def test_run_action_keeps_membership_key_after_runtime_error(monkeypatch):
     admin._run_action(
         lambda: (_ for _ in ()).throw(RuntimeError("transaction state unknown")),
         "done",
-        lambda: admin._clear_intent_idempotency_key("admin_membership_trial"),
+        lambda: admin._clear_intent_idempotency_key("admin_membership_trial", *payload),
     )
 
     assert admin._intent_idempotency_key("admin_membership_trial", *payload) == first
