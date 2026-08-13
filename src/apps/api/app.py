@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import asyncio
 import hashlib
 import hmac
@@ -38,7 +39,9 @@ from src.apps.api.read_model import (
 )
 from src.apps.api.write_service import BrowserWriteService
 from src.apps.api.chart_drawings import ChartDrawingConflict, ChartDrawingError, ChartDrawingService
+from src.apps.api.feature_catalog_adapter import FeatureCatalogAdapter
 from src.apps.api.market_stream import RealtimeCandleTracker
+from src.apps.api.personal_paper import PersonalPaperApi, build_personal_paper_api
 from src.apps.api.backtest_jobs import (
     backtest_artifact, backtest_cancel, backtest_item, backtests, worker_claim,
     worker_complete, worker_fail, worker_heartbeat, worker_input, worker_output,
@@ -104,6 +107,7 @@ from core.broker_access_applications import (
     BrokerAccessApplicationService,
 )
 from core.database import DatabaseManager
+from core.feature_catalog import FeatureCatalogConflict, FeatureCatalogValidationError
 from core.feedback import FeedbackError, FeedbackService
 from core.referral_affiliate import ReferralService, ReferralWalletService
 from core.official_option_sim_journal import OfficialOptionSimulationJournal
@@ -123,6 +127,7 @@ from payment.proof_storage import read_payment_proof
 from data.datasource import DataSourceError, get_resilient_data_source, public_market_status
 from data.opend_adapter import OpenDAdapter, OptionExpiryUnavailableError
 from data.yfinance_adapter import YahooOptionExpiryUnavailableError
+from core.personal_paper.quote_proof import ActionableStockQuote, QuoteProofError
 
 
 load_dotenv(Path(__file__).resolve().parents[3] / ".env")
@@ -353,6 +358,20 @@ def _write_service(request: Request) -> BrowserWriteService:
 def _chart_drawing_service(request: Request) -> ChartDrawingService:
     service = getattr(request.app.state, "chart_drawing_service", None)
     return service if service is not None else ChartDrawingService()
+
+
+def _personal_paper_api(request: Request) -> PersonalPaperApi:
+    service = getattr(request.app.state, "personal_paper_api", None)
+    if service is None:
+        raise ApiError("个人模拟服务暂时不可用。", 503)
+    return service
+
+
+def _feature_catalog_adapter(request: Request) -> FeatureCatalogAdapter:
+    service = getattr(request.app.state, "feature_catalog_adapter", None)
+    if service is None:
+        raise ApiError("功能目录暂时不可用。", 503)
+    return service
 
 
 async def _json_body(request: Request, limit: int = 16_384) -> dict[str, Any]:
@@ -1349,6 +1368,96 @@ async def portfolio(request: Request) -> JSONResponse:
     return JSONResponse(_repository(request).portfolio(identity))
 
 
+async def personal_paper_create_season(request: Request) -> Response:
+    _identity(request)
+    return await _personal_paper_api(request).create_season(request)
+
+
+async def personal_paper_account(request: Request) -> Response:
+    _identity(request)
+    return await _personal_paper_api(request).account(request)
+
+
+async def personal_paper_quote(request: Request) -> Response:
+    _identity(request)
+    return await _personal_paper_api(request).issue_quote(request)
+
+
+async def personal_paper_order(request: Request) -> Response:
+    _identity(request)
+    return await _personal_paper_api(request).submit_stock_order(request)
+
+
+async def personal_paper_cancel(request: Request) -> Response:
+    _identity(request)
+    return await _personal_paper_api(request).cancel_stock_order(request)
+
+
+def _feature_catalog_response(payload: dict[str, Any]) -> JSONResponse:
+    return JSONResponse(
+        payload,
+        headers={
+            "Cache-Control": "private, no-store",
+            "Pragma": "no-cache",
+            "Vary": "Cookie, Authorization",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+async def feature_catalog(request: Request) -> JSONResponse:
+    identity = _identity(request)
+    try:
+        payload = await run_in_threadpool(
+            _feature_catalog_adapter(request).read,
+            user_id=identity.id,
+        )
+    except (FeatureCatalogValidationError, ValueError) as exc:
+        raise ApiError(str(exc)) from exc
+    except Exception as exc:
+        raise ApiError("功能目录暂时不可用。", 503) from exc
+    return _feature_catalog_response(payload)
+
+
+async def feature_catalog_preferences(request: Request) -> JSONResponse:
+    identity = _identity(request)
+    payload = await _json_body(request)
+    try:
+        result = await run_in_threadpool(
+            _feature_catalog_adapter(request).update_preferences,
+            user_id=identity.id,
+            payload=payload,
+        )
+    except FeatureCatalogConflict as exc:
+        raise ApiError(str(exc), 409) from exc
+    except (FeatureCatalogValidationError, ValueError) as exc:
+        raise ApiError(str(exc)) from exc
+    except Exception as exc:
+        raise ApiError("功能目录暂时不可用。", 503) from exc
+    return _feature_catalog_response(result)
+
+
+async def feature_catalog_recent(request: Request) -> JSONResponse:
+    identity = _identity(request)
+    payload = await _json_body(request)
+    if set(payload) != {"key", "expected_version"}:
+        raise ApiError("最近使用功能字段无效。")
+    try:
+        result = await run_in_threadpool(
+            _feature_catalog_adapter(request).record_recent,
+            user_id=identity.id,
+            key=payload["key"],
+            expected_version=payload["expected_version"],
+        )
+    except FeatureCatalogConflict as exc:
+        raise ApiError(str(exc), 409) from exc
+    except (FeatureCatalogValidationError, ValueError) as exc:
+        raise ApiError(str(exc)) from exc
+    except Exception as exc:
+        raise ApiError("功能目录暂时不可用。", 503) from exc
+    return _feature_catalog_response(result)
+
+
 MARKET_TIMEFRAMES = {
     "1分": ("1d", "1m", None),
     "2分": ("5d", "1m", "2min"),
@@ -1499,6 +1608,94 @@ def _realtime_observation_is_fresh(
     current = (now or datetime.now(UTC)).astimezone(UTC)
     value = observed_at.astimezone(UTC)
     return -timedelta(minutes=1) <= current - value <= timedelta(minutes=2)
+
+
+def _positive_quote_minor(value: object) -> int:
+    if isinstance(value, bool):
+        raise QuoteProofError("实时美股报价不可用。")
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise QuoteProofError("实时美股报价不可用。") from exc
+    if not number.is_finite() or number <= 0:
+        raise QuoteProofError("实时美股报价不可用。")
+    rounded = (number * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    if rounded > 10_000_000_000_000:
+        raise QuoteProofError("实时美股报价不可用。")
+    return int(rounded)
+
+
+def _personal_actionable_quote(
+    *,
+    user_id: int,
+    market: str,
+    symbol: str,
+    now: datetime,
+) -> ActionableStockQuote:
+    """Read one verified executable US quote without any fallback provider."""
+    if (
+        isinstance(user_id, bool)
+        or not isinstance(user_id, int)
+        or user_id < 1
+        or market != "US"
+        or not isinstance(symbol, str)
+        or not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,15}", symbol)
+        or now.tzinfo is None
+        or now.utcoffset() is None
+        or not _enabled("MARKET_DATA_REALTIME")
+    ):
+        raise QuoteProofError("实时美股报价不可用。")
+    quote = OpenDAdapter().stock_quote(symbol)
+    as_of = _market_datetime(quote.get("quote_at"), "美股")
+    current = now.astimezone(UTC)
+    if (
+        quote.get("symbol") != symbol
+        or quote.get("us_realtime_entitlement") is not True
+        or quote.get("actionable_snapshot") is not True
+        or as_of is None
+        or as_of > current
+        or current - as_of > timedelta(seconds=30)
+    ):
+        raise QuoteProofError("实时美股报价不可用。")
+    bid = _positive_quote_minor(quote.get("bid"))
+    ask = _positive_quote_minor(quote.get("ask"))
+    last = _positive_quote_minor(quote.get("last"))
+    if ask < bid:
+        raise QuoteProofError("实时美股报价不可用。")
+    return ActionableStockQuote(
+        market="US",
+        symbol=symbol,
+        bid_minor=bid,
+        ask_minor=ask,
+        last_minor=last,
+        as_of=as_of,
+        is_realtime=True,
+        actionable=True,
+    )
+
+
+def _build_personal_paper_http_api() -> PersonalPaperApi | None:
+    secret = os.getenv("PERSONAL_PAPER_QUOTE_PROOF_SECRET", "").encode("utf-8")
+    if len(secret) < 32:
+        return None
+    try:
+        return build_personal_paper_api(
+            DatabaseManager(str(legacy_database_path())),
+            quote_proof_secret=secret,
+            authenticate=_identity,
+            actionable_quote=_personal_actionable_quote,
+        )
+    except Exception:
+        logger.exception("personal paper API initialization failed")
+        return None
+
+
+def _build_feature_catalog_http_adapter() -> FeatureCatalogAdapter | None:
+    try:
+        return FeatureCatalogAdapter(DatabaseManager(str(legacy_database_path())))
+    except Exception:
+        logger.exception("feature catalog API initialization failed")
+        return None
 
 
 def _market_source_realtime(
@@ -2891,6 +3088,14 @@ routes = [
     Route("/api/rewrite/v1/quant/timeline", quant_timeline, methods=["GET"]),
     Route("/api/rewrite/v1/quant/performance", quant_performance, methods=["GET"]),
     Route("/api/rewrite/v1/portfolio", portfolio, methods=["GET"]),
+    Route("/api/rewrite/v1/personal-paper/seasons", personal_paper_create_season, methods=["POST"]),
+    Route("/api/rewrite/v1/personal-paper/seasons/{season_id:str}", personal_paper_account, methods=["GET"]),
+    Route("/api/rewrite/v1/personal-paper/quotes", personal_paper_quote, methods=["POST"]),
+    Route("/api/rewrite/v1/personal-paper/orders", personal_paper_order, methods=["POST"]),
+    Route("/api/rewrite/v1/personal-paper/orders/cancel", personal_paper_cancel, methods=["POST"]),
+    Route("/api/rewrite/v1/features/catalog", feature_catalog, methods=["GET"]),
+    Route("/api/rewrite/v1/features/preferences", feature_catalog_preferences, methods=["PUT"]),
+    Route("/api/rewrite/v1/features/recent", feature_catalog_recent, methods=["PUT"]),
     Route("/api/rewrite/v1/market/candles", market_candles, methods=["GET"]),
     Route("/api/rewrite/v1/market/stream", market_stream, methods=["GET"]),
     Route("/api/rewrite/v1/market/quote", market_quote, methods=["GET"]),
@@ -2957,6 +3162,8 @@ app = Starlette(
     },
 )
 app.state.repository = ReadOnlyLegacyRepository()
+app.state.personal_paper_api = _build_personal_paper_http_api()
+app.state.feature_catalog_adapter = _build_feature_catalog_http_adapter()
 app.state.earnings_forecast_api = _build_earnings_forecast_api()
 app.state.official_option_sim_api = _build_official_option_sim_api()
 app.state.official_option_sim_receiver = _build_official_option_sim_receiver()
