@@ -311,6 +311,9 @@ textarea:focus-visible {
   z-index: 1000;
   top: 10px;
   left: 10px;
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
   padding: 8px 12px;
   transform: translateY(-150%);
   border: 1px solid var(--accent);
