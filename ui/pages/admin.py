@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from importlib.util import find_spec
 import json
 import os
@@ -41,11 +42,15 @@ from ui.components import page_heading, section_label
 _OPEND_CAPTCHA_TTL_SECONDS = 120.0
 
 
-def _intent_idempotency_key(intent: str) -> str:
+def _intent_idempotency_key(intent: str, *payload: object) -> str:
     state_key = f"admin_idempotency_{intent}"
-    if state_key not in st.session_state:
-        st.session_state[state_key] = token_urlsafe(24)
-    return str(st.session_state[state_key])
+    request = json.dumps([intent, *payload], ensure_ascii=False, separators=(",", ":"))
+    fingerprint = hashlib.sha256(request.encode("utf-8")).hexdigest()
+    stored = st.session_state.get(state_key)
+    if not isinstance(stored, dict) or stored.get("fingerprint") != fingerprint:
+        stored = {"fingerprint": fingerprint, "key": token_urlsafe(24)}
+        st.session_state[state_key] = stored
+    return str(stored["key"])
 
 
 def _clear_intent_idempotency_key(intent: str) -> None:
@@ -57,13 +62,13 @@ def _run_action(
 ) -> None:
     try:
         action()
-    except (PermissionError, ValueError, RuntimeError) as exc:
+    except (PermissionError, ValueError) as exc:
         if on_complete:
             on_complete()
         st.error(str(exc), icon=":material/error:")
+    except RuntimeError as exc:
+        st.error(str(exc), icon=":material/error:")
     except Exception as exc:
-        if on_complete:
-            on_complete()
         get_database().log_system_event("ERROR", "ADMIN", "后台操作失败", str(exc)[:1000])
         st.error("操作未完成，错误已写入系统事件。", icon=":material/error:")
     else:
@@ -196,7 +201,15 @@ def _render_users(service: AdminService, actor_id: int, role: str) -> None:
             trial_note = st.text_area("备注（选填）", max_chars=500, key="support_trial_note")
             grant = st.form_submit_button("赠送体验", type="primary", icon=":material/card_giftcard:")
         if grant:
-            idempotency_key = _intent_idempotency_key("support_membership_trial")
+            idempotency_key = _intent_idempotency_key(
+                "support_membership_trial",
+                actor_id,
+                selected_id,
+                trial_plan,
+                int(trial_days),
+                trial_reason,
+                trial_note,
+            )
             _run_action(
                 lambda: service.grant_trial(
                     actor_id,
@@ -333,7 +346,9 @@ def _render_billing(service: AdminService, actor_id: int) -> None:
         note = st.text_area("备注（选填）", max_chars=500)
         adjust = st.form_submit_button("更新订阅权益", type="primary", icon=":material/event_available:")
     if adjust:
-        idempotency_key = _intent_idempotency_key("admin_subscription_adjust")
+        idempotency_key = _intent_idempotency_key(
+            "admin_subscription_adjust", actor_id, selected_id, plan, int(days), reason, note
+        )
         _run_action(
             lambda: service.adjust_subscription(
                 actor_id,
@@ -357,7 +372,15 @@ def _render_billing(service: AdminService, actor_id: int) -> None:
             trial_note = st.text_area("体验备注（选填）", max_chars=500, key="trial_note")
             grant = st.form_submit_button("赠送体验", type="primary", icon=":material/card_giftcard:")
         if grant:
-            idempotency_key = _intent_idempotency_key("admin_membership_trial")
+            idempotency_key = _intent_idempotency_key(
+                "admin_membership_trial",
+                actor_id,
+                selected_id,
+                trial_plan,
+                int(trial_days),
+                trial_reason,
+                trial_note,
+            )
             _run_action(
                 lambda: service.grant_trial(
                     actor_id,
