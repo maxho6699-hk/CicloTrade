@@ -202,6 +202,34 @@ def test_personal_builder_derives_a_domain_separated_secret(monkeypatch, tmp_pat
     ).digest()
 
 
+def test_personal_builder_prefers_the_explicit_domain_secret(monkeypatch, tmp_path):
+    explicit = "p" * 32
+    monkeypatch.setenv("PERSONAL_PAPER_QUOTE_PROOF_SECRET", explicit)
+    monkeypatch.setenv("JWT_SECRET_KEY", "j" * 32)
+    monkeypatch.setattr(api_module, "legacy_database_path", lambda: tmp_path / "explicit.db")
+
+    built = api_module._build_personal_paper_http_api()
+
+    assert built is not None
+    assert built.quote_proofs._secret == explicit.encode("utf-8")
+
+
+def test_personal_builder_can_derive_from_the_legacy_root_secret(monkeypatch, tmp_path):
+    monkeypatch.delenv("PERSONAL_PAPER_QUOTE_PROOF_SECRET", raising=False)
+    monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+    monkeypatch.setenv("SECRET_KEY", "s" * 32)
+    monkeypatch.setattr(api_module, "legacy_database_path", lambda: tmp_path / "legacy.db")
+
+    built = api_module._build_personal_paper_http_api()
+
+    assert built is not None
+    assert built.quote_proofs._secret == hmac.new(
+        b"s" * 32,
+        b"ciclotrade:personal-paper-quote-proof:v1",
+        hashlib.sha256,
+    ).digest()
+
+
 @pytest.mark.parametrize("changes", (
     {"us_realtime_entitlement": False}, {"actionable_snapshot": False},
     {"quote_at": (NOW - timedelta(seconds=31)).isoformat()},
