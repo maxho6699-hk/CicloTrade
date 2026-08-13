@@ -250,8 +250,8 @@ test('authenticated market pages fail closed and chart timestamps use the fixed 
   assert.match(responsiveStyles, /\.chart-crosshair-card \{ left: 6px; max-width: min\(292px,[\s\S]*?background: color-mix\(in srgb, var\(--surface\) 66%, transparent\)/)
   assert.match(responsiveStyles, /\.layout-picker-popover, \.chart-symbol-popover \{ position: fixed;/)
   assert.match(responsiveStyles, /\.chart-slot-data-status \{ top: auto; right: 66px; bottom: 30px;/)
-  assert.match(responsiveStyles, /@media \(max-width: 980px\) and \(max-height: 560px\) and \(orientation: landscape\) \{[\s\S]*?\.market-workspace \.watchlist-panel, \.market-workspace \.instrument-header, \.market-workspace \.mobile-evidence-panel \{ display: none; \}[\s\S]*?\.market-workspace \.chart-frame \{ height: calc\(100dvh - var\(--topbar-height\) - var\(--status-height\)\);/)
-  assert.match(responsiveStyles, /@media \(max-width: 980px\) and \(max-height: 560px\) and \(orientation: landscape\) \{[\s\S]*?:root \{ --sidebar-width: 0px; --topbar-height: 50px; --status-height: 31px; \}[\s\S]*?\.mobile-nav \{ display: none; \}/)
+  assert.match(responsiveStyles, /@media \(max-width: 980px\) and \(max-height: 560px\) and \(orientation: landscape\) \{[\s\S]*?\.market-workspace \.watchlist-panel, \.market-workspace \.instrument-header, \.market-workspace \.mobile-evidence-panel \{ display: none; \}[\s\S]*?\.market-workspace \.chart-frame \{ height: calc\(100dvh - var\(--topbar-height\) - var\(--status-height\) - 58px - env\(safe-area-inset-bottom\)\);/)
+  assert.match(responsiveStyles, /@media \(max-width: 980px\) and \(max-height: 560px\) and \(orientation: landscape\) \{[\s\S]*?:root \{ --sidebar-width: 0px; --topbar-height: 50px; --status-height: 31px; \}[\s\S]*?\.mobile-nav \{[\s\S]*?display: grid;[\s\S]*?grid-template-columns: repeat\(5, 1fr\);[\s\S]*?\.app-shell:has\(\.chart-workspace-shell\.is-workbench-open\) \.mobile-nav \{ display: none; \}/)
 })
 
 test('market workspace keeps alert controls explicit and local marker visibility does not mutate alerts', () => {
