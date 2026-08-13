@@ -91,7 +91,13 @@
   .shell-content { margin-left: 0; padding-bottom: calc(62px + env(safe-area-inset-bottom)); }
   .topbar { gap: 8px; padding: 0 10px; }
   .mobile-menu-button { display: grid; flex: 0 0 auto; }
-  .command-search { width: auto; flex: 1; }
+  .command-search { width: auto; min-height: 44px; flex: 1; }
+  .locale-button,
+  .theme-button,
+  .user-menu,
+  .mobile-menu-button { width: 44px; min-height: 44px; height: 44px; }
+  .account-popover a,
+  .account-popover button { min-height: 44px; }
   .command-search kbd { display: none; }
   .global-status > span,
   .global-status > a { display: none; }
