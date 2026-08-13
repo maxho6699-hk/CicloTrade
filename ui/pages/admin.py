@@ -6,6 +6,7 @@ from __future__ import annotations
 from importlib.util import find_spec
 import json
 import os
+from secrets import token_urlsafe
 from time import time
 from typing import Callable
 
@@ -40,15 +41,34 @@ from ui.components import page_heading, section_label
 _OPEND_CAPTCHA_TTL_SECONDS = 120.0
 
 
-def _run_action(action: Callable[[], object], success: str) -> None:
+def _intent_idempotency_key(intent: str) -> str:
+    state_key = f"admin_idempotency_{intent}"
+    if state_key not in st.session_state:
+        st.session_state[state_key] = token_urlsafe(24)
+    return str(st.session_state[state_key])
+
+
+def _clear_intent_idempotency_key(intent: str) -> None:
+    st.session_state.pop(f"admin_idempotency_{intent}", None)
+
+
+def _run_action(
+    action: Callable[[], object], success: str, on_complete: Callable[[], None] | None = None
+) -> None:
     try:
         action()
     except (PermissionError, ValueError, RuntimeError) as exc:
+        if on_complete:
+            on_complete()
         st.error(str(exc), icon=":material/error:")
     except Exception as exc:
+        if on_complete:
+            on_complete()
         get_database().log_system_event("ERROR", "ADMIN", "后台操作失败", str(exc)[:1000])
         st.error("操作未完成，错误已写入系统事件。", icon=":material/error:")
     else:
+        if on_complete:
+            on_complete()
         st.session_state.admin_flash = success
         st.rerun()
 
@@ -176,9 +196,19 @@ def _render_users(service: AdminService, actor_id: int, role: str) -> None:
             trial_note = st.text_area("备注（选填）", max_chars=500, key="support_trial_note")
             grant = st.form_submit_button("赠送体验", type="primary", icon=":material/card_giftcard:")
         if grant:
+            idempotency_key = _intent_idempotency_key("support_membership_trial")
             _run_action(
-                lambda: service.grant_trial(actor_id, selected_id, trial_plan, int(trial_days), trial_reason, trial_note),
+                lambda: service.grant_trial(
+                    actor_id,
+                    selected_id,
+                    trial_plan,
+                    int(trial_days),
+                    trial_reason,
+                    trial_note,
+                    idempotency_key=idempotency_key,
+                ),
                 "体验权益已赠送并记录日志。",
+                lambda: _clear_intent_idempotency_key("support_membership_trial"),
             )
         logs = service.list_membership_logs(actor_id, 100)
         with st.expander(f"会员变更日志 · {len(logs)} 条", icon=":material/history:"):
@@ -303,9 +333,19 @@ def _render_billing(service: AdminService, actor_id: int) -> None:
         note = st.text_area("备注（选填）", max_chars=500)
         adjust = st.form_submit_button("更新订阅权益", type="primary", icon=":material/event_available:")
     if adjust:
+        idempotency_key = _intent_idempotency_key("admin_subscription_adjust")
         _run_action(
-            lambda: service.adjust_subscription(actor_id, selected_id, plan, int(days), reason, note),
+            lambda: service.adjust_subscription(
+                actor_id,
+                selected_id,
+                plan,
+                int(days),
+                reason,
+                note,
+                idempotency_key=idempotency_key,
+            ),
             "订阅权益已更新。",
+            lambda: _clear_intent_idempotency_key("admin_subscription_adjust"),
         )
 
     if service.has_permission(service.role_for(actor_id), "membership_grant"):
@@ -317,9 +357,19 @@ def _render_billing(service: AdminService, actor_id: int) -> None:
             trial_note = st.text_area("体验备注（选填）", max_chars=500, key="trial_note")
             grant = st.form_submit_button("赠送体验", type="primary", icon=":material/card_giftcard:")
         if grant:
+            idempotency_key = _intent_idempotency_key("admin_membership_trial")
             _run_action(
-                lambda: service.grant_trial(actor_id, selected_id, trial_plan, int(trial_days), trial_reason, trial_note),
+                lambda: service.grant_trial(
+                    actor_id,
+                    selected_id,
+                    trial_plan,
+                    int(trial_days),
+                    trial_reason,
+                    trial_note,
+                    idempotency_key=idempotency_key,
+                ),
                 "体验权益已赠送并记录日志。",
+                lambda: _clear_intent_idempotency_key("admin_membership_trial"),
             )
 
     logs = service.list_membership_logs(actor_id, 100)
