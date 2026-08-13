@@ -395,4 +395,3 @@ class ReferralService:
             "referrals": referrals, "commissions": commissions, "withdrawals": withdrawals,
             "timeline": timeline,
         }
-

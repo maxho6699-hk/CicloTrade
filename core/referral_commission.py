@@ -266,4 +266,3 @@ class ReferralCommissionService:
             conn, source_order_no=str(order["order_no"]), now=now
         )
         return True
-

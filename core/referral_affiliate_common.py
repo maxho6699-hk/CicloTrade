@@ -242,4 +242,3 @@ def _mask_email(value: str) -> str:
     if not local or not host:
         return "已隐藏用户"
     return f"{local[:1]}***@{host[:1]}***{dot}{suffix}"[:80]
-
