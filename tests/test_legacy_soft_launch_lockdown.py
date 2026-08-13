@@ -124,7 +124,7 @@ def test_nginx_soft_launch_contract_is_static_and_preserves_rewrite_routing():
     assert "location = /trading" in config
     assert "location = /trading/" in config
     assert config.index("location ^~ /api/rewrite/") < config.index("\n    location ^~ /api/ {")
-    assert "|feedback|admin|login|membership|promotion|mystic|opportunities|lab|earnings)/?$" in config
+    assert "|feedback|admin|login|membership|promotion|mystic|opportunities|lab|earnings|paper|more)/?$" in config
     assert "location ^~ /media/" in config
     assert "location = /theme-init.js" in config
     assert "location = /admin {" not in config
