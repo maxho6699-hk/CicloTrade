@@ -64,6 +64,48 @@ def _eligible_pair(database, auth):
     return referrer, buyer
 
 
+def _insert_promotion_order(
+    conn, *, order_no, buyer, now, quote, plan_type="标准版", billing_cycle="monthly"
+):
+    snapshot = PromotionOrderAdapter.bind_order_snapshot(
+        conn, quote=quote, order_no=order_no, user_id=buyer["id"], plan_type=plan_type,
+        billing_cycle=billing_cycle, currency="HKD",
+    )
+    amount_minor = int(quote["final_amount_minor"])
+    conn.execute(
+        """INSERT INTO subscription_orders(order_no,user_id,plan_type,billing_cycle,amount,currency,pay_method,status,created_at,paid_at,amount_minor,list_price_minor,coupon_discount_minor,referral_discount_minor,final_amount_minor,coupon_code_snapshot,coupon_version_snapshot,referral_policy_version,referral_eligible_snapshot,referral_commission_rate_bps_snapshot,referral_commission_cap_minor_snapshot,referral_hold_days_snapshot,referral_bonus_policy_snapshot,promotion_snapshot_sha256,referral_attribution_id_snapshot,referral_referrer_user_id_snapshot,referral_referred_user_id_snapshot)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            order_no, buyer["id"], plan_type, billing_cycle, amount_minor / 100, "HKD", "fps", "paid",
+            now.isoformat(), now.isoformat(), amount_minor,
+            snapshot["list_price_minor"], snapshot["coupon_discount_minor"],
+            snapshot["referral_discount_minor"], amount_minor,
+            snapshot["coupon_code_snapshot"], snapshot["coupon_version_snapshot"],
+            snapshot["referral_policy_version"], snapshot["referral_eligible_snapshot"],
+            snapshot["commission_rate_bps"], snapshot["commission_cap_minor"],
+            snapshot["hold_days"], snapshot["bonus_policy_snapshot"],
+            snapshot["promotion_snapshot_sha256"], snapshot["referral_attribution_id_snapshot"],
+            snapshot["referral_referrer_user_id_snapshot"], snapshot["referral_referred_user_id_snapshot"],
+        ),
+    )
+    return dict(conn.execute("SELECT * FROM subscription_orders WHERE order_no=?", (order_no,)).fetchone())
+
+
+def _quote(*, amount_minor, eligible=True, hold_days=0, bonus_policy_snapshot=None, **extra):
+    return {
+        "list_price_minor": extra.get("list_price_minor"),
+        "coupon_discount_minor": extra.get("coupon_discount_minor", 0),
+        "referral_discount_minor": extra.get("referral_discount_minor", 0),
+        "final_amount_minor": amount_minor,
+        "coupon_code_snapshot": extra.get("coupon_code_snapshot"),
+        "coupon_version_snapshot": extra.get("coupon_version_snapshot"),
+        "referral_policy_version": "membership-promotions-v2:1",
+        "referral_eligible_snapshot": int(eligible), "commission_rate_bps": 1000 if eligible else 0,
+        "commission_cap_minor": 100_000 if eligible else 0, "hold_days": hold_days,
+        "bonus_policy_snapshot": bonus_policy_snapshot,
+    }
+
+
 def test_plain_code_never_qualifies_but_verified_web_link_does(promotion_db):
     database, auth, _admin = promotion_db
     referrer = _user(auth, "plain-owner")
@@ -130,12 +172,9 @@ def test_first_paid_only_commissions_final_paid_and_reversal_is_proportional(pro
     referrer, buyer = _eligible_pair(database, auth)
     now = datetime(2026, 8, 14, 12, tzinfo=UTC)
     with database.transaction() as conn:
-        conn.execute(
-            """INSERT INTO subscription_orders(order_no,user_id,plan_type,billing_cycle,amount,currency,pay_method,status,created_at,paid_at,amount_minor,final_amount_minor,referral_policy_version,referral_eligible_snapshot,referral_commission_rate_bps_snapshot,referral_commission_cap_minor_snapshot,referral_hold_days_snapshot,promotion_snapshot_sha256)
-               VALUES ('PROMO-FIRST',?,'标准版','monthly',254.79,'HKD','fps','paid',?,?,?,?,'membership-promotions-v2:1',1,1000,100000,0,?)""",
-            (buyer["id"], now.isoformat(), now.isoformat(), 25_479, 25_479, PromotionOrderAdapter.promotion_snapshot_sha256({"list_price_minor": None, "coupon_discount_minor": 0, "referral_discount_minor": 0, "final_amount_minor": 25_479, "coupon_code_snapshot": None, "coupon_version_snapshot": None, "referral_policy_version": "membership-promotions-v2:1", "referral_eligible_snapshot": 1, "commission_rate_bps": 1000, "commission_cap_minor": 100000, "hold_days": 0, "bonus_policy_snapshot": None})),
+        order = _insert_promotion_order(
+            conn, order_no="PROMO-FIRST", buyer=buyer, now=now, quote=_quote(amount_minor=25_479)
         )
-        order = dict(conn.execute("SELECT * FROM subscription_orders WHERE order_no='PROMO-FIRST'").fetchone())
         commission = ReferralCommissionService.record_settlement(conn, order, {"plan_type": "免费版"}, now)
         assert commission and commission["commission_amount_minor"] == 2_547
         assert ReferralCommissionService.record_reversal(
@@ -145,12 +184,9 @@ def test_first_paid_only_commissions_final_paid_and_reversal_is_proportional(pro
     result = database.fetch_one("SELECT reversed_amount_minor,clawed_back_minor FROM referral_commissions")
     assert result == {"reversed_amount_minor": 12_739, "clawed_back_minor": 1_273}
     with database.transaction() as conn:
-        conn.execute(
-            """INSERT INTO subscription_orders(order_no,user_id,plan_type,billing_cycle,amount,currency,pay_method,status,created_at,paid_at,amount_minor,final_amount_minor,referral_policy_version,referral_eligible_snapshot,referral_commission_rate_bps_snapshot,referral_commission_cap_minor_snapshot,referral_hold_days_snapshot,promotion_snapshot_sha256)
-               VALUES ('PROMO-RENEW',?,'标准版','monthly',298.0,'HKD','fps','paid',?,?,?,?,'membership-promotions-v2:1',1,1000,100000,0,?)""",
-            (buyer["id"], now.isoformat(), now.isoformat(), 29_800, 29_800, PromotionOrderAdapter.promotion_snapshot_sha256({"list_price_minor": None, "coupon_discount_minor": 0, "referral_discount_minor": 0, "final_amount_minor": 29_800, "coupon_code_snapshot": None, "coupon_version_snapshot": None, "referral_policy_version": "membership-promotions-v2:1", "referral_eligible_snapshot": 1, "commission_rate_bps": 1000, "commission_cap_minor": 100000, "hold_days": 0, "bonus_policy_snapshot": None})),
+        repeat = _insert_promotion_order(
+            conn, order_no="PROMO-RENEW", buyer=buyer, now=now, quote=_quote(amount_minor=29_800)
         )
-        repeat = dict(conn.execute("SELECT * FROM subscription_orders WHERE order_no='PROMO-RENEW'").fetchone())
         assert ReferralCommissionService.record_settlement(conn, repeat, {"plan_type": "标准版"}, now) is None
     assert database.fetch_one("SELECT COUNT(*) count FROM referral_commissions")["count"] == 1
     assert referrer["id"] > 0
@@ -162,12 +198,10 @@ def test_bonus_clawback_creates_debt_and_blocks_withdrawal(promotion_db):
     now = datetime(2026, 8, 14, 12, tzinfo=UTC)
     snapshot = {"enabled": True, "hold_days": 0, "version": 1, "tiers": [{"qualified_count": 1, "cumulative_amount_minor": 30_000}]}
     with database.transaction() as conn:
-        conn.execute(
-            """INSERT INTO subscription_orders(order_no,user_id,plan_type,billing_cycle,amount,currency,pay_method,status,created_at,paid_at,amount_minor,final_amount_minor,referral_policy_version,referral_eligible_snapshot,referral_commission_rate_bps_snapshot,referral_commission_cap_minor_snapshot,referral_hold_days_snapshot,referral_bonus_policy_snapshot,promotion_snapshot_sha256)
-               VALUES ('PROMO-BONUS',?,'标准版','monthly',298.0,'HKD','fps','paid',?,?,?,?,'membership-promotions-v2:1',1,1000,100000,0,?,?)""",
-            (buyer["id"], now.isoformat(), now.isoformat(), 29_800, 29_800, json.dumps(snapshot), "c" * 64),
+        order = _insert_promotion_order(
+            conn, order_no="PROMO-BONUS", buyer=buyer, now=now,
+            quote=_quote(amount_minor=29_800, bonus_policy_snapshot=json.dumps(snapshot)),
         )
-        order = dict(conn.execute("SELECT * FROM subscription_orders WHERE order_no='PROMO-BONUS'").fetchone())
         attribution = dict(conn.execute("SELECT * FROM referral_attributions WHERE referred_user_id=?", (buyer["id"],)).fetchone())
         ReferralBonusService.record_qualification(conn, order=order, attribution=attribution, now=now)
         ReferralBonusService.release_due_in_transaction(conn, referrer["id"], now + timedelta(seconds=1))
@@ -196,26 +230,15 @@ def test_snapshot_hash_rejects_any_tampered_order_fact(promotion_db):
     database, auth, _admin = promotion_db
     _referrer, buyer = _eligible_pair(database, auth)
     now = datetime(2026, 8, 14, 12, tzinfo=UTC)
-    quote = {
-        "list_price_minor": 29_800, "coupon_discount_minor": 2_980,
-        "referral_discount_minor": 1_341, "final_amount_minor": 25_479,
-        "coupon_code_snapshot": "SAVE10", "coupon_version_snapshot": 1,
-        "referral_policy_version": "membership-promotions-v2:1",
-        "referral_eligible_snapshot": 1, "commission_rate_bps": 1_000,
-        "commission_cap_minor": 100_000, "hold_days": 30,
-        "bonus_policy_snapshot": "{}",
-    }
-    digest = PromotionOrderAdapter.promotion_snapshot_sha256(quote)
+    quote = _quote(
+        amount_minor=25_479, list_price_minor=29_800, coupon_discount_minor=2_980,
+        referral_discount_minor=1_341, coupon_code_snapshot="SAVE10",
+        coupon_version_snapshot=1, hold_days=30, bonus_policy_snapshot="{}",
+    )
     with database.transaction() as conn:
-        conn.execute(
-            """INSERT INTO subscription_orders(order_no,user_id,plan_type,billing_cycle,amount,currency,pay_method,status,created_at,paid_at,amount_minor,list_price_minor,coupon_discount_minor,referral_discount_minor,final_amount_minor,coupon_code_snapshot,coupon_version_snapshot,referral_policy_version,referral_eligible_snapshot,referral_commission_rate_bps_snapshot,referral_commission_cap_minor_snapshot,referral_hold_days_snapshot,referral_bonus_policy_snapshot,promotion_snapshot_sha256)
-               VALUES ('PROMO-HASH',?,'标准版','monthly',254.79,'HKD','fps','paid',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (buyer["id"], now.isoformat(), now.isoformat(), 25_479, quote["list_price_minor"],
-             quote["coupon_discount_minor"], quote["referral_discount_minor"], quote["final_amount_minor"],
-             quote["coupon_code_snapshot"], quote["coupon_version_snapshot"], quote["referral_policy_version"],
-             1, 1_000, 100_000, 30, "{}", digest),
+        order = _insert_promotion_order(
+            conn, order_no="PROMO-HASH", buyer=buyer, now=now, quote=quote,
         )
-        order = dict(conn.execute("SELECT * FROM subscription_orders WHERE order_no='PROMO-HASH'").fetchone())
         PromotionOrderAdapter.assert_snapshot_integrity(order)
         forged = {**order, "final_amount_minor": 1, "promotion_snapshot_sha256": "f" * 64}
         with pytest.raises(ValueError, match="摘要"):
@@ -229,3 +252,27 @@ def test_snapshot_hash_rejects_any_tampered_order_fact(promotion_db):
                 "UPDATE subscription_orders SET promotion_snapshot_sha256=? WHERE order_no='PROMO-HASH'",
                 ("e" * 64,),
             )
+
+
+def test_snapshot_hash_binds_order_identity_and_attribution(promotion_db):
+    database, auth, _admin = promotion_db
+    _referrer, buyer = _eligible_pair(database, auth)
+    other = _user(auth, "other-buyer")
+    now = datetime(2026, 8, 14, 12, tzinfo=UTC)
+    with database.transaction() as conn:
+        order = _insert_promotion_order(
+            conn, order_no="PROMO-IDENTITY", buyer=buyer, now=now, quote=_quote(amount_minor=29_800)
+        )
+        for field, value in {
+            "user_id": other["id"], "order_no": "PROMO-SWAPPED", "plan_type": "高级版",
+            "billing_cycle": "yearly", "currency": "USD",
+            "referral_attribution_id_snapshot": 0,
+        }.items():
+            with pytest.raises(ValueError, match="摘要"):
+                PromotionOrderAdapter.assert_snapshot_integrity({**order, field: value})
+        for field, value in {
+            "user_id": other["id"], "plan_type": "高级版", "billing_cycle": "yearly",
+            "currency": "USD", "referral_attribution_id_snapshot": 0,
+        }.items():
+            with pytest.raises(Exception, match="immutable"):
+                conn.execute(f"UPDATE subscription_orders SET {field}=? WHERE order_no='PROMO-IDENTITY'", (value,))

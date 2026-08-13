@@ -1,14 +1,26 @@
 ALTER TABLE subscription_orders ADD COLUMN referral_bonus_policy_snapshot TEXT;
 ALTER TABLE subscription_orders ADD COLUMN refunded_minor INTEGER NOT NULL DEFAULT 0 CHECK(refunded_minor >= 0);
 ALTER TABLE subscription_orders ADD COLUMN promotion_snapshot_sha256 TEXT;
+ALTER TABLE subscription_orders ADD COLUMN referral_attribution_id_snapshot INTEGER;
+ALTER TABLE subscription_orders ADD COLUMN referral_referrer_user_id_snapshot INTEGER;
+ALTER TABLE subscription_orders ADD COLUMN referral_referred_user_id_snapshot INTEGER;
 ALTER TABLE referral_withdrawal_requests ADD COLUMN enhanced_review_required INTEGER NOT NULL DEFAULT 0 CHECK(enhanced_review_required IN (0,1));
 
 CREATE TRIGGER trg_subscription_orders_promotion_snapshot_hash
 BEFORE INSERT ON subscription_orders
-WHEN NEW.referral_policy_version IS NOT NULL AND (NEW.promotion_snapshot_sha256 IS NULL OR length(NEW.promotion_snapshot_sha256)<>64)
+WHEN NEW.referral_policy_version IS NOT NULL AND (
+    NEW.promotion_snapshot_sha256 IS NULL OR length(NEW.promotion_snapshot_sha256)<>64 OR
+    (NEW.referral_attribution_id_snapshot IS NULL AND (
+        NEW.referral_referrer_user_id_snapshot IS NOT NULL OR NEW.referral_referred_user_id_snapshot IS NOT NULL
+    )) OR
+    (NEW.referral_attribution_id_snapshot IS NOT NULL AND (
+        NEW.referral_referrer_user_id_snapshot IS NULL OR NEW.referral_referred_user_id_snapshot IS NULL
+    )) OR
+    (NEW.referral_eligible_snapshot=1 AND NEW.referral_attribution_id_snapshot IS NULL)
+)
 BEGIN SELECT RAISE(ABORT,'promotion snapshot hash required'); END;
 CREATE TRIGGER trg_subscription_orders_promotion_snapshot_immutable
-BEFORE UPDATE OF list_price_minor,coupon_discount_minor,referral_discount_minor,final_amount_minor,coupon_code_snapshot,coupon_version_snapshot,referral_policy_version,referral_eligible_snapshot,referral_commission_rate_bps_snapshot,referral_commission_cap_minor_snapshot,referral_hold_days_snapshot,referral_bonus_policy_snapshot,promotion_snapshot_sha256 ON subscription_orders
+BEFORE UPDATE OF user_id,order_no,plan_type,billing_cycle,currency,list_price_minor,coupon_discount_minor,referral_discount_minor,final_amount_minor,coupon_code_snapshot,coupon_version_snapshot,referral_policy_version,referral_eligible_snapshot,referral_commission_rate_bps_snapshot,referral_commission_cap_minor_snapshot,referral_hold_days_snapshot,referral_bonus_policy_snapshot,promotion_snapshot_sha256,referral_attribution_id_snapshot,referral_referrer_user_id_snapshot,referral_referred_user_id_snapshot ON subscription_orders
 WHEN OLD.referral_policy_version IS NOT NULL
 BEGIN SELECT RAISE(ABORT,'promotion order snapshot is immutable'); END;
 

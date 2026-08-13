@@ -33,7 +33,11 @@ def _latest_schema(database: DatabaseManager) -> dict[str, object]:
     order_columns = {
         row["name"]: (row["type"], row["notnull"], row["dflt_value"])
         for row in database.fetch_all("PRAGMA table_info(subscription_orders)")
-        if row["name"] in {"referral_bonus_policy_snapshot", "refunded_minor"}
+        if row["name"] in {
+            "referral_bonus_policy_snapshot", "refunded_minor", "promotion_snapshot_sha256",
+            "referral_attribution_id_snapshot", "referral_referrer_user_id_snapshot",
+            "referral_referred_user_id_snapshot",
+        }
     }
     withdrawal_columns = {
         row["name"]: (row["type"], row["notnull"], row["dflt_value"])

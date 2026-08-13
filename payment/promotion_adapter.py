@@ -77,7 +77,7 @@ class PromotionOrderAdapter:
         self.plan_policy.assert_purchasable(
             conn, plan=str(plan), cycle=str(cycle), at=now
         ) if self.plan_policy is not None else _allowed_plans(None, conn, at=now)
-        return ReferralCouponService.quote_in_transaction(
+        quote = ReferralCouponService.quote_in_transaction(
             conn,
             user_id=int(user_id),
             plan=str(plan),
@@ -86,6 +86,48 @@ class PromotionOrderAdapter:
             coupon_code=coupon_code,
             now=now,
         )
+        # The coupon service prices before an order number exists.  A digest at
+        # that point cannot bind an owner or order identity, so only the order
+        # creation path may produce the persisted digest below.
+        quote.pop("promotion_snapshot_sha256", None)
+        return quote
+
+    @classmethod
+    def bind_order_snapshot(
+        cls,
+        conn: Any,
+        *,
+        quote: dict[str, Any],
+        order_no: str,
+        user_id: int,
+        plan_type: str,
+        billing_cycle: str,
+        currency: str,
+    ) -> dict[str, Any]:
+        """Bind a quoted promotion to one immutable order and attribution."""
+        attribution = conn.execute(
+            """SELECT id,referrer_user_id,referred_user_id FROM referral_attributions
+               WHERE referred_user_id=?""",
+            (int(user_id),),
+        ).fetchone()
+        eligible = int(quote.get("referral_eligible_snapshot") or 0)
+        if eligible and not attribution:
+            raise ValueError("推荐首单缺少归因快照。")
+        snapshot = {
+            **quote,
+            "order_no": str(order_no), "user_id": int(user_id),
+            "plan_type": str(plan_type), "billing_cycle": str(billing_cycle),
+            "currency": str(currency).upper(),
+            "referral_attribution_id_snapshot": int(attribution["id"]) if attribution else None,
+            "referral_referrer_user_id_snapshot": (
+                int(attribution["referrer_user_id"]) if attribution else None
+            ),
+            "referral_referred_user_id_snapshot": (
+                int(attribution["referred_user_id"]) if attribution else None
+            ),
+        }
+        snapshot["promotion_snapshot_sha256"] = cls.promotion_snapshot_sha256(snapshot)
+        return snapshot
 
     @staticmethod
     def promotion_snapshot_sha256(snapshot: dict[str, Any]) -> str:
@@ -94,6 +136,14 @@ class PromotionOrderAdapter:
             return snapshot.get(name, snapshot.get(alias)) if alias else snapshot.get(name)
 
         payload = {
+            "order_no": value("order_no"),
+            "user_id": value("user_id"),
+            "plan_type": value("plan_type"),
+            "billing_cycle": value("billing_cycle"),
+            "currency": value("currency"),
+            "referral_attribution_id_snapshot": value("referral_attribution_id_snapshot"),
+            "referral_referrer_user_id_snapshot": value("referral_referrer_user_id_snapshot"),
+            "referral_referred_user_id_snapshot": value("referral_referred_user_id_snapshot"),
             "list_price_minor": value("list_price_minor"),
             "coupon_discount_minor": value("coupon_discount_minor"),
             "referral_discount_minor": value("referral_discount_minor"),
@@ -120,10 +170,39 @@ class PromotionOrderAdapter:
     def assert_snapshot_integrity(cls, order: dict[str, Any]) -> None:
         if not order.get("referral_policy_version"):
             return
+        identity = ("order_no", "user_id", "plan_type", "billing_cycle", "currency")
+        attribution = (
+            "referral_attribution_id_snapshot", "referral_referrer_user_id_snapshot",
+            "referral_referred_user_id_snapshot",
+        )
+        if any(key not in order or order[key] in (None, "") for key in identity):
+            raise ValueError("推广订单身份快照不完整。")
+        facts = [order.get(key) for key in attribution]
+        if any(value is None for value in facts) and any(value is not None for value in facts):
+            raise ValueError("推广订单归因快照不完整。")
+        if int(order.get("referral_eligible_snapshot") or 0) and any(value is None for value in facts):
+            raise ValueError("推荐首单缺少归因快照。")
         supplied = str(order.get("promotion_snapshot_sha256") or "")
         expected = cls.promotion_snapshot_sha256(order)
         if len(supplied) != 64 or not hmac.compare_digest(supplied, expected):
             raise ValueError("推广订单快照审计摘要不一致。")
+
+    @classmethod
+    def assert_snapshot_binding(cls, conn: Any, order: dict[str, Any]) -> None:
+        cls.assert_snapshot_integrity(order)
+        attribution_id = order.get("referral_attribution_id_snapshot")
+        if attribution_id is None:
+            return
+        attribution = conn.execute(
+            """SELECT 1 FROM referral_attributions
+               WHERE id=? AND referrer_user_id=? AND referred_user_id=? AND referred_user_id=?""",
+            (
+                int(attribution_id), int(order["referral_referrer_user_id_snapshot"]),
+                int(order["referral_referred_user_id_snapshot"]), int(order["user_id"]),
+            ),
+        ).fetchone()
+        if not attribution:
+            raise ValueError("推广订单归因快照与订单所有者不一致。")
 
     @staticmethod
     def reserve_coupon(
@@ -137,7 +216,7 @@ class PromotionOrderAdapter:
     def activate_paid(
         conn: Any, *, order: dict[str, Any], pre_membership: dict[str, Any], now: datetime
     ) -> None:
-        PromotionOrderAdapter.assert_snapshot_integrity(order)
+        PromotionOrderAdapter.assert_snapshot_binding(conn, order)
         claimed = conn.execute(
             "INSERT OR IGNORE INTO membership_first_paid_orders(user_id,order_no,claimed_at) VALUES (?,?,?)",
             (int(order["user_id"]), str(order["order_no"]), now.isoformat(timespec="seconds")),
@@ -174,7 +253,7 @@ class PromotionOrderAdapter:
         reason: str,
         now: datetime,
     ) -> bool:
-        PromotionOrderAdapter.assert_snapshot_integrity(order)
+        PromotionOrderAdapter.assert_snapshot_binding(conn, order)
         return ReferralCommissionService.record_reversal(
             conn,
             event_key=event_key,

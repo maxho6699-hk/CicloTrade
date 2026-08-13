@@ -74,7 +74,7 @@ def _settle_promotion(
     hold_days: int = 1, eligible: bool = True,
 ) -> tuple[dict, dict | None]:
     now = datetime.now(UTC)
-    snapshot = {
+    quote = {
         "list_price_minor": amount_minor, "coupon_discount_minor": 0,
         "referral_discount_minor": 0, "final_amount_minor": amount_minor,
         "coupon_code_snapshot": None, "coupon_version_snapshot": None,
@@ -83,12 +83,19 @@ def _settle_promotion(
         "commission_cap_minor": 100_000, "hold_days": hold_days, "bonus_policy_snapshot": None,
     }
     with db.transaction() as conn:
+        snapshot = PromotionOrderAdapter.bind_order_snapshot(
+            conn, quote=quote, order_no=order_no, user_id=user_id,
+            plan_type="高级版", billing_cycle="yearly", currency="HKD",
+        )
         conn.execute(
-            """INSERT INTO subscription_orders(order_no,user_id,plan_type,billing_cycle,amount,currency,pay_method,status,created_at,paid_at,amount_minor,list_price_minor,coupon_discount_minor,referral_discount_minor,final_amount_minor,coupon_code_snapshot,coupon_version_snapshot,referral_policy_version,referral_eligible_snapshot,referral_commission_rate_bps_snapshot,referral_commission_cap_minor_snapshot,referral_hold_days_snapshot,promotion_snapshot_sha256)
-               VALUES (?,?,'高级版','yearly',?,'HKD','fps','paid',?,?,?,?,?,?,?,?,?,'membership-promotions-v2:1',?,1000,100000,?,?)""",
+            """INSERT INTO subscription_orders(order_no,user_id,plan_type,billing_cycle,amount,currency,pay_method,status,created_at,paid_at,amount_minor,list_price_minor,coupon_discount_minor,referral_discount_minor,final_amount_minor,coupon_code_snapshot,coupon_version_snapshot,referral_policy_version,referral_eligible_snapshot,referral_commission_rate_bps_snapshot,referral_commission_cap_minor_snapshot,referral_hold_days_snapshot,promotion_snapshot_sha256,referral_attribution_id_snapshot,referral_referrer_user_id_snapshot,referral_referred_user_id_snapshot)
+               VALUES (?,?,'高级版','yearly',?,'HKD','fps','paid',?,?,?,?,?,?,?,?,?,'membership-promotions-v2:1',?,1000,100000,?,?,?,?,?)""",
             (order_no, user_id, amount_minor / 100, now.isoformat(), now.isoformat(), amount_minor,
              amount_minor, 0, 0, amount_minor, None, None, int(eligible),
-             hold_days, PromotionOrderAdapter.promotion_snapshot_sha256(snapshot)),
+             hold_days, snapshot["promotion_snapshot_sha256"],
+             snapshot["referral_attribution_id_snapshot"],
+             snapshot["referral_referrer_user_id_snapshot"],
+             snapshot["referral_referred_user_id_snapshot"]),
         )
         order = dict(conn.execute("SELECT * FROM subscription_orders WHERE order_no=?", (order_no,)).fetchone())
         PromotionOrderAdapter.activate_paid(conn, order=order, pre_membership={"plan_type": "免费版"}, now=now)

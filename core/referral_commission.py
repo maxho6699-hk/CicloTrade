@@ -30,7 +30,7 @@ class ReferralCommissionService:
         if order.get("referral_policy_version"):
             from payment.promotion_adapter import PromotionOrderAdapter
 
-            PromotionOrderAdapter.assert_snapshot_integrity(order)
+            PromotionOrderAdapter.assert_snapshot_binding(conn, order)
         if not _enabled(conn) and not order.get("referral_policy_version"):
             return None
         attribution = conn.execute(
@@ -189,7 +189,7 @@ class ReferralCommissionService:
         if order.get("referral_policy_version"):
             from payment.promotion_adapter import PromotionOrderAdapter
 
-            PromotionOrderAdapter.assert_snapshot_integrity(order)
+            PromotionOrderAdapter.assert_snapshot_binding(conn, order)
         commission = conn.execute(
             "SELECT * FROM referral_commissions WHERE source_order_no=?", (order["order_no"],)
         ).fetchone()
