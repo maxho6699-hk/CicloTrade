@@ -6,6 +6,7 @@ from __future__ import annotations
 from datetime import datetime
 from core.compat import UTC
 import ipaddress
+import hashlib
 import json
 import re
 import sqlite3
@@ -15,6 +16,7 @@ import unicodedata
 from core.auth import AuthService
 from core.broker_authorization import broker_execution_authorized
 from core.database import DatabaseManager, get_database
+from core.entitlement_policy import current_plan_commerce_decision
 from core.membership import (
     add_membership_entitlement,
     authoritative_membership_user,
@@ -172,6 +174,18 @@ class AdminService:
             or not AdminService.has_permission(role, "billing")
         ):
             raise PermissionError("当前后台角色无权管理收款资料。")
+        return role
+
+    @staticmethod
+    def _require_permission_in_transaction(conn: Any, actor_id: int, permission: str) -> str:
+        row = conn.execute(
+            """SELECT u.is_admin,u.is_active,r.role FROM users u
+               LEFT JOIN admin_roles r ON r.user_id=u.id WHERE u.id=?""",
+            (actor_id,),
+        ).fetchone()
+        role = str(row["role"]) if row and row["role"] else ""
+        if not row or not row["is_admin"] or not row["is_active"] or not AdminService.has_permission(role, permission):
+            raise PermissionError("当前后台角色无权执行此操作。")
         return role
 
     @staticmethod
@@ -399,7 +413,7 @@ class AdminService:
             conn.execute("UPDATE user_sessions SET is_active=0 WHERE user_id=?", (user_id,))
             self._audit(conn, actor_id, "ADMIN_CLEAR_IPS", {"user_id": user_id})
 
-    def adjust_subscription(self, actor_id: int, user_id: int, plan: str, days: int, reason: str = "后台调整订阅", note: str | None = None) -> str | None:
+    def adjust_subscription(self, actor_id: int, user_id: int, plan: str, days: int, reason: str = "后台调整订阅", note: str | None = None, *, idempotency_key: str | None = None) -> str | None:
         self._require(actor_id, "billing")
         if plan not in PLAN_ORDER:
             raise ValueError("未知订阅方案。")
@@ -410,15 +424,25 @@ class AdminService:
             raise ValueError("订阅天数必须在 1 到 3650 天之间。")
         expiry: str | None = None
         with self.db.transaction() as conn:
+            self._require_permission_in_transaction(conn, actor_id, "billing")
+            fingerprint = self._membership_request_sha(user_id, plan, days, reason, note, "adjust")
+            replay = self._membership_idempotency_replay(conn, actor_id, idempotency_key, fingerprint)
+            if replay is not None:
+                return replay
             user = conn.execute("SELECT id FROM users WHERE id=?", (user_id,)).fetchone()
             if not user:
                 raise ValueError("用户不存在。")
             now = datetime.now(UTC)
+            _, decision = current_plan_commerce_decision(
+                conn, plan, "admin_grant", as_of=now,
+            )
+            if plan != "免费版" and not decision["allowed"]:
+                raise PermissionError("当前会员策略不允许后台赠送或恢复该方案。")
             current = resolve_membership(conn, user_id, now, sync_cache=True)
             membership_log = conn.execute(
                 """INSERT INTO user_membership_logs
-                   (user_id,admin_id,operation_type,before_plan,after_plan,expire_days,expire_at,reason,note,created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                   (user_id,admin_id,operation_type,before_plan,after_plan,expire_days,expire_at,reason,note,created_at,idempotency_key,request_sha256)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     user_id,
                     actor_id,
@@ -429,7 +453,7 @@ class AdminService:
                     None,
                     reason,
                     note,
-                    _iso(now),
+                    _iso(now), idempotency_key, fingerprint,
                 ),
             )
             state = replace_membership_entitlements(
@@ -462,27 +486,39 @@ class AdminService:
         days: int = 7,
         reason: str = "",
         note: str | None = None,
+        *,
+        idempotency_key: str | None = None,
     ) -> str:
         """Support may grant a bounded trial; only billing roles can adjust plans."""
         self._require(actor_id, "membership_grant")
-        if plan not in {"标准版", "高级版", "专业版"} or not 1 <= int(days) <= 90:
-            raise ValueError("体验方案必须是标准/高级/专业版，天数为 1 至 90 天。")
+        if plan not in PLAN_ORDER or plan == "免费版" or not 1 <= int(days) <= 90:
+            raise ValueError("体验方案无效，天数必须为 1 至 90 天。")
         reason = str(reason).strip()
         if not reason or len(reason) > 240:
             raise ValueError("赠送体验必须填写原因。")
         now = datetime.now(UTC)
         expiry: str
         with self.db.transaction() as conn:
+            self._require_permission_in_transaction(conn, actor_id, "membership_grant")
+            fingerprint = self._membership_request_sha(user_id, plan, days, reason, note, "grant_trial")
+            replay = self._membership_idempotency_replay(conn, actor_id, idempotency_key, fingerprint)
+            if replay is not None:
+                return replay
             user = conn.execute(
                 "SELECT id FROM users WHERE id=? AND is_active=1", (user_id,)
             ).fetchone()
             if not user:
                 raise ValueError("用户不存在或已停用。")
             current = resolve_membership(conn, user_id, now, sync_cache=True)
+            _, decision = current_plan_commerce_decision(
+                conn, plan, "admin_grant", as_of=now,
+            )
+            if not decision["allowed"]:
+                raise PermissionError("当前会员策略不允许赠送该体验方案。")
             membership_log = conn.execute(
                 """INSERT INTO user_membership_logs
-                   (user_id,admin_id,operation_type,before_plan,after_plan,expire_days,expire_at,reason,note,created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                   (user_id,admin_id,operation_type,before_plan,after_plan,expire_days,expire_at,reason,note,created_at,idempotency_key,request_sha256)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     user_id,
                     actor_id,
@@ -493,7 +529,7 @@ class AdminService:
                     None,
                     reason,
                     note,
-                    _iso(now),
+                    _iso(now), idempotency_key, fingerprint,
                 ),
             )
             state = add_membership_entitlement(
@@ -524,6 +560,26 @@ class AdminService:
         except Exception:
             self.db.log_system_event("WARN", "NOTIFICATION", "赠送体验 Telegram 通知未送达", f"user={user_id}")
         return expiry
+
+    @staticmethod
+    def _membership_idempotency_replay(conn: Any, actor_id: int, key: str | None, fingerprint: str) -> str | None:
+        if key is None:
+            return None
+        key = str(key).strip()
+        if not 8 <= len(key) <= 128:
+            raise ValueError("会员操作幂等键无效。")
+        row = conn.execute(
+            "SELECT expire_at,request_sha256 FROM user_membership_logs WHERE admin_id=? AND idempotency_key=?",
+            (actor_id, key),
+        ).fetchone()
+        if row and row["request_sha256"] != fingerprint:
+            raise ValueError("会员操作幂等键已用于不同请求。")
+        return str(row["expire_at"]) if row and row["expire_at"] else None
+
+    @staticmethod
+    def _membership_request_sha(user_id: int, plan: str, days: int, reason: str, note: str | None, operation: str) -> str:
+        value = json.dumps([user_id, plan, int(days), reason, note, operation], ensure_ascii=False, separators=(",", ":"))
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
     def list_membership_logs(self, actor_id: int, limit: int = 500) -> list[dict[str, Any]]:
         self._require(actor_id, "audit")

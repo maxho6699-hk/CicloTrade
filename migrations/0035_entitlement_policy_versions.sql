@@ -54,6 +54,38 @@ CREATE TRIGGER trg_membership_entitlement_policy_events_no_delete
 BEFORE DELETE ON membership_entitlement_policy_admin_events
 BEGIN SELECT RAISE(ABORT, 'entitlement policy admin events are append-only'); END;
 
+CREATE TABLE membership_entitlement_readiness_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    evidence_ref TEXT NOT NULL,
+    policy_key TEXT NOT NULL,
+    policy_version INTEGER NOT NULL,
+    policy_sha256 TEXT NOT NULL,
+    reviewer_id INTEGER,
+    reviewed_at TEXT NOT NULL,
+    FOREIGN KEY(reviewer_id) REFERENCES users(id),
+    UNIQUE(evidence_ref, policy_key, policy_version, policy_sha256)
+);
+
+CREATE TABLE membership_entitlement_readiness_receipts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    candidate_sha256 TEXT NOT NULL,
+    evidence_ref TEXT NOT NULL,
+    reviewer_id INTEGER,
+    valid_until TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    request_sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(reviewer_id, idempotency_key)
+);
+
+CREATE TRIGGER trg_membership_entitlement_readiness_receipts_no_update
+BEFORE UPDATE ON membership_entitlement_readiness_receipts
+BEGIN SELECT RAISE(ABORT, 'readiness receipts are append-only'); END;
+
+CREATE TRIGGER trg_membership_entitlement_readiness_receipts_no_delete
+BEFORE DELETE ON membership_entitlement_readiness_receipts
+BEGIN SELECT RAISE(ABORT, 'readiness receipts are append-only'); END;
+
 CREATE TRIGGER trg_membership_entitlement_policy_events_reference
 BEFORE INSERT ON membership_entitlement_policy_admin_events
 WHEN NOT EXISTS (
@@ -67,6 +99,7 @@ BEGIN SELECT RAISE(ABORT, 'entitlement policy admin event proof is invalid'); EN
 ALTER TABLE subscription_orders ADD COLUMN entitlement_policy_key_snapshot TEXT;
 ALTER TABLE subscription_orders ADD COLUMN entitlement_policy_version_snapshot INTEGER;
 ALTER TABLE subscription_orders ADD COLUMN entitlement_policy_sha256_snapshot TEXT;
+ALTER TABLE subscription_orders ADD COLUMN entitlement_purchase_action_snapshot TEXT;
 
 CREATE TABLE membership_entitlement_legacy_orders (
     order_no TEXT PRIMARY KEY,
@@ -132,3 +165,23 @@ WHEN NOT (
     )
 )
 BEGIN SELECT RAISE(ABORT, 'entitlement policy snapshot is immutable'); END;
+
+CREATE TRIGGER trg_subscription_order_entitlement_action_snapshot
+BEFORE INSERT ON subscription_orders
+WHEN NEW.entitlement_policy_key_snapshot IS NOT NULL
+ AND NEW.entitlement_purchase_action_snapshot NOT IN ('purchase','renew','upgrade')
+BEGIN SELECT RAISE(ABORT, 'entitlement purchase action is invalid'); END;
+
+CREATE TRIGGER trg_subscription_order_entitlement_action_snapshot_update
+BEFORE UPDATE OF entitlement_purchase_action_snapshot ON subscription_orders
+WHEN NOT (
+    OLD.entitlement_purchase_action_snapshot IS NULL
+    AND NEW.entitlement_purchase_action_snapshot IN ('purchase','renew','upgrade')
+) AND NEW.entitlement_purchase_action_snapshot IS NOT OLD.entitlement_purchase_action_snapshot
+BEGIN SELECT RAISE(ABORT, 'entitlement purchase action is immutable'); END;
+
+ALTER TABLE user_membership_logs ADD COLUMN idempotency_key TEXT;
+ALTER TABLE user_membership_logs ADD COLUMN request_sha256 TEXT;
+CREATE UNIQUE INDEX idx_membership_logs_idempotency
+ON user_membership_logs(admin_id, idempotency_key)
+WHERE idempotency_key IS NOT NULL;

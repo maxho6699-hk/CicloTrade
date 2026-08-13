@@ -22,7 +22,7 @@ from core.plans import CAPABILITIES, trading_limits
 
 
 MIGRATION = Path(__file__).parents[1] / "migrations" / "0035_entitlement_policy_versions.sql"
-PUBLIC_PLAN_ORDER = ("免费版", "标准版", "高级版", "专业版")
+PUBLIC_PLAN_ORDER = ("免费版", "标准版", "高级版")
 
 
 def _database(
@@ -55,7 +55,7 @@ def _publish(conn: sqlite3.Connection, when: datetime | None = None):
     )[0]
 
 
-def test_public_policy_has_exactly_four_tiers_and_no_retired_promises():
+def test_public_policy_has_exactly_three_tiers_and_no_retired_promises():
     policy = canonical_public_policy()
     assert tuple(policy["public_plan_order"]) == PUBLIC_PLAN_ORDER
     assert [item["key"] for item in policy["plans"]] == list(PUBLIC_PLAN_ORDER)
@@ -76,13 +76,13 @@ def test_live_option_is_an_application_program_not_a_membership_grant():
     conn = _database()
     now = datetime.now(UTC)
     seed_canonical_policy(conn, now=now)
-    assert policy_can(conn, "专业版", "option_live_beta_apply", as_of=now)
-    assert not policy_can(conn, "专业版", "option_auto_live", as_of=now)
-    assert policy_can(conn, "专业版", "option_auto", as_of=now)  # policy compatibility is paper only
+    assert policy_can(conn, "高级版", "option_live_beta_apply", as_of=now)
+    assert not policy_can(conn, "高级版", "option_auto_live", as_of=now)
+    assert not policy_can(conn, "高级版", "option_auto", as_of=now)
     dynamic = canonical_public_policy()["dynamic_programs"]["option_live_beta"]
     assert dynamic == {
         "application_capability": "option_live_beta_apply",
-        "eligible_plan": "专业版",
+        "eligible_plan": "高级版",
         "states": [
             "planned", "beta_eligible", "approved", "runtime_ready",
             "paused", "revoked",
@@ -97,17 +97,19 @@ def test_live_option_is_an_application_program_not_a_membership_grant():
     assert trading_limits("专业版")["auto_control_accounts"] == 5
 
 
-def test_legacy_custom_plan_is_read_only_compatibility():
+def test_retired_plans_map_to_advanced_read_compatibility_only():
     conn = _database()
     now = datetime.now(UTC)
     seed_canonical_policy(conn, now=now)
     assert CAPABILITIES["定制版"]  # legacy matrix remains untouched until consumer cutover
-    assert policy_can(conn, "定制版", "option_chain", as_of=now)
-    for denied in (
-        "option_live_beta_apply", "broker_access_apply", "code_import",
-        "team_collaboration", "private_deploy", "strategy_template_save",
-    ):
-        assert not policy_can(conn, "定制版", denied, as_of=now)
+    for retired in ("专业版", "定制版"):
+        assert policy_can(conn, retired, "tg_stock_signal", as_of=now)
+        assert policy_can(conn, retired, "option_live_beta_apply", as_of=now)
+        for denied in (
+            "option_chain", "option_auto_live", "code_import",
+            "team_collaboration", "private_deploy", "strategy_template_save",
+        ):
+            assert not policy_can(conn, retired, denied, as_of=now)
 
 
 def test_policy_versions_are_append_only_idempotent_and_point_in_time():
@@ -166,7 +168,7 @@ def test_policy_validation_rejects_live_grants_contract_drift_and_non_finite_jso
         )
 
     policy = canonical_public_policy()
-    policy["plans"][3]["capabilities"].append("real_trade")
+    policy["plans"][2]["capabilities"].append("real_trade")
     with pytest.raises(EntitlementPolicyError, match="公开合同完全一致"):
         publish_policy(
             _database(), policy, effective_at=datetime(2026, 8, 14, tzinfo=UTC),
@@ -185,7 +187,7 @@ def test_capability_projection_fails_closed_without_fresh_runtime_evidence():
     policy = _publish(conn)
     fixed_now = datetime(2026, 8, 14, 0, 5, tzinfo=UTC)
     evidence = {
-        "option_chain": {
+        "tg_stock_signal": {
             "data_state": "ready",
             "health": "healthy",
             "verified_at": "2026-08-14T00:00:00+00:00",
@@ -194,51 +196,47 @@ def test_capability_projection_fails_closed_without_fresh_runtime_evidence():
     states = {
         item["key"]: item
         for item in capability_contracts(
-            "专业版", policy=policy, runtime_evidence=evidence, now=fixed_now,
+            "高级版", policy=policy, runtime_evidence=evidence, now=fixed_now,
         )
-    }
-    assert states["option_chain"] == {
-        "key": "option_chain", "status": "available",
-        "reason_code": "included", "limit": None, "data_state": "ready",
     }
     assert states["option_live_beta_apply"]["status"] == "application_required"
     expired = {
         item["key"]: item
         for item in capability_contracts(
-            "专业版", policy=policy, runtime_evidence=evidence,
+            "高级版", policy=policy, runtime_evidence=evidence,
             now=fixed_now + timedelta(seconds=1),
         )
     }
-    assert expired["option_chain"]["status"] == "unavailable"
+    assert expired["tg_stock_signal"]["status"] == "unavailable"
     missing = {
         item["key"]: item
-        for item in capability_contracts("专业版", policy=policy, now=fixed_now)
+        for item in capability_contracts("高级版", policy=policy, now=fixed_now)
     }
-    assert missing["option_chain"]["reason_code"] == "runtime_evidence_missing"
-    assert missing["option_chain"]["data_state"] == "missing"
+    assert missing["tg_stock_signal"]["reason_code"] == "runtime_evidence_missing"
+    assert missing["tg_stock_signal"]["data_state"] == "missing"
 
 
 def test_published_policy_is_historical_and_not_rebuilt_from_future_globals():
     conn = _database()
     published = _publish(conn)
-    CAPABILITIES["专业版"].add("future_only_capability")
+    CAPABILITIES["高级版"].add("future_only_capability")
     try:
         loaded = current_policy(conn, as_of=datetime(2026, 8, 14, tzinfo=UTC))
         assert loaded.policy_sha256 == published.policy_sha256
-        assert "future_only_capability" not in loaded.policy["plans"][3]["capabilities"]
+        assert "future_only_capability" not in loaded.policy["plans"][2]["capabilities"]
     finally:
-        CAPABILITIES["专业版"].discard("future_only_capability")
+        CAPABILITIES["高级版"].discard("future_only_capability")
 
 
 def test_seed_is_trusted_idempotent_and_policy_can_fails_closed_before_seed():
     conn = _database()
-    assert policy_can(conn, "专业版", "option_chain") is False
+    assert policy_can(conn, "高级版", "tg_stock_signal") is False
     now = datetime.now(UTC)
     first = seed_canonical_policy(conn, now=now)
     second = seed_canonical_policy(conn, now=now)
     assert first.version == second.version == 1
     assert first.policy_sha256 == second.policy_sha256
-    assert policy_can(conn, "专业版", "option_chain") is True
+    assert policy_can(conn, "高级版", "tg_stock_signal") is True
 
 
 def test_seed_rejects_a_preexisting_bootstrap_v1_with_different_content():

@@ -10,38 +10,35 @@ from datetime import datetime
 from typing import Any, Mapping
 
 from core.compat import UTC
+from core.entitlement_commerce import (
+    EntitlementCommerceError,
+    readiness_proof,
+    validate_policy_transition,
+    validate_plan_records,
+)
+from core.entitlement_projection import (
+    capability_contracts as _project_capability_contracts,
+)
+from core.entitlement_access import aware as _aware_datetime
+from core.entitlement_projection import (
+    runtime_capability_evidence as _runtime_capability_evidence,
+)
+from core.entitlement_policy_catalog import (
+    OPTION_LIVE_BETA_STATES,
+    PUBLIC_PLAN_CAPABILITY_ADDITIONS,
+    PUBLIC_PLAN_CAPABILITY_REMOVALS,
+    PUBLIC_PLAN_COPY,
+    PUBLIC_PLAN_DISPLAY_NAMES,
+    SEALED_LEGACY_CAPABILITIES,
+)
 from core.plans import CAPABILITIES, PLANS
 
 
 POLICY_KEY = "public_membership_v1"
 POLICY_SCHEMA_VERSION = 1
-POLICY_V1_PUBLIC_PLAN_ORDER = ("免费版", "标准版", "高级版", "专业版")
-PUBLIC_PLAN_DISPLAY_NAMES = {
-    "免费版": "免費會員",
-    "标准版": "標準會員",
-    "高级版": "高級會員",
-    "专业版": "專業會員",
-}
-PUBLIC_PLAN_CAPABILITY_REMOVALS = {
-    "高级版": frozenset({"auto_control_account_1"}),
-    "专业版": frozenset({
-        "multi_account", "team_collaboration", "option_auto_live",
-        "auto_control_account_5",
-    }),
-}
-PUBLIC_PLAN_CAPABILITY_ADDITIONS = {
-    "专业版": frozenset({
-        "strategy_template_save", "broker_access_apply", "option_live_beta_apply",
-    }),
-}
-OPTION_LIVE_BETA_STATES = (
-    "planned",
-    "beta_eligible",
-    "approved",
-    "runtime_ready",
-    "paused",
-    "revoked",
-)
+POLICY_V1_PUBLIC_PLAN_ORDER = ("免费版", "标准版", "高级版")
+RETIRED_PLAN_KEYS = frozenset({"专业版", "定制版"})
+POLICY_V1_PLAN_ORDER = (*POLICY_V1_PUBLIC_PLAN_ORDER, "专业版", "定制版")
 POLICY_TOP_LEVEL_KEYS = frozenset({
     "schema_version", "policy_key", "public_plan_order", "plans",
     "dynamic_programs", "always_available",
@@ -68,13 +65,6 @@ class PublishedPolicy:
     policy: dict[str, Any]
 
 
-@dataclass(frozen=True)
-class CapabilityRuntimeEvidence:
-    data_state: str
-    health: str
-    verified_at: str
-
-
 def _iso(value: datetime | None = None) -> str:
     moment = value or datetime.now(UTC)
     if moment.tzinfo is None:
@@ -82,59 +72,8 @@ def _iso(value: datetime | None = None) -> str:
     return moment.astimezone(UTC).isoformat(timespec="seconds")
 
 
-def _aware_datetime(value: Any, label: str) -> datetime:
-    if isinstance(value, datetime):
-        parsed = value
-    elif isinstance(value, str) and value.strip():
-        try:
-            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise EntitlementPolicyError(f"{label}必须是有效且包含时区的 ISO 8601 时间。") from exc
-    else:
-        raise EntitlementPolicyError(f"{label}必须是有效且包含时区的 ISO 8601 时间。")
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise EntitlementPolicyError(f"{label}必须包含时区。")
-    return parsed.astimezone(UTC)
-
-
-def _table_exists(conn: Any, name: str) -> bool:
-    return conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
-    ).fetchone() is not None
-
-
 def runtime_capability_evidence(conn: Any) -> dict[str, dict[str, str]]:
-    """Read only successful, persisted observations; never probe providers."""
-    evidence: dict[str, dict[str, str]] = {}
-
-    def publish(capabilities: tuple[str, ...], observed_at: Any) -> None:
-        try:
-            verified_at = _aware_datetime(observed_at, "运行证据时间").isoformat(timespec="seconds")
-        except EntitlementPolicyError:
-            return
-        item = {"data_state": "ready", "health": "healthy", "verified_at": verified_at}
-        for capability in capabilities:
-            evidence[capability] = dict(item)
-
-    if _table_exists(conn, "official_option_sim_event_legs"):
-        row = conn.execute(
-            "SELECT quote_at FROM official_option_sim_event_legs ORDER BY datetime(quote_at) DESC,id DESC LIMIT 1"
-        ).fetchone()
-        if row is not None:
-            publish(
-                ("option_chain", "option_quote_chart", "option_greeks", "option_iv", "tg_option_signal"),
-                row["quote_at"],
-            )
-    if _table_exists(conn, "earnings_data_snapshots"):
-        row = conn.execute(
-            """SELECT observed_at FROM earnings_data_snapshots
-               WHERE dq_status='PASS' ORDER BY datetime(observed_at) DESC,id DESC LIMIT 1"""
-        ).fetchone()
-        if row is not None:
-            publish(("earnings_forecast", "earnings_option_defined_risk"), row["observed_at"])
-    return evidence
-
-
+    return _runtime_capability_evidence(conn, parse_aware=_aware_datetime)
 def _canonical_json(value: Mapping[str, Any]) -> str:
     try:
         return json.dumps(
@@ -146,14 +85,12 @@ def _canonical_json(value: Mapping[str, Any]) -> str:
         )
     except (TypeError, ValueError) as exc:
         raise EntitlementPolicyError("会员策略必须是可序列化的有限 JSON。") from exc
-
-
 def policy_sha256(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
 def canonical_public_policy() -> dict[str, Any]:
-    """Return the customer-facing four-tier contract.
+    """Return the versioned three-tier public and sealed legacy contract.
 
     Live option execution is intentionally represented as a dynamic program,
     not a static subscription capability.
@@ -165,16 +102,44 @@ def canonical_public_policy() -> dict[str, Any]:
             set(CAPABILITIES[key])
             - set(PUBLIC_PLAN_CAPABILITY_REMOVALS.get(key, ()))
         ) | set(PUBLIC_PLAN_CAPABILITY_ADDITIONS.get(key, ()))
-        plans.append(
-            {
+        item = {
                 "key": key,
                 "display_name": PUBLIC_PLAN_DISPLAY_NAMES[key],
-                "summary": definition["summary"],
+                "summary": PUBLIC_PLAN_COPY[key]["summary"],
                 "prices": dict(definition["prices"]),
-                "features": list(definition["features"]),
+                "features": list(PUBLIC_PLAN_COPY[key]["features"]),
                 "capabilities": sorted(capabilities),
+                "compatibility_capabilities": [],
+                "lifecycle": "active_public",
+                "commerce": {
+                    "public_visible": True,
+                    "purchasable": key != "免费版",
+                    "renewable": key != "免费版",
+                    "admin_grantable": key != "免费版",
+                    "upgrade_target": key != "免费版",
+                },
             }
+        item["readiness"] = readiness_proof(
+            key, item["lifecycle"], item["capabilities"],
+            evidence_ref="bootstrap-contract-review-20260814",
         )
+        plans.append(item)
+    for key in ("专业版", "定制版"):
+        plans.append({
+            "key": key,
+            "display_name": PUBLIC_PLAN_DISPLAY_NAMES[key],
+            "summary": "僅保留未到期歷史權益，不公開、不新售、不續費。",
+            "prices": dict(PLANS[key]["prices"]),
+            "features": ["歷史訂單與未到期權益兼容"],
+            "capabilities": [],
+            "compatibility_capabilities": list(SEALED_LEGACY_CAPABILITIES[key]),
+            "lifecycle": "retired_legacy",
+            "commerce": {key: False for key in (
+                "public_visible", "purchasable", "renewable",
+                "admin_grantable", "upgrade_target",
+            )},
+            "readiness": None,
+        })
     return {
         "schema_version": POLICY_SCHEMA_VERSION,
         "policy_key": POLICY_KEY,
@@ -183,7 +148,7 @@ def canonical_public_policy() -> dict[str, Any]:
         "dynamic_programs": {
             "option_live_beta": {
                 "application_capability": "option_live_beta_apply",
-                "eligible_plan": "专业版",
+                "eligible_plan": "高级版",
                 "states": list(OPTION_LIVE_BETA_STATES),
                 "membership_grants_runtime": False,
                 "telegram_binding_required": True,
@@ -213,57 +178,19 @@ def capability_contracts(
     maximum_age_seconds: int = 300,
 ) -> list[dict[str, Any]]:
     """Project public capabilities with explicit customer-visible states."""
-    source_plans = policy.policy["plans"] if policy is not None else canonical_public_policy()["plans"]
-    all_capabilities = sorted({
-        str(capability)
-        for item in source_plans
-        for capability in item["capabilities"]
-    })
-    data_bound = {
-        "signal_web", "tg_stock_signal", "tg_option_signal", "option_chain",
-        "option_quote_chart", "option_greeks", "option_iv", "earnings_forecast",
-        "earnings_option_defined_risk",
-    }
-    result: list[dict[str, Any]] = []
-    for capability in all_capabilities:
-        included = capability in policy_capabilities(policy, plan) if policy is not None else False
-        application = capability == "option_live_beta_apply" and included
-        data_state = "not_applicable"
-        reason_code = "runtime_approval_required" if application else "included" if included else "upgrade_required"
-        status = "application_required" if application else "available" if included else "locked"
-        if included and capability in data_bound:
-            evidence = (runtime_evidence or {}).get(capability)
-            if not isinstance(evidence, Mapping):
-                status, reason_code, data_state = "unavailable", "runtime_evidence_missing", "missing"
-            else:
-                data_state = str(evidence.get("data_state") or "missing")
-                health = str(evidence.get("health") or "unknown")
-                verified_at = evidence.get("verified_at")
-                verified_moment: datetime | None = None
-                if isinstance(verified_at, str):
-                    try:
-                        verified_moment = datetime.fromisoformat(verified_at.replace("Z", "+00:00"))
-                        if verified_moment.tzinfo is None:
-                            verified_moment = None
-                        else:
-                            verified_moment = verified_moment.astimezone(UTC)
-                    except ValueError:
-                        verified_moment = None
-                current = (now or datetime.now(UTC)).astimezone(UTC)
-                fresh = bool(
-                    verified_moment is not None
-                    and 0 <= (current - verified_moment).total_seconds() <= maximum_age_seconds
-                )
-                if data_state != "ready" or health != "healthy" or not fresh:
-                    status, reason_code = "unavailable", "runtime_evidence_invalid"
-        result.append({
-            "key": capability,
-            "status": status,
-            "reason_code": reason_code,
-            "limit": None,
-            "data_state": data_state,
-        })
-    return result
+    source_plans = (
+        policy.policy["plans"] if policy is not None
+        else canonical_public_policy()["plans"]
+    )
+    included = policy_capabilities(policy, plan) if policy is not None else set()
+    return _project_capability_contracts(
+        plan,
+        source_plans=source_plans,
+        included_capabilities=included,
+        runtime_evidence=runtime_evidence,
+        now=now,
+        maximum_age_seconds=maximum_age_seconds,
+    )
 
 
 def validate_policy(
@@ -278,36 +205,19 @@ def validate_policy(
         raise EntitlementPolicyError("会员策略 schema_version 无效。")
     if policy.get("policy_key") != POLICY_KEY:
         raise EntitlementPolicyError("会员策略 policy_key 无效。")
-    if tuple(policy.get("public_plan_order") or ()) != POLICY_V1_PUBLIC_PLAN_ORDER:
-        raise EntitlementPolicyError("公开会员必须严格为免费、标准、高级、专业四级。")
+    public_order = tuple(policy.get("public_plan_order") or ())
+    if require_current_contract and public_order != POLICY_V1_PUBLIC_PLAN_ORDER:
+        raise EntitlementPolicyError("当前公开会员必须严格为免费、标准、高级三级。")
     plans = policy.get("plans")
-    if not isinstance(plans, list) or not all(isinstance(item, dict) for item in plans):
-        raise EntitlementPolicyError("会员方案必须是对象数组。")
-    if [item.get("key") for item in plans] != list(POLICY_V1_PUBLIC_PLAN_ORDER):
-        raise EntitlementPolicyError("会员方案与公开等级顺序不一致。")
-    plan_keys = {"key", "display_name", "summary", "prices", "features", "capabilities"}
-    for item in plans:
-        if set(item) != plan_keys:
-            raise EntitlementPolicyError("会员方案字段不完整或包含未知字段。")
-        if not isinstance(item["display_name"], str) or not item["display_name"].strip():
-            raise EntitlementPolicyError("会员方案显示名称无效。")
-        if not isinstance(item["summary"], str) or not item["summary"].strip():
-            raise EntitlementPolicyError("会员方案摘要无效。")
-        if not isinstance(item["prices"], dict) or not all(
-            isinstance(key, str)
-            and isinstance(amount, (int, float)) and not isinstance(amount, bool)
-            and amount >= 0
-            for key, amount in item["prices"].items()
-        ):
-            raise EntitlementPolicyError("会员方案价格无效。")
-        if not isinstance(item["features"], list) or not all(
-            isinstance(feature, str) and feature.strip() for feature in item["features"]
-        ):
-            raise EntitlementPolicyError("会员方案说明无效。")
-        if not isinstance(item["capabilities"], list) or len(item["capabilities"]) != len(set(item["capabilities"])) or not all(
-            isinstance(capability, str) and capability.strip() for capability in item["capabilities"]
-        ):
-            raise EntitlementPolicyError("会员方案能力无效。")
+    try:
+        validate_plan_records(
+            plans,
+            expected_keys=POLICY_V1_PLAN_ORDER,
+            public_plan_order=public_order,
+            parse_aware=_aware_datetime,
+        )
+    except EntitlementCommerceError as exc:
+        raise EntitlementPolicyError(str(exc)) from exc
     dynamic_programs = policy.get("dynamic_programs")
     if not isinstance(dynamic_programs, dict) or set(dynamic_programs) != {"option_live_beta"}:
         raise EntitlementPolicyError("会员策略动态项目不完整或包含未知项目。")
@@ -316,8 +226,8 @@ def validate_policy(
         raise EntitlementPolicyError("真实期权 Beta 字段不完整或包含未知字段。")
     if dynamic.get("application_capability") != "option_live_beta_apply":
         raise EntitlementPolicyError("真实期权 Beta 申请能力无效。")
-    if dynamic.get("eligible_plan") != "专业版":
-        raise EntitlementPolicyError("真实期权 Beta 仅允许专业会员申请。")
+    if dynamic.get("eligible_plan") != "高级版":
+        raise EntitlementPolicyError("真实期权项目申请入口仅允许高级会员使用。")
     if dynamic.get("membership_grants_runtime") is not False:
         raise EntitlementPolicyError("会员身份不得直接授予真实期权运行权限。")
     if tuple(dynamic.get("states") or ()) != OPTION_LIVE_BETA_STATES:
@@ -370,24 +280,35 @@ def publish_policy(
     *,
     effective_at: datetime,
     created_by: int | None = None,
+    reviewer_id: int | None = None,
+    readiness_evidence_ref: str | None = None,
+    idempotency_key: str | None = None,
     created_at: datetime | None = None,
 ) -> tuple[PublishedPolicy, bool]:
     """Append one policy version; identical content is idempotent."""
-    owns_transaction = not bool(getattr(conn, "in_transaction", False))
-    if owns_transaction:
-        conn.execute("BEGIN IMMEDIATE")
-    try:
-        result = _publish_policy_locked(
-            conn, value, effective_at=effective_at,
-            created_by=created_by, created_at=created_at,
-        )
-        if owns_transaction:
-            conn.commit()
-        return result
-    except Exception:
-        if owns_transaction:
-            conn.rollback()
-        raise
+    from core.entitlement_publishing import publish
+
+    return publish(
+        conn, value, effective_at=effective_at, created_by=created_by,
+        reviewer_id=reviewer_id, readiness_evidence_ref=readiness_evidence_ref,
+        idempotency_key=idempotency_key, created_at=created_at,
+        validate=validate_policy, iso=_iso, canonical_json=_canonical_json,
+        error_type=EntitlementPolicyError, publish_locked=_publish_policy_locked,
+        published=_published,
+    )
+
+
+def create_readiness_review(
+    conn: Any, value: Mapping[str, Any], *, reviewer_id: int, evidence_ref: str,
+    valid_until: datetime, idempotency_key: str,
+) -> int:
+    """Create a risk-auditor receipt for a candidate policy."""
+    from core.entitlement_publishing import create_review
+
+    return create_review(conn, value, reviewer_id=reviewer_id, evidence_ref=evidence_ref,
+                         valid_until=valid_until, idempotency_key=idempotency_key,
+                         validate=validate_policy, iso=_iso, canonical_json=_canonical_json,
+                         error_type=EntitlementPolicyError)
 
 
 def seed_canonical_policy(conn: Any, *, now: datetime | None = None) -> PublishedPolicy:
@@ -417,6 +338,12 @@ def seed_canonical_policy(conn: Any, *, now: datetime | None = None) -> Publishe
     published = _published(row)
     if published.policy_sha256 != digest or published.policy != policy:
         raise EntitlementPolicyError("bootstrap v1 会员策略与审查合同不一致。")
+    conn.execute(
+        """INSERT OR IGNORE INTO membership_entitlement_readiness_reviews(
+               evidence_ref,policy_key,policy_version,policy_sha256,reviewer_id,reviewed_at)
+           VALUES (?,?,?,?,NULL,?)""",
+        ("bootstrap-contract-review-20260814", POLICY_KEY, 1, digest, effective_text),
+    )
     return published
 
 
@@ -429,7 +356,19 @@ def _publish_policy_locked(
     created_at: datetime | None = None,
 ) -> tuple[PublishedPolicy, bool]:
     effective_at = _aware_datetime(effective_at, "会员策略生效时间")
-    policy = validate_policy(value)
+    policy = validate_policy(value, require_current_contract=False)
+    previous_row = conn.execute(
+        """SELECT * FROM membership_entitlement_policy_versions
+           WHERE policy_key=? ORDER BY version DESC LIMIT 1""",
+        (POLICY_KEY,),
+    ).fetchone()
+    previous = _published(previous_row).policy if previous_row is not None else None
+    try:
+        validate_policy_transition(
+            previous, policy, fixed_plan_order=POLICY_V1_PLAN_ORDER,
+        )
+    except EntitlementCommerceError as exc:
+        raise EntitlementPolicyError(str(exc)) from exc
     serialized = _canonical_json(policy)
     digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
     existing = conn.execute(
@@ -465,7 +404,7 @@ def _publish_policy_locked(
             serialized,
             digest,
             effective_text,
-            int(created_by) if created_by is not None else None,
+            int(created_by),
             created_text,
         ),
     )
@@ -475,6 +414,8 @@ def _publish_policy_locked(
         (POLICY_KEY, version),
     ).fetchone()
     return _published(inserted), True
+
+
 
 
 def current_policy(conn: Any, *, as_of: datetime | None = None) -> PublishedPolicy | None:
@@ -489,49 +430,46 @@ def current_policy(conn: Any, *, as_of: datetime | None = None) -> PublishedPoli
     return _published(row) if row is not None else None
 
 
+def current_plan_commerce_decision(
+    conn: Any,
+    plan: str,
+    action: str,
+    *,
+    as_of: datetime | None = None,
+) -> tuple[PublishedPolicy, dict[str, Any]]:
+    """Return one decision and the exact policy that authorized it."""
+    policy = current_policy(conn, as_of=as_of)
+    if policy is None:
+        raise EntitlementPolicyError("当前没有已生效且可验证的会员策略。")
+    return policy, published_plan_commerce_decision(conn, policy, plan, action, as_of=as_of)
+
+
+def published_plan_commerce_decision(
+    conn: Any,
+    policy: PublishedPolicy,
+    plan: str,
+    action: str,
+    *,
+    as_of: datetime | None = None,
+) -> dict[str, Any]:
+    from core.entitlement_access import commerce_decision
+
+    return commerce_decision(conn, policy, plan, action, as_of=as_of)
+
+
 def policy_capabilities(policy: PublishedPolicy, plan: str) -> set[str]:
     """Resolve one tier from a verified published policy."""
-    order = tuple(str(item) for item in policy.policy["public_plan_order"])
-    effective = order[-1] if plan == "定制版" else plan
-    try:
-        plan_index = order.index(effective)
-    except ValueError:
-        plan_index = 0
-    matrix = {
-        str(item["key"]): set(str(value) for value in item["capabilities"])
-        for item in policy.policy["plans"]
-    }
-    capabilities = {
-        capability
-        for level in order[: plan_index + 1]
-        for capability in matrix[level]
-    }
-    if plan == "定制版":
-        capabilities.difference_update({
-            "alert_basic", "alerts_10", "alerts_unlimited", "backtest_1y",
-            "backtest_3y", "backtest_10y", "broker_access_apply", "code_import",
-            "api_signal_import", "strategy_template_save", "option_live_beta_apply",
-            "option_auto_paper_official", "csv_import", "strategy_generate",
-            "strategy_generate_complex", "strategy_tracking",
-            "strategy_template_parameters", "strategy_templates_use",
-        })
-    return capabilities
+    from core.entitlement_access import capabilities
+
+    return capabilities(policy, plan, retired=RETIRED_PLAN_KEYS)
 
 
 def policy_can(
     conn: Any, plan: str, capability: str, *, as_of: datetime | None = None
 ) -> bool:
-    from core.plans import CAPABILITY_ALIASES
+    from core.entitlement_access import can
 
-    policy = current_policy(conn, as_of=as_of)
-    if policy is None:
-        return False
-    canonical = {
-        **CAPABILITY_ALIASES,
-        "option_auto": "option_auto_paper_official",
-        "option_live_beta": "option_live_beta_apply",
-    }.get(capability, capability)
-    return canonical in policy_capabilities(policy, plan)
+    return can(conn, plan, capability, as_of=as_of, current=current_policy, retired=RETIRED_PLAN_KEYS)
 
 
 def _published(row: Any) -> PublishedPolicy:
@@ -553,54 +491,7 @@ def _published(row: Any) -> PublishedPolicy:
 
 
 def validate_order_policy_snapshot(conn: Any, order: Mapping[str, Any]) -> PublishedPolicy:
-    """Verify the immutable policy proof before granting paid membership."""
-    key = order.get("entitlement_policy_key_snapshot")
-    version = order.get("entitlement_policy_version_snapshot")
-    digest = order.get("entitlement_policy_sha256_snapshot")
-    if not key and version is None and not digest:
-        legacy = conn.execute(
-            "SELECT recorded_at FROM membership_entitlement_legacy_orders WHERE order_no=?",
-            (str(order.get("order_no") or ""),),
-        ).fetchone()
-        if legacy is None:
-            raise EntitlementPolicyError("订单缺少完整的会员策略快照。")
-        created_moment = _aware_datetime(order.get("created_at"), "订单创建时间")
-        recorded_moment = _aware_datetime(legacy["recorded_at"], "历史订单登记时间")
-        if created_moment > recorded_moment:
-            raise EntitlementPolicyError("历史订单创建时间晚于迁移登记时间。")
-        row = conn.execute(
-            """SELECT * FROM membership_entitlement_policy_versions
-               WHERE policy_key=? AND version=1""",
-            (POLICY_KEY,),
-        ).fetchone()
-        if row is None:
-            raise EntitlementPolicyError("旧订单无法绑定 bootstrap v1 会员策略。")
-        bootstrap = _published(row)
-        conn.execute(
-            """UPDATE subscription_orders SET entitlement_policy_key_snapshot=?,
-               entitlement_policy_version_snapshot=?,entitlement_policy_sha256_snapshot=?
-               WHERE order_no=? AND entitlement_policy_key_snapshot IS NULL""",
-            (bootstrap.policy_key, bootstrap.version, bootstrap.policy_sha256, order["order_no"]),
-        )
-        return bootstrap
-    if not key or version is None or not digest:
-        raise EntitlementPolicyError("订单会员策略快照不完整。")
-    row = conn.execute(
-        """SELECT * FROM membership_entitlement_policy_versions
-           WHERE policy_key=? AND version=?""",
-        (str(key), int(version)),
-    ).fetchone()
-    if row is None:
-        raise EntitlementPolicyError("订单引用的会员策略版本不存在。")
-    published = _published(row)
-    if published.policy_sha256 != str(digest):
-        raise EntitlementPolicyError("订单会员策略快照哈希不一致。")
-    created_at = _aware_datetime(order.get("created_at"), "订单创建时间")
-    effective = current_policy(conn, as_of=created_at)
-    if effective is None or (
-        effective.policy_key,
-        effective.version,
-        effective.policy_sha256,
-    ) != (published.policy_key, published.version, published.policy_sha256):
-        raise EntitlementPolicyError("订单会员策略快照不是创建时的有效版本。")
-    return published
+    """Verify immutable policy proof before granting paid membership."""
+    from core.entitlement_access import validate_snapshot
+
+    return validate_snapshot(conn, order, policy_key=POLICY_KEY, parse_aware=_aware_datetime, load_published=_published, load_current=current_policy, error_type=EntitlementPolicyError)

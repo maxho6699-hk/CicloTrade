@@ -19,6 +19,14 @@ from core.exceptions import DatabaseError
 
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "migrations"
+_INIT_LOCKS_GUARD = threading.Lock()
+_INIT_LOCKS: dict[str, threading.Lock] = {}
+
+
+def _initialization_lock(db_path: str) -> threading.Lock:
+    key = str(Path(db_path).resolve())
+    with _INIT_LOCKS_GUARD:
+        return _INIT_LOCKS.setdefault(key, threading.Lock())
 
 
 def _sql_statements(script: str):
@@ -637,7 +645,7 @@ class DatabaseManager:
     def _init_tables(self) -> None:
         """初始化数据库表结构"""
         try:
-            with self._lock:
+            with _initialization_lock(self._db_path), self._lock:
                 with self._get_connection() as conn:
                     conn.executescript(CREATE_TABLES_SQL)
                     columns = {row[1] for row in conn.execute("PRAGMA table_info(risk_log)")}
@@ -704,6 +712,15 @@ class DatabaseManager:
                     conn.execute("CREATE INDEX IF NOT EXISTS idx_subscription_external ON subscription_orders(external_id)")
                     conn.commit()
                     self._run_migrations(conn)
+                    if conn.execute(
+                        """SELECT 1 FROM sqlite_master
+                           WHERE type='table'
+                             AND name='membership_entitlement_policy_versions'"""
+                    ).fetchone():
+                        from core.entitlement_policy import seed_canonical_policy
+
+                        seed_canonical_policy(conn)
+                        conn.commit()
         except Exception as e:
             raise DatabaseError(f"数据库初始化失败: {e}")
 
@@ -727,6 +744,11 @@ class DatabaseManager:
                 continue
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                if conn.execute(
+                    "SELECT 1 FROM schema_migrations WHERE version=?", (path.name,)
+                ).fetchone():
+                    conn.commit()
+                    continue
                 for statement in _sql_statements(path.read_text(encoding="utf-8")):
                     conn.execute(statement)
                 conn.execute(

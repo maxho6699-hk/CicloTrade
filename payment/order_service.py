@@ -13,8 +13,13 @@ import secrets
 from typing import Any
 
 from core.database import DatabaseManager, get_database
+from core.entitlement_policy import (
+    current_plan_commerce_decision,
+    published_plan_commerce_decision,
+    validate_order_policy_snapshot,
+)
 from core.membership import (
-    MembershipPlanConflict,
+    MembershipPlanConflict,  # noqa: F401
     add_membership_entitlement,
     assert_plan_not_lower,
     resolve_membership,
@@ -31,6 +36,12 @@ LEGACY_REFERRAL_REWARD_PERCENT = 30
 TERMS_VERSION = "2026-08-07-no-refund-v1"
 ORDER_EXPIRY_HOURS = {"telegram": 1, "web": 24, "legacy": 24}
 MAX_PENDING_MANUAL_ORDERS = 3
+
+
+def _purchase_action(current_plan: str, target_plan: str) -> str:
+    if current_plan == "免费版":
+        return "purchase"
+    return "renew" if current_plan == target_plan else "upgrade"
 
 
 class ManualPaymentMethod(str, Enum):
@@ -89,6 +100,11 @@ def grant_subscription_days(
     plan = str(current["plan_type"])
     if plan == "免费版":
         plan = fallback_plan
+    _, decision = current_plan_commerce_decision(
+        conn, plan, "admin_grant", as_of=base,
+    )
+    if not decision["allowed"]:
+        raise ValueError("当前会员策略不允许赠送或延长该方案。")
     state = add_membership_entitlement(
         conn,
         user_id,
@@ -131,8 +147,6 @@ class OrderService:
         if plan not in PLANS or plan == "免费版":
             raise ValueError("请选择可购买的订阅方案。")
         prices = PLANS[plan]["prices"]
-        if plan == "定制版":
-            cycle = "project"
         if cycle not in prices:
             raise ValueError("该方案不支持所选付款周期。")
         source = str(source or "web").strip().lower()
@@ -152,20 +166,6 @@ class OrderService:
             entitlement_days += YEARLY_PROMO_DAYS
         amount = float(prices[cycle])
         amount_minor = int(round(amount * 100))
-        fingerprint = hashlib.sha256(
-            json.dumps(
-                {
-                    "plan": plan,
-                    "cycle": cycle,
-                    "method": method,
-                    "amount_minor": amount_minor,
-                    "entitlement_days": entitlement_days,
-                    "terms_version": TERMS_VERSION,
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
         now = datetime.now(UTC)
         with self.db.transaction() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -177,6 +177,30 @@ class OrderService:
                 raise PermissionError("账户不存在或已停用。")
             current = resolve_membership(conn, user_id, now, sync_cache=True)
             assert_plan_not_lower(str(current["plan_type"]), plan)
+            current_plan = str(current["plan_type"])
+            action = _purchase_action(current_plan, plan)
+            entitlement_policy, decision = current_plan_commerce_decision(
+                conn, plan, action, as_of=now,
+            )
+            if not decision["allowed"]:
+                raise ValueError("当前会员策略不允许购买、续费或升级至该方案。")
+            fingerprint = hashlib.sha256(
+                json.dumps(
+                    {
+                        "plan": plan,
+                        "cycle": cycle,
+                        "method": method,
+                        "amount_minor": amount_minor,
+                        "entitlement_days": entitlement_days,
+                        "terms_version": TERMS_VERSION,
+                        "entitlement_policy_key": entitlement_policy.policy_key,
+                        "entitlement_policy_version": entitlement_policy.version,
+                        "entitlement_policy_sha256": entitlement_policy.policy_sha256,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
             if method in MANUAL_PAYMENT_METHODS:
                 placeholders = ",".join("?" for _ in MANUAL_PAYMENT_METHODS)
                 conn.execute(
@@ -233,12 +257,16 @@ class OrderService:
                 """INSERT INTO subscription_orders
                    (order_no,user_id,plan_type,billing_cycle,amount,currency,pay_method,status,
                     entitlement_days,created_at,terms_version,terms_accepted_at,source,idempotency_key,
-                    request_fingerprint,amount_minor,expires_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    request_fingerprint,amount_minor,expires_at,
+                    entitlement_policy_key_snapshot,entitlement_policy_version_snapshot,
+                    entitlement_policy_sha256_snapshot,entitlement_purchase_action_snapshot)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     order_no, user_id, plan, cycle, amount, "HKD", method, "pending",
                     entitlement_days, _iso(now), TERMS_VERSION, _iso(now), source, idempotency_key,
                     fingerprint, amount_minor, expires_at,
+                    entitlement_policy.policy_key, entitlement_policy.version,
+                    entitlement_policy.policy_sha256, action,
                 ),
             )
             if method in MANUAL_PAYMENT_METHODS:
@@ -461,6 +489,16 @@ class OrderService:
         current = resolve_membership(
             conn, int(order["user_id"]), now, sync_cache=True
         )
+        order_policy = validate_order_policy_snapshot(conn, order)
+        action = _purchase_action(str(current["plan_type"]), str(order["plan_type"]))
+        snapshot_action = order.get("entitlement_purchase_action_snapshot")
+        if snapshot_action is not None and snapshot_action != action:
+            raise ValueError("付款时会员状态已变化，订单商业动作不再有效。")
+        decision = published_plan_commerce_decision(
+            conn, order_policy, str(order["plan_type"]), action, as_of=now,
+        )
+        if not decision["allowed"]:
+            raise ValueError("订单创建时的会员策略不允许该商业动作。")
         assert_plan_not_lower(str(current["plan_type"]), str(order["plan_type"]))
         changed = conn.execute(
             """UPDATE subscription_orders
