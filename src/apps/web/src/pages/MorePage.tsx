@@ -1,6 +1,6 @@
 import {
   AlertTriangle, ArrowRight, BellRing, BookOpenCheck, CalendarClock, ChartCandlestick,
-  ClipboardCheck, Gauge, Grid2X2, LifeBuoy, ListFilter, LockKeyhole, Pin, RadioTower,
+  ClipboardCheck, Gauge, Grid2X2, LifeBuoy, List, ListFilter, LockKeyhole, Pin, RadioTower,
   Search, ShieldCheck, Sparkles, Target, WalletCards,
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
@@ -9,13 +9,18 @@ import { PageHeader } from '../components/PageHeader'
 import {
   filterFeatureCatalog,
   formatMorePageCopy,
+  FEATURE_CATALOG_VIEW_STORAGE_KEY,
   isValidPinnedSelection,
   localizeFeature,
+  localizeFeatureReason,
   MORE_PAGE_COPY,
+  readFeatureCatalogView,
   toggleDraftPin,
+  writeFeatureCatalogView,
   type FeatureCatalogItem,
   type FeatureCatalogPayload,
   type FeatureCategory,
+  type FeatureCatalogView,
   type MorePageCopy,
 } from '../domain/featureCatalog'
 import { useLocale } from '../i18n/useLocale'
@@ -37,13 +42,15 @@ export interface MorePageProps {
   onRecordRecent?: (key: string, expectedVersion: number) => FeatureCatalogPayload | Promise<FeatureCatalogPayload>
 }
 
-function FeatureCard({ item, pinned, copy, onOpen, onTogglePin }: { item: FeatureCatalogItem; pinned: boolean; copy: MorePageCopy; onOpen: () => void; onTogglePin?: () => void }) {
+function FeatureCard({ item, pinned, copy, view, onOpen, onTogglePin }: { item: FeatureCatalogItem; pinned: boolean; copy: MorePageCopy; view: FeatureCatalogView; onOpen: () => void; onTogglePin?: () => void }) {
   const { locale } = useLocale()
   const featureCopy = localizeFeature(item, locale)
+  const localizedReason = localizeFeatureReason(item.reason, locale)
   const Icon = FEATURE_ICONS[item.icon]
   const disabled = item.availability === 'planned' || item.availability === 'unavailable' || item.availability === 'degraded'
+  const pinLabel = pinned ? copy.unpin : copy.pin
   return (
-    <article className={`feature-card ${item.availability}`}>
+    <article className={`feature-card feature-card--${view} ${item.availability}`}>
       <button className="feature-card-main" type="button" disabled={disabled} onClick={onOpen} aria-describedby={item.reason ? `feature-reason-${item.key}` : undefined}>
         <span className="feature-card-icon"><Icon size={19} aria-hidden="true" /></span>
         <span className="feature-card-copy"><strong>{featureCopy.title}</strong><small>{featureCopy.description}</small></span>
@@ -51,19 +58,19 @@ function FeatureCard({ item, pinned, copy, onOpen, onTogglePin }: { item: Featur
       </button>
       <footer>
         <span className={`feature-state ${item.availability}`}>{copy.availability[item.availability]}</span>
-        {item.reason && <small id={`feature-reason-${item.key}`}>{item.reason}</small>}
-        {item.pinAllowed && onTogglePin && <button type="button" className="feature-pin" aria-pressed={pinned} onClick={onTogglePin}><Pin size={14} aria-hidden="true" />{pinned ? copy.unpin : copy.pin}</button>}
+        {localizedReason && <small id={`feature-reason-${item.key}`}>{localizedReason}</small>}
+        {item.pinAllowed && onTogglePin && <button type="button" className="feature-pin" aria-label={pinLabel} title={pinLabel} aria-pressed={pinned} onClick={onTogglePin}><Pin size={14} aria-hidden="true" /><span className="feature-pin-label">{pinned ? copy.unpin : copy.pin}</span></button>}
       </footer>
     </article>
   )
 }
 
-function FeatureSection({ title, items, pinned, copy, onOpen, onTogglePin }: { title: string; items: FeatureCatalogItem[]; pinned: Set<string>; copy: MorePageCopy; onOpen: (item: FeatureCatalogItem) => void; onTogglePin?: (key: string) => void }) {
+function FeatureSection({ title, items, pinned, copy, view, onOpen, onTogglePin }: { title: string; items: FeatureCatalogItem[]; pinned: Set<string>; copy: MorePageCopy; view: FeatureCatalogView; onOpen: (item: FeatureCatalogItem) => void; onTogglePin?: (key: string) => void }) {
   if (!items.length) return null
   return (
     <section className="more-section">
       <header><h2>{title}</h2><span>{items.length}</span></header>
-      <div className="feature-grid">{items.map((item) => <FeatureCard key={item.key} item={item} pinned={pinned.has(item.key)} copy={copy} onOpen={() => onOpen(item)} onTogglePin={onTogglePin ? () => onTogglePin(item.key) : undefined} />)}</div>
+      <div className={`feature-grid feature-grid--${view}`}>{items.map((item) => <FeatureCard key={item.key} item={item} pinned={pinned.has(item.key)} copy={copy} view={view} onOpen={() => onOpen(item)} onTogglePin={onTogglePin ? () => onTogglePin(item.key) : undefined} />)}</div>
     </section>
   )
 }
@@ -79,6 +86,12 @@ export function MorePage({ catalog, loading = false, error = null, copy: injecte
   const [recentFeedback, setRecentFeedback] = useState('')
   const [savingPins, setSavingPins] = useState(false)
   const [catalogSnapshot, setCatalogSnapshot] = useState<FeatureCatalogPayload | null>(catalog ?? null)
+  const [view, setView] = useState<FeatureCatalogView>(() => {
+    const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 760px)').matches
+    let stored: string | null = null
+    try { stored = typeof window === 'undefined' ? null : window.localStorage.getItem(FEATURE_CATALOG_VIEW_STORAGE_KEY) } catch { /* storage can be unavailable */ }
+    return readFeatureCatalogView(stored, isPhone)
+  })
 
   useEffect(() => {
     const pinned = catalog?.preferences.pinned ?? []
@@ -141,13 +154,23 @@ export function MorePage({ catalog, loading = false, error = null, copy: injecte
     }
   }
 
-  const sectionProps = { pinned: pinnedKeys, copy, onOpen: (item: FeatureCatalogItem) => void open(item), onTogglePin: onSavePins ? togglePin : undefined }
+  const setFeatureView = (next: FeatureCatalogView) => {
+    setView(next)
+    writeFeatureCatalogView(typeof window === 'undefined' ? null : window.localStorage, next)
+  }
+  const sectionProps = { pinned: pinnedKeys, copy, view, onOpen: (item: FeatureCatalogItem) => void open(item), onTogglePin: onSavePins ? togglePin : undefined }
 
   return (
     <div className="page more-page">
       <PageHeader kicker={copy.kicker} title={copy.title} description={copy.description} />
       <span className="sr-only" role="status" aria-live="polite">{recentFeedback}</span>
-      <label className="more-search"><Search size={18} aria-hidden="true" /><span className="sr-only">{copy.searchLabel}</span><input name="feature-search" autoComplete="off" spellCheck={false} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={copy.searchPlaceholder} /></label>
+      <div className="more-tools">
+        <label className="more-search"><Search size={18} aria-hidden="true" /><span className="sr-only">{copy.searchLabel}</span><input name="feature-search" autoComplete="off" spellCheck={false} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={copy.searchPlaceholder} /></label>
+        <div className="feature-view-toggle" role="group" aria-label={copy.viewLabel}>
+          <button className={view === 'list' ? 'active' : ''} type="button" aria-pressed={view === 'list'} onClick={() => setFeatureView('list')}><List size={17} aria-hidden="true" /><span>{copy.listView}</span></button>
+          <button className={view === 'icon' ? 'active' : ''} type="button" aria-pressed={view === 'icon'} onClick={() => setFeatureView('icon')}><Grid2X2 size={17} aria-hidden="true" /><span>{copy.iconView}</span></button>
+        </div>
+      </div>
       {loading && <div className="more-state" role="status"><Sparkles size={22} aria-hidden="true" /><strong>{copy.loadingTitle}</strong><span>{copy.loadingDescription}</span></div>}
       {!loading && error && <div className="more-state error" role="alert"><AlertTriangle size={22} aria-hidden="true" /><strong>{copy.errorTitle}</strong><span>{error}</span>{onRetry && <button className="button secondary" type="button" onClick={onRetry}>{copy.retry}</button>}</div>}
       {!loading && !error && !catalogSnapshot && <div className="more-state"><LockKeyhole size={22} aria-hidden="true" /><strong>{copy.disconnectedTitle}</strong><span>{copy.disconnectedDescription}</span></div>}

@@ -20,6 +20,8 @@ import { OpportunitiesPage } from './pages/OpportunitiesPage'
 import { EarningsForecastPage } from './pages/EarningsForecastPage'
 import { FeedbackPage } from './pages/FeedbackPage'
 import { AdminPage } from './pages/AdminPage'
+import { MoreRoute } from './pages/MoreRoute'
+import { PersonalPaperPage } from './pages/PersonalPaperPage'
 import { useLocale } from './i18n/useLocale'
 import { applyTheme, readStoredTheme } from './theme'
 
@@ -43,6 +45,11 @@ function SuperAdminRoute({ children }: { children: ReactNode }) {
   return children
 }
 
+function LegacyRedirect({ to }: { to: string }) {
+  const location = useLocation()
+  return <Navigate to={`${to}${location.search}${location.hash}`} replace />
+}
+
 export default function App() {
   useLocale()
   const location = useLocation()
@@ -60,8 +67,12 @@ export default function App() {
   }
   return <ProtectedConsole><AppShell><Routes>
     <Route path="/today" element={<TodayPage />} />
-    <Route path="/opportunities" element={<OpportunitiesPage />} />
-    <Route path="/markets" element={<MarketsPage />} />
+    <Route path="/discover" element={<OpportunitiesPage />} />
+    <Route path="/research" element={<MarketsPage />} />
+    <Route path="/paper" element={<PersonalPaperPage />} />
+    <Route path="/more" element={<MoreRoute />} />
+    <Route path="/opportunities" element={<LegacyRedirect to="/discover" />} />
+    <Route path="/markets" element={<LegacyRedirect to="/research" />} />
     <Route path="/portfolio" element={<PortfolioPage />} />
     <Route path="/earnings" element={<EarningsForecastPage />} />
     <Route path="/trade" element={<TradePage />} />
@@ -75,6 +86,8 @@ export default function App() {
     <Route path="/membership" element={<MembershipPage />} />
     <Route path="/promotion" element={<PromotionCenterPage />} />
     <Route path="/mystic" element={<MysticPage />} />
+    <Route path="/opportunities/*" element={<LegacyRedirect to="/discover" />} />
+    <Route path="/markets/*" element={<LegacyRedirect to="/research" />} />
     <Route path="*" element={<Navigate to="/today" replace />} />
   </Routes></AppShell></ProtectedConsole>
 }

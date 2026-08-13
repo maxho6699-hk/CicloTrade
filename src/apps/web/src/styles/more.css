@@ -1,7 +1,12 @@
 .more-page { display: grid; gap: 20px; }
+.more-tools { display: flex; width: min(820px, 100%); align-items: center; gap: 10px; }
 .more-search { display: grid; width: min(660px, 100%); min-height: 44px; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; padding: 0 13px; border: 1px solid var(--border-strong); border-radius: var(--radius-control); background: var(--surface-inset); color: var(--muted); }
+.more-tools .more-search { flex: 1; }
 .more-search:focus-within { border-color: var(--info); box-shadow: 0 0 0 2px color-mix(in srgb, var(--info) 18%, transparent); }
 .more-search input { min-width: 0; min-height: 42px; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 14px; }
+.feature-view-toggle { display: inline-flex; min-height: 44px; flex: 0 0 auto; padding: 2px; border: 1px solid var(--border-strong); border-radius: var(--radius-control); background: var(--surface-subtle); }
+.feature-view-toggle button { display: inline-flex; min-height: 38px; align-items: center; gap: 5px; padding: 0 10px; border: 0; border-radius: calc(var(--radius-control) - 2px); background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; }
+.feature-view-toggle button.active { background: var(--surface-raised); box-shadow: 0 1px 2px var(--shadow-color); color: var(--text); }
 .pin-manager { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px 16px; padding: 14px 15px; border-block: 1px solid var(--border-subtle); background: var(--surface-subtle); }
 .pin-manager h2 { margin: 0; font-size: 15px; }
 .pin-manager p { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
@@ -14,6 +19,7 @@
 .more-section h2 { margin: 0; font-size: 16px; font-weight: 600; }
 .more-section > header span { color: var(--muted-2); font: 12px var(--mono); }
 .feature-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--border-subtle); border-left: 1px solid var(--border-subtle); }
+.feature-grid--icon { grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); }
 .feature-card { min-width: 0; border-right: 1px solid var(--border-subtle); border-bottom: 1px solid var(--border-subtle); background: var(--workspace); }
 .feature-card-main { display: grid; width: 100%; min-height: 94px; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: start; gap: 11px; padding: 15px; border: 0; background: transparent; color: var(--text); cursor: pointer; text-align: left; }
 .feature-card-main:hover:not(:disabled) { background: var(--surface-hover); }
@@ -32,19 +38,39 @@
 .feature-state.unavailable { color: var(--negative); }
 .feature-pin { display: inline-flex; min-height: 28px; align-items: center; gap: 5px; margin-left: auto; padding: 0 6px; border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 11px; }
 .feature-pin:hover, .feature-pin[aria-pressed='true'] { color: var(--info); }
+.feature-card--icon .feature-card-main { min-height: 132px; grid-template-columns: 1fr; justify-items: center; gap: 8px; padding: 16px 12px 12px; text-align: center; }
+.feature-card--icon .feature-card-icon { width: 48px; height: 48px; }
+.feature-card--icon .feature-card-icon svg { width: 24px; height: 24px; }
+.feature-card--icon .feature-card-copy { justify-items: center; gap: 0; }
+.feature-card--icon .feature-card-copy small,
+.feature-card--icon .feature-card-main > svg,
+.feature-card--icon footer > small { display: none; }
+.feature-card--icon footer { min-height: 38px; justify-content: center; padding: 5px 8px; }
+.feature-card--icon .feature-pin { position: absolute; top: 4px; right: 4px; min-width: 44px; min-height: 44px; justify-content: center; }
+.feature-card--icon .feature-pin-label { display: none; }
+.feature-card--icon { position: relative; }
 .more-state { display: grid; min-height: 210px; place-content: center; justify-items: center; gap: 8px; border-block: 1px solid var(--border-subtle); color: var(--muted); text-align: center; }
 .more-state strong { color: var(--text); font-size: 15px; }
 .more-state span { max-width: 460px; font-size: 13px; }
 .more-state.error > svg { color: var(--negative); }
 @media (max-width: 760px) {
   .more-page { gap: 16px; }
+  .more-tools { display: grid; width: 100%; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; }
+  .more-search input { min-height: 44px; }
+  .feature-view-toggle button { min-width: 44px; min-height: 44px; justify-content: center; padding: 0 8px; }
   .pin-manager { grid-template-columns: minmax(0, 1fr) auto; }
   .pin-manager > div { grid-column: 1 / -1; }
   .pin-manager > button { min-height: 44px; }
   .feature-grid { grid-template-columns: 1fr; }
+  .feature-grid--icon { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .feature-card--icon .feature-card-main { min-height: 136px; }
   .feature-card-main { min-height: 102px; }
   .feature-pin { min-width: 44px; min-height: 44px; justify-content: center; }
   .feature-card footer { min-height: 46px; }
+}
+@media (max-width: 420px) {
+  .feature-view-toggle button span { display: none; }
+  .feature-view-toggle button { width: 44px; padding: 0; }
 }
 /* This page is the responsive pin-management surface. The navigation integration
    owner must render the resulting secondary tools only above 1024px. */

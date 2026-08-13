@@ -1,30 +1,33 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
-  Bell,
+  BellRing,
+  BookOpenCheck,
   Bot,
   CandlestickChart,
   CalendarClock,
+  ChartCandlestick,
   ChevronRight,
-  CircleGauge,
-  CreditCard,
-  HandCoins,
-  FileChartColumn,
+  ClipboardCheck,
   MessageSquareText,
   FlaskConical,
+  Gauge,
+  Grid2X2,
   House,
   Languages,
   HelpCircle,
+  LifeBuoy,
+  ListFilter,
   LogOut,
   LoaderCircle,
-  Menu,
   Moon,
   Radar,
-  ShieldAlert,
+  RadioTower,
   Search,
   Settings,
   ShieldCheck,
   Sparkles,
   Sun,
+  Target,
   Trash2,
   UserRound,
   WalletCards,
@@ -32,7 +35,12 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { searchMarket, type MarketSearchItem } from '../api/client'
+import {
+  FEATURE_CATALOG_UPDATED_EVENT,
+  fetchFeatureCatalog,
+  searchMarket,
+  type MarketSearchItem,
+} from '../api/client'
 import { useWorkspace } from '../api/workspace-context'
 import { useLocale } from '../i18n/useLocale'
 import { localeSearchText } from '../i18n/runtime'
@@ -40,49 +48,38 @@ import { WatchlistToggle } from './WatchlistToggle'
 import type { Market } from '../types'
 import { applyTheme, readStoredTheme, type Theme } from '../theme'
 import { displayDeliveryDelay, displayFreshness } from '../domain/dataSourcePresentation'
+import { localizeFeature, type FeatureCatalogPayload } from '../domain/featureCatalog'
 
 interface AppShellProps {
   children: ReactNode
 }
 
 const navItems = [
-  { to: '/today', label: '今日行动', icon: House },
-  { to: '/opportunities', label: '机会中心', icon: Radar },
-  { to: '/markets', label: '市场观察', icon: CandlestickChart },
-  { to: '/portfolio', label: '跟踪持仓', icon: WalletCards },
-  { to: '/earnings', label: '业绩预测', icon: CalendarClock },
-  { to: '/mystic', label: '玄学预测', icon: Sparkles },
-  { to: '/reports', label: '持仓报告', icon: FileChartColumn },
-  { to: '/trade', label: '实盘连接', icon: CircleGauge },
-  { to: '/lab', label: '专业工具', icon: FlaskConical },
-  { to: '/notifications', label: '消息通知', icon: Bell },
-  { to: '/account', label: '用户设定', icon: UserRound },
-  { to: '/membership', label: '订阅会员', icon: CreditCard },
-  { to: '/promotion', label: '推广中心', icon: HandCoins },
-]
+  { to: '/today', key: 'today', icon: House },
+  { to: '/discover', key: 'discover', icon: Radar },
+  { to: '/research', key: 'research', icon: CandlestickChart },
+  { to: '/paper', key: 'paper', icon: WalletCards },
+  { to: '/portfolio', key: 'portfolio', icon: ClipboardCheck },
+  { to: '/more', key: 'more', icon: Grid2X2 },
+] as const
 
 const mobileNavItems = [
-  { to: '/today', label: '今日行动', icon: House },
-  { to: '/opportunities', label: '机会中心', icon: Radar },
-  { to: '/markets', label: '市场观察', icon: CandlestickChart },
-  { to: '/portfolio', label: '跟踪持仓', icon: WalletCards },
-]
-
-const mobileMoreItems = [
-  { to: '/earnings', label: '业绩预测', icon: CalendarClock },
-  { to: '/mystic', label: '玄学预测', icon: Sparkles },
-  { to: '/reports', label: '持仓报告', icon: FileChartColumn },
-  { to: '/trade', label: '实盘连接', icon: CircleGauge },
-  { to: '/lab', label: '专业工具', icon: FlaskConical },
-  { to: '/notifications', label: '消息通知', icon: Bell },
-  { to: '/account', label: '用户设定', icon: UserRound },
-  { to: '/membership', label: '订阅会员', icon: CreditCard },
-  { to: '/promotion', label: '推广中心', icon: HandCoins },
-]
-
-const mobileHelpItem = { to: '/help', label: '帮助与支持', icon: HelpCircle }
+  { to: '/today', key: 'today', icon: House },
+  { to: '/discover', key: 'discover', icon: Radar },
+  { to: '/research', key: 'market', icon: CandlestickChart },
+  { to: '/paper', key: 'paper', icon: WalletCards },
+  { to: '/more', key: 'moreShort', icon: Grid2X2 },
+] as const
 const feedbackItem = { to: '/feedback', label: '反馈建议', icon: MessageSquareText }
-const adminItem = { to: '/admin', label: '超级管理', icon: ShieldAlert }
+const promotionItem = { to: '/promotion', label: '推广中心', icon: Target }
+const NAV_COPY = {
+  'zh-Hans': { today: '今日', discover: '发现', research: '行情与研究', market: '行情', paper: '模拟', portfolio: '组合与复盘', more: '更多功能', moreShort: '更多', pinned: '固定工具' },
+  'zh-Hant': { today: '今日', discover: '發現', research: '行情與研究', market: '行情', paper: '模擬', portfolio: '組合與複盤', more: '更多功能', moreShort: '更多', pinned: '固定工具' },
+} as const
+const FEATURE_ICONS: Record<string, LucideIcon> = {
+  BellRing, BookOpenCheck, CalendarClock, ChartCandlestick, ClipboardCheck, Gauge, Grid2X2,
+  LifeBuoy, ListFilter, RadioTower, ShieldCheck, Sparkles, Target, WalletCards,
+}
 
 const SEARCH_HISTORY_STORAGE_KEY = 'ciclotrade.searchHistory'
 const MAX_RECENT_SEARCHES = 6
@@ -114,7 +111,6 @@ function storedSearchHistory(): CommandHistoryItem[] {
 }
 
 export function AppShell({ children }: AppShellProps) {
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [commandOpen, setCommandOpen] = useState(false)
   const [commandQuery, setCommandQuery] = useState('')
   const [marketMatches, setMarketMatches] = useState<MarketSearchItem[]>([])
@@ -123,10 +119,8 @@ export function AppShell({ children }: AppShellProps) {
   const [theme, setTheme] = useState<Theme>(readStoredTheme)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const [recentSearches, setRecentSearches] = useState<CommandHistoryItem[]>(storedSearchHistory)
-  const mobileMenuTrigger = useRef<HTMLButtonElement>(null)
-  const closeButton = useRef<HTMLButtonElement>(null)
+  const [featureCatalog, setFeatureCatalog] = useState<FeatureCatalogPayload | null>(null)
   const commandInput = useRef<HTMLInputElement>(null)
-  const mobileSheet = useRef<HTMLElement>(null)
   const navigate = useNavigate()
   const { pathname } = useLocation()
   const workspace = useWorkspace()
@@ -139,9 +133,17 @@ export function AppShell({ children }: AppShellProps) {
   const telegramReady = Boolean(workspace.data?.telegram.bound && workspace.data?.telegram.verified && workspace.data?.telegram.consented)
   const hasModelSnapshots = Boolean(workspace.data?.performance.items.length)
   const isSuperAdmin = workspace.user?.admin_role === 'super_admin'
-  const visibleNavItems = isSuperAdmin ? [...navItems, adminItem] : navItems
-  const visibleMobileMoreItems = isSuperAdmin ? [...mobileMoreItems, adminItem] : mobileMoreItems
-  const mobileMoreActive = [...visibleMobileMoreItems, mobileHelpItem, feedbackItem].some(({ to }) => pathname === to || pathname.startsWith(`${to}/`))
+  const navCopy = NAV_COPY[locale]
+  const secondaryTools = useMemo(() => {
+    if (!featureCatalog) return []
+    const byKey = new Map(featureCatalog.items.map((item) => [item.key, item]))
+    return featureCatalog.preferences.pinned.flatMap((key) => {
+      const item = byKey.get(key)
+      if (!item || item.primaryNav || !item.pinAllowed || item.availability !== 'available' || !item.placements.includes('secondary_nav')) return []
+      const copy = localizeFeature(item, locale)
+      return [{ to: item.route, label: copy.title, icon: FEATURE_ICONS[item.icon] }]
+    })
+  }, [featureCatalog, locale])
   const marketStatusLabel = !realData
     ? workspace.mode === 'offline' ? '离线演示' : '界面演示'
     : marketDisconnected ? '未连接' : marketDelay || (marketFreshness === '状态未记录' && marketStatus?.is_realtime ? '实时权限已验证' : marketFreshness)
@@ -149,6 +151,21 @@ export function AppShell({ children }: AppShellProps) {
   useEffect(() => {
     applyTheme(theme, true)
   }, [theme])
+
+  useEffect(() => {
+    let active = true
+    const refresh = () => {
+      void fetchFeatureCatalog().then((payload) => { if (active) setFeatureCatalog(payload) }).catch(() => { if (active) setFeatureCatalog(null) })
+    }
+    const receive = (event: Event) => {
+      const detail = (event as CustomEvent<FeatureCatalogPayload>).detail
+      if (active && detail) setFeatureCatalog(detail)
+      else refresh()
+    }
+    refresh()
+    window.addEventListener(FEATURE_CATALOG_UPDATED_EVENT, receive)
+    return () => { active = false; window.removeEventListener(FEATURE_CATALOG_UPDATED_EVENT, receive) }
+  }, [])
 
   useEffect(() => {
     const openCommand = (event: KeyboardEvent) => {
@@ -160,27 +177,6 @@ export function AppShell({ children }: AppShellProps) {
     document.addEventListener('keydown', openCommand)
     return () => document.removeEventListener('keydown', openCommand)
   }, [])
-
-  useEffect(() => {
-    if (!mobileMenuOpen) return
-    const trigger = mobileMenuTrigger.current
-    closeButton.current?.focus()
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMobileMenuOpen(false)
-      if (event.key !== 'Tab' || !mobileSheet.current) return
-      const focusable = [...mobileSheet.current.querySelectorAll<HTMLElement>('a[href], button:not([disabled])')]
-      if (!focusable.length) return
-      const first = focusable[0]
-      const last = focusable.at(-1)
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
-      if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
-    }
-    document.addEventListener('keydown', handleKey)
-    return () => {
-      document.removeEventListener('keydown', handleKey)
-      trigger?.focus()
-    }
-  }, [mobileMenuOpen])
 
   useEffect(() => {
     if (!commandOpen) return
@@ -282,11 +278,6 @@ export function AppShell({ children }: AppShellProps) {
     try { window.localStorage.removeItem(SEARCH_HISTORY_STORAGE_KEY) } catch { /* storage can be disabled */ }
   }
 
-  const openMobileMenu = (trigger: HTMLButtonElement) => {
-    mobileMenuTrigger.current = trigger
-    setMobileMenuOpen(true)
-  }
-
   return (
     <div className="app-shell">
       <a className="skip-link" href="#main-content">跳到主要内容</a>
@@ -296,11 +287,15 @@ export function AppShell({ children }: AppShellProps) {
           <span><strong>CicloTrade</strong><small>DECISION TERMINAL</small></span>
         </NavLink>
         <nav>
-          {visibleNavItems.map(({ to, label, icon: Icon }) => (
+          {navItems.map(({ to, key, icon: Icon }) => (
             <NavLink key={to} className={({ isActive }) => isActive ? 'nav-item active' : 'nav-item'} to={to}>
-              <Icon size={18} /> <span>{label}</span>
+              <Icon size={18} /> <span>{navCopy[key]}</span>
             </NavLink>
           ))}
+          {secondaryTools.length > 0 && <section className="secondary-tools" aria-label={navCopy.pinned}>
+            <h2>{navCopy.pinned}</h2>
+            {secondaryTools.map(({ to, label, icon: Icon }) => <NavLink key={to} className={({ isActive }) => isActive ? 'nav-item secondary active' : 'nav-item secondary'} to={to}><Icon size={17} /><span>{label}</span></NavLink>)}
+          </section>}
         </nav>
         <div className="sidebar-bottom">
           <NavLink className="sidebar-feedback" to={feedbackItem.to} state={{ sourcePage: pathname }}><MessageSquareText size={16} /><span>{feedbackItem.label}</span><ChevronRight size={15} /></NavLink>
@@ -315,9 +310,6 @@ export function AppShell({ children }: AppShellProps) {
 
       <div className="shell-content">
         <header className="topbar">
-          <button className="mobile-menu-button" type="button" aria-label="打开更多菜单" aria-haspopup="dialog" aria-expanded={mobileMenuOpen} onClick={(event) => openMobileMenu(event.currentTarget)}>
-            <Menu size={20} />
-          </button>
           <button className="command-search" type="button" aria-haspopup="dialog" onClick={() => setCommandOpen(true)}>
             <Search size={17} />
             <span>搜索股票</span>
@@ -336,8 +328,13 @@ export function AppShell({ children }: AppShellProps) {
             {userMenuOpen && <div className="account-popover">
               <header><strong>{workspace.user?.display_name ?? 'CicloTrade 用户'}</strong><small>{workspace.user?.plan_display_name ?? '账户'}</small></header>
               <a href="/" onClick={() => setUserMenuOpen(false)}><House size={16} /> 返回欢迎页</a>
+              <NavLink to="/notifications" onClick={() => setUserMenuOpen(false)}><BellRing size={16} /> 消息通知</NavLink>
               <NavLink to="/account" onClick={() => setUserMenuOpen(false)}><Settings size={16} /> 用户设定</NavLink>
+              <NavLink to="/membership" onClick={() => setUserMenuOpen(false)}><ShieldCheck size={16} /> 订阅会员</NavLink>
+              <NavLink to={promotionItem.to} onClick={() => setUserMenuOpen(false)}><Target size={16} /> {promotionItem.label}</NavLink>
               <NavLink to="/help" onClick={() => setUserMenuOpen(false)}><HelpCircle size={16} /> 帮助与支持</NavLink>
+              <NavLink to="/feedback" onClick={() => setUserMenuOpen(false)}><MessageSquareText size={16} /> 反馈建议</NavLink>
+              {isSuperAdmin && <NavLink to="/admin" onClick={() => setUserMenuOpen(false)}><ShieldCheck size={16} /> 超级管理</NavLink>}
               <button type="button" onClick={() => void workspace.logout().then(() => navigate('/'))}><LogOut size={16} /> 登出账户</button>
             </div>}
           </div>
@@ -354,28 +351,12 @@ export function AppShell({ children }: AppShellProps) {
       </div>
 
       <nav className="mobile-nav" aria-label="移动端主要导航">
-        {mobileNavItems.map(({ to, label, icon: Icon }) => (
+        {mobileNavItems.map(({ to, key, icon: Icon }) => (
           <NavLink key={to} className={({ isActive }) => isActive ? 'active' : ''} to={to}>
-            <Icon size={20} /><span>{label}</span>
+            <Icon size={20} /><span>{navCopy[key]}</span>
           </NavLink>
         ))}
-        <button className={mobileMoreActive ? 'active' : ''} type="button" aria-haspopup="dialog" aria-expanded={mobileMenuOpen} onClick={(event) => openMobileMenu(event.currentTarget)}><Menu size={20} /><span>更多</span></button>
       </nav>
-
-      {mobileMenuOpen && (
-        <div className="sheet-backdrop" role="presentation" onClick={() => setMobileMenuOpen(false)}>
-          <section ref={mobileSheet} className="mobile-sheet" role="dialog" aria-modal="true" aria-label="更多功能" onClick={(event) => event.stopPropagation()}>
-            <header><img src="/brand/ciclotrade-logo.jpg" alt="" /><h2>更多功能</h2><button ref={closeButton} className="icon-button" type="button" aria-label="关闭" onClick={() => setMobileMenuOpen(false)}><X size={20} /></button></header>
-            {visibleMobileMoreItems.map(({ to, label, icon: Icon }) => (
-              <NavLink key={to} to={to} onClick={() => setMobileMenuOpen(false)}><Icon size={19} />{label}<ChevronRight size={17} /></NavLink>
-            ))}
-            <NavLink className="mobile-sheet-support" to={mobileHelpItem.to} onClick={() => setMobileMenuOpen(false)}><HelpCircle size={19} />{mobileHelpItem.label}<ChevronRight size={17} /></NavLink>
-            <NavLink to={feedbackItem.to} state={{ sourcePage: pathname }} onClick={() => setMobileMenuOpen(false)}><MessageSquareText size={19} />{feedbackItem.label}<ChevronRight size={17} /></NavLink>
-            <a href="/" onClick={() => setMobileMenuOpen(false)}><House size={19} />返回欢迎页<ChevronRight size={17} /></a>
-            <button className="mobile-logout" type="button" onClick={() => void workspace.logout().then(() => navigate('/'))}><LogOut size={19} />登出账户</button>
-          </section>
-        </div>
-      )}
 
       {commandOpen && (
         <div className="command-backdrop" role="presentation" onClick={() => setCommandOpen(false)}>

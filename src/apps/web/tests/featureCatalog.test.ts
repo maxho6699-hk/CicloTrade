@@ -9,9 +9,12 @@ import {
   formatMorePageCopy,
   isValidPinnedSelection,
   localizeFeature,
+  localizeFeatureReason,
   MORE_PAGE_COPY,
+  readFeatureCatalogView,
   recordRecentFeature,
   toggleDraftPin,
+  writeFeatureCatalogView,
 } from '../src/domain/featureCatalog.ts'
 
 const payload = {
@@ -92,6 +95,27 @@ test('simplified and traditional copy share searchable terms', () => {
   assert.equal(filterFeatureCatalog(decoded.items, '篩選', 'zh-Hant').filter((item) => item.key === 'stock-screener').length, 1)
 })
 
+test('fixed server reasons are localized while unknown operational detail remains untouched', () => {
+  const reasons = [
+    ['尚未取得可核验的数据新鲜度或服务健康证明。', '尚未取得可核驗的資料新鮮度或服務健康證明。'],
+    ['运行状态格式无效，功能已安全停用。', '執行狀態格式無效，功能已安全停用。'],
+    ['数据状态或服务健康状态无法验证，功能已安全停用。', '資料狀態或服務健康狀態無法驗證，功能已安全停用。'],
+    ['未取得可核验的数据新鲜度证据，功能已安全停用。', '未取得可核驗的資料新鮮度證據，功能已安全停用。'],
+    ['运行状态时间晚于当前时钟，功能已安全停用。', '執行狀態時間晚於目前時鐘，功能已安全停用。'],
+    ['运行状态证明已超过 5 分钟，请刷新后重试。', '執行狀態證明已超過 5 分鐘，請重新整理後再試。'],
+    ['运行状态组合无法验证，功能已安全停用。', '執行狀態組合無法驗證，功能已安全停用。'],
+    ['当前数据或服务未达到可用门限。', '目前資料或服務未達到可用門檻。'],
+    ['该能力仍在独立开发与验收中，当前会员不包含此功能。', '該功能仍在獨立開發與驗收中，目前會員不包含此功能。'],
+    ['当前会员未包含此研究深度；风险与数据状态仍永久免费可见。', '目前會員未包含此研究深度；風險與資料狀態仍可永久免費查看。'],
+  ] as const
+  for (const [simplified, traditional] of reasons) {
+    assert.equal(localizeFeatureReason(simplified, 'zh-Hans'), simplified)
+    assert.equal(localizeFeatureReason(simplified, 'zh-Hant'), traditional)
+  }
+  assert.equal(localizeFeatureReason('上游服务返回自定义维护说明。', 'zh-Hant'), '上游服务返回自定义维护说明。')
+  assert.equal(localizeFeatureReason(null, 'zh-Hant'), null)
+})
+
 test('planned entries remain visible but never actionable or pinnable', () => {
   const decoded = decodeFeatureCatalog(payload)
   const planned = decoded.items.find((item) => item.key === 'option-live-automation')!
@@ -132,8 +156,33 @@ test('More page copy is injectable and complete for Simplified and Traditional C
   assert.match(source, /\.\.\.catalogSnapshot\.preferences\.recent/)
   assert.match(source, /await onRecordRecent\(item\.key, catalogSnapshot\.preferences\.version\)/)
   assert.match(source, /name="feature-search" autoComplete="off" spellCheck=\{false\}/)
+  assert.match(source, /localizeFeatureReason\(item\.reason, locale\)/)
   assert.doesNotMatch(source, /等待主管/)
   const publicProps = source.match(/export interface MorePageProps \{([\s\S]*?)\n\}/)?.[1] ?? ''
   assert.doesNotMatch(publicProps, /onTogglePin\?:/)
   assert.doesNotMatch(source, /[\u3400-\u9fff]/)
+})
+
+test('More page remembers an explicit display choice and uses a responsive first-visit default', () => {
+  assert.equal(readFeatureCatalogView(null, false), 'list')
+  assert.equal(readFeatureCatalogView(null, true), 'icon')
+  assert.equal(readFeatureCatalogView('icon', false), 'icon')
+  assert.equal(readFeatureCatalogView('other', true), 'icon')
+  const writes: Array<[string, string]> = []
+  writeFeatureCatalogView({ setItem: (key, value) => writes.push([key, value]) }, 'list')
+  assert.deepEqual(writes, [['ciclotrade.feature-catalog.view.v1', 'list']])
+  assert.equal(MORE_PAGE_COPY['zh-Hans'].iconView, '图标')
+  assert.equal(MORE_PAGE_COPY['zh-Hant'].iconView, '圖示')
+  const source = readFileSync(new URL('../src/pages/MorePage.tsx', import.meta.url), 'utf8')
+  assert.match(source, /window\.matchMedia\('\(max-width: 760px\)'\)\.matches/)
+  assert.match(source, /window\.localStorage\.getItem\(FEATURE_CATALOG_VIEW_STORAGE_KEY\)/)
+  assert.match(source, /aria-pressed=\{view === 'list'\}/)
+  assert.match(source, /aria-pressed=\{view === 'icon'\}/)
+})
+
+test('icon view pin actions keep an accessible name while list view retains visible copy', () => {
+  const source = readFileSync(new URL('../src/pages/MorePage.tsx', import.meta.url), 'utf8')
+  assert.match(source, /className="feature-pin" aria-label=\{pinLabel\} title=\{pinLabel\} aria-pressed=\{pinned\}/)
+  assert.match(source, /<span className="feature-pin-label">\{pinned \? copy\.unpin : copy\.pin\}<\/span>/)
+  assert.match(source, /const pinLabel = pinned \? copy\.unpin : copy\.pin/)
 })

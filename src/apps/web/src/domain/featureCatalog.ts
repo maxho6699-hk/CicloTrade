@@ -6,6 +6,8 @@ export type FeatureAccess = 'open' | 'upgrade' | 'wait' | 'retry'
 export type FeatureDataState = 'ready' | 'delayed' | 'stale' | 'missing' | 'not_applicable'
 export type FeatureHealth = 'healthy' | 'degraded' | 'unavailable' | 'not_applicable'
 export type FeaturePlacement = 'more' | 'secondary_nav' | 'dashboard_card' | 'inspector' | 'drawer' | 'dialog' | 'overlay'
+export type FeatureCatalogView = 'list' | 'icon'
+export const FEATURE_CATALOG_VIEW_STORAGE_KEY = 'ciclotrade.feature-catalog.view.v1'
 export interface FeatureActions {
   researchUrl?: string
   alertPrefill?: Record<string, string | number>
@@ -79,6 +81,9 @@ export interface MorePageCopy {
   pinSaved: string
   pinSaveError: string
   recentSaveError: string
+  viewLabel: string
+  listView: string
+  iconView: string
   categories: Record<FeatureCategory, string>
   availability: Record<FeatureAvailability, string>
 }
@@ -113,6 +118,9 @@ export const MORE_PAGE_COPY: Record<UiLocale, MorePageCopy> = {
     pinSaved: '已提交，正在等待目录刷新。',
     pinSaveError: '固定设置保存失败，请重试。',
     recentSaveError: '最近使用记录保存失败，功能仍可正常打开。',
+    viewLabel: '功能显示方式',
+    listView: '列表',
+    iconView: '图标',
     categories: { discover: '发现机会', research: '研究工具', simulate: '模拟与风险', review: '组合与复盘', automation: '自动化', account: '账户服务' },
     availability: { available: '可用', locked: '升级后开放', planned: '开发中', degraded: '服务降级', unavailable: '暂不可用' },
   },
@@ -145,6 +153,9 @@ export const MORE_PAGE_COPY: Record<UiLocale, MorePageCopy> = {
     pinSaved: '已提交，正在等待目錄重新整理。',
     pinSaveError: '固定設定儲存失敗，請重試。',
     recentSaveError: '最近使用記錄儲存失敗，功能仍可正常開啟。',
+    viewLabel: '功能顯示方式',
+    listView: '列表',
+    iconView: '圖示',
     categories: { discover: '發現機會', research: '研究工具', simulate: '模擬與風險', review: '組合與複盤', automation: '自動化', account: '帳戶服務' },
     availability: { available: '可用', locked: '升級後開放', planned: '開發中', degraded: '服務降級', unavailable: '暫不可用' },
   },
@@ -165,6 +176,14 @@ export function toggleDraftPin(keys: string[], key: string): string[] {
 
 export function recordRecentFeature(keys: string[], key: string): string[] {
   return [key, ...keys.filter((candidate) => candidate !== key)].slice(0, 8)
+}
+
+export function readFeatureCatalogView(raw: string | null | undefined, isPhone: boolean): FeatureCatalogView {
+  return raw === 'list' || raw === 'icon' ? raw : isPhone ? 'icon' : 'list'
+}
+
+export function writeFeatureCatalogView(storage: Pick<Storage, 'setItem'> | null | undefined, view: FeatureCatalogView): void {
+  try { storage?.setItem(FEATURE_CATALOG_VIEW_STORAGE_KEY, view) } catch { /* storage can be unavailable */ }
 }
 
 export const FEATURE_ICON_NAMES = new Set<FeatureIconName>([
@@ -221,6 +240,19 @@ const COPY: Record<string, { hans: string; hant: string }> = {
   'feature.feedback.description': { hans: '提交产品反馈，并在账户内查看处理状态。', hant: '提交產品反饋，並在帳戶內查看處理狀態。' },
   'feature.option_live_automation.title': { hans: '受控期权自动交易', hant: '受控期權自動交易' },
   'feature.option_live_automation.description': { hans: '申请制、逐策略确认的有限风险实盘路线。', hant: '申請制、逐策略確認的有限風險實盤路線。' },
+}
+
+const FEATURE_REASON_COPY: Readonly<Record<string, string>> = {
+  '尚未取得可核验的数据新鲜度或服务健康证明。': '尚未取得可核驗的資料新鮮度或服務健康證明。',
+  '运行状态格式无效，功能已安全停用。': '執行狀態格式無效，功能已安全停用。',
+  '数据状态或服务健康状态无法验证，功能已安全停用。': '資料狀態或服務健康狀態無法驗證，功能已安全停用。',
+  '未取得可核验的数据新鲜度证据，功能已安全停用。': '未取得可核驗的資料新鮮度證據，功能已安全停用。',
+  '运行状态时间晚于当前时钟，功能已安全停用。': '執行狀態時間晚於目前時鐘，功能已安全停用。',
+  '运行状态证明已超过 5 分钟，请刷新后重试。': '執行狀態證明已超過 5 分鐘，請重新整理後再試。',
+  '运行状态组合无法验证，功能已安全停用。': '執行狀態組合無法驗證，功能已安全停用。',
+  '当前数据或服务未达到可用门限。': '目前資料或服務未達到可用門檻。',
+  '该能力仍在独立开发与验收中，当前会员不包含此功能。': '該功能仍在獨立開發與驗收中，目前會員不包含此功能。',
+  '当前会员未包含此研究深度；风险与数据状态仍永久免费可见。': '目前會員未包含此研究深度；風險與資料狀態仍可永久免費查看。',
 }
 
 function record(value: unknown, message: string): Record<string, unknown> {
@@ -340,6 +372,11 @@ export function localizeFeature(item: FeatureCatalogItem, locale: UiLocale) {
     title: locale === 'zh-Hant' ? title?.hant ?? item.titleKey : title?.hans ?? item.titleKey,
     description: locale === 'zh-Hant' ? description?.hant ?? item.descriptionKey : description?.hans ?? item.descriptionKey,
   }
+}
+
+export function localizeFeatureReason(reason: string | null, locale: UiLocale): string | null {
+  if (reason === null || locale === 'zh-Hans') return reason
+  return FEATURE_REASON_COPY[reason] ?? reason
 }
 
 export function featureSearchText(item: FeatureCatalogItem): string {

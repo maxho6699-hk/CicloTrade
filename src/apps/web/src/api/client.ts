@@ -1,4 +1,5 @@
 import type { DrawingTime } from '../data/chartDrawings'
+import { decodeFeatureCatalog, type FeatureCatalogPayload } from '../domain/featureCatalog.ts'
 
 export interface SessionUser {
   id: number
@@ -358,6 +359,87 @@ export interface MarketSearchItem {
   type: string
   market: 'US' | 'CN'
 }
+
+export type PersonalPaperSide = 'BUY' | 'SELL' | 'SHORT' | 'COVER'
+export type PersonalPaperOrderType = 'MARKET' | 'LIMIT' | 'STOP' | 'STOP_LIMIT'
+export type PersonalPaperQuoteState = 'fresh' | 'delayed' | 'stale' | 'missing'
+
+export interface PersonalPaperSeason {
+  id: string
+  state: 'active' | 'closed'
+  currency: 'USD'
+  initial_cash: 10000
+  started_at: string
+  closed_at: string | null
+  version: number
+}
+
+export interface PersonalPaperPosition {
+  market: 'US'
+  symbol: string
+  quantity: number
+}
+
+export interface PersonalPaperAccount {
+  season: PersonalPaperSeason
+  cash: number
+  reserved_cash: number
+  buying_power: number
+  market_value: number
+  realized_pnl: number
+  unrealized_pnl: number
+  total_equity: number
+  as_of: string
+  quote_state: PersonalPaperQuoteState
+  account_version: number
+  positions: PersonalPaperPosition[]
+}
+
+export interface PersonalPaperQuoteProof {
+  quote_id: string
+  market: 'US'
+  symbol: string
+}
+
+export interface PersonalPaperOrder {
+  id: string
+  season_id: string
+  market: 'US'
+  symbol: string
+  side: PersonalPaperSide
+  order_type: PersonalPaperOrderType
+  quantity: number
+  status: 'PENDING' | 'FILLED' | 'CANCELLED'
+  created_at: string
+  quote_id: string
+}
+
+export interface PersonalPaperOrderRequest {
+  idempotency_key: string
+  season_id: string
+  market: 'US'
+  symbol: string
+  side: PersonalPaperSide
+  order_type: PersonalPaperOrderType
+  quantity: number
+  limit_price: number | null
+  stop_price: number | null
+  time_in_force: 'DAY'
+  quote_id: string
+  account_version: number
+  source_context: {
+    kind: 'manual' | 'recommendation' | 'chart' | 'screener'
+    reference_id: string | null
+  }
+}
+
+export interface PersonalPaperOrderResult {
+  order: PersonalPaperOrder
+  account: PersonalPaperAccount
+  replayed: boolean
+}
+
+export const FEATURE_CATALOG_UPDATED_EVENT = 'ciclotrade:feature-catalog-updated'
 
 export interface MarketCandlePayload {
   symbol: string
@@ -907,6 +989,95 @@ export function fetchBootstrap(): Promise<BootstrapPayload> {
   return request<BootstrapPayload>('/api/rewrite/v1/bootstrap')
 }
 
+function decodeFeatureCatalogResponse(value: unknown): FeatureCatalogPayload {
+  try {
+    return decodeFeatureCatalog(value)
+  } catch {
+    throw new BrowserApiError('功能目录响应格式无效。', 502)
+  }
+}
+
+export async function fetchFeatureCatalog(): Promise<FeatureCatalogPayload> {
+  return decodeFeatureCatalogResponse(await request<unknown>('/api/rewrite/v1/features/catalog'))
+}
+
+export async function saveFeatureCatalogPreferences(payload: {
+  expected_version: number
+  pinned: string[]
+  recent: string[]
+}): Promise<FeatureCatalogPayload> {
+  const decoded = decodeFeatureCatalogResponse(await request<unknown>('/api/rewrite/v1/features/preferences', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  }))
+  window.dispatchEvent(new CustomEvent(FEATURE_CATALOG_UPDATED_EVENT, { detail: decoded }))
+  return decoded
+}
+
+export async function recordRecentFeature(key: string, expectedVersion: number): Promise<FeatureCatalogPayload> {
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(key) || !finiteNonNegativeInteger(expectedVersion)) {
+    throw new BrowserApiError('功能目录请求无效。', 400)
+  }
+  const decoded = decodeFeatureCatalogResponse(await request<unknown>('/api/rewrite/v1/features/recent', {
+    method: 'PUT',
+    body: JSON.stringify({ key, expected_version: expectedVersion }),
+  }))
+  window.dispatchEvent(new CustomEvent(FEATURE_CATALOG_UPDATED_EVENT, { detail: decoded }))
+  return decoded
+}
+
+export async function createPersonalPaperSeason(): Promise<PersonalPaperSeason> {
+  const payload = await request<unknown>('/api/rewrite/v1/personal-paper/seasons', { method: 'POST' })
+  if (!exactKeys(payload, ['season']) || !validPersonalPaperSeason(payload.season)) {
+    throw new BrowserApiError('个人模拟赛季响应格式无效。', 502)
+  }
+  return payload.season
+}
+
+export async function fetchPersonalPaperAccount(seasonId: string): Promise<PersonalPaperAccount> {
+  if (!validOpaqueId(seasonId)) throw new BrowserApiError('个人模拟赛季无效。', 400)
+  const payload = await request<unknown>(`/api/rewrite/v1/personal-paper/seasons/${encodeURIComponent(seasonId)}`)
+  if (!exactKeys(payload, ['account']) || !validPersonalPaperAccount(payload.account)) {
+    throw new BrowserApiError('个人模拟账户响应格式无效。', 502)
+  }
+  return payload.account
+}
+
+export async function issuePersonalPaperQuote(symbol: string): Promise<PersonalPaperQuoteProof> {
+  const normalized = symbol.trim().toUpperCase()
+  if (!/^[A-Z][A-Z0-9.-]{0,15}$/.test(normalized)) throw new BrowserApiError('请输入有效的美股代码。', 400)
+  const payload = await request<unknown>('/api/rewrite/v1/personal-paper/quotes', {
+    method: 'POST',
+    body: JSON.stringify({ market: 'US', symbol: normalized }),
+  })
+  if (!validPersonalPaperQuoteProof(payload) || payload.symbol !== normalized) {
+    throw new BrowserApiError('个人模拟报价响应格式无效。', 502)
+  }
+  return payload
+}
+
+export async function submitPersonalPaperStockOrder(payload: PersonalPaperOrderRequest): Promise<PersonalPaperOrderResult> {
+  const result = await request<unknown>('/api/rewrite/v1/personal-paper/orders', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+  if (!validPersonalPaperOrderResult(result)) throw new BrowserApiError('个人模拟订单响应格式无效。', 502)
+  return result
+}
+
+export async function cancelPersonalPaperStockOrder(payload: {
+  season_id: string
+  order_id: string
+  account_version: number
+}): Promise<PersonalPaperOrderResult> {
+  const result = await request<unknown>('/api/rewrite/v1/personal-paper/orders/cancel', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+  if (!validPersonalPaperOrderResult(result)) throw new BrowserApiError('个人模拟撤单响应格式无效。', 502)
+  return result
+}
+
 export async function fetchSystemCycleResearchStatus(): Promise<SystemCycleResearchStatus> {
   const payload = await request<unknown>('/api/rewrite/v1/system-cycle-research/status')
   if (!validSystemCycleResearchStatus(payload)) throw new BrowserApiError('影子策略研究状态响应格式无效。', 502)
@@ -953,6 +1124,79 @@ function validIsoTimestamp(value: unknown): value is string {
   return typeof value === 'string'
     && /^\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:\d{2})$/.test(value)
     && Number.isFinite(Date.parse(value))
+}
+
+function nullableTimestamp(value: unknown): value is string | null {
+  return value === null || validIsoTimestamp(value)
+}
+
+function validFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function validOpaqueId(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value)
+}
+
+export function validPersonalPaperSeason(value: unknown): value is PersonalPaperSeason {
+  return exactKeys(value, ['id', 'state', 'currency', 'initial_cash', 'started_at', 'closed_at', 'version'])
+    && validOpaqueId(value.id)
+    && (value.state === 'active' || value.state === 'closed')
+    && value.currency === 'USD'
+    && value.initial_cash === 10000
+    && validIsoTimestamp(value.started_at)
+    && nullableTimestamp(value.closed_at)
+    && finiteNonNegativeInteger(value.version)
+}
+
+export function validPersonalPaperAccount(value: unknown): value is PersonalPaperAccount {
+  if (!exactKeys(value, [
+    'season', 'cash', 'reserved_cash', 'buying_power', 'market_value', 'realized_pnl',
+    'unrealized_pnl', 'total_equity', 'as_of', 'quote_state', 'account_version', 'positions',
+  ]) || !validPersonalPaperSeason(value.season)
+    || !['fresh', 'delayed', 'stale', 'missing'].includes(value.quote_state as string)
+    || !validIsoTimestamp(value.as_of)
+    || !finiteNonNegativeInteger(value.account_version)
+    || !Array.isArray(value.positions)) return false
+  if (![value.cash, value.reserved_cash, value.buying_power, value.market_value, value.realized_pnl, value.unrealized_pnl, value.total_equity].every(validFiniteNumber)) return false
+  return value.positions.every((position) => exactKeys(position, ['market', 'symbol', 'quantity'])
+    && position.market === 'US'
+    && typeof position.symbol === 'string'
+    && /^[A-Z][A-Z0-9.-]{0,15}$/.test(position.symbol)
+    && Number.isInteger(position.quantity)
+    && position.quantity !== 0)
+}
+
+export function validPersonalPaperQuoteProof(value: unknown): value is PersonalPaperQuoteProof {
+  return exactKeys(value, ['quote_id', 'market', 'symbol'])
+    && validOpaqueId(value.quote_id)
+    && value.market === 'US'
+    && typeof value.symbol === 'string'
+    && /^[A-Z][A-Z0-9.-]{0,15}$/.test(value.symbol)
+}
+
+export function validPersonalPaperOrder(value: unknown): value is PersonalPaperOrder {
+  return exactKeys(value, ['id', 'season_id', 'market', 'symbol', 'side', 'order_type', 'quantity', 'status', 'created_at', 'quote_id'])
+    && validOpaqueId(value.id)
+    && validOpaqueId(value.season_id)
+    && value.market === 'US'
+    && typeof value.symbol === 'string'
+    && /^[A-Z][A-Z0-9.-]{0,15}$/.test(value.symbol)
+    && ['BUY', 'SELL', 'SHORT', 'COVER'].includes(value.side as string)
+    && ['MARKET', 'LIMIT', 'STOP', 'STOP_LIMIT'].includes(value.order_type as string)
+    && Number.isInteger(value.quantity)
+    && Number(value.quantity) > 0
+    && ['PENDING', 'FILLED', 'CANCELLED'].includes(value.status as string)
+    && validIsoTimestamp(value.created_at)
+    && validOpaqueId(value.quote_id)
+}
+
+export function validPersonalPaperOrderResult(value: unknown): value is PersonalPaperOrderResult {
+  return exactKeys(value, ['order', 'account', 'replayed'])
+    && validPersonalPaperOrder(value.order)
+    && validPersonalPaperAccount(value.account)
+    && typeof value.replayed === 'boolean'
+    && value.order.season_id === value.account.season.id
 }
 
 function validSha256(value: unknown): value is string {
