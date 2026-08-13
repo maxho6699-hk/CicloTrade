@@ -83,3 +83,31 @@ def test_adapter_ignores_caller_plan_and_fails_closed_for_unknown_user(tmp_path)
         adapter.read(user_id=10, plan="高级版")  # type: ignore[call-arg]
     with pytest.raises(ValueError, match="unavailable"):
         adapter.read(user_id=999)
+
+
+@pytest.mark.parametrize("user_id", (999, 11))
+def test_invalid_user_preference_mutations_have_no_side_effect(tmp_path, user_id) -> None:
+    database = DatabaseManager(str(tmp_path / "mutation-authority.db"))
+    database.execute(
+        """INSERT INTO users(
+               id,email,password_hash,display_name,plan_type,is_active,created_at
+           ) VALUES (?,?,?,?,?,?,?)""",
+        (11, "inactive@example.com", "hash", "Inactive", "高级版", 0, "2026-08-13T00:00:00+00:00"),
+    )
+    adapter = FeatureCatalogAdapter(database)
+
+    with pytest.raises(ValueError, match="unavailable"):
+        adapter.update_preferences(
+            user_id=user_id,
+            payload={"expected_version": 0, "pinned": [], "recent": []},
+        )
+    with pytest.raises(ValueError, match="unavailable"):
+        adapter.record_recent(
+            user_id=user_id,
+            key="risk-calculator",
+            expected_version=0,
+        )
+
+    assert database.fetch_one(
+        "SELECT COUNT(*) count FROM user_settings WHERE user_id=?", (user_id,)
+    )["count"] == 0
