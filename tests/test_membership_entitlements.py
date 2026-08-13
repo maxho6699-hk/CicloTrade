@@ -14,6 +14,11 @@ from scheduler.jobs import downgrade_expired_subscriptions
 from src.apps.api.read_model import ReadOnlyLegacyRepository
 
 
+@pytest.fixture(autouse=True)
+def jwt_secret(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-that-is-longer-than-thirty-two-characters")
+
+
 def _user(database: DatabaseManager, name: str) -> dict:
     return AuthService(database).register(
         f"{name}@example.com", "CorrectHorse123", name, True
@@ -33,7 +38,7 @@ def test_upgrade_is_immediate_and_falls_back_to_remaining_lower_tier(tmp_path):
     service = OrderService(database)
     upgrade = service.create_order(
         user["id"],
-        "专业版",
+        "高级版",
         "monthly",
         "paypal",
         terms_accepted=True,
@@ -44,7 +49,7 @@ def test_upgrade_is_immediate_and_falls_back_to_remaining_lower_tier(tmp_path):
     active = database.fetch_one(
         "SELECT plan_type,subscription_expire FROM users WHERE id=?", (user["id"],)
     )
-    assert active["plan_type"] == "专业版"
+    assert active["plan_type"] == "高级版"
     assert datetime.fromisoformat(active["subscription_expire"]) < datetime.fromisoformat(
         lower_expiry
     )
@@ -72,13 +77,13 @@ def test_same_tier_purchase_extends_continuously_without_duplicate_activation(tm
     before = datetime.now(UTC).replace(microsecond=0)
     current_expiry = (before + timedelta(days=10)).isoformat(timespec="seconds")
     database.execute(
-        "UPDATE users SET plan_type='专业版',subscription_expire=? WHERE id=?",
+        "UPDATE users SET plan_type='高级版',subscription_expire=? WHERE id=?",
         (current_expiry, user["id"]),
     )
     service = OrderService(database)
     renewal = service.create_order(
         user["id"],
-        "专业版",
+        "高级版",
         "monthly",
         "paypal",
         terms_accepted=True,
@@ -90,7 +95,7 @@ def test_same_tier_purchase_extends_continuously_without_duplicate_activation(tm
     state = database.fetch_one(
         "SELECT plan_type,subscription_expire FROM users WHERE id=?", (user["id"],)
     )
-    assert state["plan_type"] == "专业版"
+    assert state["plan_type"] == "高级版"
     remaining = datetime.fromisoformat(state["subscription_expire"]) - before
     assert timedelta(days=39, hours=23) < remaining < timedelta(days=40, minutes=1)
     assert database.fetch_one(
@@ -120,7 +125,7 @@ def test_read_only_api_resolves_fallback_before_scheduler_updates_cache(tmp_path
     service = OrderService(database)
     upgrade = service.create_order(
         user["id"],
-        "专业版",
+        "高级版",
         "monthly",
         "paypal",
         terms_accepted=True,
