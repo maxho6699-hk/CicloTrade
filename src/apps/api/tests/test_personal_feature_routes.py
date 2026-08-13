@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import importlib
 import json
 from datetime import datetime, timedelta, timezone
@@ -178,9 +180,26 @@ def test_feature_routes_reject_client_authority_and_isolate_preferences(routed_a
 
 def test_personal_builder_requires_independent_secret(monkeypatch):
     monkeypatch.delenv("PERSONAL_PAPER_QUOTE_PROOF_SECRET", raising=False)
+    monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+    monkeypatch.delenv("SECRET_KEY", raising=False)
     assert api_module._build_personal_paper_http_api() is None
     monkeypatch.setenv("PERSONAL_PAPER_QUOTE_PROOF_SECRET", "too-short")
     assert api_module._build_personal_paper_http_api() is None
+
+
+def test_personal_builder_derives_a_domain_separated_secret(monkeypatch, tmp_path):
+    monkeypatch.delenv("PERSONAL_PAPER_QUOTE_PROOF_SECRET", raising=False)
+    monkeypatch.setenv("JWT_SECRET_KEY", "j" * 32)
+    monkeypatch.setattr(api_module, "legacy_database_path", lambda: tmp_path / "paper.db")
+
+    built = api_module._build_personal_paper_http_api()
+
+    assert built is not None
+    assert built.quote_proofs._secret == hmac.new(
+        b"j" * 32,
+        b"ciclotrade:personal-paper-quote-proof:v1",
+        hashlib.sha256,
+    ).digest()
 
 
 @pytest.mark.parametrize("changes", (

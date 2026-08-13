@@ -1675,7 +1675,24 @@ def _personal_actionable_quote(
 
 
 def _build_personal_paper_http_api() -> PersonalPaperApi | None:
-    secret = os.getenv("PERSONAL_PAPER_QUOTE_PROOF_SECRET", "").encode("utf-8")
+    configured_secret = os.getenv("PERSONAL_PAPER_QUOTE_PROOF_SECRET", "")
+    if configured_secret:
+        secret = configured_secret.encode("utf-8")
+    else:
+        root_secret = (
+            os.getenv("JWT_SECRET_KEY")
+            or os.getenv("SECRET_KEY")
+            or ""
+        ).encode("utf-8")
+        secret = (
+            hmac.new(
+                root_secret,
+                b"ciclotrade:personal-paper-quote-proof:v1",
+                hashlib.sha256,
+            ).digest()
+            if len(root_secret) >= 32
+            else b""
+        )
     if len(secret) < 32:
         return None
     try:
