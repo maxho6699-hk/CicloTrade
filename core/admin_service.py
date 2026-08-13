@@ -413,7 +413,7 @@ class AdminService:
             conn.execute("UPDATE user_sessions SET is_active=0 WHERE user_id=?", (user_id,))
             self._audit(conn, actor_id, "ADMIN_CLEAR_IPS", {"user_id": user_id})
 
-    def adjust_subscription(self, actor_id: int, user_id: int, plan: str, days: int, reason: str = "后台调整订阅", note: str | None = None, *, idempotency_key: str | None = None) -> str | None:
+    def adjust_subscription(self, actor_id: int, user_id: int, plan: str, days: int, reason: str = "后台调整订阅", note: str | None = None, *, idempotency_key: str) -> str | None:
         self._require(actor_id, "billing")
         if plan not in PLAN_ORDER:
             raise ValueError("未知订阅方案。")
@@ -426,9 +426,9 @@ class AdminService:
         with self.db.transaction() as conn:
             self._require_permission_in_transaction(conn, actor_id, "billing")
             fingerprint = self._membership_request_sha(user_id, plan, days, reason, note, "adjust")
-            replay = self._membership_idempotency_replay(conn, actor_id, idempotency_key, fingerprint)
-            if replay is not None:
-                return replay
+            replayed, expiry = self._membership_idempotency_replay(conn, actor_id, idempotency_key, fingerprint)
+            if replayed:
+                return expiry
             user = conn.execute("SELECT id FROM users WHERE id=?", (user_id,)).fetchone()
             if not user:
                 raise ValueError("用户不存在。")
@@ -487,7 +487,7 @@ class AdminService:
         reason: str = "",
         note: str | None = None,
         *,
-        idempotency_key: str | None = None,
+        idempotency_key: str,
     ) -> str:
         """Support may grant a bounded trial; only billing roles can adjust plans."""
         self._require(actor_id, "membership_grant")
@@ -501,9 +501,9 @@ class AdminService:
         with self.db.transaction() as conn:
             self._require_permission_in_transaction(conn, actor_id, "membership_grant")
             fingerprint = self._membership_request_sha(user_id, plan, days, reason, note, "grant_trial")
-            replay = self._membership_idempotency_replay(conn, actor_id, idempotency_key, fingerprint)
-            if replay is not None:
-                return replay
+            replayed, expiry = self._membership_idempotency_replay(conn, actor_id, idempotency_key, fingerprint)
+            if replayed:
+                return str(expiry)
             user = conn.execute(
                 "SELECT id FROM users WHERE id=? AND is_active=1", (user_id,)
             ).fetchone()
@@ -562,9 +562,7 @@ class AdminService:
         return expiry
 
     @staticmethod
-    def _membership_idempotency_replay(conn: Any, actor_id: int, key: str | None, fingerprint: str) -> str | None:
-        if key is None:
-            return None
+    def _membership_idempotency_replay(conn: Any, actor_id: int, key: str, fingerprint: str) -> tuple[bool, str | None]:
         key = str(key).strip()
         if not 8 <= len(key) <= 128:
             raise ValueError("会员操作幂等键无效。")
@@ -574,7 +572,7 @@ class AdminService:
         ).fetchone()
         if row and row["request_sha256"] != fingerprint:
             raise ValueError("会员操作幂等键已用于不同请求。")
-        return str(row["expire_at"]) if row and row["expire_at"] else None
+        return bool(row), str(row["expire_at"]) if row and row["expire_at"] else None
 
     @staticmethod
     def _membership_request_sha(user_id: int, plan: str, days: int, reason: str, note: str | None, operation: str) -> str:

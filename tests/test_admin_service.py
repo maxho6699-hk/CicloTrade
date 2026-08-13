@@ -46,11 +46,11 @@ def test_rbac_user_subscription_and_global_controls(services):
     service.set_role(admin["id"], support["id"], "support")
 
     with pytest.raises(PermissionError):
-        service.adjust_subscription(support["id"], customer["id"], "标准版", 30)
+        service.adjust_subscription(support["id"], customer["id"], "标准版", 30, idempotency_key="support-denied-001")
     with pytest.raises(ValueError, match="自己的超级管理员"):
         service.set_role(admin["id"], admin["id"], "support")
 
-    expiry = service.adjust_subscription(admin["id"], customer["id"], "标准版", 30)
+    expiry = service.adjust_subscription(admin["id"], customer["id"], "标准版", 30, idempotency_key="admin-adjust-001")
     assert expiry
     service.add_ip(admin["id"], customer["id"], "203.0.113.10")
     assert service.list_ips(admin["id"], customer["id"])[0]["ip_address"] == "203.0.113.10"
@@ -257,14 +257,31 @@ def test_super_admin_and_support_can_grant_trial_but_finance_cannot(services):
     service.set_role(admin["id"], finance["id"], "finance")
 
     assert service.has_permission(service.role_for(admin["id"]), "membership_grant")
-    first_expiry = service.grant_trial(admin["id"], customer["id"], "标准版", 7, "新用户体验")
-    second_expiry = service.grant_trial(support["id"], customer["id"], "标准版", 3, "客服补赠")
+    first_expiry = service.grant_trial(admin["id"], customer["id"], "标准版", 7, "新用户体验", idempotency_key="trial-admin-001")
+    second_expiry = service.grant_trial(support["id"], customer["id"], "标准版", 3, "客服补赠", idempotency_key="trial-support-001")
     assert datetime.fromisoformat(second_expiry) > datetime.fromisoformat(first_expiry)
     with pytest.raises(PermissionError):
-        service.grant_trial(finance["id"], customer["id"], "标准版", 3, "越权尝试")
+        service.grant_trial(finance["id"], customer["id"], "标准版", 3, "越权尝试", idempotency_key="trial-finance-001")
     logs = service.list_membership_logs(support["id"])
     assert [row["operation_type"] for row in logs[:2]] == ["grant_trial", "grant_trial"]
     assert db.fetch_one("SELECT plan_type FROM users WHERE id=?", (customer["id"],))["plan_type"] == "标准版"
+
+
+def test_membership_adjustment_idempotency_replays_free_downgrade(services):
+    db, auth, admin, service = services
+    customer = _register(auth, "idempotent-free")
+    key = "free-downgrade-001"
+    assert service.adjust_subscription(
+        admin["id"], customer["id"], "免费版", 0, "关闭会员", idempotency_key=key,
+    ) is None
+    assert service.adjust_subscription(
+        admin["id"], customer["id"], "免费版", 0, "关闭会员", idempotency_key=key,
+    ) is None
+    assert db.fetch_one("SELECT COUNT(*) count FROM user_membership_logs WHERE idempotency_key=?", (key,))["count"] == 1
+    with pytest.raises(ValueError, match="不同请求"):
+        service.adjust_subscription(
+            admin["id"], customer["id"], "免费版", 0, "不同原因", idempotency_key=key,
+        )
 
 
 def test_legacy_fps_confirmation_is_fail_closed_for_every_role(services):

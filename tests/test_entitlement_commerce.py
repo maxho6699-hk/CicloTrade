@@ -13,7 +13,6 @@ from core.entitlement_policy import (
     EntitlementPolicyError,
     canonical_public_policy,
     create_readiness_review,
-    current_plan_commerce_decision,
     current_policy,
     publish_policy,
     validate_policy,
@@ -77,6 +76,26 @@ def test_publish_requires_split_authority_atomic_audit_and_idempotency():
     assert not created and replay.version == 1
     with pytest.raises(EntitlementPolicyError, match="不同请求"):
         _publish(conn, key="policy-key-1", at=NOW + timedelta(days=1))
+
+
+def test_readiness_receipt_requires_reviewer_and_rolls_back_outer_transaction():
+    conn = _database()
+    policy = canonical_public_policy()
+    with pytest.raises(PermissionError, match="审查授权"):
+        create_readiness_review(
+            conn, policy, reviewer_id=1, evidence_ref="review-813",
+            valid_until=NOW + timedelta(days=1), idempotency_key="bad-review-001",
+        )
+    assert conn.execute("SELECT COUNT(*) FROM membership_entitlement_readiness_receipts").fetchone()[0] == 0
+    conn.commit()
+    conn.execute("BEGIN")
+    receipt = create_readiness_review(
+        conn, policy, reviewer_id=2, evidence_ref="review-813",
+        valid_until=NOW + timedelta(days=1), idempotency_key="review-tx-001",
+    )
+    assert receipt > 0 and conn.in_transaction
+    conn.rollback()
+    assert conn.execute("SELECT COUNT(*) FROM membership_entitlement_readiness_receipts").fetchone()[0] == 0
 
 
 def test_unreviewed_or_wrong_readiness_proof_fails_closed():

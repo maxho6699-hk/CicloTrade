@@ -81,15 +81,34 @@ def create_review(
     policy = validate(value, require_current_contract=False)
     if not evidence_ref.strip() or not 8 <= len(idempotency_key.strip()) <= 128 or valid_until <= datetime.now(valid_until.tzinfo):
         raise error_type("readiness 审查证据、有效期或幂等键无效。")
+    owns = not bool(getattr(conn, "in_transaction", False))
+    if owns:
+        conn.execute("BEGIN IMMEDIATE")
+    else:
+        conn.execute("SAVEPOINT entitlement_readiness_review")
+    try:
+        _require_reviewer(conn, reviewer_id)
+        digest = hashlib.sha256(canonical_json(policy).encode("utf-8")).hexdigest()
+        request = hashlib.sha256(canonical_json([digest, evidence_ref, iso(valid_until)]).encode("utf-8")).hexdigest()
+        existing = conn.execute("SELECT * FROM membership_entitlement_readiness_receipts WHERE reviewer_id=? AND idempotency_key=?", (reviewer_id, idempotency_key)).fetchone()
+        if existing:
+            if existing["request_sha256"] != request:
+                raise error_type("readiness 审查幂等键已用于不同请求。")
+            result = int(existing["id"])
+        else:
+            result = int(conn.execute("""INSERT INTO membership_entitlement_readiness_receipts(candidate_sha256,evidence_ref,reviewer_id,valid_until,idempotency_key,request_sha256,created_at) VALUES (?,?,?,?,?,?,?)""", (digest, evidence_ref, reviewer_id, iso(valid_until), idempotency_key, request, iso())).lastrowid)
+        conn.commit() if owns else conn.execute("RELEASE entitlement_readiness_review")
+        return result
+    except Exception:
+        if owns:
+            conn.rollback()
+        else:
+            conn.execute("ROLLBACK TO entitlement_readiness_review")
+            conn.execute("RELEASE entitlement_readiness_review")
+        raise
+
+
+def _require_reviewer(conn: Any, reviewer_id: int) -> None:
     row = conn.execute("""SELECT u.is_admin,u.is_active,r.role FROM users u LEFT JOIN admin_roles r ON r.user_id=u.id WHERE u.id=?""", (reviewer_id,)).fetchone()
     if not row or not row["is_admin"] or not row["is_active"] or row["role"] != "risk_audit":
         raise PermissionError("readiness 审查授权无效。")
-    digest = hashlib.sha256(canonical_json(policy).encode("utf-8")).hexdigest()
-    request = hashlib.sha256(canonical_json([digest, evidence_ref, iso(valid_until)]).encode("utf-8")).hexdigest()
-    existing = conn.execute("SELECT * FROM membership_entitlement_readiness_receipts WHERE reviewer_id=? AND idempotency_key=?", (reviewer_id, idempotency_key)).fetchone()
-    if existing:
-        if existing["request_sha256"] != request:
-            raise error_type("readiness 审查幂等键已用于不同请求。")
-        return int(existing["id"])
-    cursor = conn.execute("""INSERT INTO membership_entitlement_readiness_receipts(candidate_sha256,evidence_ref,reviewer_id,valid_until,idempotency_key,request_sha256,created_at) VALUES (?,?,?,?,?,?,?)""", (digest, evidence_ref, reviewer_id, iso(valid_until), idempotency_key, request, iso()))
-    return int(cursor.lastrowid)
