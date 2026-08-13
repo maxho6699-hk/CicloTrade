@@ -56,6 +56,7 @@ BEGIN SELECT RAISE(ABORT, 'entitlement policy admin events are append-only'); EN
 
 CREATE TABLE membership_entitlement_readiness_reviews (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    receipt_id INTEGER NOT NULL UNIQUE,
     evidence_ref TEXT NOT NULL,
     policy_key TEXT NOT NULL,
     policy_version INTEGER NOT NULL,
@@ -63,6 +64,7 @@ CREATE TABLE membership_entitlement_readiness_reviews (
     reviewer_id INTEGER,
     reviewed_at TEXT NOT NULL,
     FOREIGN KEY(reviewer_id) REFERENCES users(id),
+    FOREIGN KEY(receipt_id) REFERENCES membership_entitlement_readiness_receipts(id),
     UNIQUE(evidence_ref, policy_key, policy_version, policy_sha256)
 );
 

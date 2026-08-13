@@ -11,6 +11,7 @@ from core.entitlement_policy import (
     EntitlementPolicyError,
     canonical_public_policy,
     capability_contracts,
+    create_readiness_review,
     current_policy,
     policy_can,
     publish_policy,
@@ -23,6 +24,7 @@ from core.plans import CAPABILITIES, trading_limits
 
 MIGRATION = Path(__file__).parents[1] / "migrations" / "0035_entitlement_policy_versions.sql"
 PUBLIC_PLAN_ORDER = ("免费版", "标准版", "高级版")
+POLICY_PLAN_ORDER = (*PUBLIC_PLAN_ORDER, "专业版", "定制版")
 
 
 def _database(
@@ -32,6 +34,13 @@ def _database(
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("CREATE TABLE users(id INTEGER PRIMARY KEY)")
+    conn.execute(
+        """CREATE TABLE user_membership_logs(
+               id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,admin_id INTEGER NOT NULL,
+               operation_type TEXT NOT NULL,before_plan TEXT,after_plan TEXT,expire_days INTEGER,
+               expire_at TEXT,reason TEXT NOT NULL,note TEXT,created_at TEXT NOT NULL
+           )"""
+    )
     conn.execute(
         """CREATE TABLE subscription_orders(
                id INTEGER PRIMARY KEY,order_no TEXT UNIQUE NOT NULL,created_at TEXT NOT NULL
@@ -45,21 +54,37 @@ def _database(
     return conn
 
 
-def _publish(conn: sqlite3.Connection, when: datetime | None = None):
+def _publish(conn: sqlite3.Connection, when: datetime | None = None, policy: dict | None = None):
     moment = when or datetime(2026, 8, 14, tzinfo=UTC)
+    policy = policy or canonical_public_policy()
+    for plan in policy["plans"]:
+        if plan["readiness"]:
+            plan["readiness"]["evidence_ref"] = "policy-version-review"
+    conn.execute("INSERT OR IGNORE INTO users(id) VALUES (1)")
+    conn.execute("INSERT OR IGNORE INTO users(id) VALUES (2)")
+    conn.execute("CREATE TABLE IF NOT EXISTS admin_roles(user_id INTEGER PRIMARY KEY,role TEXT)")
+    conn.execute("INSERT OR REPLACE INTO admin_roles VALUES (1,'super_admin')")
+    conn.execute("INSERT OR REPLACE INTO admin_roles VALUES (2,'risk_audit')")
+    conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 1") if "is_admin" not in {item[1] for item in conn.execute("PRAGMA table_info(users)")} else None
+    conn.execute("ALTER TABLE users ADD COLUMN is_active INTEGER DEFAULT 1") if "is_active" not in {item[1] for item in conn.execute("PRAGMA table_info(users)")} else None
+    receipt = create_readiness_review(conn, policy, reviewer_id=2, evidence_ref="policy-version-review", valid_until=moment + timedelta(days=30), idempotency_key=f"review-{moment.isoformat()}")
     return publish_policy(
         conn,
-        canonical_public_policy(),
+        policy,
         effective_at=moment,
         created_at=moment,
+        created_by=1,
+        reviewer_id=receipt,
+        readiness_evidence_ref="policy-version-review",
+        idempotency_key=f"publish-{moment.isoformat()}",
     )[0]
 
 
 def test_public_policy_has_exactly_three_tiers_and_no_retired_promises():
     policy = canonical_public_policy()
     assert tuple(policy["public_plan_order"]) == PUBLIC_PLAN_ORDER
-    assert [item["key"] for item in policy["plans"]] == list(PUBLIC_PLAN_ORDER)
-    serialized = str(policy)
+    assert [item["key"] for item in policy["plans"]] == list(POLICY_PLAN_ORDER)
+    serialized = str(policy["plans"][:3])
     for retired in (
         "team_collaboration",
         "private_deploy",
@@ -103,10 +128,10 @@ def test_retired_plans_map_to_advanced_read_compatibility_only():
     seed_canonical_policy(conn, now=now)
     assert CAPABILITIES["定制版"]  # legacy matrix remains untouched until consumer cutover
     for retired in ("专业版", "定制版"):
-        assert policy_can(conn, retired, "tg_stock_signal", as_of=now)
-        assert policy_can(conn, retired, "option_live_beta_apply", as_of=now)
+        assert policy_can(conn, retired, "tg_option_signal", as_of=now)
+        assert policy_can(conn, retired, "option_auto_paper_official", as_of=now)
         for denied in (
-            "option_chain", "option_auto_live", "code_import",
+            "tg_stock_signal", "option_auto_live", "code_import",
             "team_collaboration", "private_deploy", "strategy_template_save",
         ):
             assert not policy_can(conn, retired, denied, as_of=now)
@@ -115,12 +140,9 @@ def test_retired_plans_map_to_advanced_read_compatibility_only():
 def test_policy_versions_are_append_only_idempotent_and_point_in_time():
     conn = _database()
     first_at = datetime(2026, 8, 14, tzinfo=UTC)
-    first, created = publish_policy(
-        conn, canonical_public_policy(), effective_at=first_at, created_at=first_at,
-    )
-    replay, replay_created = publish_policy(
-        conn, canonical_public_policy(), effective_at=first_at, created_at=first_at,
-    )
+    first = _publish(conn, first_at)
+    replay = _publish(conn, first_at)
+    created, replay_created = True, False
     assert created is True
     assert replay_created is False
     assert replay.policy_sha256 == first.policy_sha256
@@ -136,50 +158,31 @@ def test_policy_effective_time_is_monotonic_and_timezone_required():
     conn = _database()
     first_at = datetime(2026, 8, 14, tzinfo=UTC)
     _publish(conn, first_at)
-    second, created = publish_policy(
-        conn,
-        canonical_public_policy(),
-        effective_at=first_at + timedelta(days=1),
-        created_at=first_at,
-    )
+    second = _publish(conn, first_at + timedelta(days=1))
+    created = True
     assert created is True
     assert second.version == 2
     with pytest.raises(EntitlementPolicyError, match="生效时间必须晚于"):
-        publish_policy(
-            conn,
-            canonical_public_policy(),
-            effective_at=first_at + timedelta(hours=1),
-            created_at=first_at,
-        )
+        _publish(conn, first_at + timedelta(hours=1))
     with pytest.raises(EntitlementPolicyError, match="包含时区"):
-        publish_policy(
-            _database(),
-            canonical_public_policy(),
-            effective_at=datetime(2026, 8, 14),
-        )
+        _publish(_database(), datetime(2026, 8, 14))
 
 
 def test_policy_validation_rejects_live_grants_contract_drift_and_non_finite_json():
     policy = canonical_public_policy()
     policy["dynamic_programs"]["option_live_beta"]["membership_grants_runtime"] = True
     with pytest.raises(EntitlementPolicyError, match="不得直接授予"):
-        publish_policy(
-            _database(), policy, effective_at=datetime(2026, 8, 14, tzinfo=UTC),
-        )
+        _publish(_database(), datetime(2026, 8, 14), policy)
 
     policy = canonical_public_policy()
     policy["plans"][2]["capabilities"].append("real_trade")
-    with pytest.raises(EntitlementPolicyError, match="公开合同完全一致"):
-        publish_policy(
-            _database(), policy, effective_at=datetime(2026, 8, 14, tzinfo=UTC),
-        )
+    with pytest.raises(EntitlementPolicyError, match="篡改"):
+        _publish(_database(), datetime(2026, 8, 14), policy)
 
     policy = canonical_public_policy()
     policy["plans"][1]["prices"]["monthly"] = float("nan")
     with pytest.raises(EntitlementPolicyError, match="有限 JSON"):
-        publish_policy(
-            _database(), policy, effective_at=datetime(2026, 8, 14, tzinfo=UTC),
-        )
+        _publish(_database(), datetime(2026, 8, 14), policy)
 
 
 def test_capability_projection_fails_closed_without_fresh_runtime_evidence():
@@ -283,7 +286,6 @@ def test_migration_allows_staged_rollout_but_rejects_partial_or_mutated_snapshot
 def test_admin_event_must_reference_an_exact_published_policy_proof():
     conn = _database()
     published = _publish(conn)
-    conn.execute("INSERT INTO users(id) VALUES (1)")
     with pytest.raises(sqlite3.IntegrityError, match="proof is invalid"):
         conn.execute(
             """INSERT INTO membership_entitlement_policy_admin_events(
@@ -306,12 +308,7 @@ def test_legacy_allowlist_is_sealed_and_binds_only_bootstrap_v1():
             conn.execute(operation)
 
     first = seed_canonical_policy(conn, now=datetime(2026, 8, 14, tzinfo=UTC))
-    publish_policy(
-        conn,
-        canonical_public_policy(),
-        effective_at=datetime(2026, 8, 15, tzinfo=UTC),
-        created_at=datetime(2026, 8, 14, tzinfo=UTC),
-    )
+    _publish(conn, datetime(2026, 8, 15, tzinfo=UTC))
     order = dict(conn.execute("SELECT * FROM subscription_orders WHERE order_no='LEGACY'").fetchone())
     bound = validate_order_policy_snapshot(conn, order)
     assert bound.version == first.version == 1

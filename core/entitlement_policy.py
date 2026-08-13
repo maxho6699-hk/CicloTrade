@@ -10,27 +10,11 @@ from datetime import datetime
 from typing import Any, Mapping
 
 from core.compat import UTC
-from core.entitlement_commerce import (
-    EntitlementCommerceError,
-    readiness_proof,
-    validate_policy_transition,
-    validate_plan_records,
-)
-from core.entitlement_projection import (
-    capability_contracts as _project_capability_contracts,
-)
+from core.entitlement_commerce import EntitlementCommerceError, readiness_proof, validate_policy_transition, validate_plan_records
+from core.entitlement_projection import capability_contracts as _project_capability_contracts
 from core.entitlement_access import aware as _aware_datetime
-from core.entitlement_projection import (
-    runtime_capability_evidence as _runtime_capability_evidence,
-)
-from core.entitlement_policy_catalog import (
-    OPTION_LIVE_BETA_STATES,
-    PUBLIC_PLAN_CAPABILITY_ADDITIONS,
-    PUBLIC_PLAN_CAPABILITY_REMOVALS,
-    PUBLIC_PLAN_COPY,
-    PUBLIC_PLAN_DISPLAY_NAMES,
-    SEALED_LEGACY_CAPABILITIES,
-)
+from core.entitlement_projection import runtime_capability_evidence as _runtime_capability_evidence
+from core.entitlement_policy_catalog import OPTION_LIVE_BETA_STATES, PUBLIC_PLAN_CAPABILITY_ADDITIONS, PUBLIC_PLAN_CAPABILITY_REMOVALS, PUBLIC_PLAN_COPY, PUBLIC_PLAN_DISPLAY_NAMES, SEALED_LEGACY_CAPABILITIES
 from core.plans import CAPABILITIES, PLANS
 
 
@@ -74,6 +58,8 @@ def _iso(value: datetime | None = None) -> str:
 
 def runtime_capability_evidence(conn: Any) -> dict[str, dict[str, str]]:
     return _runtime_capability_evidence(conn, parse_aware=_aware_datetime)
+
+
 def _canonical_json(value: Mapping[str, Any]) -> str:
     try:
         return json.dumps(
@@ -85,6 +71,8 @@ def _canonical_json(value: Mapping[str, Any]) -> str:
         )
     except (TypeError, ValueError) as exc:
         raise EntitlementPolicyError("会员策略必须是可序列化的有限 JSON。") from exc
+
+
 def policy_sha256(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
@@ -339,10 +327,21 @@ def seed_canonical_policy(conn: Any, *, now: datetime | None = None) -> Publishe
     if published.policy_sha256 != digest or published.policy != policy:
         raise EntitlementPolicyError("bootstrap v1 会员策略与审查合同不一致。")
     conn.execute(
+        """INSERT OR IGNORE INTO membership_entitlement_readiness_receipts(
+               candidate_sha256,evidence_ref,reviewer_id,valid_until,idempotency_key,request_sha256,created_at)
+           VALUES (?,?,NULL,?,?,?,?)""",
+        (digest, "bootstrap-contract-review-20260814", "9999-12-31T23:59:59+00:00",
+         "bootstrap-contract-review-20260814", digest, effective_text),
+    )
+    receipt = conn.execute(
+        """SELECT id FROM membership_entitlement_readiness_receipts
+           WHERE idempotency_key='bootstrap-contract-review-20260814'""",
+    ).fetchone()
+    conn.execute(
         """INSERT OR IGNORE INTO membership_entitlement_readiness_reviews(
-               evidence_ref,policy_key,policy_version,policy_sha256,reviewer_id,reviewed_at)
-           VALUES (?,?,?,?,NULL,?)""",
-        ("bootstrap-contract-review-20260814", POLICY_KEY, 1, digest, effective_text),
+               receipt_id,evidence_ref,policy_key,policy_version,policy_sha256,reviewer_id,reviewed_at)
+           VALUES (?,?,?,?,?,NULL,?)""",
+        (receipt["id"], "bootstrap-contract-review-20260814", POLICY_KEY, 1, digest, effective_text),
     )
     return published
 
@@ -355,7 +354,10 @@ def _publish_policy_locked(
     created_by: int | None = None,
     created_at: datetime | None = None,
 ) -> tuple[PublishedPolicy, bool]:
-    effective_at = _aware_datetime(effective_at, "会员策略生效时间")
+    try:
+        effective_at = _aware_datetime(effective_at, "会员策略生效时间")
+    except ValueError as exc:
+        raise EntitlementPolicyError(str(exc)) from exc
     policy = validate_policy(value, require_current_contract=False)
     previous_row = conn.execute(
         """SELECT * FROM membership_entitlement_policy_versions

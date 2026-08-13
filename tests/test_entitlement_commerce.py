@@ -78,6 +78,32 @@ def test_publish_requires_split_authority_atomic_audit_and_idempotency():
         _publish(conn, key="policy-key-1", at=NOW + timedelta(days=1))
 
 
+def test_readiness_receipt_is_consumed_once_but_publish_replay_is_safe():
+    conn = _database()
+    policy = canonical_public_policy()
+    for item in policy["plans"]:
+        if item["readiness"]:
+            item["readiness"] = readiness_proof(item["key"], item["lifecycle"], item["capabilities"], evidence_ref="single-use")
+    receipt = create_readiness_review(
+        conn, policy, reviewer_id=2, evidence_ref="single-use",
+        valid_until=NOW + timedelta(days=30), idempotency_key="single-review-001",
+    )
+    arguments = dict(
+        effective_at=NOW, created_at=NOW, created_by=1, reviewer_id=receipt,
+        readiness_evidence_ref="single-use", idempotency_key="single-publish-001",
+    )
+    first, created = publish_policy(conn, policy, **arguments)
+    replay, replay_created = publish_policy(conn, policy, **arguments)
+    assert created and not replay_created and replay.version == first.version
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+        publish_policy(
+            conn, policy, effective_at=NOW + timedelta(days=1), created_at=NOW,
+            created_by=1, reviewer_id=receipt, readiness_evidence_ref="single-use",
+            idempotency_key="single-publish-002",
+        )
+    assert conn.execute("SELECT COUNT(*) FROM membership_entitlement_policy_versions").fetchone()[0] == 1
+
+
 def test_readiness_receipt_requires_reviewer_and_rolls_back_outer_transaction():
     conn = _database()
     policy = canonical_public_policy()

@@ -70,7 +70,7 @@ def _bind_review(conn: Any, policy: Any, receipt_id: int, evidence: str, iso: Ca
     if refs != {evidence}:
         raise error_type("readiness 审查证据必须精确覆盖发布策略。")
     receipt = conn.execute("SELECT reviewer_id FROM membership_entitlement_readiness_receipts WHERE id=?", (receipt_id,)).fetchone()
-    conn.execute("""INSERT OR IGNORE INTO membership_entitlement_readiness_reviews(evidence_ref,policy_key,policy_version,policy_sha256,reviewer_id,reviewed_at) VALUES (?,?,?,?,?,?)""", (evidence, policy.policy_key, policy.version, policy.policy_sha256, receipt["reviewer_id"], iso()))
+    conn.execute("""INSERT INTO membership_entitlement_readiness_reviews(receipt_id,evidence_ref,policy_key,policy_version,policy_sha256,reviewer_id,reviewed_at) VALUES (?,?,?,?,?,?,?)""", (receipt_id, evidence, policy.policy_key, policy.version, policy.policy_sha256, receipt["reviewer_id"], iso()))
 
 
 def create_review(
