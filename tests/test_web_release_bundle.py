@@ -78,6 +78,7 @@ def _source_repo(tmp_path: Path) -> Path:
         "migrations/0034_personal_paper.sql": b"SELECT 34;\n",
         "migrations/0035_entitlement_policy_versions.sql": b"SELECT 35;\n",
         "migrations/backtest/0012_expanded_research_receipts.sql": b"SELECT 12;\n",
+        "migrations/backtest/0013_expanded_research_invalidations.sql": b"SELECT 13;\n",
     }
     for name, content in files.items():
         path = root / name
@@ -146,7 +147,7 @@ def test_build_is_reproducible_and_verifies(tmp_path: Path) -> None:
     assert artifact.read_bytes() == second.read_bytes()
     assert verifier.verify_release(root, artifact, manifest) == []
     assert data["migrations"]["required"][-1] == "0035_entitlement_policy_versions.sql"
-    assert data["migrations"]["required_backtest"] == ["0012_expanded_research_receipts.sql"]
+    assert data["migrations"]["required_backtest"] == ["0012_expanded_research_receipts.sql", "0013_expanded_research_invalidations.sql"]
     assert data["lifecycle"] == {"allowed_actions": ["restart"], "service": "ciclotrade-rewrite-api.service"}
 
 
@@ -188,6 +189,22 @@ def test_builder_requires_expanded_research_backtest_migration(tmp_path: Path) -
     required.unlink()
     _run(root, "add", "-u")
     _run(root, "commit", "-m", "remove required backtest migration")
+    with pytest.raises(builder.ReleaseBuildError, match="missing required runtime inputs"):
+        builder.build_release(
+            root,
+            tmp_path / "release.tar.gz",
+            tmp_path / "release.json",
+            baseline=_run(root, "rev-parse", "HEAD"),
+            source_date_epoch=1,
+        )
+
+
+def test_builder_requires_expanded_research_invalidation_migration(tmp_path: Path) -> None:
+    root = _source_repo(tmp_path)
+    required = root / "migrations/backtest/0013_expanded_research_invalidations.sql"
+    required.unlink()
+    _run(root, "add", "-u")
+    _run(root, "commit", "-m", "remove required invalidation migration")
     with pytest.raises(builder.ReleaseBuildError, match="missing required runtime inputs"):
         builder.build_release(
             root,

@@ -22,7 +22,7 @@ MAX_MEMBER_BYTES = 32 * 1024 * 1024
 MAX_TOTAL_MEMBER_BYTES = 256 * 1024 * 1024
 MAX_MEMBERS = 10_000
 REQUIRED_MIGRATIONS = ["0032_membership_promotions.sql", "0033_membership_promotion_settlement.sql", "0034_personal_paper.sql", "0035_entitlement_policy_versions.sql"]
-REQUIRED_BACKTEST_MIGRATIONS = ["0012_expanded_research_receipts.sql"]
+REQUIRED_BACKTEST_MIGRATIONS = ["0012_expanded_research_receipts.sql", "0013_expanded_research_invalidations.sql"]
 REQUIRED_BACKTEST_MIGRATION_PATHS = {
     f"migrations/backtest/{name}" for name in REQUIRED_BACKTEST_MIGRATIONS
 }
@@ -464,10 +464,9 @@ def verify_release(root: Path, artifact: Path, manifest: Path) -> list[str]:
     members, archive_violations = _archive_members(artifact, data.get("source_date_epoch", -1))
     violations.extend(archive_violations)
     manifest_paths = {item["path"] for item in files if isinstance(item.get("path"), str)}
-    required_backtest_path = next(iter(REQUIRED_BACKTEST_MIGRATION_PATHS))
-    if required_backtest_path not in manifest_paths:
+    if not REQUIRED_BACKTEST_MIGRATION_PATHS <= manifest_paths:
         violations.append("manifest is missing required backtest migration")
-    if required_backtest_path not in members:
+    if not REQUIRED_BACKTEST_MIGRATION_PATHS <= set(members):
         violations.append("archive is missing required backtest migration")
     if set(members) - manifest_paths:
         violations.append("archive has paths absent from manifest")

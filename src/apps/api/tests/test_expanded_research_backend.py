@@ -75,6 +75,13 @@ def test_canonical_universe_matches_running_97_chain():
     assert UNIVERSE_SHA256 == "ae95ca26edc28385c495b055f57f28dd78fdc088a3a7cdd683b0244e55f1b4b7"
 
 
+def test_invalidation_schema_is_migrated_before_store_construction(tmp_path, monkeypatch):
+    database = BacktestQueueDatabase(tmp_path / "backtest.db")
+    assert database.fetch_one("SELECT name FROM sqlite_master WHERE type='table' AND name='expanded_research_invalidations'")
+    monkeypatch.setattr(database, "transaction", lambda: (_ for _ in ()).throw(AssertionError("store constructor must not write")))
+    ExpandedResearchStore(database, clock=lambda: NOW)
+
+
 def test_receiver_accepts_existing_strategy_authority_and_replays_idempotently(tmp_path):
     store = ExpandedResearchStore(BacktestQueueDatabase(tmp_path / "backtest.db"), clock=lambda: NOW)
     receiver = ExpandedResearchReceiver(store, shared_secret=SECRET, enabled=True, clock=lambda: NOW)
@@ -172,7 +179,8 @@ def test_signed_invalidation_is_idempotent_and_removes_result_from_active_projec
     assert first["created"] is True and second["created"] is False
     assert first["state"] == "invalidated" and first["target_result_id"] == value["result_id"]
     assert store.latest_by_symbol() == []
-    assert store.history() and store.history()[0]["result_id"] == value["result_id"]
+    assert store.history()[0]["result_id"] == value["result_id"]
+    assert store.history()[0]["projection_state"] == "invalidated"
 
 
 def test_tombstone_arriving_before_result_still_blocks_late_delivery(tmp_path):
@@ -194,7 +202,9 @@ def test_read_model_keeps_active_history_consistent_after_one_result_is_invalida
     latest = model.latest("user")
     history = model.history("user")
     assert latest["cycle"]["summary"]["wait_count"] == 1
-    assert history["items"][0]["coverage_count"] == 1
+    assert history["items"][0]["coverage_count"] == 2
+    assert history["items"][0]["active_count"] == 1
+    assert history["items"][0]["invalidated_count"] == 1
 
 
 def test_expired_result_is_removed_from_active_projection_but_remains_in_history(tmp_path):
@@ -209,6 +219,9 @@ def test_expired_result_is_removed_from_active_projection_but_remains_in_history
     current[0] = NOW + timedelta(hours=12, seconds=1)
     assert store.latest_by_symbol() == []
     assert len(store.history()) == 1
+    assert store.history()[0]["projection_state"] == "expired"
+    history = ExpandedResearchReadModel(store, authorize=lambda _identity: True).history("user")
+    assert history["items"][0]["expired_count"] == 1
 
 
 def test_full_coverage_with_one_stale_symbol_is_not_healthy(monkeypatch):

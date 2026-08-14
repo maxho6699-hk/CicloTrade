@@ -30,7 +30,6 @@ class ExpandedResearchStore:
             raise TypeError("database must BacktestQueueDatabase")
         self.database = database
         self.clock = clock or (lambda: datetime.now(UTC))
-        self._ensure_invalidation_schema()
 
     def record(self, value: Mapping[str, Any], *, receipt_key: str, worker_id: str, fencing_epoch: int, payload_sha256: str) -> dict[str, Any]:
         result = validate_result(value)
@@ -174,9 +173,21 @@ class ExpandedResearchStore:
     def history(self, limit: int = 20) -> list[dict[str, Any]]:
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
             raise ValueError("expanded research history limit must be between 1 and 100")
-        return [decoded for row in self.database.fetch_all(
+        decoded = [decoded for row in self.database.fetch_all(
             "SELECT * FROM expanded_research_receipts ORDER BY received_at DESC,receipt_key DESC LIMIT ?", (limit,)
         ) if (decoded := self._decode(row)) is not None]
+        latest_ids: dict[str, str] = {}
+        for row in decoded:
+            latest_ids.setdefault(row["symbol"], row["result_id"])
+        invalidated_ids = self._invalidated_result_ids(decoded)
+        result: list[dict[str, Any]] = []
+        for row in decoded:
+            invalidated = row["result_id"] in invalidated_ids
+            expired = not self._is_active(row["received_at"])
+            active = latest_ids[row["symbol"]] == row["result_id"] and not invalidated and not expired
+            state = "active" if active else "invalidated" if invalidated else "expired" if expired else "superseded"
+            result.append({**row, "projection_state": state})
+        return result
 
     def status(self) -> dict[str, Any]:
         active = self.latest_by_symbol()
@@ -190,34 +201,6 @@ class ExpandedResearchStore:
             "sealed_count": len(active), "tier_a_count": counts["A"], "tier_c_count": counts["C"],
             "symbol_count": len(active), "last_received_at": latest,
         }
-
-    def _ensure_invalidation_schema(self) -> None:
-        with self.database.transaction() as connection:
-            connection.executescript(
-                """CREATE TABLE IF NOT EXISTS expanded_research_invalidations (
-                       invalidation_key TEXT PRIMARY KEY,
-                       invalidation_id TEXT NOT NULL UNIQUE,
-                       worker_id TEXT NOT NULL,
-                       fencing_epoch INTEGER NOT NULL CHECK (fencing_epoch >= 1),
-                       target_result_id TEXT NOT NULL,
-                       symbol TEXT NOT NULL,
-                       reason TEXT NOT NULL,
-                       universe_version TEXT NOT NULL,
-                       universe_sha256 TEXT NOT NULL CHECK (length(universe_sha256) = 64),
-                       payload_sha256 TEXT NOT NULL CHECK (length(payload_sha256) = 64),
-                       payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
-                       invalidated_at TEXT NOT NULL,
-                       received_at TEXT NOT NULL
-                   );
-                   CREATE INDEX IF NOT EXISTS idx_expanded_research_invalidations_target
-                   ON expanded_research_invalidations(target_result_id,received_at DESC);
-                   CREATE TRIGGER IF NOT EXISTS trg_expanded_research_invalidations_no_update
-                   BEFORE UPDATE ON expanded_research_invalidations
-                   BEGIN SELECT RAISE(ABORT, 'expanded research invalidations are append-only'); END;
-                   CREATE TRIGGER IF NOT EXISTS trg_expanded_research_invalidations_no_delete
-                   BEFORE DELETE ON expanded_research_invalidations
-                   BEGIN SELECT RAISE(ABORT, 'expanded research invalidations are append-only'); END;"""
-            )
 
     def _invalidated_result_ids(self, rows: Any) -> set[str]:
         result_ids = [str(row["result_id"]) for row in rows]

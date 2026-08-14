@@ -25,7 +25,7 @@ REQUIRED_MIGRATIONS = (
     "0034_personal_paper.sql",
     "0035_entitlement_policy_versions.sql",
 )
-REQUIRED_BACKTEST_MIGRATIONS = ("0012_expanded_research_receipts.sql",)
+REQUIRED_BACKTEST_MIGRATIONS = ("0012_expanded_research_receipts.sql", "0013_expanded_research_invalidations.sql")
 REQUIRED_BACKTEST_MIGRATION_PATHS = frozenset(
     f"migrations/backtest/{name}" for name in REQUIRED_BACKTEST_MIGRATIONS
 )

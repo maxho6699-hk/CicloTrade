@@ -49,7 +49,7 @@ const latest = {
 }
 const history = {
   available: true, authority, limit: 20 as const,
-  items: [{ cycle_id: 'expanded-2026-08-14-eod', evaluation_date: '2026-08-14', evaluated_at: '2026-08-14T08:00:00Z', received_at: '2026-08-14T08:01:00Z', coverage_count: 96, no_data_count: 1, long_count: 0, flat_count: 0, wait_count: 96 }],
+  items: [{ cycle_id: 'expanded-2026-08-14-eod', evaluation_date: '2026-08-14', evaluated_at: '2026-08-14T08:00:00Z', received_at: '2026-08-14T08:01:00Z', coverage_count: 97, no_data_count: 0, long_count: 0, flat_count: 0, wait_count: 97, receipt_count: 99, active_count: 96, invalidated_count: 1, expired_count: 1, superseded_count: 1 }],
 }
 
 test('accepts the strict expanded-research authority and 97-symbol coverage', () => {
@@ -59,6 +59,7 @@ test('accepts the strict expanded-research authority and 97-symbol coverage', ()
   assert.equal(validStrategyResearch97Aggregate({ status, latest, history }), true)
   assert.equal(status.coverage_count + status.no_data_count, 97)
   assert.equal(latest.cycle.summary.wait_count > 0, true)
+  assert.equal(history.items[0].receipt_count, 99)
 })
 
 test('fails closed when authority, universe count, or missing-data signal is unsafe', () => {
@@ -71,6 +72,7 @@ test('fails closed when authority, universe count, or missing-data signal is uns
   assert.equal(validStrategyResearch97Latest({ ...latest, cycle: { ...latest.cycle, summary: { ...latest.cycle.summary, flat_count: 1, wait_count: 95 } } }), false)
   assert.equal(validStrategyResearch97History({ ...history, items: [{ ...history.items[0], long_count: 1, wait_count: 95 }] }), false)
   assert.equal(validStrategyResearch97History({ ...history, items: [{ ...history.items[0], flat_count: 1, wait_count: 95 }] }), false)
+  assert.equal(validStrategyResearch97History({ ...history, items: [{ ...history.items[0], invalidated_count: 0 }] }), false)
   assert.equal(validStrategyResearch97Aggregate({ status, latest: { ...latest, cycle: { ...latest.cycle, evidence: { ...latest.cycle.evidence, universe_sha256: 'f'.repeat(64) } } }, history }), false)
   assert.equal(validStrategyResearch97Aggregate({ status: { ...status, coverage_count: 95, no_data_count: 2 }, latest, history }), false)
   assert.equal(validStrategyResearch97Aggregate({ status, latest, history: { ...history, items: [{ ...history.items[0], cycle_id: 'different-cycle' }] } }), false)
@@ -221,6 +223,9 @@ test('panel owns Tier/status/search pagination and explicit partial/stale states
   assert.match(panel, /research_query/)
   assert.match(panel, /research_page/)
   assert.match(panel, /strategy-research-97-filter-empty/)
+  assert.match(panel, /STRATEGY_RESEARCH97_REFRESH_MS/)
+  assert.match(panel, /visibilitychange/)
+  assert.match(panel, /invalidated_count/)
   assert.match(panel, /setSearchParams\(next, \{ replace: true \}\)/)
   assert.match(panel, /autoComplete="off"/)
   assert.match(panel, /spellCheck={false}/)

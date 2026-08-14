@@ -100,6 +100,11 @@ export interface StrategyResearch97HistoryItem {
   long_count: number
   flat_count: number
   wait_count: number
+  receipt_count: number
+  active_count: number
+  invalidated_count: number
+  expired_count: number
+  superseded_count: number
 }
 
 export interface StrategyResearch97History {
@@ -174,16 +179,13 @@ export function validStrategyResearch97Aggregate(value: unknown): value is Strat
     counts[item.tier] += 1
     return counts
   }, { A: 0, C: 0 })
-  const historyLatest = value.history.items[0]
-  if (!historyLatest
-    || historyLatest.cycle_id !== cycle.cycle_id
-    || historyLatest.evaluation_date !== cycle.evaluation_date
-    || historyLatest.evaluated_at !== cycle.evaluated_at
-    || historyLatest.coverage_count !== covered
-    || historyLatest.no_data_count !== missing
-    || historyLatest.long_count !== 0
-    || historyLatest.flat_count !== 0
-    || historyLatest.wait_count !== waitCount
+  const historyCycle = value.history.items.find((item) => item.cycle_id === cycle.cycle_id)
+  if (!historyCycle
+    || historyCycle.evaluation_date !== cycle.evaluation_date
+    || historyCycle.active_count !== covered
+    || historyCycle.long_count !== 0
+    || historyCycle.flat_count !== 0
+    || historyCycle.wait_count < waitCount
     || tierCounts.A !== 13
     || tierCounts.C !== 84
     || value.status.last_result_at !== cycle.evaluated_at
@@ -340,11 +342,13 @@ export function validStrategyResearch97Latest(value: unknown): value is Strategy
 }
 
 function validHistoryItem(value: unknown): value is StrategyResearch97HistoryItem {
-  if (!exactKeys(value, ['cycle_id', 'evaluation_date', 'evaluated_at', 'received_at', 'coverage_count', 'no_data_count', 'long_count', 'flat_count', 'wait_count'])
+  if (!exactKeys(value, ['cycle_id', 'evaluation_date', 'evaluated_at', 'received_at', 'coverage_count', 'no_data_count', 'long_count', 'flat_count', 'wait_count', 'receipt_count', 'active_count', 'invalidated_count', 'expired_count', 'superseded_count'])
     || !text(value.cycle_id) || !isoDate(value.evaluation_date) || !isoTimestamp(value.evaluated_at) || !isoTimestamp(value.received_at)
     || !count(value.coverage_count) || !count(value.no_data_count) || value.long_count !== 0 || value.flat_count !== 0 || !count(value.wait_count)
+    || !count(value.receipt_count) || !count(value.active_count) || !count(value.invalidated_count) || !count(value.expired_count) || !count(value.superseded_count)
     || value.coverage_count + value.no_data_count !== 97) return false
   return value.wait_count === value.coverage_count
+    && value.receipt_count === value.active_count + value.invalidated_count + value.expired_count + value.superseded_count
 }
 
 export function validStrategyResearch97History(value: unknown): value is StrategyResearch97History {

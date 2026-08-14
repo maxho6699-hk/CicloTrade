@@ -81,11 +81,9 @@ class ExpandedResearchReadModel:
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
             raise ValueError("expanded research history limit must be between 1 and 20")
         rows = self.store.history(100)
-        active_ids = {row["result_id"] for row in self.store.latest_by_symbol()}
         grouped: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
-            if row["result_id"] in active_ids:
-                grouped.setdefault(row["dataset_end"], []).append(row)
+            grouped.setdefault(row["dataset_end"], []).append(row)
         items = [_history_item(date_key, values) for date_key, values in list(grouped.items())[:limit]]
         return {
             "available": bool(items), "authority": _authority(), "limit": 20, "items": items,
@@ -183,7 +181,16 @@ def _symbols(rows: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _history_item(dataset_end: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
     received = max(row["received_at"] for row in rows)
-    return {"cycle_id": f"expanded-research-{dataset_end}", "evaluation_date": dataset_end, "evaluated_at": received, "received_at": received, "coverage_count": len({row["symbol"] for row in rows}), "no_data_count": 97 - len({row["symbol"] for row in rows}), "long_count": 0, "flat_count": 0, "wait_count": len({row["symbol"] for row in rows})}
+    coverage = len({row["symbol"] for row in rows})
+    states = {state: sum(row["projection_state"] == state for row in rows) for state in ("active", "invalidated", "expired", "superseded")}
+    return {
+        "cycle_id": f"expanded-research-{dataset_end}", "evaluation_date": dataset_end,
+        "evaluated_at": received, "received_at": received, "coverage_count": coverage,
+        "no_data_count": 97 - coverage, "long_count": 0, "flat_count": 0,
+        "wait_count": coverage, "receipt_count": len(rows), "active_count": states["active"],
+        "invalidated_count": states["invalidated"], "expired_count": states["expired"],
+        "superseded_count": states["superseded"],
+    }
 
 
 def _code_bundle(row: dict[str, Any]) -> str:
