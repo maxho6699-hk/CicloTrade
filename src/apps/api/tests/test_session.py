@@ -2336,6 +2336,8 @@ def test_alert_delete_endpoint_is_idempotent_and_rejects_other_users(browser_api
         payload={
             "symbol": "AAPL",
             "conditions": [{"type": "price", "operator": ">=", "value": 220}],
+            "channels": ["website"],
+            "notify_only": True,
         },
     )))
     alert_id = _payload(created)["items"][0]["id"]
@@ -2405,6 +2407,8 @@ def test_alert_create_endpoint_supports_cn_and_rejects_invalid_market(browser_ap
             "market": "CN",
             "symbol": "600519.SS",
             "conditions": [{"type": "price", "operator": ">=", "value": 1500}],
+            "channels": ["website"],
+            "notify_only": True,
         },
     )))
 
@@ -2419,6 +2423,8 @@ def test_alert_create_endpoint_supports_cn_and_rejects_invalid_market(browser_ap
                 "market": "A股",
                 "symbol": "600519",
                 "conditions": [{"type": "price", "operator": ">=", "value": 1500}],
+                "channels": ["website"],
+                "notify_only": True,
             },
         )))
     assert invalid.value.status == 400
