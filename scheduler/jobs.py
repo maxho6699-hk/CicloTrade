@@ -200,31 +200,37 @@ def enqueue_quant_signal_deliveries(database=None) -> int:
         )
     ]
     now = datetime.now(UTC).isoformat(timespec="seconds")
+    eligible: list[tuple[dict, dict]] = []
+    for target in event_targets:
+        capability, event_name = _signal_capability(target["instrument_type"])
+        for user in users:
+            settings = _settings_json(user.get("settings_json"))
+            if (
+                not policy_allows(db, user, capability)
+                or not _watches(settings, target["symbol"], target["market"])
+                or not entitled_user_target(db, user, settings, event_name)
+                or not _newer_than_eligibility(target["recorded_at"], user)
+            ):
+                continue
+            eligible.append((target, user))
+
     queued = 0
+    # Policy and consent reads must finish before taking DatabaseManager's
+    # non-reentrant write lock. Dispatch rechecks them before any send.
     with db.transaction() as conn:
-        for target in event_targets:
-            capability, event_name = _signal_capability(target["instrument_type"])
-            for user in users:
-                settings = _settings_json(user.get("settings_json"))
-                if (
-                    not policy_allows(db, user, capability)
-                    or not _watches(settings, target["symbol"], target["market"])
-                    or not entitled_user_target(db, user, settings, event_name)
-                    or not _newer_than_eligibility(target["recorded_at"], user)
-                ):
-                    continue
-                table = _DELIVERY_TABLES[str(target["_consumer_store"])]
-                cursor = conn.execute(
-                    f"""INSERT OR IGNORE INTO {table}
-                       (event_id,user_id,channel,instrument_type,symbol,status,attempts,
-                        next_attempt_at,last_error,created_at,updated_at,sent_at)
-                       VALUES (?,?,'telegram',?,?, 'pending',0,?,NULL,?,?,NULL)""",
-                    (
-                        target["event_id"], user["id"], target["instrument_type"], target["symbol"],
-                        now, now, now,
-                    ),
-                )
-                queued += cursor.rowcount
+        for target, user in eligible:
+            table = _DELIVERY_TABLES[str(target["_consumer_store"])]
+            cursor = conn.execute(
+                f"""INSERT OR IGNORE INTO {table}
+                   (event_id,user_id,channel,instrument_type,symbol,status,attempts,
+                    next_attempt_at,last_error,created_at,updated_at,sent_at)
+                   VALUES (?,?,'telegram',?,?, 'pending',0,?,NULL,?,?,NULL)""",
+                (
+                    target["event_id"], user["id"], target["instrument_type"], target["symbol"],
+                    now, now, now,
+                ),
+            )
+            queued += cursor.rowcount
     return queued
 
 

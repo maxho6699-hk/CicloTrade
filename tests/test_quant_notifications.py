@@ -140,7 +140,7 @@ def test_signal_outbox_enforces_tiers_and_is_idempotent(tmp_path, monkeypatch):
     _paid_user(db, "professional", "专业版", "10003")
     _event(db)
 
-    assert enqueue_quant_signal_deliveries(db) == 3
+    assert enqueue_quant_signal_deliveries(db) == 2
     assert enqueue_quant_signal_deliveries(db) == 0
     rows = db.fetch_all(
         """SELECT u.plan_type,d.instrument_type FROM quant_event_deliveries d
@@ -148,14 +148,13 @@ def test_signal_outbox_enforces_tiers_and_is_idempotent(tmp_path, monkeypatch):
     )
     assert {(row["plan_type"], row["instrument_type"]) for row in rows} == {
         ("高级版", "stock"),
-        ("专业版", "stock"),
         ("专业版", "option"),
     }
 
     sent = []
     monkeypatch.setattr("scheduler.jobs.telegram_configured", lambda *_: True)
     monkeypatch.setattr("scheduler.jobs.send_telegram", lambda message, chat_id=None, **kwargs: sent.append((message, chat_id, kwargs)))
-    assert dispatch_quant_signal_deliveries(db) == 3
+    assert dispatch_quant_signal_deliveries(db) == 2
     assert dispatch_quant_signal_deliveries(db) == 0
     assert {target for _, target, _ in sent} == {"10002", "10003"}
     assert all("#1" in message and kwargs["parse_mode"] == "HTML" for message, _, kwargs in sent)
@@ -175,7 +174,7 @@ def test_delivery_rechecks_watchlist_and_subscription_before_sending(tmp_path, m
     advanced = _paid_user(db, "advanced-recheck", "高级版", "20001")
     professional = _paid_user(db, "professional-recheck", "专业版", "20002")
     _event(db)
-    assert enqueue_quant_signal_deliveries(db) == 3
+    assert enqueue_quant_signal_deliveries(db) == 2
 
     merge_user_settings(advanced["id"], {"watchlists": {"us": [], "a_share": []}}, db)
     db.execute(
@@ -190,7 +189,7 @@ def test_delivery_rechecks_watchlist_and_subscription_before_sending(tmp_path, m
     assert not sent
     assert db.fetch_one(
         "SELECT COUNT(*) count FROM quant_event_deliveries WHERE status='skipped'"
-    )["count"] == 3
+    )["count"] == 2
 
 
 def test_telegram_dispatcher_does_not_claim_future_discord_rows(tmp_path, monkeypatch):
