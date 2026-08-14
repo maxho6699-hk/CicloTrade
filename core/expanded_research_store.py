@@ -97,19 +97,15 @@ class ExpandedResearchStore:
         return max(rows, key=lambda row: (row["received_at"], row["receipt_key"]), default=None)
 
     def latest_by_symbol(self) -> list[dict[str, Any]]:
-        rows = self.database.fetch_all(
-            """SELECT * FROM expanded_research_receipts
-               ORDER BY received_at DESC,receipt_key DESC"""
-        )
-        selected: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            decoded = self._decode(row)
-            if decoded is not None and decoded["symbol"] not in selected:
-                selected[decoded["symbol"]] = decoded
-        invalidated = self._invalidated_result_ids(selected.values())
+        selected = [
+            decoded
+            for row in self._latest_candidate_rows()
+            if (decoded := self._decode(row)) is not None
+        ]
+        invalidated = self._invalidated_result_ids(selected)
         return sorted(
             (
-                row for row in selected.values()
+                row for row in selected
                 if row["result_id"] not in invalidated and self._is_active(row["received_at"])
             ),
             key=lambda row: row["symbol"],
@@ -124,14 +120,15 @@ class ExpandedResearchStore:
         fencing_epoch: int,
         payload_sha256: str,
     ) -> dict[str, Any]:
-        invalidation = validate_invalidation(value)
+        now_datetime = self._now_datetime()
+        invalidation = validate_invalidation(value, now=now_datetime)
         body = canonical_json(invalidation)
         digest = sha256_bytes(body)
         if digest != payload_sha256:
             raise ExpandedResearchError("expanded research invalidation payload hash does not match")
         if invalidation["universe_sha256"] != UNIVERSE_SHA256:
             raise ExpandedResearchError("expanded research invalidation universe is not current")
-        now = self._now()
+        now = now_datetime.replace(microsecond=0).isoformat().replace("+00:00", "Z")
         with self.database.transaction() as connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
@@ -151,6 +148,12 @@ class ExpandedResearchStore:
                 "SELECT 1 FROM expanded_research_receipts WHERE receipt_key=?", (receipt_key,)
             ).fetchone() is not None:
                 raise ExpandedResearchConflict("expanded research idempotency identity was reused by a result")
+            target = connection.execute(
+                "SELECT symbol FROM expanded_research_receipts WHERE result_id=?",
+                (invalidation["target_result_id"],),
+            ).fetchone()
+            if target is not None and target["symbol"] != invalidation["symbol"]:
+                raise ExpandedResearchConflict("expanded research invalidation symbol does not match target result")
             self._advance_fence(connection, worker_id, fencing_epoch, now)
             connection.execute(
                 """INSERT INTO expanded_research_invalidations(
@@ -171,14 +174,27 @@ class ExpandedResearchStore:
             return {**dict(stored), "created": True}
 
     def history(self, limit: int = 20) -> list[dict[str, Any]]:
-        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
-            raise ValueError("expanded research history limit must be between 1 and 100")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
+            raise ValueError("expanded research history limit must be between 1 and 20 cycles")
         decoded = [decoded for row in self.database.fetch_all(
-            "SELECT * FROM expanded_research_receipts ORDER BY received_at DESC,receipt_key DESC LIMIT ?", (limit,)
+            """WITH recent_cycles(dataset_end) AS (
+                   SELECT json_extract(payload_json,'$.dataset_end')
+                   FROM expanded_research_receipts INDEXED BY idx_expanded_research_dataset_cycle
+                   GROUP BY json_extract(payload_json,'$.dataset_end')
+                   ORDER BY json_extract(payload_json,'$.dataset_end') DESC
+                   LIMIT ?
+               )
+               SELECT receipts.*
+               FROM expanded_research_receipts AS receipts
+               JOIN recent_cycles
+                 ON json_extract(receipts.payload_json,'$.dataset_end')=recent_cycles.dataset_end
+               ORDER BY recent_cycles.dataset_end DESC,receipts.received_at DESC,receipts.receipt_key DESC""",
+            (limit,),
         ) if (decoded := self._decode(row)) is not None]
-        latest_ids: dict[str, str] = {}
-        for row in decoded:
-            latest_ids.setdefault(row["symbol"], row["result_id"])
+        latest_ids = {
+            str(row["symbol"]): str(row["result_id"])
+            for row in self._latest_candidate_rows()
+        }
         invalidated_ids = self._invalidated_result_ids(decoded)
         result: list[dict[str, Any]] = []
         for row in decoded:
@@ -203,17 +219,48 @@ class ExpandedResearchStore:
         }
 
     def _invalidated_result_ids(self, rows: Any) -> set[str]:
-        result_ids = [str(row["result_id"]) for row in rows]
-        if not result_ids:
+        candidates = sorted({(str(row["result_id"]), str(row["symbol"])) for row in rows})
+        if not candidates:
             return set()
-        placeholders = ",".join("?" for _ in result_ids)
-        return {
-            str(row["target_result_id"])
-            for row in self.database.fetch_all(
-                f"SELECT target_result_id FROM expanded_research_invalidations WHERE target_result_id IN ({placeholders})",
-                tuple(result_ids),
+        invalidated: set[str] = set()
+        for offset in range(0, len(candidates), 400):
+            chunk = candidates[offset : offset + 400]
+            values = ",".join("(?,?)" for _ in chunk)
+            parameters = tuple(value for candidate in chunk for value in candidate)
+            invalidated.update(
+                str(row["result_id"])
+                for row in self.database.fetch_all(
+                    f"""WITH candidates(result_id,symbol) AS (VALUES {values})
+                        SELECT candidates.result_id
+                        FROM candidates
+                        WHERE EXISTS (
+                            SELECT 1 FROM expanded_research_invalidations AS invalidations
+                            WHERE invalidations.target_result_id=candidates.result_id
+                              AND invalidations.symbol=candidates.symbol
+                        )""",
+                    parameters,
+                )
             )
-        }
+        return invalidated
+
+    def _latest_candidate_rows(self) -> list[dict[str, Any]]:
+        return self.database.fetch_all(
+            """SELECT latest.*
+               FROM (
+                   SELECT DISTINCT symbol
+                   FROM expanded_research_receipts INDEXED BY idx_expanded_research_latest_symbol
+               ) AS symbols
+               JOIN expanded_research_receipts AS latest
+                 ON latest.receipt_key=(
+                     SELECT candidate.receipt_key
+                     FROM expanded_research_receipts AS candidate
+                          INDEXED BY idx_expanded_research_latest_symbol
+                     WHERE candidate.symbol=symbols.symbol
+                     ORDER BY candidate.received_at DESC,candidate.receipt_key DESC
+                     LIMIT 1
+                 )
+               ORDER BY latest.symbol"""
+        )
 
     def _is_active(self, received_at: str) -> bool:
         try:

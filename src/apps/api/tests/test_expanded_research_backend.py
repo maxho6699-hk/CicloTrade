@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, timedelta
 import hashlib
 
 import pytest
@@ -13,6 +13,7 @@ from core.expanded_research_contracts import (
     TIER_A,
     TIER_C,
     UNIVERSE_SHA256,
+    UNIVERSE_VERSION,
     canonical_json,
     receiver_signature,
 )
@@ -25,13 +26,20 @@ SECRET = "s" * 32
 NOW = datetime(2026, 8, 14, 12, 0, tzinfo=UTC)
 
 
-def _result(symbol: str = "AAPL", *, tier: str = "A", authority: dict | None = None) -> dict:
+def _result(
+    symbol: str = "AAPL",
+    *,
+    tier: str = "A",
+    authority: dict | None = None,
+    dataset_end: str = "2026-08-13",
+    result_id: str | None = None,
+) -> dict:
     digest = "a" * 64
     evidence = {"runner": "equity-research-v1", "code_bundle_sha256": "b" * 64, "validation": {"candidate_status": "shadow"}}
     return {
         "schema_version": 1, "kind": "tradeai.expanded-local-research.v1",
-        "result_id": f"expanded-{symbol}-aaaaaaaaaaaaaaaaaaaaaaaa", "symbol": symbol, "tier": tier,
-        "source_sha256": digest, "universe_sha256": UNIVERSE_SHA256, "dataset_end": "2026-08-13",
+        "result_id": result_id or f"expanded-{symbol}-aaaaaaaaaaaaaaaaaaaaaaaa", "symbol": symbol, "tier": tier,
+        "source_sha256": digest, "universe_sha256": UNIVERSE_SHA256, "dataset_end": dataset_end,
         "equity": {"equity.trend.long_flat.v1": evidence, "equity.mean_reversion.long_flat.v1": evidence, "equity.breakout.long_flat.v1": evidence},
         "option_proxy": {"decision": "WAIT", "actionable": False} if tier == "A" else None,
         "authority": AUTHORITY if authority is None else authority,
@@ -51,12 +59,20 @@ def _request(receiver: ExpandedResearchReceiver, value: dict, *, key: str = "exp
     return receiver.accept(raw, headers)
 
 
-def _invalidate(receiver: ExpandedResearchReceiver, *, result_id: str, symbol: str = "AAPL", key: str = "expanded-invalidate-0001", epoch: int = 1):
+def _invalidate(
+    receiver: ExpandedResearchReceiver,
+    *,
+    result_id: str,
+    symbol: str = "AAPL",
+    key: str = "expanded-invalidate-0001",
+    epoch: int = 1,
+    invalidated_at: str = "2026-08-14T12:00:00Z",
+):
     value = {
         "schema_version": 1, "kind": INVALIDATION_KIND,
         "invalidation_id": key, "target_result_id": result_id, "symbol": symbol,
         "reason": "source_invalidated", "universe_sha256": UNIVERSE_SHA256,
-        "invalidated_at": "2026-08-14T12:00:00Z", "authority": AUTHORITY,
+        "invalidated_at": invalidated_at, "authority": AUTHORITY,
     }
     raw = canonical_json(value)
     body_sha = hashlib.sha256(raw).hexdigest()
@@ -70,6 +86,24 @@ def _invalidate(receiver: ExpandedResearchReceiver, *, result_id: str, symbol: s
     return receiver.accept(raw, headers)
 
 
+def _seed_receipts(database: BacktestQueueDatabase, entries: list[tuple[dict, str]]) -> None:
+    with database.transaction() as connection:
+        for index, (value, received_at) in enumerate(entries):
+            body = canonical_json(value)
+            digest = hashlib.sha256(body).hexdigest()
+            connection.execute(
+                """INSERT INTO expanded_research_receipts(
+                       receipt_key,result_id,worker_id,fencing_epoch,universe_version,
+                       universe_sha256,symbol,tier,source_sha256,payload_sha256,
+                       payload_json,received_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    f"seed-{index:08d}-{value['symbol']}", value["result_id"], "seed-worker", 1,
+                    UNIVERSE_VERSION, UNIVERSE_SHA256, value["symbol"], value["tier"],
+                    value["source_sha256"], digest, body.decode("utf-8"), received_at,
+                ),
+            )
+
+
 def test_canonical_universe_matches_running_97_chain():
     assert len(TIER_A) == 13 and len(TIER_C) == 84
     assert UNIVERSE_SHA256 == "ae95ca26edc28385c495b055f57f28dd78fdc088a3a7cdd683b0244e55f1b4b7"
@@ -78,6 +112,13 @@ def test_canonical_universe_matches_running_97_chain():
 def test_invalidation_schema_is_migrated_before_store_construction(tmp_path, monkeypatch):
     database = BacktestQueueDatabase(tmp_path / "backtest.db")
     assert database.fetch_one("SELECT name FROM sqlite_master WHERE type='table' AND name='expanded_research_invalidations'")
+    indexes = {
+        row["name"]
+        for row in database.fetch_all(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='expanded_research_receipts'"
+        )
+    }
+    assert {"idx_expanded_research_latest_symbol", "idx_expanded_research_dataset_cycle"} <= indexes
     monkeypatch.setattr(database, "transaction", lambda: (_ for _ in ()).throw(AssertionError("store constructor must not write")))
     ExpandedResearchStore(database, clock=lambda: NOW)
 
@@ -190,6 +231,132 @@ def test_tombstone_arriving_before_result_still_blocks_late_delivery(tmp_path):
     _invalidate(receiver, result_id=value["result_id"], key="expanded-invalidate-before-result-0001")
     _request(receiver, value)
     assert store.latest_by_symbol() == []
+
+
+def test_known_target_invalidation_requires_matching_symbol(tmp_path):
+    database = BacktestQueueDatabase(tmp_path / "backtest.db")
+    store = ExpandedResearchStore(database, clock=lambda: NOW)
+    receiver = ExpandedResearchReceiver(store, shared_secret=SECRET, enabled=True, clock=lambda: NOW)
+    value = _result()
+    _request(receiver, value)
+    with pytest.raises(ExpandedResearchReceiverError) as mismatch:
+        _invalidate(receiver, result_id=value["result_id"], symbol="MSFT", key="expanded-invalidate-wrong-symbol-0001")
+    assert mismatch.value.status == 409
+    assert database.fetch_one("SELECT count(*) AS total FROM expanded_research_invalidations")["total"] == 0
+    assert [row["symbol"] for row in store.latest_by_symbol()] == ["AAPL"]
+
+
+def test_wrong_symbol_tombstone_before_result_does_not_suppress_late_delivery(tmp_path):
+    store = ExpandedResearchStore(BacktestQueueDatabase(tmp_path / "backtest.db"), clock=lambda: NOW)
+    receiver = ExpandedResearchReceiver(store, shared_secret=SECRET, enabled=True, clock=lambda: NOW)
+    value = _result()
+    _invalidate(
+        receiver,
+        result_id=value["result_id"],
+        symbol="MSFT",
+        key="expanded-invalidate-before-result-wrong-symbol-0001",
+    )
+    _request(receiver, value)
+    assert [row["symbol"] for row in store.latest_by_symbol()] == ["AAPL"]
+    assert store.history()[0]["projection_state"] == "active"
+
+
+def test_invalidation_timestamp_allows_five_minute_skew_and_rejects_more(tmp_path):
+    allowed_store = ExpandedResearchStore(BacktestQueueDatabase(tmp_path / "allowed.db"), clock=lambda: NOW)
+    allowed_receiver = ExpandedResearchReceiver(allowed_store, shared_secret=SECRET, enabled=True, clock=lambda: NOW)
+    allowed_value = _result()
+    _request(allowed_receiver, allowed_value)
+    accepted = _invalidate(
+        allowed_receiver,
+        result_id=allowed_value["result_id"],
+        invalidated_at="2026-08-14T12:05:00Z",
+    )
+    assert accepted["state"] == "invalidated"
+
+    rejected_database = BacktestQueueDatabase(tmp_path / "rejected.db")
+    rejected_store = ExpandedResearchStore(rejected_database, clock=lambda: NOW)
+    rejected_receiver = ExpandedResearchReceiver(rejected_store, shared_secret=SECRET, enabled=True, clock=lambda: NOW)
+    rejected_value = _result()
+    _request(rejected_receiver, rejected_value)
+    with pytest.raises(ExpandedResearchReceiverError) as future:
+        _invalidate(
+            rejected_receiver,
+            result_id=rejected_value["result_id"],
+            invalidated_at="2026-08-14T12:05:01Z",
+        )
+    assert future.value.status == 400
+    assert rejected_database.fetch_one("SELECT count(*) AS total FROM expanded_research_invalidations")["total"] == 0
+
+
+def test_latest_by_symbol_decodes_at_most_one_candidate_per_symbol(tmp_path, monkeypatch):
+    database = BacktestQueueDatabase(tmp_path / "backtest.db")
+    symbols = (*TIER_A, *TIER_C)
+    entries: list[tuple[dict, str]] = []
+    for revision in range(5):
+        dataset_end = (date(2026, 8, 13) - timedelta(days=revision)).isoformat()
+        received_at = f"2026-08-14T11:{revision:02d}:00Z"
+        for symbol in symbols:
+            tier = "A" if symbol in TIER_A else "C"
+            entries.append((_result(
+                symbol,
+                tier=tier,
+                dataset_end=dataset_end,
+                result_id=f"expanded-{symbol}-revision-{revision:02d}-aaaaaaaa",
+            ), received_at))
+    _seed_receipts(database, entries)
+    store = ExpandedResearchStore(database, clock=lambda: NOW)
+    decoded = 0
+    original_decode = store._decode
+
+    def counting_decode(row):
+        nonlocal decoded
+        decoded += 1
+        return original_decode(row)
+
+    monkeypatch.setattr(store, "_decode", counting_decode)
+    rows = store.latest_by_symbol()
+    assert len(rows) == 97
+    assert decoded == 97
+
+
+def test_history_returns_twenty_complete_97_symbol_cycles(tmp_path):
+    database = BacktestQueueDatabase(tmp_path / "backtest.db")
+    symbols = (*TIER_A, *TIER_C)
+    entries: list[tuple[dict, str]] = []
+    for cycle in range(21):
+        dataset_end = (date(2026, 8, 13) - timedelta(days=cycle)).isoformat()
+        received_at = (NOW - timedelta(minutes=cycle)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        for symbol in symbols:
+            tier = "A" if symbol in TIER_A else "C"
+            entries.append((_result(
+                symbol,
+                tier=tier,
+                dataset_end=dataset_end,
+                result_id=f"expanded-{symbol}-cycle-{cycle:02d}-aaaaaaaaaa",
+            ), received_at))
+    _seed_receipts(database, entries)
+    store = ExpandedResearchStore(database, clock=lambda: NOW)
+    rows = store.history(20)
+    history = ExpandedResearchReadModel(store, authorize=lambda _identity: True).history("user", 20)
+    assert len(rows) == 20 * 97
+    assert len(history["items"]) == 20 and history["limit"] == 20
+    assert all(item["receipt_count"] == 97 and item["coverage_count"] == 97 for item in history["items"])
+    assert history["items"][0]["active_count"] == 97
+    assert all(item["superseded_count"] == 97 for item in history["items"][1:])
+    assert history["items"][-1]["evaluation_date"] == "2026-07-25"
+
+
+def test_history_uses_global_latest_result_when_limited_cycle_excludes_it(tmp_path):
+    database = BacktestQueueDatabase(tmp_path / "backtest.db")
+    selected = _result(dataset_end="2026-08-13", result_id="expanded-AAPL-selected-cycle-aaaaaaaa")
+    global_latest = _result(dataset_end="2026-08-12", result_id="expanded-AAPL-global-latest-aaaaaaaaa")
+    _seed_receipts(database, [
+        (selected, "2026-08-14T11:00:00Z"),
+        (global_latest, "2026-08-14T11:01:00Z"),
+    ])
+    rows = ExpandedResearchStore(database, clock=lambda: NOW).history(1)
+    assert [row["result_id"] for row in rows] == [selected["result_id"]]
+    assert rows[0]["projection_state"] == "superseded"
 
 
 def test_read_model_keeps_active_history_consistent_after_one_result_is_invalidated(tmp_path):

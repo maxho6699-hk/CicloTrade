@@ -8,7 +8,7 @@ live state.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import hashlib
 import hmac
 import json
@@ -23,6 +23,7 @@ RESULT_KIND = "tradeai.expanded-local-research.v1"
 INVALIDATION_KIND = "tradeai.expanded-local-research-invalidation.v1"
 RECEIVER_ENDPOINT = "expanded-equity-research-result"
 UNIVERSE_VERSION = "us-liquid-research-2026-08-13-v1"
+MAX_INVALIDATION_FUTURE_SKEW = timedelta(minutes=5)
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 WORKER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -136,7 +137,7 @@ def validate_result(value: Any) -> dict[str, Any]:
     return normalized
 
 
-def validate_invalidation(value: Any) -> dict[str, Any]:
+def validate_invalidation(value: Any, *, now: datetime | None = None) -> dict[str, Any]:
     item = _object(value, "expanded research invalidation")
     expected = {
         "schema_version", "kind", "invalidation_id", "target_result_id", "symbol",
@@ -156,7 +157,13 @@ def validate_invalidation(value: Any) -> dict[str, Any]:
         raise ExpandedResearchError("expanded research invalidation reason is invalid")
     if item["universe_sha256"] != UNIVERSE_SHA256:
         raise ExpandedResearchError("expanded research invalidation universe hash is invalid")
-    invalidated_at = stamp(parse_timestamp(item["invalidated_at"], "invalidated_at"))
+    invalidated_time = parse_timestamp(item["invalidated_at"], "invalidated_at")
+    reference = now or datetime.now(UTC)
+    if reference.tzinfo is None or reference.utcoffset() is None:
+        raise ExpandedResearchError("invalidation validation clock must include a timezone")
+    if invalidated_time > reference.astimezone(UTC) + MAX_INVALIDATION_FUTURE_SKEW:
+        raise ExpandedResearchError("expanded research invalidated_at is too far in the future")
+    invalidated_at = stamp(invalidated_time)
     if item["authority"] != AUTHORITY:
         raise ExpandedResearchError("expanded research invalidation authority is not shadow-only")
     normalized = {
