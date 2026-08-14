@@ -12,6 +12,7 @@ import subprocess
 import tarfile
 from typing import Any
 import unicodedata
+import stat
 
 
 SCHEMA = "tradeai.web-release.v1"
@@ -48,6 +49,16 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _regular_file_identity(path: Path, limit: int, message: str) -> tuple[int, int, int, int, int]:
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise ReleaseVerificationError(message) from error
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode) or metadata.st_nlink != 1 or metadata.st_size > limit:
+        raise ReleaseVerificationError(message)
+    return metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns
+
+
 def _no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -58,8 +69,7 @@ def _no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def read_manifest(path: Path) -> dict[str, Any]:
-    if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_MEMBER_BYTES:
-        raise ReleaseVerificationError("manifest must be a small regular file")
+    _regular_file_identity(path, MAX_MEMBER_BYTES, "manifest must be a small regular file")
     raw = path.read_bytes()
     try:
         data = json.loads(raw.decode("utf-8"), object_pairs_hook=_no_duplicates)
@@ -129,9 +139,25 @@ def _contains_secret(content: bytes) -> bool:
     return bool(SECRET_ASSIGNMENT.search(content) or (b"-----BEGIN " in content and b"PRIVATE KEY-----" in content))
 
 
-def _tool_hashes() -> dict[str, str]:
-    directory = Path(__file__).resolve().parent
-    return {name: sha256_file(directory / name) for name in ("build_web_release.py", "verify_web_release.py")}
+def _input_hashes(root: Path) -> dict[str, Any]:
+    tracked = _tracked_modes(root)
+    requested = {
+        "requirements_sha256": "requirements.txt",
+        "web_package_lock_sha256": "src/apps/web/package-lock.json",
+        "build_web_release.py": "ops/scripts/build_web_release.py",
+        "verify_web_release.py": "ops/scripts/verify_web_release.py",
+    }
+    hashes: dict[str, str] = {}
+    for name, path in requested.items():
+        record = tracked.get(path)
+        if record is None or record[1] not in {0o100644, 0o100755}:
+            raise ReleaseVerificationError("manifest lock or build inputs mismatch")
+        hashes[name] = hashlib.sha256(_git_blob_bytes(root, record[0])).hexdigest()
+    return {
+        "builders": {name: hashes[name] for name in ("build_web_release.py", "verify_web_release.py")},
+        "requirements_sha256": hashes["requirements_sha256"],
+        "web_package_lock_sha256": hashes["web_package_lock_sha256"],
+    }
 
 
 def _tracked_modes(root: Path) -> dict[str, tuple[str, int]]:
@@ -184,9 +210,9 @@ def _manifest_files(data: dict[str, Any]) -> tuple[list[dict[str, Any]], list[st
             violations.append("manifest contains forbidden release path")
         if not _allowed_release_path(name):
             violations.append("manifest contains a path outside the release allowlist")
-        if not isinstance(item.get("size"), int) or item["size"] < 0 or item["size"] > MAX_MEMBER_BYTES:
+        if type(item.get("size")) is not int or item["size"] < 0 or item["size"] > MAX_MEMBER_BYTES:
             violations.append("manifest file size is invalid")
-        if item.get("mode") not in {0o644, 0o755}:
+        if type(item.get("mode")) is not int or item["mode"] not in {0o644, 0o755}:
             violations.append("manifest file mode is invalid")
         if not isinstance(item.get("sha256"), str) or not HASH.fullmatch(item["sha256"]):
             violations.append("manifest file hash is invalid")
@@ -203,7 +229,7 @@ def _validate_manifest_shape(data: dict[str, Any], root: Path) -> list[str]:
     if data.get("schema") != SCHEMA:
         violations.append("manifest schema mismatch")
     artifact = data.get("artifact")
-    if not isinstance(artifact, dict) or set(artifact) != {"file", "sha256", "size"} or not isinstance(artifact.get("file"), str) or not artifact["file"] or "/" in artifact["file"] or "\\" in artifact["file"] or not HASH.fullmatch(str(artifact.get("sha256", ""))) or not isinstance(artifact.get("size"), int) or artifact["size"] < 0 or artifact["size"] > MAX_ARTIFACT_BYTES:
+    if not isinstance(artifact, dict) or set(artifact) != {"file", "sha256", "size"} or not isinstance(artifact.get("file"), str) or not artifact["file"] or "/" in artifact["file"] or "\\" in artifact["file"] or not HASH.fullmatch(str(artifact.get("sha256", ""))) or type(artifact.get("size")) is not int or artifact["size"] < 0 or artifact["size"] > MAX_ARTIFACT_BYTES:
         violations.append("manifest artifact is invalid")
     source = data.get("source")
     if not isinstance(source, dict) or set(source) != {"baseline", "commit", "tree"}:
@@ -214,7 +240,7 @@ def _validate_manifest_shape(data: dict[str, Any], root: Path) -> list[str]:
         violations.append("manifest lifecycle is not restricted to Rewrite API restart")
     if data.get("migrations") != {"expected_existing": EXPECTED_EXISTING_MIGRATIONS, "required": REQUIRED_MIGRATIONS}:
         violations.append("manifest migration contract mismatch")
-    if not isinstance(data.get("source_date_epoch"), int) or data["source_date_epoch"] < 0:
+    if type(data.get("source_date_epoch")) is not int or data["source_date_epoch"] < 0:
         violations.append("manifest SOURCE_DATE_EPOCH is invalid")
     runtime = data.get("runtime")
     if not isinstance(runtime, dict) or set(runtime) != {"node", "npm", "python"} or not all(isinstance(value, str) and value for value in runtime.values()):
@@ -225,7 +251,7 @@ def _validate_manifest_shape(data: dict[str, Any], root: Path) -> list[str]:
     if not all(isinstance(inputs.get(name), str) and HASH.fullmatch(inputs[name]) for name in ("requirements_sha256", "web_package_lock_sha256")) or not isinstance(inputs.get("builders"), dict) or set(inputs["builders"]) != {"build_web_release.py", "verify_web_release.py"}:
         return violations + ["manifest build inputs are invalid"]
     try:
-        expected_inputs = {"requirements_sha256": sha256_file(root / "requirements.txt"), "web_package_lock_sha256": sha256_file(root / "src/apps/web/package-lock.json"), "builders": _tool_hashes()}
+        expected_inputs = _input_hashes(root)
         if inputs != expected_inputs:
             violations.append("manifest lock or build inputs mismatch")
     except OSError:
@@ -349,6 +375,7 @@ def _release_safety_gate(root: Path, artifact: Path) -> list[str]:
 def verify_release(root: Path, artifact: Path, manifest: Path) -> list[str]:
     root, artifact, manifest = root.resolve(), artifact.absolute(), manifest.absolute()
     try:
+        manifest_identity = _regular_file_identity(manifest, MAX_MEMBER_BYTES, "manifest must be a small regular file")
         data = read_manifest(manifest)
     except (OSError, ReleaseVerificationError) as error:
         return [str(error)]
@@ -357,10 +384,12 @@ def verify_release(root: Path, artifact: Path, manifest: Path) -> list[str]:
     files, file_violations = _manifest_files(data)
     violations.extend(file_violations)
     artifact_data = data.get("artifact") if isinstance(data.get("artifact"), dict) else {}
-    if artifact.is_symlink() or not artifact.is_file() or artifact.stat().st_size > MAX_ARTIFACT_BYTES:
+    try:
+        artifact_identity = _regular_file_identity(artifact, MAX_ARTIFACT_BYTES, "artifact must be a bounded regular file")
+    except ReleaseVerificationError:
         violations.append("artifact must be a bounded regular file")
         return sorted(set(violations))
-    if artifact_data.get("file") != artifact.name or artifact_data.get("size") != artifact.stat().st_size or artifact_data.get("sha256") != sha256_file(artifact):
+    if artifact_data.get("file") != artifact.name or artifact_data.get("size") != artifact_identity[2] or artifact_data.get("sha256") != sha256_file(artifact):
         violations.append("artifact hash mismatch")
     members, archive_violations = _archive_members(artifact, data.get("source_date_epoch", -1))
     violations.extend(archive_violations)
@@ -384,6 +413,14 @@ def verify_release(root: Path, artifact: Path, manifest: Path) -> list[str]:
             violations.append("archive member does not match tracked Git blob")
     violations.extend(_verify_dist(members))
     violations.extend(_release_safety_gate(root, artifact))
+    violations.extend(_verify_identity(data, root))
+    try:
+        if _regular_file_identity(manifest, MAX_MEMBER_BYTES, "manifest must be a small regular file") != manifest_identity:
+            violations.append("manifest changed during verification")
+        if _regular_file_identity(artifact, MAX_ARTIFACT_BYTES, "artifact must be a bounded regular file") != artifact_identity:
+            violations.append("artifact changed during verification")
+    except ReleaseVerificationError:
+        violations.append("manifest or artifact changed during verification")
     return sorted(set(violations))
 
 

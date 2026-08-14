@@ -4,6 +4,7 @@ import gzip
 import hashlib
 import importlib.util
 from io import BytesIO
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -68,6 +69,10 @@ def _source_repo(tmp_path: Path) -> Path:
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
+    for name, module in (("build_web_release.py", builder), ("verify_web_release.py", verifier)):
+        path = root / "ops/scripts" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(Path(module.__file__).read_bytes())
     _run(root, "add", ".")
     _run(root, "commit", "-m", "fixture")
     return root
@@ -156,6 +161,25 @@ def test_builder_rechecks_clean_source_after_archive_write(tmp_path: Path, monke
         builder.build_release(root, artifact, manifest, baseline=_run(root, "rev-parse", "HEAD"), source_date_epoch=1)
 
 
+def test_builder_rechecks_source_after_manifest_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = _source_repo(tmp_path)
+    artifact = tmp_path / "release.tar.gz"
+    manifest = tmp_path / "release.json"
+    original = builder._assert_source_snapshot
+    calls = 0
+
+    def mutate_after_manifest(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            (root / "app.py").write_text("changed\n", encoding="utf-8")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(builder, "_assert_source_snapshot", mutate_after_manifest)
+    with pytest.raises(builder.ReleaseBuildError, match="source repository is not clean"):
+        builder.build_release(root, artifact, manifest, baseline=_run(root, "rev-parse", "HEAD"), source_date_epoch=1)
+
+
 def test_rejects_tampered_manifest_archive_and_blob_binding(tmp_path: Path) -> None:
     root = _source_repo(tmp_path)
     artifact, manifest, _ = _bundle(root, tmp_path)
@@ -163,6 +187,28 @@ def test_rejects_tampered_manifest_archive_and_blob_binding(tmp_path: Path) -> N
     data["files"][0]["source"] = "0" * 40
     _write_manifest(manifest, data)
     assert any("tracked source" in item for item in verifier.verify_release(root, artifact, manifest))
+
+
+def test_rejects_rebound_artifact_when_member_differs_from_git_blob(tmp_path: Path) -> None:
+    root = _source_repo(tmp_path)
+    artifact, manifest, _ = _bundle(root, tmp_path)
+    rewritten = tmp_path / "rewritten.tar.gz"
+    with tarfile.open(artifact, "r:gz") as old, rewritten.open("wb") as destination:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=destination, mtime=1) as compressed:
+            with tarfile.open(mode="w", fileobj=compressed, format=tarfile.USTAR_FORMAT) as new:
+                for member in old.getmembers():
+                    content = old.extractfile(member).read()
+                    if member.name == "app.py":
+                        content = b"tampered = True\n"
+                        member.size = len(content)
+                    new.addfile(member, BytesIO(content))
+    data = verifier.read_manifest(manifest)
+    app = next(item for item in data["files"] if item["path"] == "app.py")
+    app["sha256"] = hashlib.sha256(b"tampered = True\n").hexdigest()
+    app["size"] = len(b"tampered = True\n")
+    _write_manifest(manifest, data)
+    _rebind_artifact(rewritten, manifest)
+    assert "archive member does not match tracked Git blob" in verifier.verify_release(root, rewritten, manifest)
 
 
 def test_rejects_manifest_extra_keys_and_collisions(tmp_path: Path) -> None:
@@ -237,3 +283,46 @@ def test_rejects_mode_size_and_member_count_boundaries(tmp_path: Path, monkeypat
 
     monkeypatch.setattr(verifier, "MAX_MEMBERS", 1)
     assert "archive has too many members" in verifier.verify_release(root, artifact, manifest)
+
+
+def test_manifest_integer_fields_reject_booleans(tmp_path: Path) -> None:
+    root = _source_repo(tmp_path)
+    artifact, manifest, _ = _bundle(root, tmp_path)
+    data = verifier.read_manifest(manifest)
+    data["artifact"]["size"] = True
+    data["files"][0]["size"] = True
+    data["files"][0]["mode"] = True
+    data["source_date_epoch"] = True
+    _write_manifest(manifest, data)
+    violations = verifier.verify_release(root, artifact, manifest)
+    assert "manifest artifact is invalid" in violations
+    assert "manifest file size is invalid" in violations
+    assert "manifest file mode is invalid" in violations
+    assert "manifest SOURCE_DATE_EPOCH is invalid" in violations
+
+
+def test_verifier_rejects_manifest_or_artifact_path_replacement(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = _source_repo(tmp_path)
+    artifact, manifest, _ = _bundle(root, tmp_path)
+    replacement = tmp_path / "replacement.tar.gz"
+    replacement.write_bytes(artifact.read_bytes())
+    original_members = verifier._archive_members
+
+    def replace_artifact(*args, **kwargs):
+        os.replace(replacement, artifact)
+        return original_members(*args, **kwargs)
+
+    monkeypatch.setattr(verifier, "_archive_members", replace_artifact)
+    assert "artifact changed during verification" in verifier.verify_release(root, artifact, manifest)
+    monkeypatch.setattr(verifier, "_archive_members", original_members)
+
+    replacement_manifest = tmp_path / "replacement.json"
+    replacement_manifest.write_bytes(manifest.read_bytes())
+    original_shape = verifier._validate_manifest_shape
+
+    def replace_manifest(*args, **kwargs):
+        os.replace(replacement_manifest, manifest)
+        return original_shape(*args, **kwargs)
+
+    monkeypatch.setattr(verifier, "_validate_manifest_shape", replace_manifest)
+    assert "manifest changed during verification" in verifier.verify_release(root, artifact, manifest)

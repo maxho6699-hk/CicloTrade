@@ -33,16 +33,17 @@ manifest by hand.
 ## What the gate binds
 
 The canonical JSON manifest binds the exact Git commit, tree, reviewed
-baseline, artifact SHA-256 and size, requirements and Web lockfile hashes,
-both tooling hashes, runtime versions, `SOURCE_DATE_EPOCH`, and every archive
+baseline, artifact SHA-256 and size, Git-blob hashes for requirements, the Web
+lockfile, and both tooling files, runtime versions, `SOURCE_DATE_EPOCH`, and every archive
 file's path, SHA-256, size, mode, and Git blob identity.
 
 The builder packages only the website runtime allowlist and writes each file
 from its Git blob. It verifies the checkout is clean and unchanged again after
-the archive closes. Verification streams tar members, rejects non-canonical
+the archive closes and after writing the manifest. Verification streams tar members, rejects non-canonical
 gzip/tar metadata, archive bombs, unsafe modes, path traversal,
 case-insensitive or Unicode-colliding paths, missing or extra entries, secrets,
-changed source identity, dirty checkouts, changed inputs, and stale Git blobs.
+changed source identity, dirty checkouts, changed inputs, stale Git blobs, and
+manifest/artifact replacement during verification.
 
 Only one lifecycle action is permitted: `restart` of
 `ciclotrade-rewrite-api.service`. No OpenD action, broker action, database

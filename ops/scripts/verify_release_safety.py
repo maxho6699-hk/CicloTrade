@@ -11,9 +11,10 @@ import json
 from pathlib import Path, PurePosixPath
 import re
 import shlex
+import stat
 import subprocess
 import tarfile
-from typing import Iterable
+from typing import Callable, Iterable
 import unicodedata
 import zipfile
 
@@ -27,7 +28,7 @@ ALLOWED_ACTION = "restart"
 FORBIDDEN_COMPONENT = re.compile(
     r"(?:\bfutu\s*-?\s*opend\b|\bfutuopend\b|\bopend\b)", re.IGNORECASE
 )
-COMMAND_BOUNDARY = re.compile(r"(?<![\w.-])(?:(?P<sudo>sudo)(?P<sudo_args>(?:[ \t]+\S+)*?)[ \t]+)?(?P<command>systemctl|service|futu[ \t]*-?[ \t]*opend|futuopend|opend)(?:\.exe)?(?![\w.-])(?=[ \t])(?=(?:[^\n`]*\b(?:start|stop|restart|reload|try-reload|reload-or-restart|reload-or-try-restart|login|relogin|migrate|kill|enable|disable|daemon-reload)\b))", re.IGNORECASE)
+COMMAND_BOUNDARY = re.compile(r"(?<![\w.-])(?:(?P<sudo>sudo)(?P<sudo_args>(?:[ \t]+\S+)*?)[ \t]+)?(?P<command>systemctl|service|futu[ \t]*-?[ \t]*opend|futuopend|opend)(?:\.exe)?(?![\w.-])(?=[ \t])", re.IGNORECASE)
 COMMAND_END = re.compile(r"(?:;|&&|\|\||\||\n|`|\))")
 OPEND_ACTIONS = frozenset({"start", "stop", "restart", "reload", "try-reload", "reload-or-restart", "reload-or-try-restart", "login", "relogin", "migrate", "kill", "enable", "disable", "daemon-reload"})
 SERVICE_LIFECYCLE_ACTIONS = OPEND_ACTIONS
@@ -39,6 +40,7 @@ TEXT_SUFFIXES = {
     ".bat", ".cmd", ".conf", ".env", ".ini", ".json", ".md", ".ps1", ".py", ".service",
     ".sh", ".txt", ".toml", ".yaml", ".yml",
 }
+PROCESS_SPAWN = re.compile(r"\b(?:subprocess\.(?:run|call|Popen|check_call|check_output)|os\.system|child_process\.(?:exec|execFile|spawn|spawnSync)|(?:execFile|spawn))\s*\(", re.IGNORECASE)
 
 
 class SafetyError(ValueError):
@@ -54,9 +56,13 @@ def _normalise_member_name(name: str) -> str:
 
 
 def _safe_artifact(path: Path) -> None:
-    if path.is_symlink() or not path.is_file():
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise SafetyError("artifact must be a regular file") from error
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode) or metadata.st_nlink != 1:
         raise SafetyError("artifact must be a regular file")
-    if path.stat().st_size > MAX_ARTIFACT_BYTES:
+    if metadata.st_size > MAX_ARTIFACT_BYTES:
         raise SafetyError("artifact exceeds maximum size")
 
 
@@ -122,6 +128,23 @@ def _markdown_command_fragments(text: str) -> Iterable[str]:
         yield match.group(1) if match.group(1) is not None else match.group(2)
 
 
+def _dequote_fragments(text: str) -> str:
+    """Expose shell quote-fragmented executable names and actions."""
+    return text.replace("'", "").replace('"', "")
+
+
+def _scan_process_spawns(label: str, text: str) -> list[str]:
+    """Reject lifecycle/OpenD commands embedded in Python or Node spawn APIs."""
+    violations: list[str] = []
+    for match in PROCESS_SPAWN.finditer(text):
+        segment = text[match.start():text.find("\n", match.start()) if text.find("\n", match.start()) >= 0 else len(text)]
+        collapsed = re.sub(r"[^a-z0-9]", "", _dequote_fragments(segment).casefold())
+        has_lifecycle = any(action.replace("-", "") in collapsed for action in SERVICE_LIFECYCLE_ACTIONS)
+        if has_lifecycle and ("systemctl" in collapsed or "futuopend" in collapsed or "opend" in collapsed):
+            violations.append(f"{label}: process-spawn lifecycle invocation")
+    return violations
+
+
 def _scan_command_text(label: str, content: bytes) -> list[str]:
     violations: list[str] = []
     try:
@@ -130,42 +153,47 @@ def _scan_command_text(label: str, content: bytes) -> list[str]:
         return [f"{label}: invalid or NUL-obfuscated release text"]
     fragments = _markdown_command_fragments(text) if Path(label).suffix.lower() == ".md" else [text]
     for fragment in fragments:
-        for match in COMMAND_BOUNDARY.finditer(fragment):
-            if _command_segment_prefix(fragment, match.start()):
-                violations.append(f"{label}: non-standard command wrapper")
-                continue
-            if match.group("sudo") and match.group("sudo_args"):
-                violations.append(f"{label}: non-standard sudo wrapper")
-                continue
-            try:
-                tokens = _command_tokens(fragment, match)
-            except SafetyError:
-                return [f"{label}: malformed release command"]
-            if not tokens:
-                continue
-            command = _command_identity(match.group("command"))
-            arguments = tokens[1:]
-            action_index = _lifecycle_index(arguments)
-            if command in {"futuopend", "opend"}:
-                if action_index is not None:
+        for candidate in {fragment, _dequote_fragments(fragment)}:
+            for match in COMMAND_BOUNDARY.finditer(candidate):
+                end = COMMAND_END.search(candidate, match.end())
+                remainder = candidate[match.end():end.start() if end else len(candidate)]
+                if not any(re.search(rf"(?<![\w-]){re.escape(action)}(?![\w-])", remainder, re.IGNORECASE) for action in SERVICE_LIFECYCLE_ACTIONS):
+                    continue
+                try:
+                    tokens = _command_tokens(candidate, match)
+                except SafetyError:
+                    return [f"{label}: malformed release command"]
+                if not tokens:
+                    continue
+                command = _command_identity(match.group("command"))
+                arguments = tokens[1:]
+                action_index = _lifecycle_index(arguments)
+                if action_index is None:
+                    continue
+                if _command_segment_prefix(candidate, match.start()):
+                    violations.append(f"{label}: non-standard command wrapper")
+                    continue
+                if match.group("sudo") and match.group("sudo_args"):
+                    violations.append(f"{label}: non-standard sudo wrapper")
+                    continue
+                if command in {"futuopend", "opend"}:
                     violations.append(f"{label}: OpenD lifecycle invocation")
-                continue
-            if command == "service":
-                if action_index is not None:
+                    continue
+                if command == "service":
                     violations.append(f"{label}: non-whitelisted service action")
-                continue
-            if action_index is None:
-                continue
-            # Every lifecycle action is denied unless it exactly restarts the one
-            # approved Rewrite API unit. Read-only status commands are not actions.
-            if command != "systemctl":
-                violations.append(f"{label}: non-whitelisted service action")
-                continue
-            if any(argument != "--no-block" for argument in arguments[:action_index]):
-                violations.append(f"{label}: non-whitelisted systemctl option")
-                continue
-            if action_index != len(arguments) - 2 or arguments[action_index].lower() != ALLOWED_ACTION or arguments[action_index + 1].lower() != ALLOWED_SERVICE:
-                violations.append(f"{label}: non-whitelisted service action")
+                    continue
+                # Every lifecycle action is denied unless it exactly restarts the one
+                # approved Rewrite API unit. Read-only status commands are not actions.
+                if command != "systemctl":
+                    violations.append(f"{label}: non-whitelisted service action")
+                    continue
+                if any(argument != "--no-block" for argument in arguments[:action_index]):
+                    violations.append(f"{label}: non-whitelisted systemctl option")
+                    continue
+                if action_index != len(arguments) - 2 or arguments[action_index].lower() != ALLOWED_ACTION or arguments[action_index + 1].lower() != ALLOWED_SERVICE:
+                    violations.append(f"{label}: non-whitelisted service action")
+    if Path(label).suffix.lower() in {".py", ".js", ".ts", ".tsx"}:
+        violations.extend(_scan_process_spawns(label, text))
     return violations
 
 
@@ -200,11 +228,13 @@ def scan_tracked_surface(root: Path) -> list[str]:
     return violations
 
 
-def _scan_archive_members(members: Iterable[tuple[str, int, bool, bytes | None]]) -> list[str]:
+def _scan_archive_members(members: Iterable[tuple[str, int, bool, bytes | Callable[[], bytes] | None]]) -> list[str]:
     violations: list[str] = []
     count = 0
     total = 0
-    for name, size, is_link, content in members:
+    names: set[str] = set()
+    collisions: set[str] = set()
+    for name, size, is_regular, content in members:
         count += 1
         if count > MAX_MEMBERS:
             return ["artifact has too many members"]
@@ -213,10 +243,18 @@ def _scan_archive_members(members: Iterable[tuple[str, int, bool, bytes | None]]
         except SafetyError as error:
             violations.append(str(error))
             continue
-        if is_link:
-            violations.append(f"{name}: symbolic links are forbidden")
+        if name in names:
+            violations.append("artifact has duplicate member paths")
             continue
-        if size > MAX_MEMBER_BYTES:
+        names.add(name)
+        key = unicodedata.normalize("NFKC", name).casefold()
+        if key in collisions:
+            violations.append("artifact has casefold or Unicode member path collisions")
+        collisions.add(key)
+        if not is_regular:
+            violations.append(f"{name}: non-regular archive entry is forbidden")
+            continue
+        if type(size) is not int or size < 0 or size > MAX_MEMBER_BYTES:
             violations.append(f"{name}: release entry exceeds maximum size")
             return violations
         total += size
@@ -225,6 +263,8 @@ def _scan_archive_members(members: Iterable[tuple[str, int, bool, bytes | None]]
         if not _release_path_allowed(name):
             violations.append(f"{name}: forbidden OpenD release path")
             continue
+        if callable(content):
+            content = content()
         if content is not None and (Path(name).suffix.lower() in TEXT_SUFFIXES or content.startswith(b"#!")):
             violations.extend(_scan_command_text(name, content))
     return violations
@@ -236,20 +276,22 @@ def scan_artifact(path: Path) -> list[str]:
         with tarfile.open(path, "r|*") as archive:
             def stream_members() -> Iterable[tuple[str, int, bool, bytes | None]]:
                 for member in archive:
-                    content = None
-                    if member.isfile() and member.size <= MAX_MEMBER_BYTES:
+                    def content(member=member) -> bytes:
                         handle = archive.extractfile(member)
-                        content = handle.read(MAX_MEMBER_BYTES + 1) if handle else b""
-                    yield member.name, member.size, member.issym() or member.islnk(), content
+                        return handle.read(member.size + 1) if handle else b""
+
+                    yield member.name, member.size, member.isfile(), content
 
             return _scan_archive_members(stream_members())
     if zipfile.is_zipfile(path):
         with zipfile.ZipFile(path) as archive:
-            return _scan_archive_members(
-                (info.filename, info.file_size, bool((info.external_attr >> 16) & 0o170000 == 0o120000),
-                 archive.read(info, pwd=None) if not info.is_dir() and info.file_size <= MAX_MEMBER_BYTES else None)
-                for info in archive.infolist()
-            )
+            def members() -> Iterable[tuple[str, int, bool, bytes | Callable[[], bytes] | None]]:
+                for info in archive.infolist():
+                    kind = (info.external_attr >> 16) & 0o170000
+                    regular = not info.is_dir() and kind in {0, 0o100000}
+                    yield info.filename, info.file_size, regular, lambda info=info: archive.read(info, pwd=None)
+
+            return _scan_archive_members(members())
     raise SafetyError("artifact must be a tar or zip archive")
 
 
@@ -265,6 +307,8 @@ def scan_manifest(path: Path) -> list[str]:
     if path.stat().st_size > MAX_MEMBER_BYTES:
         raise SafetyError("manifest exceeds maximum size")
     violations: list[str] = []
+    names: set[str] = set()
+    collisions: set[str] = set()
     for raw in path.read_text(encoding="utf-8", errors="strict").splitlines():
         entry = raw.strip()
         if not entry or entry.startswith("#"):
@@ -275,6 +319,13 @@ def scan_manifest(path: Path) -> list[str]:
         except SafetyError as error:
             violations.append(str(error))
             continue
+        if name in names:
+            violations.append("manifest has duplicate member paths")
+        names.add(name)
+        key = unicodedata.normalize("NFKC", name).casefold()
+        if key in collisions:
+            violations.append("manifest has casefold or Unicode member path collisions")
+        collisions.add(key)
         if not _release_path_allowed(name):
             violations.append(f"{name}: forbidden OpenD release path")
     return violations

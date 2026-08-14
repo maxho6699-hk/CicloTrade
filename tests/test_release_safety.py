@@ -80,6 +80,26 @@ def test_policy_prose_does_not_count_as_a_lifecycle_invocation(tmp_path, monkeyp
     assert release_safety.scan_tracked_surface(tmp_path) == []
 
 
+def test_quote_fragmented_and_process_spawn_lifecycle_are_rejected(tmp_path, monkeypatch):
+    source = tmp_path / "ops/deploy.py"
+    source.parent.mkdir(exist_ok=True)
+    source.write_text('subprocess.run(["sys" "temctl", "re" "start", "legacy.service"])')
+    shell = tmp_path / "ops/deploy.sh"
+    shell.write_text('sys"temctl" re"start" legacy.service')
+    monkeypatch.setattr(release_safety, "tracked_release_surface", lambda _root: [source, shell])
+    violations = release_safety.scan_tracked_surface(tmp_path)
+    assert any("process-spawn lifecycle" in item for item in violations)
+    assert any("non-whitelisted service action" in item for item in violations)
+
+
+def test_policy_prose_with_lifecycle_words_is_not_an_invocation(tmp_path, monkeypatch):
+    source = tmp_path / "docs/rewrite/policy.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("Policy prose forbids systemctl restart and any OpenD lifecycle action.")
+    monkeypatch.setattr(release_safety, "tracked_release_surface", lambda _root: [source])
+    assert release_safety.scan_tracked_surface(tmp_path) == []
+
+
 @pytest.mark.parametrize("contents", [
     b"\xff\xfes\x00y\x00s\x00t\x00e\x00m\x00c\x00t\x00l\x00 \x00r\x00e\x00l\x00o\x00a\x00d\x00 \x00c\x00i\x00c\x00l\x00o\x00t\x00r\x00a\x00d\x00e\x00-\x00r\x00e\x00w\x00r\x00i\x00t\x00e\x00-\x00a\x00p\x00i\x00.\x00s\x00e\x00r\x00v\x00i\x00c\x00e\x00",
     b"systemctl re\x00start ciclotrade-rewrite-api.service",
@@ -155,6 +175,14 @@ def test_rejects_path_traversal_and_opend_entries_in_artifact_manifest(tmp_path)
     assert release_safety.scan_manifest(manifest)
 
 
+def test_manifest_rejects_exact_and_unicode_collisions(tmp_path):
+    manifest = tmp_path / "release.MANIFEST.txt"
+    manifest.write_text("a" * 64 + "  app.py\n" + "b" * 64 + "  app.py\n" + "c" * 64 + "  Ａpp.py\n")
+    violations = release_safety.scan_manifest(manifest)
+    assert "manifest has duplicate member paths" in violations
+    assert "manifest has casefold or Unicode member path collisions" in violations
+
+
 def test_rejects_zip_symlink_and_oversized_member_without_extracting(tmp_path, monkeypatch):
     archive_path = tmp_path / "bad.zip"
     with zipfile.ZipFile(archive_path, "w") as archive:
@@ -165,6 +193,25 @@ def test_rejects_zip_symlink_and_oversized_member_without_extracting(tmp_path, m
     monkeypatch.setattr(release_safety, "MAX_MEMBER_BYTES", 1)
     oversized = _tar(tmp_path / "large.tar.gz", {"app.py": b"12"})
     assert release_safety.scan_artifact(oversized)
+
+
+def test_rejects_archive_special_members_and_path_collisions(tmp_path):
+    archive_path = tmp_path / "special.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        directory = tarfile.TarInfo("directory")
+        directory.type = tarfile.DIRTYPE
+        archive.addfile(directory)
+        hardlink = tarfile.TarInfo("hardlink")
+        hardlink.type = tarfile.LNKTYPE
+        hardlink.linkname = "target"
+        archive.addfile(hardlink)
+        for name in ("app.py", "Ａpp.py"):
+            info = tarfile.TarInfo(name)
+            info.size = 4
+            archive.addfile(info, BytesIO(b"pass"))
+    violations = release_safety.scan_artifact(archive_path)
+    assert any("non-regular archive entry" in item for item in violations)
+    assert "artifact has casefold or Unicode member path collisions" in violations
 
 
 def test_tar_scanner_streams_and_fails_before_reading_oversized_member(tmp_path, monkeypatch):
@@ -186,6 +233,31 @@ def test_tar_scanner_streams_and_fails_before_reading_oversized_member(tmp_path,
 
     path = tmp_path / "unused.tar.gz"
     path.write_bytes(b"placeholder")
+    monkeypatch.setattr(release_safety.tarfile, "is_tarfile", lambda _path: True)
+    monkeypatch.setattr(release_safety.tarfile, "open", lambda *args, **kwargs: FakeArchive())
+    assert release_safety.scan_artifact(path)
+
+
+def test_archive_aggregate_limit_is_checked_before_triggering_member_read(tmp_path, monkeypatch):
+    member = tarfile.TarInfo("bomb")
+    member.size = 2
+
+    class FakeArchive:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def __iter__(self):
+            return iter((member,))
+
+        def extractfile(self, _member):
+            raise AssertionError("aggregate-limit payload must not be read")
+
+    path = tmp_path / "unused.tar.gz"
+    path.write_bytes(b"placeholder")
+    monkeypatch.setattr(release_safety, "MAX_TOTAL_MEMBER_BYTES", 1)
     monkeypatch.setattr(release_safety.tarfile, "is_tarfile", lambda _path: True)
     monkeypatch.setattr(release_safety.tarfile, "open", lambda *args, **kwargs: FakeArchive())
     assert release_safety.scan_artifact(path)

@@ -14,6 +14,7 @@ import stat
 import subprocess
 import tarfile
 from typing import Any
+import unicodedata
 
 
 SCHEMA = "tradeai.web-release.v1"
@@ -33,6 +34,10 @@ ALLOWED_PREFIXES = (
     "src/packages/contracts/", "src/apps/web/dist/",
 )
 BUILDER_FILES = ("build_web_release.py", "verify_web_release.py")
+INPUT_FILES = {
+    "requirements_sha256": "requirements.txt",
+    "web_package_lock_sha256": "src/apps/web/package-lock.json",
+}
 
 
 class ReleaseBuildError(ValueError):
@@ -122,7 +127,11 @@ def _release_records(root: Path) -> list[tuple[str, str, int]]:
     required.update(f"migrations/{name}" for name in REQUIRED_MIGRATIONS)
     if required - paths:
         raise ReleaseBuildError("release allowlist is missing required runtime inputs")
-    return sorted(records)
+    ordered = sorted(records)
+    collisions = {unicodedata.normalize("NFKC", path).casefold() for path, _, _ in ordered}
+    if len(collisions) != len(ordered):
+        raise ReleaseBuildError("release paths have casefold or Unicode collisions")
+    return ordered
 
 
 def _safe_source_file(root: Path, relative: str, git_mode: int) -> tuple[Path, int]:
@@ -172,15 +181,21 @@ def _source_date_epoch(root: Path, requested: int | None) -> int:
     return int(_git(root, "show", "-s", "--format=%ct", "HEAD"))
 
 
-def _builder_hashes() -> dict[str, str]:
-    directory = Path(__file__).resolve().parent
-    result: dict[str, str] = {}
-    for name in BUILDER_FILES:
-        path = directory / name
-        if not path.is_file() or path.is_symlink():
+def _input_hashes(root: Path) -> dict[str, Any]:
+    tracked = {path: (blob, mode) for path, blob, mode in _tracked_records(root)}
+    requested = dict(INPUT_FILES)
+    requested.update({name: f"ops/scripts/{name}" for name in BUILDER_FILES})
+    hashes: dict[str, str] = {}
+    for name, path in requested.items():
+        record = tracked.get(path)
+        if record is None or record[1] not in {0o100644, 0o100755}:
             raise ReleaseBuildError("release builder input is unavailable")
-        result[name] = sha256_file(path)
-    return result
+        hashes[name] = sha256_bytes(_git_blob_bytes(root, record[0]))
+    return {
+        "builders": {name: hashes[name] for name in BUILDER_FILES},
+        "requirements_sha256": hashes["requirements_sha256"],
+        "web_package_lock_sha256": hashes["web_package_lock_sha256"],
+    }
 
 
 def build_release(root: Path, artifact: Path, manifest: Path, *, baseline: str, source_date_epoch: int | None = None) -> dict[str, Any]:
@@ -206,6 +221,7 @@ def build_release(root: Path, artifact: Path, manifest: Path, *, baseline: str, 
         raise ReleaseBuildError("SOURCE_DATE_EPOCH must be non-negative")
     records = _release_records(root)
     _assert_source_snapshot(root, commit, tree, records)
+    inputs = _input_hashes(root)
     files: list[dict[str, Any]] = []
     artifact.parent.mkdir(parents=True, exist_ok=True)
     with artifact.open("wb") as destination:
@@ -223,12 +239,10 @@ def build_release(root: Path, artifact: Path, manifest: Path, *, baseline: str, 
                     archive.addfile(info, BytesIO(content))
                     files.append({"mode": mode, "path": relative, "sha256": sha256_bytes(content), "size": len(content), "source": blob})
     _assert_source_snapshot(root, commit, tree, records)
-    requirements = root / "requirements.txt"
-    package_lock = root / "src/apps/web/package-lock.json"
     data: dict[str, Any] = {
         "artifact": {"file": artifact.name, "sha256": sha256_file(artifact), "size": artifact.stat().st_size},
         "files": files,
-        "inputs": {"builders": _builder_hashes(), "requirements_sha256": sha256_file(requirements), "web_package_lock_sha256": sha256_file(package_lock)},
+        "inputs": inputs,
         "lifecycle": LIFECYCLE,
         "migrations": {"expected_existing": list(EXPECTED_EXISTING_MIGRATIONS), "required": list(REQUIRED_MIGRATIONS)},
         "runtime": {"node": _runtime_version("node"), "npm": _runtime_version("npm"), "python": platform.python_version()},
@@ -238,6 +252,7 @@ def build_release(root: Path, artifact: Path, manifest: Path, *, baseline: str, 
     }
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_bytes(canonical_json(data))
+    _assert_source_snapshot(root, commit, tree, records)
     return data
 
 
