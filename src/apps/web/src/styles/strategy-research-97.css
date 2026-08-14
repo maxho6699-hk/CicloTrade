@@ -27,6 +27,8 @@
 .strategy-research-97-summary .panel-heading p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
 .strategy-research-97-disclaimer { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--warning) 7%, var(--surface)); color: var(--muted); font-size: 12px; line-height: 1.55; }
 .strategy-research-97-disclaimer svg { flex: 0 0 auto; margin-top: 1px; color: var(--warning); }
+.strategy-research-97-disclaimer > span { display: grid; gap: 3px; min-width: 0; }
+.strategy-research-97-disclaimer strong { color: var(--text); font-size: 11px; font-weight: 600; }
 .strategy-research-97-partial { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 11px 15px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--warning) 8%, var(--surface)); color: var(--warning); font-size: 12px; line-height: 1.55; }
 .strategy-research-97-partial svg { flex: 0 0 auto; margin-top: 1px; }
 .strategy-research-97-lineage { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; padding: 13px 16px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--surface-subtle) 72%, transparent); }

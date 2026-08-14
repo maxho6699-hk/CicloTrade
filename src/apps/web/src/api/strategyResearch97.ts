@@ -13,6 +13,8 @@ export type StrategyResearch97DataState = 'fresh' | 'stale' | 'missing'
 
 export interface StrategyResearch97Authority {
   publication_ceiling: 'shadow'
+  projection_scope: 'authenticated_research'
+  source_user_visible: false
   research_only: true
   actionable: false
   outbound: false
@@ -245,8 +247,10 @@ function count(value: unknown): value is number {
 }
 
 function validAuthority(value: unknown): value is StrategyResearch97Authority {
-  return exactKeys(value, ['publication_ceiling', 'research_only', 'actionable', 'outbound', 'execution', 'official', 'live'])
+  return exactKeys(value, ['publication_ceiling', 'projection_scope', 'source_user_visible', 'research_only', 'actionable', 'outbound', 'execution', 'official', 'live'])
     && value.publication_ceiling === 'shadow'
+    && value.projection_scope === 'authenticated_research'
+    && value.source_user_visible === false
     && value.research_only === true
     && value.actionable === false
     && value.outbound === false

@@ -13,7 +13,8 @@ import {
 } from '../src/api/strategyResearch97.ts'
 
 const authority = {
-  publication_ceiling: 'shadow', research_only: true, actionable: false, outbound: false,
+  publication_ceiling: 'shadow', projection_scope: 'authenticated_research', source_user_visible: false,
+  research_only: true, actionable: false, outbound: false,
   execution: false, official: false, live: false,
 } as const
 const hash = 'a'.repeat(64)
@@ -61,6 +62,8 @@ test('accepts the strict expanded-research authority and 97-symbol coverage', ()
 
 test('fails closed when authority, universe count, or missing-data signal is unsafe', () => {
   assert.equal(validStrategyResearch97Status({ ...status, authority: { ...authority, actionable: true } }), false)
+  assert.equal(validStrategyResearch97Status({ ...status, authority: { ...authority, source_user_visible: true } }), false)
+  assert.equal(validStrategyResearch97Status({ ...status, authority: { ...authority, projection_scope: 'public' as never } }), false)
   assert.equal(validStrategyResearch97Status({ ...status, universe: { ...universe, count: 13 } }), false)
   assert.equal(validStrategyResearch97Latest({ ...latest, cycle: { ...latest.cycle, symbols: latest.cycle.symbols.map((item, index) => index === 96 ? { ...item, signal: 'long' } : item) } }), false)
   assert.equal(validStrategyResearch97Aggregate({ status, latest: { ...latest, cycle: { ...latest.cycle, evidence: { ...latest.cycle.evidence, universe_sha256: 'f'.repeat(64) } } }, history }), false)
@@ -195,6 +198,7 @@ test('panel keeps touch-safe focus styles and a zero-result state', async () => 
   const panel = await readFile(new URL('../src/components/StrategyResearch97Panel.tsx', import.meta.url), 'utf8')
   const styles = await readFile(new URL('../src/styles/strategy-research-97.css', import.meta.url), 'utf8')
   assert.match(panel, /text\.noMatches/)
+  assert.match(panel, /text\.projection/)
   assert.match(styles, /focus-visible/)
   assert.match(styles, /min-height: 44px/)
   assert.match(styles, /max-width: 390px/)
