@@ -98,7 +98,8 @@ class ExpandedResearchReceiver:
             raise ExpandedResearchReceiverError(str(exc), 400) from exc
         return {
             "accepted": True, "created": bool(stored["created"]), "receipt_key": stored["receipt_key"],
-            "result_id": stored["result_id"], "evidence_sha256": stored["payload_sha256"], "state": "shadow",
+            "result_id": stored["result_id"], "payload_sha256": stored["payload_sha256"],
+            "result_sha256": stored["payload_sha256"], "state": "shadow",
             "research_only": True, "shadow": True, "actionable": False, "outbound": False,
             "user_visible": False, "execution": False, "official": False, "live": False,
         }

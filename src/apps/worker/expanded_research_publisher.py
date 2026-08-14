@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 import argparse
+from datetime import datetime, timedelta
 import json
+import os
 from pathlib import Path
 import sqlite3
 from typing import Any, Callable, Mapping, Protocol
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 from urllib.parse import urlparse
-import os
+from urllib.request import Request, urlopen
 
 from core.compat import UTC
 from core.expanded_research_contracts import (
@@ -25,6 +25,8 @@ from core.expanded_research_contracts import (
 
 
 MAX_BATCH = 1
+MAX_SOURCE_SCAN = 97
+SOURCE_PAGE_SIZE = 16
 LEASE_SECONDS = 120
 
 
@@ -57,15 +59,16 @@ class ExpandedResearchPublisher:
         self.state_database = Path(state_database).resolve()
         if self.source_spool == self.state_database:
             raise ValueError("expanded publisher source and state databases must be isolated")
-        parsed = urlparse(str(base_url).rstrip("/"))
-        if parsed.scheme != "https" and parsed.hostname not in {"127.0.0.1", "localhost"}:
-            raise ValueError("expanded publisher requires HTTPS outside localhost")
+        normalized_base_url = str(base_url).rstrip("/")
+        parsed = urlparse(normalized_base_url)
+        if normalized_base_url != "https://ciclotrade.com" or parsed.scheme != "https" or parsed.hostname != "ciclotrade.com":
+            raise ValueError("expanded publisher base_url is not the sealed CicloTrade endpoint")
         secret = shared_secret.encode("utf-8") if isinstance(shared_secret, str) else shared_secret
         if not isinstance(secret, bytes) or len(secret) < 32:
             raise ValueError("expanded publisher shared secret must contain at least 32 bytes")
         if not worker_id or len(worker_id) > 128:
             raise ValueError("expanded publisher worker_id is invalid")
-        self.base_url = str(base_url).rstrip("/")
+        self.base_url = normalized_base_url
         self._secret = secret
         self.worker_id = worker_id
         self.enabled = bool(enabled)
@@ -86,7 +89,7 @@ class ExpandedResearchPublisher:
             for row in self._pending_rows(limit):
                 result_id = str(row["result_id"])
                 key = f"expanded97-{result_id}"
-                body = self._canonical_source_body(row["payload_json"])
+                body = self._canonical_source_body(row["payload_json"], row["payload_sha256"])
                 sent_at = stamp(self._now())
                 body_sha = sha256_bytes(body)
                 headers = {
@@ -104,6 +107,7 @@ class ExpandedResearchPublisher:
                 self._mark_attempt(result_id, key, lease["epoch"])
                 try:
                     response = self.transport(self.base_url + "/api/rewrite/internal/v1/expanded-research/results", body, headers)
+                    self._validate_receipt(response, key=key, result_id=result_id, body_sha256=body_sha)
                     self._mark_sent(result_id, key, response)
                     published.append(result_id)
                 except Exception as exc:  # keep the same idempotency key for a safe retry
@@ -125,31 +129,62 @@ class ExpandedResearchPublisher:
         with sqlite3.connect(uri, uri=True, timeout=5) as source:
             source.row_factory = sqlite3.Row
             try:
-                rows = source.execute(
-                    """SELECT result_id,payload_json FROM expanded_research_results
-                       ORDER BY created_at ASC,result_id ASC LIMIT ?""", (limit * 8,)
-                ).fetchall()
+                cursor = source.execute(
+                    """SELECT result_id,payload_json,payload_sha256 FROM expanded_research_results
+                       ORDER BY created_at ASC,result_id ASC LIMIT ?""", (MAX_SOURCE_SCAN,)
+                )
             except sqlite3.Error as exc:
                 raise ExpandedResearchPublisherError("expanded publisher source spool schema is invalid") from exc
-        pending: list[dict[str, Any]] = []
-        with self._connect() as state:
-            for row in rows:
-                existing = state.execute(
-                    "SELECT status FROM expanded_research_publish_state WHERE result_id=?", (row["result_id"],)
-                ).fetchone()
-                if existing is None or existing[0] != "sent":
-                    pending.append(dict(row))
-                    if len(pending) >= limit:
+            pending: list[dict[str, Any]] = []
+            scanned = 0
+            with self._connect() as state:
+                while scanned < MAX_SOURCE_SCAN:
+                    page = cursor.fetchmany(min(SOURCE_PAGE_SIZE, MAX_SOURCE_SCAN - scanned))
+                    if not page:
                         break
-        return pending
+                    scanned += len(page)
+                    for row in page:
+                        existing = state.execute(
+                            "SELECT status FROM expanded_research_publish_state WHERE result_id=?", (row["result_id"],)
+                        ).fetchone()
+                        if existing is None or existing[0] != "sent":
+                            pending.append(dict(row))
+                            if len(pending) >= limit:
+                                return pending
+            return pending
 
     @staticmethod
-    def _canonical_source_body(raw: str) -> bytes:
+    def _canonical_source_body(raw: str, expected_sha256: str) -> bytes:
         try:
             value = validate_result(json.loads(raw))
         except (TypeError, ValueError, json.JSONDecodeError, ExpandedResearchError) as exc:
             raise ExpandedResearchPublisherError("expanded publisher found invalid source evidence") from exc
-        return canonical_json(value)
+        body = canonical_json(value)
+        if sha256_bytes(body) != expected_sha256:
+            raise ExpandedResearchPublisherError("expanded publisher source payload hash does not match sealed evidence")
+        return body
+
+    @staticmethod
+    def _validate_receipt(response: Mapping[str, Any], *, key: str, result_id: str, body_sha256: str) -> None:
+        expected_fields = {
+            "accepted", "created", "receipt_key", "result_id", "payload_sha256", "result_sha256", "state",
+            "research_only", "shadow", "actionable", "outbound", "user_visible", "execution", "official", "live",
+        }
+        if not isinstance(response, Mapping) or set(response) != expected_fields:
+            raise ExpandedResearchPublisherError("expanded publisher received an invalid receipt")
+        if (
+            response["accepted"] is not True
+            or not isinstance(response["created"], bool)
+            or response["receipt_key"] != key
+            or response["result_id"] != result_id
+            or response["payload_sha256"] != body_sha256
+            or response["result_sha256"] != body_sha256
+            or response["state"] != "shadow"
+            or response["research_only"] is not True
+            or response["shadow"] is not True
+            or any(response[field] is not False for field in ("actionable", "outbound", "user_visible", "execution", "official", "live"))
+        ):
+            raise ExpandedResearchPublisherError("expanded publisher receipt did not prove sealed shadow acceptance")
 
     def _init_state(self) -> None:
         with self._connect() as connection:

@@ -63,6 +63,7 @@ def test_receiver_accepts_existing_strategy_authority_and_replays_idempotently(t
     second = _request(receiver, value)
     assert first["created"] is True and second["created"] is False
     assert first["state"] == "shadow" and first["actionable"] is False and first["execution"] is False
+    assert first["payload_sha256"] == first["result_sha256"]
 
 
 def test_receiver_rejects_noncanonical_duplicate_and_wrong_authority(tmp_path):
@@ -104,3 +105,12 @@ def test_read_model_emits_exact_97_symbol_dto_and_requires_authentication(tmp_pa
     assert cycle["summary"]["no_data_count"] == 96
     assert {item["data_state"] for item in cycle["symbols"] if item["symbol"] != "AAPL"} == {"missing"}
     assert all(item["signal"] == "wait" for item in cycle["symbols"])
+
+
+def test_full_coverage_with_one_stale_symbol_is_not_healthy(monkeypatch):
+    store = object.__new__(ExpandedResearchStore)
+    rows = [{"symbol": symbol, "received_at": "stale" if index == 0 else "fresh"} for index, symbol in enumerate((*TIER_A, *TIER_C))]
+    monkeypatch.setattr(store, "latest_by_symbol", lambda: rows)
+    monkeypatch.setattr("src.apps.api.expanded_research_read_model._stale", lambda value: value == "stale")
+    model = ExpandedResearchReadModel(store, authorize=lambda _identity: True)
+    assert model.status("user")["state"] == "stale"

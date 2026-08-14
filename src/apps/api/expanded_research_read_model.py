@@ -27,7 +27,7 @@ class ExpandedResearchReadModel:
         rows = self.store.latest_by_symbol()
         latest = _latest_cycle(rows)
         last_received = _latest_received(rows)
-        stale = _stale(last_received)
+        stale = any(_stale(str(row["received_at"])) for row in latest.values())
         covered = len(latest)
         return {
             "available": bool(latest),

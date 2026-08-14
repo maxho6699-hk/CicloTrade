@@ -2,7 +2,7 @@
 Description=Run the disabled-first expanded 97-symbol research publisher
 
 [Timer]
-OnCalendar=*:0/15
+OnCalendar=*-*-* *:*:00
 Persistent=false
 Unit=ciclotrade-expanded-research-publisher.service
 
