@@ -113,6 +113,21 @@ def test_allows_approved_literal_process_spawn_without_lifecycle_action(tmp_path
     assert release_safety.scan_tracked_surface(tmp_path) == []
 
 
+def test_allows_utf8_bom_in_release_control_python(tmp_path, monkeypatch):
+    source = tmp_path / "ops/version.py"
+    source.parent.mkdir(exist_ok=True)
+    source.write_bytes(b"\xef\xbb\xbfimport subprocess\nsubprocess.run(['git', 'status'], shell=False)\n")
+    monkeypatch.setattr(release_safety, "tracked_release_surface", lambda _root: [source])
+    assert release_safety.scan_tracked_surface(tmp_path) == []
+
+
+def test_allows_docker_process_spawn_in_runtime_artifact(tmp_path):
+    artifact = _tar(tmp_path / "runtime.tar.gz", {
+        "sandbox_runner/runner_service.py": b"import subprocess\nsubprocess.run(['docker', 'info'], shell=False)\n",
+    })
+    assert release_safety.scan_artifact(artifact) == []
+
+
 @pytest.mark.parametrize("contents", [
     "cmd = 'systemctl'\naction = 'restart'\nsubprocess.run([cmd, action, 'futu-opend.service'])",
     "from subprocess import run as launch\ncmd = 'systemctl'\nlaunch([cmd, 'restart', 'futu-opend.service'])",

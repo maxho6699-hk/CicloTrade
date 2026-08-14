@@ -50,6 +50,7 @@ def _source_repo(tmp_path: Path) -> Path:
         "notification/service.py": b"pass\n",
         "payment/proof_storage.py": b"pass\n",
         "sandbox_runner/run.py": b"pass\n",
+        "sandbox_runner/README.md": b"systemctl restart legacy.service\nsecret=replace-me\n",
         "scheduler/tasks.py": b"pass\n",
         "strategies/base.py": b"pass\n",
         "strategy_client/client.py": b"pass\n",
@@ -130,6 +131,15 @@ def test_build_is_reproducible_and_verifies(tmp_path: Path) -> None:
     assert verifier.verify_release(root, artifact, manifest) == []
     assert data["migrations"]["required"][-1] == "0035_entitlement_policy_versions.sql"
     assert data["lifecycle"] == {"allowed_actions": ["restart"], "service": "ciclotrade-rewrite-api.service"}
+
+
+def test_builder_excludes_markdown_runtime_instructions(tmp_path: Path) -> None:
+    root = _source_repo(tmp_path)
+    artifact, manifest, data = _bundle(root, tmp_path)
+    assert "sandbox_runner/README.md" not in {item["path"] for item in data["files"]}
+    with tarfile.open(artifact, "r:gz") as archive:
+        assert "sandbox_runner/README.md" not in archive.getnames()
+    assert verifier.verify_release(root, artifact, manifest) == []
 
 
 def test_archive_payload_is_the_exact_git_blob_bytes(tmp_path: Path) -> None:

@@ -118,6 +118,8 @@ def _forbidden_path(name: str) -> bool:
     lower = name.casefold()
     parts = lower.split("/")
     basename = parts[-1]
+    if basename.endswith((".md", ".markdown")):
+        return True
     if any(part in {"tests", "cache", "node_modules", "worker", "logs"} for part in parts):
         return True
     if lower.startswith("ops/opend/") or lower.startswith("migrations/backtest/") or "opend" in lower:

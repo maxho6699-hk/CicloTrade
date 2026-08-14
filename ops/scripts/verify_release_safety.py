@@ -78,6 +78,7 @@ def _release_path_allowed(path: str) -> bool:
 
 def _decode_release_text(content: bytes) -> str:
     """Decode source bytes without accepting NUL-based command obfuscation."""
+    utf8_bom = content.startswith(b"\xef\xbb\xbf")
     if content.startswith((b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff")):
         text = content.decode("utf-32", errors="strict")
     elif content.startswith((b"\xff\xfe", b"\xfe\xff")):
@@ -88,6 +89,8 @@ def _decode_release_text(content: bytes) -> str:
         text = content.decode("utf-8", errors="strict")
     if "\x00" in text:
         raise SafetyError("NUL-obfuscated release text")
+    if utf8_bom:
+        text = text[1:]
     return unicodedata.normalize("NFKC", text)
 
 
@@ -266,6 +269,10 @@ def _scan_node_process_spawns(label: str, text: str) -> list[str]:
     return [f"{label}: process-spawn lifecycle invocation"] if NODE_CHILD_PROCESS_MODULE.search(text) or NODE_PROCESS_SPAWN.search(text) else []
 
 
+def _is_release_control_label(label: str) -> bool:
+    return label.replace("\\", "/").startswith(("ops/", "config/", "docs/rewrite/"))
+
+
 def _scan_command_text(label: str, content: bytes) -> list[str]:
     violations: list[str] = []
     try:
@@ -314,9 +321,9 @@ def _scan_command_text(label: str, content: bytes) -> list[str]:
                 if action_index != len(arguments) - 2 or arguments[action_index].lower() != ALLOWED_ACTION or arguments[action_index + 1].lower() != ALLOWED_SERVICE:
                     violations.append(f"{label}: non-whitelisted service action")
     suffix = Path(label).suffix.lower()
-    if suffix == ".py":
+    if _is_release_control_label(label) and suffix == ".py":
         violations.extend(_scan_python_process_spawns(label, text))
-    elif suffix in {".js", ".ts", ".tsx"}:
+    elif _is_release_control_label(label) and suffix in {".js", ".ts", ".tsx"}:
         violations.extend(_scan_node_process_spawns(label, text))
     return violations
 

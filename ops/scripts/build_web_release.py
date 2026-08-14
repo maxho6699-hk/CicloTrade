@@ -105,6 +105,8 @@ def _is_forbidden(path: str) -> bool:
     if path.startswith("ops/opend/") or path.startswith("migrations/backtest/"):
         return True
     name = parts[-1].casefold()
+    if name.endswith((".md", ".markdown")):
+        return True
     if ".env" in name or "worker" in name or name.endswith((".map", ".db", ".sqlite", ".sqlite3", ".wal", ".shm", ".log")):
         return True
     if any(word in name for word in ("credential", "secret", "payment-proof", "payment_proof", "qr")) and not name.endswith((".py", ".ts", ".tsx", ".js")):
