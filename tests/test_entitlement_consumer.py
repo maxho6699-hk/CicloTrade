@@ -1,5 +1,7 @@
 import sqlite3
+from datetime import datetime, timedelta
 
+from core.compat import UTC
 from core.database import DatabaseManager
 from core.entitlement_consumer import (
     commerce_decision,
@@ -72,6 +74,42 @@ def test_missing_readiness_review_fails_closed(tmp_path):
         connection.execute("DELETE FROM membership_entitlement_readiness_reviews")
         assert verified_can(connection, "高级版", "option_live_beta_apply") is False
         assert commerce_decision(connection, "高级版", "purchase")["allowed"] is False
+
+
+def test_expired_readiness_receipt_fails_closed_at_as_of(tmp_path):
+    database = _db(tmp_path)
+    checked_at = datetime.now(UTC)
+    with database.transaction() as connection:
+        connection.execute("DROP TRIGGER trg_membership_entitlement_readiness_receipts_no_update")
+        connection.execute(
+            "UPDATE membership_entitlement_readiness_receipts SET valid_until=?",
+            ((checked_at - timedelta(seconds=1)).isoformat(),),
+        )
+        assert verified_capabilities(connection, "高级版", as_of=checked_at) == set()
+        assert verified_can(connection, "高级版", "option_live_beta_apply", as_of=checked_at) is False
+
+
+def test_future_as_of_keeps_future_valid_receipt_and_later_expiry_fails(tmp_path):
+    database = _db(tmp_path)
+    checked_at = datetime.now(UTC)
+    with database.transaction() as connection:
+        connection.execute("DROP TRIGGER trg_membership_entitlement_readiness_receipts_no_update")
+        connection.execute(
+            "UPDATE membership_entitlement_readiness_receipts SET valid_until=?",
+            ((checked_at + timedelta(days=1)).isoformat(),),
+        )
+        assert verified_can(connection, "高级版", "option_live_beta_apply", as_of=checked_at) is True
+        assert verified_can(
+            connection, "高级版", "option_live_beta_apply", as_of=checked_at + timedelta(days=2),
+        ) is False
+
+
+def test_retired_legacy_read_does_not_require_readiness_receipt(tmp_path):
+    database = _db(tmp_path)
+    with database.transaction() as connection:
+        connection.execute("DELETE FROM membership_entitlement_readiness_reviews")
+        assert verified_can(connection, "专业版", "option_chain") is True
+        assert verified_can(connection, "专业版", "option_auto_live") is False
 
 
 def test_missing_policy_fails_closed():

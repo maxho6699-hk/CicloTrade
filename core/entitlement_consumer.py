@@ -11,6 +11,7 @@ from datetime import datetime
 import sqlite3
 from typing import Any
 
+from core.compat import UTC
 from core.entitlement_policy import (
     EntitlementPolicyError,
     current_plan_commerce_decision,
@@ -25,10 +26,12 @@ class EntitlementConsumerUnavailable(RuntimeError):
     """The published policy is missing, stale, or fails integrity checks."""
 
 
-def verified_capabilities(conn: Any, plan: str) -> set[str]:
+def verified_capabilities(
+    conn: Any, plan: str, *, as_of: datetime | None = None,
+) -> set[str]:
     """Return policy capabilities, or an empty set when proof is unavailable."""
     try:
-        policy = current_policy(conn)
+        policy = current_policy(conn, as_of=as_of)
         if policy is None:
             return set()
         item = next((entry for entry in policy.policy["plans"] if entry.get("key") == plan), None)
@@ -36,13 +39,19 @@ def verified_capabilities(conn: Any, plan: str) -> set[str]:
             return set()
         if item.get("lifecycle") != "retired_legacy":
             readiness = item.get("readiness") or {}
+            checked_at = (as_of or datetime.now(UTC)).astimezone(UTC).isoformat()
             reviewed = conn.execute(
-                """SELECT 1 FROM membership_entitlement_readiness_reviews
-                   WHERE evidence_ref=? AND policy_key=? AND policy_version=? AND policy_sha256=?
+                """SELECT 1
+                   FROM membership_entitlement_readiness_reviews AS review
+                   JOIN membership_entitlement_readiness_receipts AS receipt
+                     ON receipt.id=review.receipt_id
+                   WHERE review.evidence_ref=? AND review.policy_key=?
+                     AND review.policy_version=? AND review.policy_sha256=?
+                     AND datetime(receipt.valid_until) >= datetime(?)
                    LIMIT 1""",
                 (
                     readiness.get("evidence_ref"), policy.policy_key, policy.version,
-                    policy.policy_sha256,
+                    policy.policy_sha256, checked_at,
                 ),
             ).fetchone()
             if not reviewed:
@@ -52,12 +61,14 @@ def verified_capabilities(conn: Any, plan: str) -> set[str]:
         return set()
 
 
-def verified_can(conn: Any, plan: str, capability: str) -> bool:
+def verified_can(
+    conn: Any, plan: str, capability: str, *, as_of: datetime | None = None,
+) -> bool:
     """Check one capability against the current verified policy."""
     try:
-        if not verified_capabilities(conn, plan):
+        if not verified_capabilities(conn, plan, as_of=as_of):
             return False
-        return bool(policy_can(conn, plan, capability))
+        return bool(policy_can(conn, plan, capability, as_of=as_of))
     except (EntitlementPolicyError, KeyError, TypeError, ValueError, sqlite3.Error):
         return False
 
