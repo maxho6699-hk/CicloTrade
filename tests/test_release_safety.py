@@ -167,6 +167,30 @@ def test_rejects_zip_symlink_and_oversized_member_without_extracting(tmp_path, m
     assert release_safety.scan_artifact(oversized)
 
 
+def test_tar_scanner_streams_and_fails_before_reading_oversized_member(tmp_path, monkeypatch):
+    member = tarfile.TarInfo("bomb")
+    member.size = release_safety.MAX_MEMBER_BYTES + 1
+
+    class FakeArchive:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def __iter__(self):
+            return iter((member,))
+
+        def extractfile(self, _member):
+            raise AssertionError("bomb payload must not be read")
+
+    path = tmp_path / "unused.tar.gz"
+    path.write_bytes(b"placeholder")
+    monkeypatch.setattr(release_safety.tarfile, "is_tarfile", lambda _path: True)
+    monkeypatch.setattr(release_safety.tarfile, "open", lambda *args, **kwargs: FakeArchive())
+    assert release_safety.scan_artifact(path)
+
+
 def test_receipt_contract_is_read_only_and_has_no_connection_fields():
     contract = release_safety.receipt_contract()
     assert contract["allowed_action"] == "restart"

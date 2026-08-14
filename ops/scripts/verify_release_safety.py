@@ -20,6 +20,7 @@ import zipfile
 
 MAX_ARTIFACT_BYTES = 256 * 1024 * 1024
 MAX_MEMBER_BYTES = 32 * 1024 * 1024
+MAX_TOTAL_MEMBER_BYTES = 256 * 1024 * 1024
 MAX_MEMBERS = 10_000
 ALLOWED_SERVICE = "ciclotrade-rewrite-api.service"
 ALLOWED_ACTION = "restart"
@@ -202,6 +203,7 @@ def scan_tracked_surface(root: Path) -> list[str]:
 def _scan_archive_members(members: Iterable[tuple[str, int, bool, bytes | None]]) -> list[str]:
     violations: list[str] = []
     count = 0
+    total = 0
     for name, size, is_link, content in members:
         count += 1
         if count > MAX_MEMBERS:
@@ -216,7 +218,10 @@ def _scan_archive_members(members: Iterable[tuple[str, int, bool, bytes | None]]
             continue
         if size > MAX_MEMBER_BYTES:
             violations.append(f"{name}: release entry exceeds maximum size")
-            continue
+            return violations
+        total += size
+        if total > MAX_TOTAL_MEMBER_BYTES:
+            return ["artifact exceeds expanded size limit"]
         if not _release_path_allowed(name):
             violations.append(f"{name}: forbidden OpenD release path")
             continue
@@ -228,13 +233,16 @@ def _scan_archive_members(members: Iterable[tuple[str, int, bool, bytes | None]]
 def scan_artifact(path: Path) -> list[str]:
     _safe_artifact(path)
     if tarfile.is_tarfile(path):
-        with tarfile.open(path, "r:*") as archive:
-            members = archive.getmembers()
-            return _scan_archive_members(
-                (member.name, member.size, member.issym() or member.islnk(),
-                 archive.extractfile(member).read(MAX_MEMBER_BYTES + 1) if member.isfile() and member.size <= MAX_MEMBER_BYTES else None)
-                for member in members
-            )
+        with tarfile.open(path, "r|*") as archive:
+            def stream_members() -> Iterable[tuple[str, int, bool, bytes | None]]:
+                for member in archive:
+                    content = None
+                    if member.isfile() and member.size <= MAX_MEMBER_BYTES:
+                        handle = archive.extractfile(member)
+                        content = handle.read(MAX_MEMBER_BYTES + 1) if handle else b""
+                    yield member.name, member.size, member.issym() or member.islnk(), content
+
+            return _scan_archive_members(stream_members())
     if zipfile.is_zipfile(path):
         with zipfile.ZipFile(path) as archive:
             return _scan_archive_members(
