@@ -37,7 +37,7 @@ FORBIDDEN_PATH = re.compile(
     re.IGNORECASE,
 )
 TEXT_SUFFIXES = {
-    ".bat", ".cmd", ".conf", ".env", ".ini", ".json", ".md", ".ps1", ".py", ".service",
+    ".bat", ".cmd", ".conf", ".env", ".ini", ".js", ".json", ".md", ".ps1", ".py", ".service", ".ts", ".tsx",
     ".sh", ".txt", ".toml", ".yaml", ".yml",
 }
 PROCESS_SPAWN = re.compile(r"\b(?:subprocess\.(?:run|call|Popen|check_call|check_output)|os\.system|child_process\.(?:exec|execFile|spawn|spawnSync)|(?:execFile|spawn))\s*\(", re.IGNORECASE)
@@ -133,11 +133,37 @@ def _dequote_fragments(text: str) -> str:
     return text.replace("'", "").replace('"', "")
 
 
+def _spawn_call(text: str, opening_paren: int) -> str:
+    """Return one balanced spawn call without truncating multiline arguments."""
+    depth = 0
+    quote = ""
+    escaped = False
+    for index in range(opening_paren, len(text)):
+        character = text[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = ""
+            continue
+        if character in {"'", '"', "`"}:
+            quote = character
+        elif character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+            if depth == 0:
+                return text[opening_paren:index + 1]
+    return text[opening_paren:]
+
+
 def _scan_process_spawns(label: str, text: str) -> list[str]:
     """Reject lifecycle/OpenD commands embedded in Python or Node spawn APIs."""
     violations: list[str] = []
     for match in PROCESS_SPAWN.finditer(text):
-        segment = text[match.start():text.find("\n", match.start()) if text.find("\n", match.start()) >= 0 else len(text)]
+        segment = text[match.start():match.end() - 1] + _spawn_call(text, match.end() - 1)
         collapsed = re.sub(r"[^a-z0-9]", "", _dequote_fragments(segment).casefold())
         has_lifecycle = any(action.replace("-", "") in collapsed for action in SERVICE_LIFECYCLE_ACTIONS)
         if has_lifecycle and ("systemctl" in collapsed or "futuopend" in collapsed or "opend" in collapsed):

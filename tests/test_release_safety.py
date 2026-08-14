@@ -92,6 +92,27 @@ def test_quote_fragmented_and_process_spawn_lifecycle_are_rejected(tmp_path, mon
     assert any("non-whitelisted service action" in item for item in violations)
 
 
+@pytest.mark.parametrize(("name", "contents"), [
+    ("deploy.py", 'subprocess.run(\n    ["sys" "temctl",\n     "re" "start",\n     "futu-opend.service"],\n)'),
+    ("deploy.js", 'spawn(\n  "sys" + "temctl",\n  ["re" + "start", "futu-opend.service"],\n)'),
+    ("deploy.js", 'child_process.spawn(\n  "sys" + "temctl",\n  ["re" + "start", "futu-opend.service"],\n)'),
+])
+def test_rejects_multiline_process_spawn_lifecycle(tmp_path, monkeypatch, name, contents):
+    source = tmp_path / "ops" / name
+    source.parent.mkdir(exist_ok=True)
+    source.write_text(contents)
+    monkeypatch.setattr(release_safety, "tracked_release_surface", lambda _root: [source])
+    assert any("process-spawn lifecycle" in item for item in release_safety.scan_tracked_surface(tmp_path))
+
+
+def test_allows_process_spawn_without_lifecycle_action(tmp_path, monkeypatch):
+    source = tmp_path / "ops/deploy.py"
+    source.parent.mkdir(exist_ok=True)
+    source.write_text('subprocess.run(\n    ["echo", "release-ready"],\n)')
+    monkeypatch.setattr(release_safety, "tracked_release_surface", lambda _root: [source])
+    assert release_safety.scan_tracked_surface(tmp_path) == []
+
+
 def test_policy_prose_with_lifecycle_words_is_not_an_invocation(tmp_path, monkeypatch):
     source = tmp_path / "docs/rewrite/policy.md"
     source.parent.mkdir(parents=True)
@@ -261,6 +282,37 @@ def test_archive_aggregate_limit_is_checked_before_triggering_member_read(tmp_pa
     monkeypatch.setattr(release_safety.tarfile, "is_tarfile", lambda _path: True)
     monkeypatch.setattr(release_safety.tarfile, "open", lambda *args, **kwargs: FakeArchive())
     assert release_safety.scan_artifact(path)
+
+
+def test_archive_member_count_fails_before_consuming_third_member(tmp_path, monkeypatch):
+    first = tarfile.TarInfo("first.py")
+    first.size = 1
+    second = tarfile.TarInfo("second.py")
+    second.size = 1
+
+    class FakeArchive:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def __iter__(self):
+            yield first
+            yield second
+            raise AssertionError("third member must not be consumed")
+
+        def extractfile(self, member):
+            if member is second:
+                raise AssertionError("triggering member payload must not be read")
+            return BytesIO(b"x")
+
+    path = tmp_path / "unused.tar.gz"
+    path.write_bytes(b"placeholder")
+    monkeypatch.setattr(release_safety, "MAX_MEMBERS", 1)
+    monkeypatch.setattr(release_safety.tarfile, "is_tarfile", lambda _path: True)
+    monkeypatch.setattr(release_safety.tarfile, "open", lambda *args, **kwargs: FakeArchive())
+    assert "artifact has too many members" in release_safety.scan_artifact(path)
 
 
 def test_receipt_contract_is_read_only_and_has_no_connection_fields():

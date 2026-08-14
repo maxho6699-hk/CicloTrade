@@ -247,6 +247,45 @@ def test_rejects_noncanonical_gzip_and_tar_metadata(tmp_path: Path) -> None:
     assert "archive member metadata is not deterministic" in verifier.verify_release(root, rewritten, manifest)
 
 
+def test_rejects_archive_member_order_unicode_collision_and_unsafe_mode(tmp_path: Path) -> None:
+    root = _source_repo(tmp_path)
+    artifact, manifest, _ = _bundle(root, tmp_path)
+
+    unordered = tmp_path / "unordered.tar.gz"
+    with tarfile.open(artifact, "r:gz") as old, unordered.open("wb") as destination:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=destination, mtime=1) as compressed:
+            with tarfile.open(mode="w", fileobj=compressed, format=tarfile.USTAR_FORMAT) as new:
+                for member in reversed(old.getmembers()):
+                    new.addfile(member, BytesIO(old.extractfile(member).read()))
+    _rebind_artifact(unordered, manifest)
+    assert "archive members are not sorted" in verifier.verify_release(root, unordered, manifest)
+
+    collision = tmp_path / "collision.tar.gz"
+    with tarfile.open(artifact, "r:gz") as old, collision.open("wb") as destination:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=destination, mtime=1) as compressed:
+            with tarfile.open(mode="w", fileobj=compressed, format=tarfile.USTAR_FORMAT) as new:
+                for member in old.getmembers():
+                    new.addfile(member, BytesIO(old.extractfile(member).read()))
+                extra = tarfile.TarInfo("Ａpp.py")
+                extra.size, extra.mode, extra.mtime = 4, 0o644, 1
+                extra.uid = extra.gid = 0
+                extra.uname = extra.gname = ""
+                new.addfile(extra, BytesIO(b"pass"))
+    _rebind_artifact(collision, manifest)
+    assert "archive has casefold or Unicode path collisions" in verifier.verify_release(root, collision, manifest)
+
+    unsafe_mode = tmp_path / "unsafe-mode.tar.gz"
+    with tarfile.open(artifact, "r:gz") as old, unsafe_mode.open("wb") as destination:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=destination, mtime=1) as compressed:
+            with tarfile.open(mode="w", fileobj=compressed, format=tarfile.USTAR_FORMAT) as new:
+                for member in old.getmembers():
+                    if member.name == "app.py":
+                        member.mode = 0o600
+                    new.addfile(member, BytesIO(old.extractfile(member).read()))
+    _rebind_artifact(unsafe_mode, manifest)
+    assert "archive member metadata is not deterministic" in verifier.verify_release(root, unsafe_mode, manifest)
+
+
 def test_archive_streaming_stops_before_reading_bomb(monkeypatch: pytest.MonkeyPatch) -> None:
     member = tarfile.TarInfo("bomb")
     member.size = verifier.MAX_MEMBER_BYTES + 1
