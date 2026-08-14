@@ -1,0 +1,106 @@
+from __future__ import annotations
+
+from datetime import datetime
+import hashlib
+
+import pytest
+
+from core.backtest_queue_database import BacktestQueueDatabase
+from core.compat import UTC
+from core.expanded_research_contracts import (
+    AUTHORITY,
+    TIER_A,
+    TIER_C,
+    UNIVERSE_SHA256,
+    canonical_json,
+    receiver_signature,
+)
+from core.expanded_research_store import ExpandedResearchStore
+from src.apps.api.expanded_research_read_model import ExpandedResearchReadModel
+from src.apps.api.expanded_research_receiver import ExpandedResearchReceiver, ExpandedResearchReceiverError
+
+
+SECRET = "s" * 32
+NOW = datetime(2026, 8, 14, 12, 0, tzinfo=UTC)
+
+
+def _result(symbol: str = "AAPL", *, tier: str = "A", authority: dict | None = None) -> dict:
+    digest = "a" * 64
+    evidence = {"runner": "equity-research-v1", "code_bundle_sha256": "b" * 64, "validation": {"candidate_status": "shadow"}}
+    return {
+        "schema_version": 1, "kind": "tradeai.expanded-local-research.v1",
+        "result_id": f"expanded-{symbol}-aaaaaaaaaaaaaaaaaaaaaaaa", "symbol": symbol, "tier": tier,
+        "source_sha256": digest, "universe_sha256": UNIVERSE_SHA256, "dataset_end": "2026-08-13",
+        "equity": {"equity.trend.long_flat.v1": evidence, "equity.mean_reversion.long_flat.v1": evidence, "equity.breakout.long_flat.v1": evidence},
+        "option_proxy": {"decision": "WAIT", "actionable": False} if tier == "A" else None,
+        "authority": AUTHORITY if authority is None else authority,
+    }
+
+
+def _request(receiver: ExpandedResearchReceiver, value: dict, *, key: str = "expanded-aapl-0001", epoch: int = 1, sent: str = "2026-08-14T12:00:00Z"):
+    raw = canonical_json(value)
+    body_sha = hashlib.sha256(raw).hexdigest()
+    headers = {
+        "content-type": "application/json", "idempotency-key": key,
+        "x-ciclotrade-research-worker-id": "expanded-research-worker",
+        "x-ciclotrade-research-fencing-epoch": str(epoch), "x-ciclotrade-research-sent-at": sent,
+        "x-ciclotrade-research-sha256": body_sha,
+        "x-ciclotrade-research-signature": receiver_signature(SECRET, worker_id="expanded-research-worker", fencing_epoch=epoch, idempotency_key=key, sent_at=sent, body_sha256=body_sha),
+    }
+    return receiver.accept(raw, headers)
+
+
+def test_canonical_universe_matches_running_97_chain():
+    assert len(TIER_A) == 13 and len(TIER_C) == 84
+    assert UNIVERSE_SHA256 == "ae95ca26edc28385c495b055f57f28dd78fdc088a3a7cdd683b0244e55f1b4b7"
+
+
+def test_receiver_accepts_existing_strategy_authority_and_replays_idempotently(tmp_path):
+    store = ExpandedResearchStore(BacktestQueueDatabase(tmp_path / "backtest.db"), clock=lambda: NOW)
+    receiver = ExpandedResearchReceiver(store, shared_secret=SECRET, enabled=True, clock=lambda: NOW)
+    value = _result()
+    first = _request(receiver, value)
+    second = _request(receiver, value)
+    assert first["created"] is True and second["created"] is False
+    assert first["state"] == "shadow" and first["actionable"] is False and first["execution"] is False
+
+
+def test_receiver_rejects_noncanonical_duplicate_and_wrong_authority(tmp_path):
+    store = ExpandedResearchStore(BacktestQueueDatabase(tmp_path / "backtest.db"), clock=lambda: NOW)
+    receiver = ExpandedResearchReceiver(store, shared_secret=SECRET, enabled=True, clock=lambda: NOW)
+    raw = b'{"schema_version":1,"schema_version":1}'
+    with pytest.raises(ExpandedResearchReceiverError) as duplicate:
+        receiver.accept(raw, {"content-type": "application/json"})
+    assert duplicate.value.status == 401
+    with pytest.raises(ExpandedResearchReceiverError) as authority:
+        _request(receiver, _result(authority={**AUTHORITY, "execution_eligible": True}), key="expanded-aapl-0002")
+    assert authority.value.status == 400
+
+
+def test_receiver_rejects_stale_fence_and_bad_signature(tmp_path):
+    store = ExpandedResearchStore(BacktestQueueDatabase(tmp_path / "backtest.db"), clock=lambda: NOW)
+    receiver = ExpandedResearchReceiver(store, shared_secret=SECRET, enabled=True, clock=lambda: NOW)
+    _request(receiver, _result(), epoch=2)
+    with pytest.raises(ExpandedResearchReceiverError) as stale:
+        _request(receiver, _result("MSFT"), key="expanded-msft-0001", epoch=1)
+    assert stale.value.status == 409
+    with pytest.raises(ExpandedResearchReceiverError) as bad:
+        receiver.accept(canonical_json(_result("NVDA")), {"content-type": "application/json"})
+    assert bad.value.status == 401
+
+
+def test_read_model_emits_exact_97_symbol_dto_and_requires_authentication(tmp_path):
+    store = ExpandedResearchStore(BacktestQueueDatabase(tmp_path / "backtest.db"), clock=lambda: NOW)
+    receiver = ExpandedResearchReceiver(store, shared_secret=SECRET, enabled=True, clock=lambda: NOW)
+    _request(receiver, _result())
+    model = ExpandedResearchReadModel(store, authorize=lambda identity: identity == "user")
+    with pytest.raises(PermissionError):
+        model.latest("guest")
+    latest = model.latest("user")
+    cycle = latest["cycle"]
+    assert set(latest) == {"available", "authority", "validation_label", "cycle"}
+    assert latest["authority"]["actionable"] is False
+    assert len(cycle["symbols"]) == 97
+    assert cycle["summary"]["no_data_count"] == 96
+    assert {item["data_state"] for item in cycle["symbols"] if item["symbol"] != "AAPL"} == {"missing"}
+    assert all(item["signal"] == "wait" for item in cycle["symbols"])

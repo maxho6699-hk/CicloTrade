@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the disabled-first expanded 97-symbol research publisher
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=false
+Unit=ciclotrade-expanded-research-publisher.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,24 @@
+[Unit]
+Description=CicloTrade expanded 97-symbol research publisher (disabled-first)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=cicloworker
+Group=cicloworker
+EnvironmentFile=/etc/ciclotrade-worker/expanded-research-publisher.env
+WorkingDirectory=/opt/CicloTrade/current
+ExecStart=/usr/bin/python3 -m src.apps.worker.expanded_research_publisher --once
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ciclotrade-worker/expanded-research
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target
