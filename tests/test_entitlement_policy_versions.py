@@ -242,6 +242,19 @@ def test_seed_is_trusted_idempotent_and_policy_can_fails_closed_before_seed():
     assert policy_can(conn, "高级版", "tg_stock_signal") is True
 
 
+def test_policy_capability_fails_closed_when_readiness_receipt_is_expired():
+    conn = _database()
+    checked_at = datetime(2026, 8, 14, tzinfo=UTC)
+    published = _publish(conn, when=checked_at)
+    conn.execute("DROP TRIGGER trg_membership_entitlement_readiness_receipts_no_update")
+    conn.execute(
+        "UPDATE membership_entitlement_readiness_receipts SET valid_until=?",
+        ((checked_at - timedelta(seconds=1)).isoformat(),),
+    )
+    assert published.version == 1
+    assert policy_can(conn, "高级版", "tg_stock_signal", as_of=checked_at) is False
+
+
 def test_seed_rejects_a_preexisting_bootstrap_v1_with_different_content():
     conn = _database()
     conn.execute(

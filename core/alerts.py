@@ -11,8 +11,9 @@ import re
 from typing import Any
 
 from core.database import DatabaseManager, get_database
+from core.entitlement_consumer import verified_can
 from core.membership import authoritative_membership_user
-from core.plans import alert_limit, can, effective_plan
+from core.plans import alert_limit, effective_plan
 
 
 CONDITION_TYPES = {"price", "volume", "volume_ratio", "rsi", "macd", "ma", "change"}
@@ -316,8 +317,10 @@ class AlertService:
             item.get("type") == "price" for item in normalized
         ):
             raise ValueError("上穿或下穿只适用于价格条件。")
-        if channels is not None and "telegram" in metadata["channels"] and not can(actual_plan, "tg_stock_signal"):
-            raise ValueError("当前会员等级不能使用 Telegram 价格预警，请升级后再选择该渠道。")
+        if "telegram" in metadata["channels"]:
+            with self.db.transaction() as conn:
+                if not verified_can(conn, actual_plan, "tg_stock_signal"):
+                    raise ValueError("当前会员策略不能使用 Telegram 价格预警，请升级后再选择该渠道。")
         if first.get("type") == "price":
             if metadata["trigger_mode"] in {"at_or_above", "crosses_above"} and first.get("operator") not in {">=", ">", "="}:
                 raise ValueError("达到或上穿预警必须使用 >= 或 > 条件。")

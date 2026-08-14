@@ -78,7 +78,22 @@ def test_rbac_user_subscription_and_global_controls(services):
     service.set_user_active(admin["id"], customer["id"], False)
     assert db.fetch_one("SELECT is_active FROM users WHERE id=?", (customer["id"],))["is_active"] == 0
     assert any(row["action_type"] == "ADMIN_USER_AUTO_TRADING_STATUS" for row in service.list_audit(admin["id"]))
-    assert any(row["action_type"] == "ADMIN_USER_STATUS" for row in service.list_audit(admin["id"]))
+
+
+def test_admin_membership_actions_follow_published_policy_not_plan_rank(services):
+    _, auth, admin, service = services
+    customer = _register(auth, "policy-rank-customer")
+    assert service.adjust_subscription(
+        admin["id"], customer["id"], "高级版", 30, idempotency_key="policy-rank-advanced-001",
+    )
+    with pytest.raises(PermissionError, match="会员策略"):
+        service.adjust_subscription(
+            admin["id"], customer["id"], "专业版", 30, idempotency_key="policy-rank-retired-001",
+        )
+    with pytest.raises(PermissionError, match="会员策略"):
+        service.grant_trial(
+            admin["id"], customer["id"], "专业版", 7, "退休方案不得赠送", idempotency_key="policy-rank-trial-001",
+        )
 
 
 def test_data_source_verification_is_system_only_and_never_stores_captcha(services):

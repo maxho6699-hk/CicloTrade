@@ -11,6 +11,7 @@ from starlette.requests import Request
 from core.auth import AuthService
 from core.compat import UTC
 from core.database import DatabaseManager
+from core.plans import CAPABILITIES
 from src.apps.api.app import ApiError, app as api_application, membership_order_proof
 from src.apps.api.read_model import BrowserIdentity, ReadOnlyLegacyRepository
 from src.apps.api.write_service import BrowserWriteService
@@ -206,6 +207,20 @@ def test_alert_creation_uses_legacy_plan_and_condition_rules(write_context):
     assert alerts[0]["symbol"] == "AAPL"
     assert alerts[0]["market"] == "US"
     assert alerts[0]["conditions_list"][0]["value"] == 220
+
+
+def test_alert_telegram_channel_uses_published_policy_not_legacy_capabilities(write_context):
+    _, identity, service = write_context
+    CAPABILITIES["高级版"].discard("tg_stock_signal")
+    try:
+        alerts = service.create_alert(identity, {
+            "symbol": "AAPL",
+            "channels": ["telegram"],
+            "conditions": [{"type": "price", "operator": ">=", "value": 220}],
+        })
+        assert alerts[0]["channels"] == ["telegram"]
+    finally:
+        CAPABILITIES["高级版"].add("tg_stock_signal")
 
 
 def test_alert_creation_accepts_explicit_us_and_cn_markets(write_context):

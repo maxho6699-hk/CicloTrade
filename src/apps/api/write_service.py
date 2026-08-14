@@ -250,6 +250,11 @@ class BrowserWriteService:
         channels = payload.get("channels", payload.get("notify_channels"))
         if payload.get("notify_only", True) is not True:
             raise ValueError("预警只负责提醒，不会自动下单。")
+        requested_channels = channels if channels is not None else ["website", "telegram"]
+        if isinstance(requested_channels, str):
+            requested_channels = [part.strip() for part in requested_channels.split(",") if part.strip()]
+        if "telegram" in requested_channels and not self._policy_can(identity.effective_plan, "tg_stock_signal"):
+            raise PermissionError("当前会员策略不能使用 Telegram 价格预警。")
         AlertService(self.db).create(
             identity.id,
             identity.effective_plan,

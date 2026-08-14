@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any, Callable, Mapping
 
 from core.entitlement_commerce import plan_commerce_decision
+from core.compat import UTC
 
 
 def aware(value: Any, label: str) -> datetime:
@@ -27,17 +28,31 @@ def aware(value: Any, label: str) -> datetime:
 
 def commerce_decision(conn: Any, policy: Any, plan: str, action: str, *, as_of: datetime | None = None) -> dict[str, Any]:
     decision = plan_commerce_decision(policy.policy, plan, action, as_of=as_of)
-    if decision["allowed"] and not _reviewed(conn, policy, plan):
+    if decision["allowed"] and not _reviewed(conn, policy, plan, as_of=as_of):
         return {**decision, "allowed": False, "reason": "readiness_unreviewed"}
     return decision
 
 
-def _reviewed(conn: Any, policy: Any, plan: str) -> bool:
+def _reviewed(conn: Any, policy: Any, plan: str, *, as_of: datetime | None = None) -> bool:
     item = next((entry for entry in policy.policy["plans"] if entry["key"] == plan), None)
     readiness = item.get("readiness") if isinstance(item, dict) else None
     if not readiness:
         return False
-    return conn.execute("""SELECT 1 FROM membership_entitlement_readiness_reviews WHERE evidence_ref=? AND policy_key=? AND policy_version=? AND policy_sha256=? LIMIT 1""", (readiness.get("evidence_ref"), policy.policy_key, policy.version, policy.policy_sha256)).fetchone() is not None
+    checked_at = (as_of or datetime.now(UTC)).astimezone(UTC).isoformat()
+    return conn.execute(
+        """SELECT 1
+           FROM membership_entitlement_readiness_reviews AS review
+           JOIN membership_entitlement_readiness_receipts AS receipt
+             ON receipt.id=review.receipt_id
+           WHERE review.evidence_ref=? AND review.policy_key=?
+             AND review.policy_version=? AND review.policy_sha256=?
+             AND datetime(receipt.valid_until) >= datetime(?)
+           LIMIT 1""",
+        (
+            readiness.get("evidence_ref"), policy.policy_key, policy.version,
+            policy.policy_sha256, checked_at,
+        ),
+    ).fetchone() is not None
 
 
 def capabilities(policy: Any, plan: str, *, retired: frozenset[str]) -> set[str]:
@@ -57,6 +72,8 @@ def can(conn: Any, plan: str, capability: str, *, as_of: datetime | None, curren
     if policy is None:
         return False
     canonical = {**CAPABILITY_ALIASES, "option_auto": "option_auto_paper_official", "option_live_beta": "option_live_beta_apply"}.get(capability, capability)
+    if plan not in retired and not _reviewed(conn, policy, plan, as_of=as_of):
+        return False
     return canonical in capabilities(policy, plan, retired=retired)
 
 
