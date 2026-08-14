@@ -7,6 +7,7 @@ server, invokes a service manager, or emits deployment connection details.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -40,7 +41,9 @@ TEXT_SUFFIXES = {
     ".bat", ".cmd", ".conf", ".env", ".ini", ".js", ".json", ".md", ".ps1", ".py", ".service", ".ts", ".tsx",
     ".sh", ".txt", ".toml", ".yaml", ".yml",
 }
-PROCESS_SPAWN = re.compile(r"\b(?:subprocess\.(?:run|call|Popen|check_call|check_output)|os\.system|child_process\.(?:exec|execFile|spawn|spawnSync)|(?:execFile|spawn))\s*\(", re.IGNORECASE)
+NODE_PROCESS_SPAWN = re.compile(r"\b(?:exec|execFile|spawn|spawnSync)\s*\(|\.\s*(?:exec|execFile|spawn|spawnSync)\s*\(", re.IGNORECASE)
+PYTHON_SUBPROCESS_FUNCTIONS = frozenset({"run", "call", "Popen", "check_call", "check_output"})
+SAFE_SUBPROCESS_EXECUTABLES = frozenset({"git", "node", "npm"})
 
 
 class SafetyError(ValueError):
@@ -133,42 +136,87 @@ def _dequote_fragments(text: str) -> str:
     return text.replace("'", "").replace('"', "")
 
 
-def _spawn_call(text: str, opening_paren: int) -> str:
-    """Return one balanced spawn call without truncating multiline arguments."""
-    depth = 0
-    quote = ""
-    escaped = False
-    for index in range(opening_paren, len(text)):
-        character = text[index]
-        if quote:
-            if escaped:
-                escaped = False
-            elif character == "\\":
-                escaped = True
-            elif character == quote:
-                quote = ""
-            continue
-        if character in {"'", '"', "`"}:
-            quote = character
-        elif character == "(":
-            depth += 1
-        elif character == ")":
-            depth -= 1
-            if depth == 0:
-                return text[opening_paren:index + 1]
-    return text[opening_paren:]
+def _python_literal(node: ast.AST, values: dict[str, object]) -> object | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, (str, bool)):
+        return node.value
+    if isinstance(node, ast.Name):
+        return values.get(node.id)
+    if isinstance(node, (ast.List, ast.Tuple)):
+        result = [_python_literal(item, values) for item in node.elts]
+        return result if all(item is not None for item in result) else None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _python_literal(node.left, values), _python_literal(node.right, values)
+        return left + right if isinstance(left, str) and isinstance(right, str) else None
+    return None
 
 
-def _scan_process_spawns(label: str, text: str) -> list[str]:
-    """Reject lifecycle/OpenD commands embedded in Python or Node spawn APIs."""
+def _python_call_kind(node: ast.Call, subprocess_modules: set[str], subprocess_functions: set[str], os_modules: set[str], os_system_functions: set[str]) -> str | None:
+    if isinstance(node.func, ast.Name):
+        if node.func.id in subprocess_functions:
+            return "subprocess"
+        if node.func.id in os_system_functions:
+            return "os.system"
+    if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+        if node.func.value.id in subprocess_modules and node.func.attr in PYTHON_SUBPROCESS_FUNCTIONS:
+            return "subprocess"
+        if node.func.value.id in os_modules and node.func.attr == "system":
+            return "os.system"
+    return None
+
+
+def _scan_python_process_spawns(label: str, text: str) -> list[str]:
+    """Fail closed for Python process APIs except proven literal tool probes."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return [f"{label}: invalid Python release text"]
+    subprocess_modules = {"subprocess"}
+    subprocess_functions: set[str] = set()
+    os_modules = {"os"}
+    os_system_functions: set[str] = set()
+    values: dict[str, object] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "subprocess":
+                    subprocess_modules.add(alias.asname or alias.name)
+                if alias.name == "os":
+                    os_modules.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module in {"subprocess", "os"}:
+            for alias in node.names:
+                if node.module == "subprocess" and alias.name in PYTHON_SUBPROCESS_FUNCTIONS:
+                    subprocess_functions.add(alias.asname or alias.name)
+                if node.module == "os" and alias.name == "system":
+                    os_system_functions.add(alias.asname or alias.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            value = _python_literal(node.value, values) if node.value is not None else None
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    if value is None:
+                        values.pop(target.id, None)
+                    else:
+                        values[target.id] = value
     violations: list[str] = []
-    for match in PROCESS_SPAWN.finditer(text):
-        segment = text[match.start():match.end() - 1] + _spawn_call(text, match.end() - 1)
-        collapsed = re.sub(r"[^a-z0-9]", "", _dequote_fragments(segment).casefold())
-        has_lifecycle = any(action.replace("-", "") in collapsed for action in SERVICE_LIFECYCLE_ACTIONS)
-        if has_lifecycle and ("systemctl" in collapsed or "futuopend" in collapsed or "opend" in collapsed):
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        kind = _python_call_kind(node, subprocess_modules, subprocess_functions, os_modules, os_system_functions)
+        if kind == "os.system":
+            violations.append(f"{label}: process-spawn lifecycle invocation")
+            continue
+        if kind != "subprocess":
+            continue
+        shell = next((keyword.value for keyword in node.keywords if keyword.arg == "shell"), ast.Constant(False))
+        command = node.args[0] if node.args else None
+        executable = command.elts[0].value if isinstance(command, (ast.List, ast.Tuple)) and command.elts and isinstance(command.elts[0], ast.Constant) and isinstance(command.elts[0].value, str) else None
+        if _python_literal(shell, values) is not False or executable not in SAFE_SUBPROCESS_EXECUTABLES:
             violations.append(f"{label}: process-spawn lifecycle invocation")
     return violations
+
+
+def _scan_node_process_spawns(label: str, text: str) -> list[str]:
+    return [f"{label}: process-spawn lifecycle invocation"] if NODE_PROCESS_SPAWN.search(text) else []
 
 
 def _scan_command_text(label: str, content: bytes) -> list[str]:
@@ -218,8 +266,11 @@ def _scan_command_text(label: str, content: bytes) -> list[str]:
                     continue
                 if action_index != len(arguments) - 2 or arguments[action_index].lower() != ALLOWED_ACTION or arguments[action_index + 1].lower() != ALLOWED_SERVICE:
                     violations.append(f"{label}: non-whitelisted service action")
-    if Path(label).suffix.lower() in {".py", ".js", ".ts", ".tsx"}:
-        violations.extend(_scan_process_spawns(label, text))
+    suffix = Path(label).suffix.lower()
+    if suffix == ".py":
+        violations.extend(_scan_python_process_spawns(label, text))
+    elif suffix in {".js", ".ts", ".tsx"}:
+        violations.extend(_scan_node_process_spawns(label, text))
     return violations
 
 

@@ -164,7 +164,11 @@ def _assert_source_snapshot(root: Path, commit: str, tree: str, records: list[tu
 
 def _runtime_version(command: str) -> str:
     try:
-        return subprocess.run([command, "--version"], check=True, capture_output=True, text=True).stdout.strip()
+        if command == "node":
+            return subprocess.run(["node", "--version"], check=True, capture_output=True, text=True).stdout.strip()
+        if command == "npm":
+            return subprocess.run(["npm", "--version"], check=True, capture_output=True, text=True).stdout.strip()
+        return "unavailable"
     except (OSError, subprocess.CalledProcessError):
         return "unavailable"
 
