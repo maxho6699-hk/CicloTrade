@@ -120,7 +120,7 @@ def test_retired_plan_does_not_inherit_legacy_capabilities():
 
 @pytest.mark.parametrize(
     ("action", "data_state", "health", "side"),
-    [("buy", "fresh", "healthy", "BUY"), ("short", "fresh", "healthy", "SHORT"),
+    [("buy", "fresh", "healthy", "BUY"), ("short", "fresh", "healthy", None),
      ("hold", "fresh", "healthy", None), ("wait", "stale", "healthy", None),
      ("reduce", "fresh", "degraded", None), ("exit", "fresh", "healthy", None)],
 )

@@ -247,8 +247,8 @@ def _normalize_candidate(raw: Mapping[str, Any], now: datetime) -> dict[str, Any
     paper_prefill = None
     blocked_reason = None
     actionable = False
-    if action in {"buy", "short"} and data_state == "fresh" and health == "healthy":
-        paper_prefill = {"market": "US", "symbol": symbol, "side": "BUY" if action == "buy" else "SHORT"}
+    if action == "buy" and data_state == "fresh" and health == "healthy":
+        paper_prefill = {"market": "US", "symbol": symbol, "side": "BUY"}
         actionable = True
     elif data_state != "fresh":
         blocked_reason = "market_data_not_fresh"
