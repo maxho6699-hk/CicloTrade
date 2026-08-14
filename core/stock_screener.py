@@ -421,64 +421,49 @@ def screen_candidates(
 
 
 def recommendation_to_candidate(recommendation: Mapping[str, Any]) -> dict[str, Any]:
-    """Map the existing recommendation DTO without inventing a score."""
+    """Map the existing flat read-model recommendation DTO without invention."""
     if not isinstance(recommendation, Mapping):
         raise StockScreenerError("recommendation must be an object")
-    instrument = recommendation.get("instrument")
-    if instrument is None:
-        if recommendation.get("market") != "US" or recommendation.get("instrument_type") != "stock":
-            raise StockScreenerError("recommendation must describe a US stock")
-        action = recommendation.get("action")
-        state = recommendation.get("state")
-        if state not in {"official", "research"}:
-            raise StockScreenerError("recommendation status is not screener eligible")
-        return {
-            "symbol": recommendation.get("symbol"),
-            "name": recommendation.get("symbol"),
-            "state": state,
-            "action": str(action or "").lower(),
-            "score": recommendation.get("score"),
-            "price": recommendation.get("reference_price"),
-            "change_pct": recommendation.get("change_pct", 0),
-            "reasons": [recommendation.get("rationale", "未提供理由。")],
-            "counter_evidence": recommendation.get("counter_evidence", []),
-            "risk": recommendation.get("risk", "未提供风险说明。"),
-            "invalidation": recommendation.get("invalidation"),
-            "data_state": recommendation.get("data_state", "missing"),
-            "health": recommendation.get("health", "unavailable"),
-            "updated_at": recommendation.get("updated_at", recommendation.get("occurred_at")),
-        }
-    if not isinstance(instrument, Mapping) or instrument.get("market") != "US" or instrument.get("instrument_type") != "stock":
+    if recommendation.get("market") != "US" or recommendation.get("instrument_type") != "stock":
         raise StockScreenerError("recommendation must describe a US stock")
-    status = recommendation.get("status")
-    if status not in {"official", "research"}:
+    state = recommendation.get("state")
+    if state not in CANDIDATE_STATES:
         raise StockScreenerError("recommendation status is not screener eligible")
-    action = recommendation.get("action")
-    if action not in {"BUY", "HOLD", "REDUCE", "EXIT", "WAIT"}:
+    action = str(recommendation.get("action") or "").upper()
+    action = {"BUY": "buy", "SHORT": "short", "COVER": "reduce", "REDUCE": "reduce", "EXIT": "exit"}.get(action, "")
+    if action not in CANDIDATE_ACTIONS:
         raise StockScreenerError("recommendation action is invalid")
-    evidence = recommendation.get("evidence") or {}
-    risk = recommendation.get("risk") or {}
-    provenance = recommendation.get("provenance") or {}
-    if not isinstance(evidence, Mapping) or not isinstance(risk, Mapping) or not isinstance(provenance, Mapping):
-        raise StockScreenerError("recommendation evidence, risk, and provenance must be objects")
-    freshness = {"live": "fresh", "delayed": "delayed", "stale": "stale", "incomplete": "missing"}.get(
-        risk.get("data_freshness", "missing"), "missing"
-    )
+    quote_at = recommendation.get("quote_at")
+    missing_fields = recommendation.get("missing_fields", [])
+    if not isinstance(missing_fields, list) or any(not isinstance(item, str) for item in missing_fields):
+        raise StockScreenerError("recommendation missing_fields is invalid")
+    contract_status = recommendation.get("contract_status")
+    upstream_actionable = recommendation.get("actionable") is True
+    fresh = bool(quote_at) and contract_status == "complete" and upstream_actionable and not missing_fields
+    current_price = recommendation.get("current_price")
+    if isinstance(current_price, (int, float)) and not isinstance(current_price, bool) and isfinite(float(current_price)) and float(current_price) > 0:
+        price = current_price
+    else:
+        price = recommendation.get("reference_price")
+    risk = recommendation.get("risk") or recommendation.get("rationale")
+    invalidation = recommendation.get("invalidation")
+    if not isinstance(risk, str) or not risk.strip() or not isinstance(invalidation, str) or not invalidation.strip():
+        raise StockScreenerError("recommendation risk fields are incomplete")
     return {
-        "symbol": instrument.get("symbol"),
-        "name": instrument.get("symbol"),
-        "state": status,
-        "action": action.lower(),
+        "symbol": recommendation.get("symbol"),
+        "name": recommendation.get("symbol"),
+        "state": state,
+        "action": action,
         "score": recommendation.get("score"),
-        "price": recommendation.get("reference_price", recommendation.get("price")),
+        "price": price,
         "change_pct": recommendation.get("change_pct", 0),
-        "reasons": evidence.get("supporting", []),
-        "counter_evidence": evidence.get("counter", []),
-        "risk": risk.get("risk") or "未提供风险说明。",
-        "invalidation": risk.get("invalidation"),
-        "data_state": freshness,
-        "health": recommendation.get("health", "healthy"),
-        "updated_at": provenance.get("generated_at", recommendation.get("updated_at")),
+        "reasons": [risk],
+        "counter_evidence": recommendation.get("counter_evidence", []),
+        "risk": risk,
+        "invalidation": invalidation,
+        "data_state": "fresh" if fresh else "missing",
+        "health": "healthy" if fresh else "degraded",
+        "updated_at": quote_at or recommendation.get("occurred_at") or recommendation.get("recorded_at"),
     }
 
 

@@ -39,24 +39,47 @@ def test_api_adapter_maps_real_recommendation_without_fabricating_score():
     now = datetime(2026, 8, 14, tzinfo=ZoneInfo("UTC"))
     adapter = ApiStockScreenerAdapter(has_capability=lambda capability: capability == "strategy_all")
     result = adapter.read_recommendations([{
-        "status": "official", "action": "BUY",
-        "instrument": {"market": "US", "instrument_type": "stock", "symbol": "AAPL", "currency": "USD"},
-        "evidence": {"supporting": ["趋势确认"], "counter": ["波动较高"]},
-        "risk": {"invalidation": "跌破支撑", "maximum_modeled_loss": None, "data_freshness": "live", "risk": "波动风险"},
-        "provenance": {"model_version": "v1", "generated_at": now.isoformat(), "source_snapshot": "snap-1"},
-        "reference_price": 200,
+        "state": "official", "action": "BUY", "market": "US", "instrument_type": "stock", "symbol": "AAPL",
+        "current_price": 201, "reference_price": 200, "quote_at": now.isoformat(),
+        "contract_status": "complete", "actionable": True, "missing_fields": [],
+        "rationale": "趋势确认", "invalidation": "跌破支撑", "risk": "波动风险",
     }], now=now)
     assert result["items"][0]["score"] is None
     assert result["items"][0]["paper_prefill"]["side"] == "BUY"
+    assert result["items"][0]["price"] == 201
 
 
 def test_api_adapter_rejects_malformed_recommendation_nested_objects():
     adapter = ApiStockScreenerAdapter(has_capability=lambda capability: capability == "strategy_all")
     with pytest.raises(StockScreenerError):
+        adapter.read_recommendations([{"state": "official", "action": "BUY", "market": "US", "instrument_type": "option", "symbol": "AAPL"}])
+
+
+@pytest.mark.parametrize("action", ["SHORT", "COVER", "REDUCE", "EXIT"])
+def test_api_adapter_maps_management_actions_without_paper_prefill(action):
+    adapter = ApiStockScreenerAdapter(has_capability=lambda capability: capability == "strategy_all")
+    result = adapter.read_recommendations([{
+        "state": "official", "action": action, "market": "US", "instrument_type": "stock", "symbol": "AAPL",
+        "current_price": 201, "reference_price": 200, "quote_at": "2026-08-14T00:00:00+00:00",
+        "contract_status": "complete", "actionable": True, "missing_fields": [],
+        "rationale": "持仓管理", "invalidation": "风险失效", "risk": "管理风险",
+    }])
+    assert result["items"][0]["paper_prefill"] is None
+    assert result["items"][0]["action"] in {"short", "reduce", "exit"}
+
+
+def test_api_adapter_blocks_incomplete_or_locked_recommendations():
+    adapter = ApiStockScreenerAdapter(has_capability=lambda capability: capability == "strategy_all")
+    incomplete = adapter.read_recommendations([{
+        "state": "official", "action": "BUY", "market": "US", "instrument_type": "stock", "symbol": "AAPL",
+        "current_price": 201, "reference_price": 200, "quote_at": None,
+        "contract_status": "incomplete", "actionable": False, "missing_fields": ["quote_at"],
+        "rationale": "等待报价", "invalidation": "失效", "risk": "数据风险",
+    }])
+    assert incomplete["items"][0]["paper_prefill"] is None
+    with pytest.raises(StockScreenerError):
         adapter.read_recommendations([{
-            "status": "official", "action": "BUY",
-            "instrument": {"market": "US", "instrument_type": "stock", "symbol": "AAPL"},
-            "evidence": "not-an-object", "risk": {}, "provenance": {},
+            "state": "locked", "action": "BUY", "market": "US", "instrument_type": "stock", "symbol": "AAPL",
         }])
 
 
