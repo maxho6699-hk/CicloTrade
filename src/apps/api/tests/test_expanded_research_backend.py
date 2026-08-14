@@ -9,6 +9,7 @@ from core.backtest_queue_database import BacktestQueueDatabase
 from core.compat import UTC
 from core.expanded_research_contracts import (
     AUTHORITY,
+    INVALIDATION_KIND,
     TIER_A,
     TIER_C,
     UNIVERSE_SHA256,
@@ -46,6 +47,25 @@ def _request(receiver: ExpandedResearchReceiver, value: dict, *, key: str = "exp
         "x-ciclotrade-research-fencing-epoch": str(epoch), "x-ciclotrade-research-sent-at": sent,
         "x-ciclotrade-research-sha256": body_sha,
         "x-ciclotrade-research-signature": receiver_signature(SECRET, worker_id="expanded-research-worker", fencing_epoch=epoch, idempotency_key=key, sent_at=sent, body_sha256=body_sha),
+    }
+    return receiver.accept(raw, headers)
+
+
+def _invalidate(receiver: ExpandedResearchReceiver, *, result_id: str, symbol: str = "AAPL", key: str = "expanded-invalidate-0001", epoch: int = 1):
+    value = {
+        "schema_version": 1, "kind": INVALIDATION_KIND,
+        "invalidation_id": key, "target_result_id": result_id, "symbol": symbol,
+        "reason": "source_invalidated", "universe_sha256": UNIVERSE_SHA256,
+        "invalidated_at": "2026-08-14T12:00:00Z", "authority": AUTHORITY,
+    }
+    raw = canonical_json(value)
+    body_sha = hashlib.sha256(raw).hexdigest()
+    headers = {
+        "content-type": "application/json", "idempotency-key": key,
+        "x-ciclotrade-research-worker-id": "expanded-research-worker",
+        "x-ciclotrade-research-fencing-epoch": str(epoch), "x-ciclotrade-research-sent-at": "2026-08-14T12:00:00Z",
+        "x-ciclotrade-research-sha256": body_sha,
+        "x-ciclotrade-research-signature": receiver_signature(SECRET, worker_id="expanded-research-worker", fencing_epoch=epoch, idempotency_key=key, sent_at="2026-08-14T12:00:00Z", body_sha256=body_sha),
     }
     return receiver.accept(raw, headers)
 
@@ -140,6 +160,55 @@ def test_read_model_unavailable_projections_are_exact_and_safe():
     for invalid in (True, 0, 21):
         with pytest.raises(ValueError):
             ExpandedResearchReadModel.unavailable_history(invalid)
+
+
+def test_signed_invalidation_is_idempotent_and_removes_result_from_active_projection(tmp_path):
+    store = ExpandedResearchStore(BacktestQueueDatabase(tmp_path / "backtest.db"), clock=lambda: NOW)
+    receiver = ExpandedResearchReceiver(store, shared_secret=SECRET, enabled=True, clock=lambda: NOW)
+    value = _result()
+    _request(receiver, value)
+    first = _invalidate(receiver, result_id=value["result_id"])
+    second = _invalidate(receiver, result_id=value["result_id"])
+    assert first["created"] is True and second["created"] is False
+    assert first["state"] == "invalidated" and first["target_result_id"] == value["result_id"]
+    assert store.latest_by_symbol() == []
+    assert store.history() and store.history()[0]["result_id"] == value["result_id"]
+
+
+def test_tombstone_arriving_before_result_still_blocks_late_delivery(tmp_path):
+    store = ExpandedResearchStore(BacktestQueueDatabase(tmp_path / "backtest.db"), clock=lambda: NOW)
+    receiver = ExpandedResearchReceiver(store, shared_secret=SECRET, enabled=True, clock=lambda: NOW)
+    value = _result()
+    _invalidate(receiver, result_id=value["result_id"], key="expanded-invalidate-before-result-0001")
+    _request(receiver, value)
+    assert store.latest_by_symbol() == []
+
+
+def test_read_model_keeps_active_history_consistent_after_one_result_is_invalidated(tmp_path):
+    store = ExpandedResearchStore(BacktestQueueDatabase(tmp_path / "backtest.db"), clock=lambda: NOW)
+    receiver = ExpandedResearchReceiver(store, shared_secret=SECRET, enabled=True, clock=lambda: NOW)
+    _request(receiver, _result(), key="expanded-aapl-0001")
+    _request(receiver, _result("MSFT"), key="expanded-msft-0001")
+    _invalidate(receiver, result_id=_result()["result_id"])
+    model = ExpandedResearchReadModel(store, authorize=lambda _identity: True)
+    latest = model.latest("user")
+    history = model.history("user")
+    assert latest["cycle"]["summary"]["wait_count"] == 1
+    assert history["items"][0]["coverage_count"] == 1
+
+
+def test_expired_result_is_removed_from_active_projection_but_remains_in_history(tmp_path):
+    from datetime import timedelta
+
+    current = [NOW]
+    store = ExpandedResearchStore(BacktestQueueDatabase(tmp_path / "backtest.db"), clock=lambda: current[0])
+    receiver = ExpandedResearchReceiver(store, shared_secret=SECRET, enabled=True, clock=lambda: current[0])
+    value = _result()
+    _request(receiver, value)
+    assert [row["symbol"] for row in store.latest_by_symbol()] == ["AAPL"]
+    current[0] = NOW + timedelta(hours=12, seconds=1)
+    assert store.latest_by_symbol() == []
+    assert len(store.history()) == 1
 
 
 def test_full_coverage_with_one_stale_symbol_is_not_healthy(monkeypatch):

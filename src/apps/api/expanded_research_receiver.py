@@ -24,10 +24,12 @@ from core.expanded_research_contracts import (
     ExpandedResearchConflict,
     ExpandedResearchError,
     ExpandedResearchStaleFence,
+    INVALIDATION_KIND,
     canonical_json,
     parse_timestamp,
     receiver_signature,
     sha256_bytes,
+    validate_invalidation,
     validate_result,
 )
 from core.expanded_research_store import ExpandedResearchStore
@@ -80,7 +82,27 @@ class ExpandedResearchReceiver:
             raise ExpandedResearchReceiverError("expanded research content type is invalid", 415)
         try:
             identity = self._authenticate(raw, normalized)
-            result = validate_result(_json(raw))
+            payload = _json(raw)
+            if isinstance(payload, Mapping) and payload.get("kind") == INVALIDATION_KIND:
+                result = validate_invalidation(payload)
+                if canonical_json(result) != raw:
+                    raise ExpandedResearchError("expanded research body must use canonical JSON")
+                stored = self.store.invalidate(
+                    result,
+                    receipt_key=identity["idempotency_key"],
+                    worker_id=identity["worker_id"],
+                    fencing_epoch=identity["fencing_epoch"],
+                    payload_sha256=identity["body_sha256"],
+                )
+                return {
+                    "accepted": True, "created": bool(stored["created"]),
+                    "receipt_key": stored["invalidation_key"], "invalidation_id": stored["invalidation_id"],
+                    "target_result_id": stored["target_result_id"], "payload_sha256": stored["payload_sha256"],
+                    "result_sha256": stored["payload_sha256"], "state": "invalidated",
+                    "research_only": True, "shadow": True, "actionable": False, "outbound": False,
+                    "user_visible": False, "execution": False, "official": False, "live": False,
+                }
+            result = validate_result(payload)
             if canonical_json(result) != raw:
                 raise ExpandedResearchError("expanded research body must use canonical JSON")
             stored = self.store.record(

@@ -2,7 +2,7 @@ import { AlertTriangle, ChevronLeft, ChevronRight, Clock3, Database, LockKeyhole
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { BrowserApiError } from '../api/client'
-import { displayableStrategyResearch97Cycle, fetchStrategyResearch97Aggregate, type StrategyResearch97AggregateLoad, type StrategyResearch97DataState, type StrategyResearch97Signal, type StrategyResearch97State } from '../api/strategyResearch97'
+import { displayableStrategyResearch97Cycle, fetchStrategyResearch97Aggregate, STRATEGY_RESEARCH97_REFRESH_MS, type StrategyResearch97AggregateLoad, type StrategyResearch97DataState, type StrategyResearch97Signal, type StrategyResearch97State } from '../api/strategyResearch97'
 import { useLocale } from '../i18n/useLocale'
 import '../styles/strategy-research-97.css'
 
@@ -56,7 +56,8 @@ function pageCountForLoad(loadState: LoadState, query: string, tier: TierFilter,
     const matchesTier = tier === 'all' || item.tier === tier
     const matchesStatus = status === 'all' || item.signal === status || item.data_state === status
     const matchesQuery = !normalizedQuery || item.symbol.includes(normalizedQuery)
-    return matchesTier && matchesStatus && matchesQuery
+    const matchesActive = status === 'missing' || item.data_state !== 'missing'
+    return matchesTier && matchesStatus && matchesQuery && matchesActive
   }).length
   return Math.max(1, Math.ceil(filteredCount / pageSize))
 }
@@ -106,14 +107,33 @@ export function StrategyResearch97Panel() {
 
   useEffect(() => {
     let current = true
-    void fetchStrategyResearch97Aggregate().then((load) => {
-      if (!current) return
-      if (load.phase === 'error') setLoadState(load.forbidden ? { phase: 'forbidden' } : { phase: 'error', reason: load.reason })
-      else setLoadState({ phase: load.phase, load })
-    }).catch((error: unknown) => {
-      if (current) setLoadState({ phase: error instanceof BrowserApiError && error.status === 403 ? 'forbidden' : 'error' })
-    })
-    return () => { current = false }
+    let initial = true
+    let inFlight = false
+    const refresh = async (force = false) => {
+      if (!current || inFlight || (!force && document.visibilityState !== 'visible')) return
+      inFlight = true
+      try {
+        const load = await fetchStrategyResearch97Aggregate()
+        if (!current) return
+        if (load.phase === 'error') {
+          if (initial || load.forbidden) setLoadState(load.forbidden ? { phase: 'forbidden' } : { phase: 'error', reason: load.reason })
+        } else setLoadState({ phase: load.phase, load })
+      } catch (error: unknown) {
+        if (current && initial) setLoadState({ phase: error instanceof BrowserApiError && error.status === 403 ? 'forbidden' : 'error' })
+      } finally {
+        initial = false
+        inFlight = false
+      }
+    }
+    void refresh(true)
+    const timer = window.setInterval(() => { void refresh() }, STRATEGY_RESEARCH97_REFRESH_MS)
+    const onVisibilityChange = () => { if (document.visibilityState === 'visible') void refresh(true) }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      current = false
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
   }, [])
 
   if (loadState.phase === 'loading') return <section className="data-panel strategy-research-97-panel" aria-busy="true"><div className="strategy-research-97-message" role="status" aria-live="polite"><Clock3 aria-hidden="true" size={20} /><span>{text.loading}</span></div></section>
@@ -133,7 +153,8 @@ export function StrategyResearch97Panel() {
     const matchesTier = tier === 'all' || item.tier === tier
     const matchesStatus = status === 'all' || item.signal === status || item.data_state === status
     const matchesQuery = !normalizedQuery || item.symbol.includes(normalizedQuery)
-    return matchesTier && matchesStatus && matchesQuery
+    const matchesActive = status === 'missing' || item.data_state !== 'missing'
+    return matchesTier && matchesStatus && matchesQuery && matchesActive
   }) ?? []
   const pageCount = Math.max(1, Math.ceil(filteredSymbols.length / pageSize))
   const safePage = Math.min(page, pageCount)

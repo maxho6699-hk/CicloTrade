@@ -15,6 +15,7 @@ export type StrategyResearch97State = 'waiting' | 'healthy' | 'stale' | 'degrade
  */
 export type StrategyResearch97Signal = 'wait'
 export type StrategyResearch97DataState = 'fresh' | 'stale' | 'missing'
+export const STRATEGY_RESEARCH97_REFRESH_MS = 15_000
 
 export interface StrategyResearch97Authority {
   publication_ceiling: 'shadow'

@@ -20,6 +20,7 @@ from core.expanded_research_universe_data import UNIVERSE_DATA
 
 
 RESULT_KIND = "tradeai.expanded-local-research.v1"
+INVALIDATION_KIND = "tradeai.expanded-local-research-invalidation.v1"
 RECEIVER_ENDPOINT = "expanded-equity-research-result"
 UNIVERSE_VERSION = "us-liquid-research-2026-08-13-v1"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -129,6 +130,39 @@ def validate_result(value: Any) -> dict[str, Any]:
         "schema_version": 1, "kind": RESULT_KIND, "result_id": result_id, "symbol": symbol, "tier": tier,
         "source_sha256": source_sha, "universe_sha256": UNIVERSE_SHA256, "dataset_end": dataset_end.isoformat(),
         "equity": normalized_equity, "option_proxy": dict(option_proxy) if isinstance(option_proxy, Mapping) else None,
+        "authority": dict(AUTHORITY),
+    }
+    canonical_json(normalized)
+    return normalized
+
+
+def validate_invalidation(value: Any) -> dict[str, Any]:
+    item = _object(value, "expanded research invalidation")
+    expected = {
+        "schema_version", "kind", "invalidation_id", "target_result_id", "symbol",
+        "reason", "universe_sha256", "invalidated_at", "authority",
+    }
+    if set(item) != expected:
+        raise ExpandedResearchError("expanded research invalidation fields are invalid")
+    if item["schema_version"] != 1 or item["kind"] != INVALIDATION_KIND:
+        raise ExpandedResearchError("expanded research invalidation kind is invalid")
+    invalidation_id = _safe_id(item["invalidation_id"], "invalidation_id")
+    target_result_id = _safe_id(item["target_result_id"], "target_result_id")
+    symbol = _symbol(item["symbol"])
+    if symbol not in CANONICAL_SYMBOLS:
+        raise ExpandedResearchError("expanded research invalidation symbol is invalid")
+    reason = item["reason"]
+    if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 240:
+        raise ExpandedResearchError("expanded research invalidation reason is invalid")
+    if item["universe_sha256"] != UNIVERSE_SHA256:
+        raise ExpandedResearchError("expanded research invalidation universe hash is invalid")
+    invalidated_at = stamp(parse_timestamp(item["invalidated_at"], "invalidated_at"))
+    if item["authority"] != AUTHORITY:
+        raise ExpandedResearchError("expanded research invalidation authority is not shadow-only")
+    normalized = {
+        "schema_version": 1, "kind": INVALIDATION_KIND, "invalidation_id": invalidation_id,
+        "target_result_id": target_result_id, "symbol": symbol, "reason": reason.strip(),
+        "universe_sha256": UNIVERSE_SHA256, "invalidated_at": invalidated_at,
         "authority": dict(AUTHORITY),
     }
     canonical_json(normalized)

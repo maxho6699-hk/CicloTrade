@@ -81,9 +81,11 @@ class ExpandedResearchReadModel:
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
             raise ValueError("expanded research history limit must be between 1 and 20")
         rows = self.store.history(100)
+        active_ids = {row["result_id"] for row in self.store.latest_by_symbol()}
         grouped: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
-            grouped.setdefault(row["dataset_end"], []).append(row)
+            if row["result_id"] in active_ids:
+                grouped.setdefault(row["dataset_end"], []).append(row)
         items = [_history_item(date_key, values) for date_key, values in list(grouped.items())[:limit]]
         return {
             "available": bool(items), "authority": _authority(), "limit": 20, "items": items,
