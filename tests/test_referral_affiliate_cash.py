@@ -65,7 +65,7 @@ def _eligible_pair(db: DatabaseManager, auth: AuthService, referrer_name: str, r
 
 def _settle_promotion(
     db: DatabaseManager, user_id: int, order_no: str, *, amount_minor: int = 200_000,
-    hold_days: int = 1, eligible: bool = True,
+    hold_days: int = 1, eligible: bool = True, commission_cap_minor: int = 100_000,
 ) -> tuple[dict, dict | None]:
     now = datetime.now(UTC)
     quote = {
@@ -74,7 +74,7 @@ def _settle_promotion(
         "coupon_code_snapshot": None, "coupon_version_snapshot": None,
         "referral_policy_version": "membership-promotions-v2:1",
         "referral_eligible_snapshot": int(eligible), "commission_rate_bps": 1000,
-        "commission_cap_minor": 100_000, "hold_days": hold_days, "bonus_policy_snapshot": None,
+        "commission_cap_minor": commission_cap_minor, "hold_days": hold_days, "bonus_policy_snapshot": None,
     }
     with db.transaction() as conn:
         snapshot = PromotionOrderAdapter.bind_order_snapshot(
@@ -83,10 +83,10 @@ def _settle_promotion(
         )
         conn.execute(
             """INSERT INTO subscription_orders(order_no,user_id,plan_type,billing_cycle,amount,currency,pay_method,status,created_at,paid_at,amount_minor,list_price_minor,coupon_discount_minor,referral_discount_minor,final_amount_minor,coupon_code_snapshot,coupon_version_snapshot,referral_policy_version,referral_eligible_snapshot,referral_commission_rate_bps_snapshot,referral_commission_cap_minor_snapshot,referral_hold_days_snapshot,promotion_snapshot_sha256,referral_attribution_id_snapshot,referral_referrer_user_id_snapshot,referral_referred_user_id_snapshot)
-               VALUES (?,?,'高级版','yearly',?,'HKD','fps','paid',?,?,?,?,?,?,?,?,?,'membership-promotions-v2:1',?,1000,100000,?,?,?,?,?)""",
+               VALUES (?,?,'高级版','yearly',?,'HKD','fps','paid',?,?,?,?,?,?,?,?,?,'membership-promotions-v2:1',?,1000,?,?,?,?,?,?)""",
             (order_no, user_id, amount_minor / 100, now.isoformat(), now.isoformat(), amount_minor,
              amount_minor, 0, 0, amount_minor, None, None, int(eligible),
-             hold_days, snapshot["promotion_snapshot_sha256"],
+             commission_cap_minor, hold_days, snapshot["promotion_snapshot_sha256"],
              snapshot["referral_attribution_id_snapshot"],
              snapshot["referral_referrer_user_id_snapshot"],
              snapshot["referral_referred_user_id_snapshot"]),
@@ -548,3 +548,75 @@ def test_partial_commission_reversal_is_proportional(db):
                 amount_minor=order["amount_minor"], reason="provider_refund",
                 now=datetime.now(UTC),
             )
+
+
+def test_capped_commission_reversal_only_claws_back_amount_above_cap(db):
+    auth = AuthService(db)
+    referrer, referred = _eligible_pair(db, auth, "cap-referrer", "cap-referred")
+    order, commission = _settle_promotion(
+        db, referred["id"], "cap-threshold-order", amount_minor=663_100,
+        commission_cap_minor=50_000,
+    )
+    assert commission and commission["commission_amount_minor"] == 50_000
+    wallet = ReferralWalletService(db)
+    now = datetime.now(UTC)
+
+    with db.transaction() as conn:
+        assert ReferralCommissionService.record_reversal(
+            conn, event_key="cap-small-refund", order=order, amount_minor=10_000,
+            reason="provider_refund", now=now,
+        )
+    assert db.fetch_one(
+        "SELECT reversed_amount_minor,clawed_back_minor FROM referral_commissions WHERE source_order_no=?",
+        (order["order_no"],),
+    ) == {"reversed_amount_minor": 10_000, "clawed_back_minor": 0}
+    assert wallet.balances(referrer["id"])["pending"] == 50_000
+
+    with db.transaction() as conn:
+        assert ReferralCommissionService.record_reversal(
+            conn, event_key="cap-threshold-crossing", order=order, amount_minor=153_101,
+            reason="provider_refund", now=now,
+        )
+    after_threshold = db.fetch_one(
+        "SELECT reversed_amount_minor,clawed_back_minor FROM referral_commissions WHERE source_order_no=?",
+        (order["order_no"],),
+    )
+    assert after_threshold == {"reversed_amount_minor": 163_101, "clawed_back_minor": 1}
+    assert wallet.balances(referrer["id"])["pending"] == 49_999
+    assert db.fetch_one(
+        """SELECT COALESCE(SUM(l.amount_minor),0) amount FROM referral_ledger_entries l
+           JOIN referral_journal_batches b ON b.id=l.batch_id
+           WHERE l.account_kind='user' AND b.status='finalized' AND l.bucket='pending'
+             AND (l.reference_id=? OR l.reference_id IN
+                 (SELECT public_id FROM referral_reversal_events WHERE source_order_no=?))""",
+        (commission["public_id"], order["order_no"]),
+    )["amount"] == 49_999
+
+    released_at = datetime.fromisoformat(commission["available_at"]) + timedelta(seconds=1)
+    assert ReferralCommissionService(db).release_due(referrer["id"], released_at) == 1
+    with db.transaction() as conn:
+        _ledger_batch(
+            conn, user_id=referrer["id"], legs=[("available", -10_000), ("paid", 10_000)],
+            entry_type="test_paid", group_key="cap-threshold-paid", reference_type="test",
+            reference_id="cap-threshold-paid", batch_key="cap-threshold-paid", now=released_at,
+        )
+        assert not ReferralCommissionService.record_reversal(
+            conn, event_key="cap-threshold-crossing", order=order, amount_minor=153_101,
+            reason="provider_refund", now=released_at,
+        )
+
+    with db.transaction() as conn:
+        assert ReferralCommissionService.record_reversal(
+            conn, event_key="cap-full-refund", order=order, amount_minor=499_999,
+            reason="provider_refund", now=released_at,
+        )
+    assert db.fetch_one(
+        "SELECT reversed_amount_minor,clawed_back_minor FROM referral_commissions WHERE source_order_no=?",
+        (order["order_no"],),
+    ) == {"reversed_amount_minor": 663_100, "clawed_back_minor": 50_000}
+    assert wallet.balances(referrer["id"]) == {
+        "pending": 0, "available": -10_000, "reserved": 0, "paid": 10_000,
+    }
+    assert db.fetch_one(
+        "SELECT COALESCE(SUM(amount_minor),0) net FROM referral_ledger_entries"
+    )["net"] == 0

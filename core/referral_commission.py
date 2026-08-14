@@ -143,7 +143,10 @@ class ReferralCommissionService:
                   AND EXISTS (SELECT 1 FROM referral_ledger_entries l
                               JOIN referral_journal_batches b ON b.id=l.batch_id
                               WHERE l.account_kind='user' AND b.status='finalized'
-                                AND l.reference_type='commission' AND l.reference_id=c.public_id
+                                AND ((l.reference_type='commission' AND l.reference_id=c.public_id)
+                                  OR (l.reference_type='reversal' AND l.reference_id IN
+                                      (SELECT public_id FROM referral_reversal_events
+                                       WHERE source_order_no=c.source_order_no)))
                               GROUP BY l.reference_id
                               HAVING SUM(CASE WHEN l.bucket='pending' THEN l.amount_minor ELSE 0 END)>0)
                 ORDER BY id""",
@@ -154,9 +157,11 @@ class ReferralCommissionService:
             pending = int(conn.execute(
                 """SELECT COALESCE(SUM(l.amount_minor),0) FROM referral_ledger_entries l
                    JOIN referral_journal_batches b ON b.id=l.batch_id
-                   WHERE l.account_kind='user' AND b.status='finalized'
-                     AND l.reference_type='commission' AND l.reference_id=? AND l.bucket='pending'""",
-                (row["public_id"],),
+                   WHERE l.account_kind='user' AND b.status='finalized' AND l.bucket='pending'
+                     AND ((l.reference_type='commission' AND l.reference_id=?)
+                       OR (l.reference_type='reversal' AND l.reference_id IN
+                           (SELECT public_id FROM referral_reversal_events WHERE source_order_no=?)))""",
+                (row["public_id"], row["source_order_no"]),
             ).fetchone()[0])
             if pending <= 0:
                 continue
@@ -212,11 +217,16 @@ class ReferralCommissionService:
             (reversal_id, event_key, order["order_no"], kind, amount, reason[:160], _iso(now)),
         )
         cumulative = int(commission["reversed_amount_minor"]) + amount
-        remaining_commission = (
-            (int(commission["gross_amount_minor"]) - cumulative) * int(commission["rate_bps"]) // 10000
+        original_commission = int(commission["commission_amount_minor"])
+        remaining_commission = min(
+            original_commission,
+            (int(commission["gross_amount_minor"]) - cumulative)
+            * int(commission["rate_bps"]) // 10000,
         )
-        target_claw = int(commission["commission_amount_minor"]) - remaining_commission
+        target_claw = max(0, original_commission - remaining_commission)
         claw = target_claw - int(commission["clawed_back_minor"])
+        if not 0 <= target_claw <= original_commission or claw < 0:
+            raise RuntimeError("推广佣金冲回状态无效。")
         conn.execute(
             """UPDATE referral_commissions
                SET reversed_amount_minor=?,clawed_back_minor=? WHERE id=?""",
@@ -228,8 +238,11 @@ class ReferralCommissionService:
                 """SELECT COALESCE(SUM(l.amount_minor),0) FROM referral_ledger_entries l
                    JOIN referral_journal_batches b ON b.id=l.batch_id
                    WHERE l.account_kind='user' AND b.status='finalized'
-                     AND l.reference_type='commission' AND l.reference_id=? AND l.bucket='pending'""",
-                (commission["public_id"],),
+                     AND l.bucket='pending'
+                     AND ((l.reference_type='commission' AND l.reference_id=?)
+                       OR (l.reference_type='reversal' AND l.reference_id IN
+                           (SELECT public_id FROM referral_reversal_events WHERE source_order_no=?)))""",
+                (commission["public_id"], commission["source_order_no"]),
             ).fetchone()[0])
             from_pending = min(claw, max(0, pending))
             if from_pending:
