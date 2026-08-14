@@ -101,7 +101,17 @@ class ExpandedResearchReadModel:
 
 
 def _authority() -> dict[str, Any]:
-    return {"publication_ceiling": "shadow", "research_only": True, "actionable": False, "outbound": False, "execution": False, "official": False, "live": False}
+    return {
+        "publication_ceiling": "shadow",
+        "projection_scope": "authenticated_research",
+        "source_user_visible": False,
+        "research_only": True,
+        "actionable": False,
+        "outbound": False,
+        "execution": False,
+        "official": False,
+        "live": False,
+    }
 
 
 def _universe() -> dict[str, Any]:

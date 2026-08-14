@@ -100,7 +100,20 @@ def test_read_model_emits_exact_97_symbol_dto_and_requires_authentication(tmp_pa
     latest = model.latest("user")
     cycle = latest["cycle"]
     assert set(latest) == {"available", "authority", "validation_label", "cycle"}
-    assert latest["authority"]["actionable"] is False
+    assert AUTHORITY["user_visible"] is False
+    assert latest["authority"] == {
+        "publication_ceiling": "shadow",
+        "projection_scope": "authenticated_research",
+        "source_user_visible": False,
+        "research_only": True,
+        "actionable": False,
+        "outbound": False,
+        "execution": False,
+        "official": False,
+        "live": False,
+    }
+    assert "user_visible" not in latest["authority"]
+    assert not {"raw", "worker_id", "receipt_key", "payload_json", "signature", "shared_secret", "secret"} & _nested_keys(latest)
     assert len(cycle["symbols"]) == 97
     assert cycle["summary"]["no_data_count"] == 96
     assert {item["data_state"] for item in cycle["symbols"] if item["symbol"] != "AAPL"} == {"missing"}
@@ -119,6 +132,8 @@ def test_read_model_unavailable_projections_are_exact_and_safe():
     assert status["available"] is False and status["state"] == "waiting"
     assert status["coverage_count"] == 0 and status["no_data_count"] == 97
     assert status["universe"]["count"] == 97 and status["authority"]["actionable"] is False
+    assert status["authority"]["source_user_visible"] is False
+    assert status["authority"]["projection_scope"] == "authenticated_research"
     assert set(latest) == {"available", "authority", "validation_label", "cycle"}
     assert latest["available"] is False and latest["cycle"] is None
     assert history == {"available": False, "authority": status["authority"], "limit": 20, "items": []}
@@ -134,3 +149,11 @@ def test_full_coverage_with_one_stale_symbol_is_not_healthy(monkeypatch):
     monkeypatch.setattr("src.apps.api.expanded_research_read_model._stale", lambda value: value == "stale")
     model = ExpandedResearchReadModel(store, authorize=lambda _identity: True)
     assert model.status("user")["state"] == "stale"
+
+
+def _nested_keys(value):
+    if isinstance(value, dict):
+        return set(value) | set().union(*(_nested_keys(item) for item in value.values()), set())
+    if isinstance(value, list):
+        return set().union(*(_nested_keys(item) for item in value), set())
+    return set()
