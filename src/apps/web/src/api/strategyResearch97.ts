@@ -8,7 +8,12 @@ import { authenticatedJsonRequest, BrowserApiError } from './client.ts'
  * in this module can create an order, send Telegram, or control a strategy.
  */
 export type StrategyResearch97State = 'waiting' | 'healthy' | 'stale' | 'degraded'
-export type StrategyResearch97Signal = 'long' | 'flat' | 'wait'
+/**
+ * Expanded research is deliberately non-actionable.  The browser contract
+ * exposes WAIT only; directional labels from an upstream or stale payload
+ * must fail validation instead of being rendered as recommendations.
+ */
+export type StrategyResearch97Signal = 'wait'
 export type StrategyResearch97DataState = 'fresh' | 'stale' | 'missing'
 
 export interface StrategyResearch97Authority {
@@ -163,10 +168,7 @@ export function validStrategyResearch97Aggregate(value: unknown): value is Strat
   const cycle = value.latest.cycle
   const missing = cycle.symbols.filter((item) => item.data_state === 'missing').length
   const covered = cycle.symbols.length - missing
-  const signals = cycle.symbols.filter((item) => item.data_state !== 'missing').reduce((counts, item) => {
-    counts[item.signal] += 1
-    return counts
-  }, { long: 0, flat: 0, wait: 0 })
+  const waitCount = cycle.symbols.filter((item) => item.data_state !== 'missing').length
   const tierCounts = cycle.symbols.reduce((counts, item) => {
     counts[item.tier] += 1
     return counts
@@ -178,9 +180,9 @@ export function validStrategyResearch97Aggregate(value: unknown): value is Strat
     || historyLatest.evaluated_at !== cycle.evaluated_at
     || historyLatest.coverage_count !== covered
     || historyLatest.no_data_count !== missing
-    || historyLatest.long_count !== signals.long
-    || historyLatest.flat_count !== signals.flat
-    || historyLatest.wait_count !== signals.wait
+    || historyLatest.long_count !== 0
+    || historyLatest.flat_count !== 0
+    || historyLatest.wait_count !== waitCount
     || tierCounts.A !== 13
     || tierCounts.C !== 84
     || value.status.last_result_at !== cycle.evaluated_at
@@ -189,9 +191,9 @@ export function validStrategyResearch97Aggregate(value: unknown): value is Strat
     && value.status.coverage_count === covered
     && value.status.no_data_count === missing
     && cycle.summary.no_data_count === missing
-    && cycle.summary.long_count === signals.long
-    && cycle.summary.flat_count === signals.flat
-    && cycle.summary.wait_count === signals.wait
+    && cycle.summary.long_count === 0
+    && cycle.summary.flat_count === 0
+    && cycle.summary.wait_count === waitCount
 }
 
 async function settleResource<T>(load: () => Promise<T>, available: (value: T) => boolean): Promise<StrategyResearch97Resource<T>> {
@@ -306,7 +308,7 @@ function validSymbol(value: unknown): value is StrategyResearch97Symbol {
     && text(value.symbol)
     && (value.tier === 'A' || value.tier === 'C')
     && ['fresh', 'stale', 'missing'].includes(value.data_state as string)
-    && ['long', 'flat', 'wait'].includes(value.signal as string)
+    && value.signal === 'wait'
     && (value.rationale === null || text(value.rationale))
     && (value.updated_at === null || isoTimestamp(value.updated_at))
     && (value.data_state === 'missing' ? value.signal === 'wait' : true)
@@ -321,9 +323,9 @@ function validCycle(value: unknown): value is StrategyResearch97Cycle {
   const summary = value.summary
   const symbols = value.symbols
   if (!text(value.cycle_id) || !isoDate(value.evaluation_date) || !isoTimestamp(value.evaluated_at) || !text(value.strategy_key) || !text(value.strategy_name) || !text(value.strategy_version)) return false
-  if (!exactKeys(summary, ['long_count', 'flat_count', 'wait_count', 'no_data_count']) || !count(summary.long_count) || !count(summary.flat_count) || !count(summary.wait_count) || !count(summary.no_data_count)) return false
+  if (!exactKeys(summary, ['long_count', 'flat_count', 'wait_count', 'no_data_count']) || summary.long_count !== 0 || summary.flat_count !== 0 || !count(summary.wait_count) || !count(summary.no_data_count)) return false
   const summaryTotal = summary.long_count + summary.flat_count + summary.wait_count + summary.no_data_count
-  if (summaryTotal !== 97) return false
+  if (summaryTotal !== 97 || summary.wait_count + summary.no_data_count !== 97) return false
   if (!Array.isArray(symbols) || symbols.length !== 97 || !symbols.every(validSymbol) || new Set(symbols.map((item) => `${item.market}:${item.symbol}`)).size !== 97) return false
   return validEvidence(value.evidence)
 }
@@ -339,9 +341,9 @@ export function validStrategyResearch97Latest(value: unknown): value is Strategy
 function validHistoryItem(value: unknown): value is StrategyResearch97HistoryItem {
   if (!exactKeys(value, ['cycle_id', 'evaluation_date', 'evaluated_at', 'received_at', 'coverage_count', 'no_data_count', 'long_count', 'flat_count', 'wait_count'])
     || !text(value.cycle_id) || !isoDate(value.evaluation_date) || !isoTimestamp(value.evaluated_at) || !isoTimestamp(value.received_at)
-    || !count(value.coverage_count) || !count(value.no_data_count) || !count(value.long_count) || !count(value.flat_count) || !count(value.wait_count)
+    || !count(value.coverage_count) || !count(value.no_data_count) || value.long_count !== 0 || value.flat_count !== 0 || !count(value.wait_count)
     || value.coverage_count + value.no_data_count !== 97) return false
-  return value.long_count + value.flat_count + value.wait_count <= value.coverage_count
+  return value.wait_count === value.coverage_count
 }
 
 export function validStrategyResearch97History(value: unknown): value is StrategyResearch97History {

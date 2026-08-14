@@ -27,7 +27,7 @@ function symbols() {
     symbol: `STK${String(index + 1).padStart(2, '0')}`,
     tier: index < 13 ? 'A' as const : 'C' as const,
     data_state: index === 96 ? 'missing' as const : 'fresh' as const,
-    signal: index === 96 ? 'wait' as const : index % 3 === 0 ? 'long' as const : index % 3 === 1 ? 'flat' as const : 'wait' as const,
+    signal: 'wait' as const,
     rationale: index === 96 ? null : '研究标签由服务端周期回传。',
     updated_at: index === 96 ? null : '2026-08-14T08:00:00Z',
   }))
@@ -43,13 +43,13 @@ const latest = {
   cycle: {
     cycle_id: 'expanded-2026-08-14-eod', evaluation_date: '2026-08-14', evaluated_at: '2026-08-14T08:00:00Z',
     strategy_key: 'expanded-equity-research', strategy_name: 'US liquid research', strategy_version: 'v1',
-    summary: { long_count: 32, flat_count: 32, wait_count: 32, no_data_count: 1 }, symbols: symbols(),
+    summary: { long_count: 0, flat_count: 0, wait_count: 96, no_data_count: 1 }, symbols: symbols(),
     evidence: { universe_sha256: hash, source_snapshot_sha256: 'b'.repeat(64), code_bundle_sha256: 'c'.repeat(64), result_sha256: 'd'.repeat(64) },
   },
 }
 const history = {
   available: true, authority, limit: 20 as const,
-  items: [{ cycle_id: 'expanded-2026-08-14-eod', evaluation_date: '2026-08-14', evaluated_at: '2026-08-14T08:00:00Z', received_at: '2026-08-14T08:01:00Z', coverage_count: 96, no_data_count: 1, long_count: 32, flat_count: 32, wait_count: 32 }],
+  items: [{ cycle_id: 'expanded-2026-08-14-eod', evaluation_date: '2026-08-14', evaluated_at: '2026-08-14T08:00:00Z', received_at: '2026-08-14T08:01:00Z', coverage_count: 96, no_data_count: 1, long_count: 0, flat_count: 0, wait_count: 96 }],
 }
 
 test('accepts the strict expanded-research authority and 97-symbol coverage', () => {
@@ -66,11 +66,16 @@ test('fails closed when authority, universe count, or missing-data signal is uns
   assert.equal(validStrategyResearch97Status({ ...status, authority: { ...authority, source_user_visible: true } }), false)
   assert.equal(validStrategyResearch97Status({ ...status, authority: { ...authority, projection_scope: 'public' as never } }), false)
   assert.equal(validStrategyResearch97Status({ ...status, universe: { ...universe, count: 13 } }), false)
-  assert.equal(validStrategyResearch97Latest({ ...latest, cycle: { ...latest.cycle, symbols: latest.cycle.symbols.map((item, index) => index === 96 ? { ...item, signal: 'long' } : item) } }), false)
+  assert.equal(validStrategyResearch97Latest({ ...latest, cycle: { ...latest.cycle, symbols: latest.cycle.symbols.map((item, index) => index === 96 ? { ...item, signal: 'long' as never } : item) } }), false)
+  assert.equal(validStrategyResearch97Latest({ ...latest, cycle: { ...latest.cycle, summary: { ...latest.cycle.summary, long_count: 1, wait_count: 95 } } }), false)
+  assert.equal(validStrategyResearch97Latest({ ...latest, cycle: { ...latest.cycle, summary: { ...latest.cycle.summary, flat_count: 1, wait_count: 95 } } }), false)
+  assert.equal(validStrategyResearch97History({ ...history, items: [{ ...history.items[0], long_count: 1, wait_count: 95 }] }), false)
+  assert.equal(validStrategyResearch97History({ ...history, items: [{ ...history.items[0], flat_count: 1, wait_count: 95 }] }), false)
   assert.equal(validStrategyResearch97Aggregate({ status, latest: { ...latest, cycle: { ...latest.cycle, evidence: { ...latest.cycle.evidence, universe_sha256: 'f'.repeat(64) } } }, history }), false)
   assert.equal(validStrategyResearch97Aggregate({ status: { ...status, coverage_count: 95, no_data_count: 2 }, latest, history }), false)
   assert.equal(validStrategyResearch97Aggregate({ status, latest, history: { ...history, items: [{ ...history.items[0], cycle_id: 'different-cycle' }] } }), false)
   assert.equal(validStrategyResearch97Aggregate({ status, latest, history: { ...history, items: [{ ...history.items[0], long_count: 31 }] } }), false)
+  assert.equal(validStrategyResearch97Aggregate({ status, latest, history: { ...history, items: [{ ...history.items[0], flat_count: 1, wait_count: 95 }] } }), false)
   assert.equal(validStrategyResearch97Aggregate({ status, latest: { ...latest, cycle: { ...latest.cycle, symbols: latest.cycle.symbols.map((item, index) => index === 13 ? { ...item, tier: 'A' as const } : item) } }, history }), false)
   assert.equal(validStrategyResearch97Aggregate({ status: { ...status, last_result_at: null }, latest, history }), false)
 })
@@ -207,7 +212,8 @@ test('panel owns Tier/status/search pagination and explicit partial/stale states
   assert.match(panel, /PAGE_SIZE = 18/)
   assert.match(panel, /NARROW_PAGE_SIZE = 8/)
   assert.match(panel, /tierFilter/)
-  assert.match(panel, /signalFilter/)
+  assert.match(panel, /statusFilter/)
+  assert.doesNotMatch(panel, /value="long"|value="flat"|text\.long|text\.flat/)
   assert.match(panel, /setPage\(1\)/)
   assert.match(panel, /phase: 'partial'/)
   assert.match(panel, /statusData\?\.state === 'stale'/)
