@@ -188,6 +188,69 @@ class OrderService:
         )
         return not row or str(row["control_value"]).lower() in {"1", "true", "yes", "on"}
 
+    def quote_order(
+        self,
+        user_id: int,
+        plan: str,
+        cycle: str,
+        *,
+        coupon_code: str | None = None,
+    ) -> dict[str, Any]:
+        """Return a server-authoritative preview without reserving a coupon.
+
+        Order creation always recalculates the same rules inside its own write
+        transaction.  The browser therefore receives useful price detail but
+        never supplies or authorizes an amount.
+        """
+        if plan not in PLANS or plan == "免费版":
+            raise ValueError("请选择可购买的订阅方案。")
+        prices = PLANS[plan]["prices"]
+        if cycle not in prices:
+            raise ValueError("该方案不支持所选付款周期。")
+        if coupon_code is not None and not isinstance(coupon_code, str):
+            raise ValueError("优惠码字段无效。")
+        canonical_coupon = coupon_code.strip().upper() or None if coupon_code is not None else None
+        now = datetime.now(UTC)
+        with self.db.transaction() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            user = conn.execute(
+                "SELECT is_active,plan_type,subscription_expire FROM users WHERE id=?",
+                (int(user_id),),
+            ).fetchone()
+            if not user or not user["is_active"]:
+                raise PermissionError("账户不存在或已停用。")
+            current = resolve_membership(conn, int(user_id), now, sync_cache=True)
+            assert_plan_not_lower(str(current["plan_type"]), plan)
+            action = _purchase_action(str(current["plan_type"]), plan)
+            _, decision = current_plan_commerce_decision(
+                conn, plan, action, as_of=now,
+            )
+            if not decision["allowed"]:
+                raise ValueError("当前会员策略不允许购买、续费或升级至该方案。")
+            list_price_minor = int(round(float(prices[cycle]) * 100))
+            quote = PromotionOrderAdapter(_EntitlementCommercePolicy()).quote(
+                conn,
+                user_id=int(user_id),
+                plan=plan,
+                cycle=cycle,
+                list_price_minor=list_price_minor,
+                coupon_code=canonical_coupon,
+                now=now,
+            )
+        return {
+            "plan": plan,
+            "cycle": cycle,
+            "currency": "HKD",
+            "list_price_minor": int(quote["list_price_minor"]),
+            "coupon_discount_minor": int(quote["coupon_discount_minor"]),
+            "referral_discount_minor": int(quote["referral_discount_minor"]),
+            "final_amount_minor": int(quote["final_amount_minor"]),
+            "coupon_code": quote.get("coupon_code_snapshot"),
+            "referral_eligible": bool(quote.get("referral_eligible_snapshot")),
+            "discount_order": ["coupon", "referral"],
+            "server_reprices_on_order": True,
+        }
+
     def create_order(
         self,
         user_id: int,
@@ -224,7 +287,9 @@ class OrderService:
             entitlement_days += YEARLY_PROMO_DAYS
         amount = float(prices[cycle])
         list_price_minor = int(round(amount * 100))
-        canonical_coupon = str(coupon_code or "").strip().upper() or None
+        if coupon_code is not None and not isinstance(coupon_code, str):
+            raise ValueError("优惠码字段无效。")
+        canonical_coupon = coupon_code.strip().upper() or None if coupon_code is not None else None
         now = datetime.now(UTC)
         with self.db.transaction() as conn:
             conn.execute("BEGIN IMMEDIATE")

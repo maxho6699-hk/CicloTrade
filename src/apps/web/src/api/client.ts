@@ -45,6 +45,30 @@ export interface MembershipPlan {
   can_purchase: boolean
   purchase_action: MembershipPurchaseAction
   blocked_reason: string | null
+  lifecycle: 'active_public'
+}
+
+export interface LegacyMembershipPlan {
+  key: Extract<MembershipPlanKey, '专业版' | '定制版'>
+  display_name: string
+  lifecycle: 'retired_legacy'
+  summary: string
+  can_purchase: false
+  can_renew: false
+}
+
+export interface MembershipQuote {
+  plan: MembershipPlanKey
+  cycle: MembershipBillingCycle
+  currency: 'HKD'
+  list_price_minor: number
+  coupon_discount_minor: number
+  referral_discount_minor: number
+  final_amount_minor: number
+  coupon_code: string | null
+  referral_eligible: boolean
+  discount_order: ['coupon', 'referral']
+  server_reprices_on_order: true
 }
 
 export type BrokerCatalogStatus =
@@ -265,6 +289,8 @@ export interface BootstrapPayload {
     annual_bonus_enabled?: boolean
     capabilities: string[]
     plans: MembershipPlan[]
+    legacy_plans: LegacyMembershipPlan[]
+    policy: { key: string | null; version: number | null; sha256: string | null }
     orders: MembershipOrder[]
     payment_methods: Record<'fps' | 'alipay' | 'wechat', { available: boolean; has_text: boolean; has_qr: boolean }>
     brokerage: {
@@ -736,6 +762,100 @@ export interface AdminManualClaim {
   [key: string]: unknown
 }
 
+export type AdminReferralWithdrawalStatus = 'submitted' | 'approved' | 'rejected' | 'paid' | 'system_cancelled'
+
+export interface AdminReferralWithdrawalReceipt {
+  withdrawal_id: string
+  amount_minor: number
+  currency: 'HKD'
+  status: AdminReferralWithdrawalStatus
+  submitted_at: string
+  reviewed_at: string | null
+  approved_at: string | null
+  paid_at: string | null
+  rejection_reason: string | null
+}
+
+export interface AdminReferralWithdrawal extends AdminReferralWithdrawalReceipt {
+  user_reference: string
+  user_masked: string
+}
+
+export type AdminReferralBonusTier = { qualified_count: number; cumulative_amount_minor: number }
+export type AdminReferralPolicyValue = {
+  commission_rate_bps: number
+  referral_discount_bps: number
+  minimum_final_amount_minor: number
+  commission_cap_minor: number
+  hold_days: number
+  withdrawal_min_minor: number
+  withdrawal_max_minor: number
+  withdrawal_daily_limit: number
+  withdrawal_monthly_limit: number
+  withdrawal_open_limit: number
+  withdrawal_cooldown_days: number
+  automatic_payout_review_threshold_minor: number
+  withdrawal_paused: boolean
+  bonus_enabled: boolean
+  bonus_tiers: AdminReferralBonusTier[]
+}
+
+export interface AdminReferralPolicy { version: number; policy: AdminReferralPolicyValue }
+
+export interface AdminReferralCoupon {
+  coupon_id: string
+  code: string
+  campaign_name: string
+  discount_type: 'percent' | 'fixed_hkd'
+  discount_value: number
+  max_discount_minor: number | null
+  min_spend_minor: number
+  total_use_limit: number
+  per_user_limit: number
+  applicable_plans: Array<'标准版' | '高级版'>
+  applicable_cycles: Array<'monthly' | 'quarterly' | 'yearly'>
+  starts_at: string
+  expires_at: string
+  enabled: boolean
+  version: number
+  created_at: string
+  updated_at: string
+}
+
+export type AdminReferralPromotionType = 'coupon_only' | 'referral_only' | 'stacked' | 'none'
+export interface AdminReferralAnalyticsItem {
+  coupon_code: string | null
+  campaign: string | null
+  customer: string
+  order_id: string
+  status: 'pending' | 'paid' | 'refunded' | 'cancelled' | 'failed'
+  list_price_minor: number
+  coupon_discount_minor: number
+  referral_discount_minor: number
+  paid_revenue_minor: number
+  refund_or_chargeback_minor: number
+  net_revenue_minor: number
+  discount_cost_minor: number
+  created_at: string
+  paid_at: string | null
+  refunded_at: string | null
+  promotion_type: AdminReferralPromotionType
+  commission_cost_minor: number
+  bonus_cost_minor: number
+  promotion_cost_minor: number
+}
+
+export interface AdminReferralAnalytics {
+  items: AdminReferralAnalyticsItem[]
+  summary: {
+    orders: number; list_price_minor: number; coupon_cost_minor: number; referral_cost_minor: number
+    paid_revenue_minor: number; refund_or_chargeback_minor: number; net_revenue_minor: number
+    customers: number; coupon_only_orders: number; referral_only_orders: number; stacked_orders: number
+    unattributed_orders: number; commission_cost_minor: number; bonus_cost_minor: number
+    promotion_cost_minor: number
+  }
+}
+
 export interface AdminBrokerAccount {
   id?: string | number
   broker?: string
@@ -807,6 +927,150 @@ function adminItems<T>(payload: unknown): T[] {
   return Array.isArray(payload) ? payload as T[] : Array.isArray((payload as { items?: unknown })?.items) ? (payload as { items: T[] }).items : []
 }
 
+export function validAdminReferralWithdrawalReceipt(value: unknown): value is AdminReferralWithdrawalReceipt {
+  return exactKeys(value, [
+    'withdrawal_id', 'amount_minor', 'currency', 'status', 'submitted_at',
+    'reviewed_at', 'approved_at', 'paid_at', 'rejection_reason',
+  ])
+    && typeof value.withdrawal_id === 'string'
+    && /^WDR[A-Z0-9]{20,40}$/.test(value.withdrawal_id)
+    && finiteNonNegativeInteger(value.amount_minor)
+    && value.currency === 'HKD'
+    && ['submitted', 'approved', 'rejected', 'paid', 'system_cancelled'].includes(String(value.status))
+    && validIsoTimestamp(value.submitted_at)
+    && nullableTimestamp(value.reviewed_at)
+    && nullableTimestamp(value.approved_at)
+    && nullableTimestamp(value.paid_at)
+    && (value.rejection_reason === null || typeof value.rejection_reason === 'string')
+}
+
+export function validAdminReferralWithdrawal(value: unknown): value is AdminReferralWithdrawal {
+  if (!exactKeys(value, [
+    'withdrawal_id', 'user_reference', 'user_masked', 'amount_minor', 'currency',
+    'status', 'submitted_at', 'reviewed_at', 'approved_at', 'paid_at', 'rejection_reason',
+  ])) return false
+  const receipt = {
+    withdrawal_id: value.withdrawal_id,
+    amount_minor: value.amount_minor,
+    currency: value.currency,
+    status: value.status,
+    submitted_at: value.submitted_at,
+    reviewed_at: value.reviewed_at,
+    approved_at: value.approved_at,
+    paid_at: value.paid_at,
+    rejection_reason: value.rejection_reason,
+  }
+  return validAdminReferralWithdrawalReceipt(receipt)
+    && typeof value.user_reference === 'string'
+    && /^USR[A-Z0-9]{20,40}$/.test(value.user_reference)
+    && typeof value.user_masked === 'string'
+    && value.user_masked.length >= 1
+    && value.user_masked.length <= 254
+}
+
+function validAdminReferralBonusTier(value: unknown): value is AdminReferralBonusTier {
+  return exactKeys(value, ['qualified_count', 'cumulative_amount_minor'])
+    && finiteNonNegativeInteger(value.qualified_count)
+    && finiteNonNegativeInteger(value.cumulative_amount_minor)
+    && value.qualified_count > 0
+    && value.cumulative_amount_minor > 0
+}
+
+export function validAdminReferralPolicy(value: unknown): value is AdminReferralPolicy {
+  if (!exactKeys(value, ['version', 'policy']) || !finiteNonNegativeInteger(value.version) || value.version < 1 || !exactKeys(value.policy, [
+    'commission_rate_bps', 'referral_discount_bps', 'minimum_final_amount_minor', 'commission_cap_minor',
+    'hold_days', 'withdrawal_min_minor', 'withdrawal_max_minor', 'withdrawal_daily_limit',
+    'withdrawal_monthly_limit', 'withdrawal_open_limit', 'withdrawal_cooldown_days',
+    'automatic_payout_review_threshold_minor', 'withdrawal_paused', 'bonus_enabled', 'bonus_tiers',
+  ])) return false
+  const policy = value.policy as AdminReferralPolicyValue
+  const numeric = [
+    policy.commission_rate_bps, policy.referral_discount_bps, policy.minimum_final_amount_minor,
+    policy.commission_cap_minor, policy.hold_days, policy.withdrawal_min_minor, policy.withdrawal_max_minor,
+    policy.withdrawal_daily_limit, policy.withdrawal_monthly_limit, policy.withdrawal_open_limit,
+    policy.withdrawal_cooldown_days, policy.automatic_payout_review_threshold_minor,
+  ]
+  return numeric.every(finiteNonNegativeInteger)
+    && policy.commission_rate_bps === 1_000
+    && policy.referral_discount_bps === 500
+    && [policy.minimum_final_amount_minor, policy.commission_cap_minor, policy.withdrawal_min_minor,
+      policy.withdrawal_max_minor, policy.automatic_payout_review_threshold_minor]
+      .every((amount) => amount >= 1 && amount <= 100_000_000)
+    && policy.hold_days <= 365
+    && [policy.withdrawal_daily_limit, policy.withdrawal_monthly_limit, policy.withdrawal_open_limit]
+      .every((limit) => limit >= 1 && limit <= 100_000)
+    && policy.withdrawal_cooldown_days <= 3_650
+    && policy.withdrawal_max_minor >= policy.withdrawal_min_minor
+    && typeof policy.withdrawal_paused === 'boolean'
+    && typeof policy.bonus_enabled === 'boolean'
+    && Array.isArray(policy.bonus_tiers)
+    && policy.bonus_tiers.length >= 1
+    && policy.bonus_tiers.length <= 10
+    && policy.bonus_tiers.every(validAdminReferralBonusTier)
+    && policy.bonus_tiers.every((tier, index, tiers) => index === 0 || (
+      tier.qualified_count > tiers[index - 1].qualified_count
+      && tier.cumulative_amount_minor > tiers[index - 1].cumulative_amount_minor
+    ))
+}
+
+export function validAdminReferralCoupon(value: unknown): value is AdminReferralCoupon {
+  const coupon = value as AdminReferralCoupon
+  return exactKeys(value, [
+    'coupon_id', 'code', 'campaign_name', 'discount_type', 'discount_value', 'max_discount_minor',
+    'min_spend_minor', 'total_use_limit', 'per_user_limit', 'applicable_plans', 'applicable_cycles',
+    'starts_at', 'expires_at', 'enabled', 'version', 'created_at', 'updated_at',
+  ])
+    && typeof value.coupon_id === 'string' && /^CPN[A-Z0-9]{20,40}$/.test(value.coupon_id)
+    && typeof value.code === 'string' && /^[A-Z0-9_-]{3,64}$/.test(value.code)
+    && typeof value.campaign_name === 'string' && value.campaign_name.length >= 1 && value.campaign_name.length <= 120
+    && ['percent', 'fixed_hkd'].includes(String(value.discount_type))
+    && finiteNonNegativeInteger(value.discount_value) && value.discount_value > 0
+    && (coupon.discount_type === 'percent' ? coupon.discount_value <= 1_500 : coupon.discount_value <= 100_000)
+    && (value.max_discount_minor === null || (finiteNonNegativeInteger(value.max_discount_minor) && value.max_discount_minor >= 1 && value.max_discount_minor <= 100_000))
+    && [value.min_spend_minor, value.total_use_limit, value.per_user_limit, value.version].every(finiteNonNegativeInteger)
+    && coupon.total_use_limit > 0 && coupon.per_user_limit > 0 && coupon.version > 0
+    && Array.isArray(value.applicable_plans) && value.applicable_plans.length > 0
+    && value.applicable_plans.every((plan) => plan === '标准版' || plan === '高级版')
+    && Array.isArray(value.applicable_cycles) && value.applicable_cycles.length > 0
+    && value.applicable_cycles.every((cycle) => ['monthly', 'quarterly', 'yearly'].includes(cycle))
+    && validIsoTimestamp(value.starts_at) && validIsoTimestamp(value.expires_at)
+    && Date.parse(value.expires_at) > Date.parse(value.starts_at)
+    && typeof value.enabled === 'boolean'
+    && validIsoTimestamp(value.created_at) && validIsoTimestamp(value.updated_at)
+}
+
+export function validAdminReferralAnalytics(value: unknown): value is AdminReferralAnalytics {
+  if (!exactKeys(value, ['items', 'summary']) || !Array.isArray(value.items) || !exactKeys(value.summary, [
+    'orders', 'list_price_minor', 'coupon_cost_minor', 'referral_cost_minor', 'paid_revenue_minor',
+    'refund_or_chargeback_minor', 'net_revenue_minor', 'customers', 'coupon_only_orders',
+    'referral_only_orders', 'stacked_orders', 'unattributed_orders', 'commission_cost_minor',
+    'bonus_cost_minor', 'promotion_cost_minor',
+  ])) return false
+  const validItem = (item: unknown): item is AdminReferralAnalyticsItem => {
+    const row = item as AdminReferralAnalyticsItem
+    return exactKeys(item, [
+    'coupon_code', 'campaign', 'customer', 'order_id', 'status', 'list_price_minor', 'coupon_discount_minor',
+    'referral_discount_minor', 'paid_revenue_minor', 'refund_or_chargeback_minor', 'net_revenue_minor',
+    'discount_cost_minor', 'created_at', 'paid_at', 'refunded_at', 'promotion_type', 'commission_cost_minor',
+    'bonus_cost_minor', 'promotion_cost_minor',
+  ])
+    && (item.coupon_code === null || (typeof item.coupon_code === 'string' && /^[A-Z0-9_-]{3,64}$/.test(item.coupon_code)))
+    && (item.campaign === null || (typeof item.campaign === 'string' && item.campaign.length >= 1 && item.campaign.length <= 120))
+    && typeof item.customer === 'string' && /^USR[A-Z0-9]{20,40}$/.test(item.customer)
+    && typeof item.order_id === 'string' && item.order_id.length >= 1 && item.order_id.length <= 128
+    && ['pending', 'paid', 'refunded', 'cancelled', 'failed'].includes(String(item.status))
+    && [item.list_price_minor, item.coupon_discount_minor, item.referral_discount_minor, item.paid_revenue_minor,
+      item.refund_or_chargeback_minor, item.net_revenue_minor, item.discount_cost_minor, item.commission_cost_minor,
+      item.bonus_cost_minor, item.promotion_cost_minor].every(finiteNonNegativeInteger)
+    && row.discount_cost_minor === row.coupon_discount_minor + row.referral_discount_minor
+    && row.net_revenue_minor === row.paid_revenue_minor - row.refund_or_chargeback_minor
+    && row.promotion_cost_minor === row.discount_cost_minor + row.commission_cost_minor + row.bonus_cost_minor
+    && validIsoTimestamp(item.created_at) && nullableTimestamp(item.paid_at) && nullableTimestamp(item.refunded_at)
+    && ['coupon_only', 'referral_only', 'stacked', 'none'].includes(String(item.promotion_type))
+  }
+  return value.items.length <= 500 && value.items.every(validItem) && Object.values(value.summary).every(finiteNonNegativeInteger)
+}
+
 export async function fetchAdminOverview(): Promise<AdminOverview> {
   return request<AdminOverview>('/api/rewrite/v1/admin/overview')
 }
@@ -817,6 +1081,71 @@ export async function fetchAdminUsers(): Promise<AdminUser[]> {
 
 export async function fetchAdminManualClaims(): Promise<AdminManualClaim[]> {
   return adminItems<AdminManualClaim>(await request<unknown>('/api/rewrite/v1/admin/payments/manual-claims'))
+}
+
+export async function fetchAdminReferralWithdrawals(
+  status: AdminReferralWithdrawalStatus | 'all' = 'all',
+): Promise<AdminReferralWithdrawal[]> {
+  const payload = await request<unknown>(`/api/rewrite/v1/admin/referrals/withdrawals?status=${encodeURIComponent(status)}`)
+  const items = adminItems<unknown>(payload)
+  if (!items.every(validAdminReferralWithdrawal)) throw new BrowserApiError('推广提现队列响应格式无效。', 502)
+  return items
+}
+
+export async function fetchAdminReferralPolicy(): Promise<AdminReferralPolicy> {
+  const value = await request<unknown>('/api/rewrite/v1/admin/referrals/policy')
+  if (!validAdminReferralPolicy(value)) throw new BrowserApiError('推广政策响应格式无效。', 502)
+  return value
+}
+
+export async function updateAdminReferralPolicy(
+  expectedVersion: number, policy: AdminReferralPolicyValue, password: string, idempotencyKey: string,
+): Promise<AdminReferralPolicy> {
+  const value = await request<unknown>('/api/rewrite/v1/admin/referrals/policy', {
+    method: 'PUT', headers: { 'Idempotency-Key': idempotencyKey },
+    body: JSON.stringify({ expected_version: expectedVersion, policy, password }),
+  })
+  if (!validAdminReferralPolicy(value)) throw new BrowserApiError('推广政策保存回执格式无效。', 502)
+  return value
+}
+
+export async function fetchAdminReferralCoupons(): Promise<AdminReferralCoupon[]> {
+  const items = adminItems<unknown>(await request<unknown>('/api/rewrite/v1/admin/referrals/coupons'))
+  if (!items.every(validAdminReferralCoupon)) throw new BrowserApiError('优惠码列表响应格式无效。', 502)
+  return items
+}
+
+export async function createAdminReferralCoupon(
+  coupon: Omit<AdminReferralCoupon, 'coupon_id' | 'version' | 'created_at' | 'updated_at'>, password: string, idempotencyKey: string,
+): Promise<AdminReferralCoupon> {
+  const value = await request<unknown>('/api/rewrite/v1/admin/referrals/coupons', {
+    method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({ coupon, password }),
+  })
+  if (!validAdminReferralCoupon(value)) throw new BrowserApiError('优惠码创建回执格式无效。', 502)
+  return value
+}
+
+export async function pauseAdminReferralCoupon(
+  couponId: string, expectedVersion: number, password: string, idempotencyKey: string,
+): Promise<AdminReferralCoupon> {
+  const value = await request<unknown>(`/api/rewrite/v1/admin/referrals/coupons/${encodeURIComponent(couponId)}/pause`, {
+    method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({ expected_version: expectedVersion, password }),
+  })
+  if (!validAdminReferralCoupon(value)) throw new BrowserApiError('优惠码暂停回执格式无效。', 502)
+  return value
+}
+
+export type AdminReferralAnalyticsFilter = Partial<{
+  coupon_code: string; campaign: string; status: AdminReferralAnalyticsItem['status']
+  started_at: string; ended_at: string; promotion_type: AdminReferralPromotionType | 'all'
+}>
+
+export async function fetchAdminReferralAnalytics(filter: AdminReferralAnalyticsFilter = {}): Promise<AdminReferralAnalytics> {
+  const query = new URLSearchParams({ promotion_type: filter.promotion_type ?? 'all' })
+  for (const [key, value] of Object.entries(filter)) if (value && key !== 'promotion_type') query.set(key, value)
+  const value = await request<unknown>(`/api/rewrite/v1/admin/referrals/analytics?${query.toString()}`)
+  if (!validAdminReferralAnalytics(value)) throw new BrowserApiError('推广归因仪表盘响应格式无效。', 502)
+  return value
 }
 
 export async function fetchAdminBrokers(): Promise<AdminBrokerAccount[]> {
@@ -856,6 +1185,40 @@ export async function reviewAdminManualClaim(id: number, payload: {
     method: 'POST',
     body: JSON.stringify(payload),
   })
+}
+
+export async function reviewAdminReferralWithdrawal(
+  withdrawalId: string,
+  payload: { decision: 'approve' | 'reject'; password: string; reason?: string },
+  idempotencyKey: string,
+): Promise<AdminReferralWithdrawalReceipt> {
+  const value = await request<unknown>(
+    `/api/rewrite/v1/admin/referrals/withdrawals/${encodeURIComponent(withdrawalId)}/review`,
+    {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(payload),
+    },
+  )
+  if (!validAdminReferralWithdrawalReceipt(value)) throw new BrowserApiError('推广提现审核回执格式无效。', 502)
+  return value
+}
+
+export async function confirmAdminReferralWithdrawalPaid(
+  withdrawalId: string,
+  payload: { password: string; payout_method: 'fps' | 'bank' | 'other'; payout_reference: string },
+  idempotencyKey: string,
+): Promise<AdminReferralWithdrawalReceipt> {
+  const value = await request<unknown>(
+    `/api/rewrite/v1/admin/referrals/withdrawals/${encodeURIComponent(withdrawalId)}/paid`,
+    {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(payload),
+    },
+  )
+  if (!validAdminReferralWithdrawalReceipt(value)) throw new BrowserApiError('推广提现付款回执格式无效。', 502)
+  return value
 }
 
 export async function updateAdminUserAutoTrading(payload: {
@@ -1665,10 +2028,10 @@ export function deactivatePriceAlert(alertId: number) {
 }
 
 export function createMembershipOrder(
-  payload: { plan: MembershipPlanKey; cycle: MembershipBillingCycle; method: string; terms_accepted: boolean },
+  payload: { plan: MembershipPlanKey; cycle: MembershipBillingCycle; method: string; terms_accepted: boolean; coupon_code?: string },
   idempotencyKey: string,
 ) {
-  return request<{ order_no: string; status: string; amount: number; currency: string; payment_instructions: string; payment_qr_available: boolean }>(
+  return request<{ order_no: string; status: string; amount: number; currency: string; payment_instructions: string; payment_qr_available: boolean; list_price_minor: number; coupon_discount_minor: number; referral_discount_minor: number; final_amount_minor: number; coupon_code_snapshot: string | null }>(
     '/api/rewrite/v1/membership/orders',
     {
       method: 'POST',
@@ -1676,6 +2039,43 @@ export function createMembershipOrder(
       body: JSON.stringify(payload),
     },
   )
+}
+
+function validMembershipQuote(value: unknown): value is MembershipQuote {
+  return exactKeys(value, [
+    'plan', 'cycle', 'currency', 'list_price_minor', 'coupon_discount_minor',
+    'referral_discount_minor', 'final_amount_minor', 'coupon_code',
+    'referral_eligible', 'discount_order', 'server_reprices_on_order',
+  ])
+    && ['标准版', '高级版'].includes(String(value.plan))
+    && ['monthly', 'quarterly', 'yearly', 'project'].includes(String(value.cycle))
+    && value.currency === 'HKD'
+    && finiteNonNegativeInteger(value.list_price_minor)
+    && finiteNonNegativeInteger(value.coupon_discount_minor)
+    && finiteNonNegativeInteger(value.referral_discount_minor)
+    && finiteNonNegativeInteger(value.final_amount_minor)
+    && value.list_price_minor >= value.final_amount_minor
+    && value.coupon_discount_minor + value.referral_discount_minor === value.list_price_minor - value.final_amount_minor
+    && (value.coupon_code === null || (typeof value.coupon_code === 'string' && /^[A-Z0-9_-]{3,64}$/.test(value.coupon_code)))
+    && typeof value.referral_eligible === 'boolean'
+    && Array.isArray(value.discount_order)
+    && value.discount_order.length === 2
+    && value.discount_order[0] === 'coupon'
+    && value.discount_order[1] === 'referral'
+    && value.server_reprices_on_order === true
+}
+
+export async function quoteMembershipOrder(payload: {
+  plan: MembershipPlanKey
+  cycle: MembershipBillingCycle
+  coupon_code?: string
+}): Promise<MembershipQuote> {
+  const value = await request<unknown>('/api/rewrite/v1/membership/quote', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+  if (!validMembershipQuote(value)) throw new BrowserApiError('会员报价响应格式无效。', 502)
+  return value
 }
 
 export async function fetchMembershipPaymentQr(orderNo: string): Promise<Blob> {

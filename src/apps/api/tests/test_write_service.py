@@ -23,6 +23,7 @@ from payment.receiver_storage import (
     store_receiver_qr,
 )
 from payment.receiving_profile import ReceivingProfileService
+from payment.order_service import _EntitlementCommercePolicy
 
 
 @pytest.fixture
@@ -347,7 +348,7 @@ def test_browser_write_service_does_not_expose_personal_paper_orders(write_conte
 @pytest.mark.parametrize("method", ["fps", "alipay", "wechat"])
 def test_membership_order_is_idempotent_and_redacted(write_context, method):
     database, identity, service = write_context
-    payload = {"plan": "专业版", "cycle": "monthly", "method": method, "terms_accepted": True}
+    payload = {"plan": "高级版", "cycle": "monthly", "method": method, "terms_accepted": True}
 
     idempotency_key = f"membership-order-{method}"
     first = service.create_membership_order(identity, payload, idempotency_key)
@@ -360,6 +361,89 @@ def test_membership_order_is_idempotent_and_redacted(write_context, method):
     assert database.fetch_one(
         "SELECT COUNT(*) count FROM subscription_orders WHERE user_id=?", (identity.id,)
     )["count"] == 1
+
+
+def test_membership_quote_and_order_apply_coupon_then_referral(write_context):
+    database, identity, service = write_context
+    database.execute(
+        "UPDATE users SET plan_type='免费版',subscription_expire=NULL WHERE id=?",
+        (identity.id,),
+    )
+    admin = AuthService(database).register(
+        "promotion-admin@example.com", "StrongPass123", "Promotion Admin", True
+    )
+    database.execute("UPDATE users SET is_admin=1 WHERE id=?", (admin["id"],))
+    database.execute(
+        "INSERT OR REPLACE INTO admin_roles(user_id,role,updated_at) VALUES (?,'super_admin',?)",
+        (admin["id"], datetime.now(UTC).isoformat()),
+    )
+    from core.referral_affiliate import ReferralProgramService, ReferralService
+    from core.referral_coupon import ReferralCouponService
+
+    ReferralProgramService(database).enable(admin["id"])
+    referrer = AuthService(database).register(
+        "promotion-referrer@example.com", "StrongPass123", "Referrer", True
+    )
+    invite = ReferralService(database).ensure_profile(referrer["id"])["invite_code"]
+    with database.transaction() as conn:
+        ReferralService.attach_at_registration(conn, identity.id, invite)
+    attribution = database.fetch_one(
+        "SELECT id FROM referral_attributions WHERE referred_user_id=?", (identity.id,)
+    )
+    database.execute(
+        "INSERT INTO referral_link_claims(attribution_id,claim_hash,issued_at,expires_at,consumed_at) VALUES (?,?,?,?,?)",
+        (attribution["id"], "a" * 64, datetime.now(UTC).isoformat(), (datetime.now(UTC) + timedelta(minutes=5)).isoformat(), datetime.now(UTC).isoformat()),
+    )
+    link_claim = database.fetch_one(
+        "SELECT id FROM referral_link_claims WHERE attribution_id=?", (attribution["id"],)
+    )
+    database.execute(
+        "INSERT INTO referral_discount_eligibilities(attribution_id,link_claim_id,eligible_at) VALUES (?,?,?)",
+        (attribution["id"], link_claim["id"], datetime.now(UTC).isoformat()),
+    )
+    coupon = ReferralCouponService(database, plan_policy=_EntitlementCommercePolicy()).create_coupon(
+        admin["id"],
+        {
+            "code": "WELCOME10", "campaign_name": "welcome", "discount_type": "percent",
+            "discount_value": 1000, "max_discount_minor": 30_000,
+            "starts_at": (datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+            "expires_at": (datetime.now(UTC) + timedelta(days=7)).isoformat(),
+            "min_spend_minor": 0, "total_use_limit": 10, "per_user_limit": 1,
+            "applicable_plans": ["标准版", "高级版"], "applicable_cycles": ["monthly"],
+            "enabled": True,
+        },
+        "welcome-coupon-create",
+    )
+
+    quote = service.quote_membership_order(
+        identity, {"plan": "标准版", "cycle": "monthly", "coupon_code": coupon["code"]}
+    )
+    assert quote["list_price_minor"] == 29_800
+    assert quote["coupon_discount_minor"] == 2_980
+    assert quote["referral_discount_minor"] == 1_341
+    assert quote["final_amount_minor"] == 25_479
+    assert quote["discount_order"] == ["coupon", "referral"]
+    assert quote["server_reprices_on_order"] is True
+
+    order = service.create_membership_order(
+        identity,
+        {"plan": "标准版", "cycle": "monthly", "method": "fps", "terms_accepted": True, "coupon_code": coupon["code"]},
+        "membership-coupon-order",
+    )
+    assert order["final_amount_minor"] == quote["final_amount_minor"]
+    assert order["coupon_code_snapshot"] == "WELCOME10"
+
+
+def test_membership_quote_and_order_reject_retired_and_client_amount(write_context):
+    _, identity, service = write_context
+    with pytest.raises(ValueError, match="当前会员策略"):
+        service.quote_membership_order(identity, {"plan": "专业版", "cycle": "monthly"})
+    with pytest.raises(ValueError, match="未知字段"):
+        service.create_membership_order(
+            identity,
+            {"plan": "标准版", "cycle": "monthly", "method": "fps", "terms_accepted": True, "amount": 1},
+            "membership-forged-amount",
+        )
 
 
 def test_membership_payment_instructions_normalize_escaped_newlines(write_context, monkeypatch):
@@ -443,7 +527,7 @@ def test_browser_membership_proof_is_sanitized_private_and_idempotent(write_cont
     database, identity, service = write_context
     order = service.create_membership_order(
         identity,
-        {"plan": "专业版", "cycle": "monthly", "method": "alipay", "terms_accepted": True},
+        {"plan": "高级版", "cycle": "monthly", "method": "alipay", "terms_accepted": True},
         "membership-proof-order",
     )
     image = BytesIO()

@@ -6,16 +6,18 @@ import {
   ShieldCheck,
   Upload,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   BrowserApiError,
   createMembershipOrder,
   fetchMembershipPaymentQr,
+  quoteMembershipOrder,
   submitMembershipProof,
   type MembershipBillingCycle,
   type MembershipPlan,
   type MembershipPlanKey,
+  type MembershipQuote,
 } from "../api/client";
 import { useWorkspace } from "../api/workspace-context";
 import { PageHeader } from "../components/PageHeader";
@@ -39,16 +41,65 @@ const goalGuides: Array<{
   {
     key: "alerts",
     title: "我想收到提醒",
-    detail: "高级版开放正股 Telegram；期权即时提醒需要专业版。",
+    detail: "高级版开放正股 Telegram，并提供真实期权自动交易项目申请入口。",
     plan: "高级版",
   },
   {
     key: "research",
     title: "我想研究期权或写策略",
-    detail: "专业版开放期权链、报价 K 线、Greeks、多腿组合、代码与 API。",
-    plan: "专业版",
+    detail: "高级版提供深度研究与受控项目申请；申请不等于获批或自动启用。",
+    plan: "高级版",
   },
 ];
+
+type MembershipQuoteRequest = Parameters<typeof quoteMembershipOrder>[0];
+
+function normalizedCouponCode(value: string) {
+  return value.trim().toUpperCase();
+}
+
+function membershipQuoteFingerprint(input: MembershipQuoteRequest) {
+  return [input.plan, input.cycle, input.coupon_code ?? ""].join("\u001f");
+}
+
+function quoteMatchesRequest(
+  value: MembershipQuote,
+  input: MembershipQuoteRequest,
+) {
+  return (
+    value.plan === input.plan &&
+    value.cycle === input.cycle &&
+    (value.coupon_code ?? "") === (input.coupon_code ?? "")
+  );
+}
+
+function quoteMatchesDisplayedQuote(
+  displayed: MembershipQuote,
+  verified: MembershipQuote,
+) {
+  return (
+    displayed.plan === verified.plan &&
+    displayed.cycle === verified.cycle &&
+    displayed.currency === verified.currency &&
+    displayed.list_price_minor === verified.list_price_minor &&
+    displayed.coupon_discount_minor === verified.coupon_discount_minor &&
+    displayed.referral_discount_minor === verified.referral_discount_minor &&
+    displayed.final_amount_minor === verified.final_amount_minor &&
+    displayed.coupon_code === verified.coupon_code &&
+    displayed.referral_eligible === verified.referral_eligible &&
+    displayed.discount_order[0] === verified.discount_order[0] &&
+    displayed.discount_order[1] === verified.discount_order[1] &&
+    displayed.server_reprices_on_order === verified.server_reprices_on_order
+  );
+}
+
+function membershipOrderFingerprint(
+  input: MembershipQuoteRequest,
+  method: PaymentMethod,
+  termsAccepted: boolean,
+) {
+  return [membershipQuoteFingerprint(input), method, termsAccepted ? "accepted" : "not-accepted"].join("\u001f");
+}
 
 function isMembershipBillingCycle(
   value: string,
@@ -335,6 +386,15 @@ export function MembershipPage() {
   const [orderStatus, setOrderStatus] = useState<OrderNotice | null>(null);
   const [showOrders, setShowOrders] = useState(false);
   const [proofOrder, setProofOrder] = useState<ProofOrder | null>(null);
+  const [couponCode, setCouponCode] = useState("");
+  const [quote, setQuote] = useState<MembershipQuote | null>(null);
+  const [quotedInputFingerprint, setQuotedInputFingerprint] = useState("");
+  const [quoteBusy, setQuoteBusy] = useState(false);
+  const [quoteError, setQuoteError] = useState("");
+  const membershipOrderIdempotency = useRef<{
+    fingerprint: string;
+    key: string;
+  } | null>(null);
   const paymentAvailability = workspace.data?.membership.payment_methods;
   const plans = useMemo(
     () =>
@@ -372,10 +432,84 @@ export function MembershipPage() {
     (guide) => guide.key === selectedGoal,
   )?.plan;
   const checkoutCycle = selectedBillingCycle(selectedPlanDetails, cycle);
-  const isProjectPlan = checkoutCycle === "project";
-  const selectedAmount = checkoutCycle
-    ? selectedPlanDetails?.prices?.[checkoutCycle]
-    : undefined;
+  const quoteRequest: MembershipQuoteRequest | null =
+    selectedPlanDetails && checkoutCycle
+      ? {
+          plan: selectedPlanDetails.key,
+          cycle: checkoutCycle,
+          ...(normalizedCouponCode(couponCode)
+            ? { coupon_code: normalizedCouponCode(couponCode) }
+            : {}),
+        }
+      : null;
+  const quoteInputFingerprint = quoteRequest
+    ? membershipQuoteFingerprint(quoteRequest)
+    : "";
+  const currentQuoteFingerprint = useRef(quoteInputFingerprint);
+  currentQuoteFingerprint.current = quoteInputFingerprint;
+  const orderRequestFingerprint = quoteRequest
+    ? membershipOrderFingerprint(quoteRequest, paymentMethod, termsAccepted)
+    : "";
+  const hasCurrentQuote = Boolean(
+    quote &&
+      quoteRequest &&
+      quotedInputFingerprint === quoteInputFingerprint &&
+      quoteMatchesRequest(quote, quoteRequest),
+  );
+
+  useEffect(() => {
+    setQuote(null);
+    setQuotedInputFingerprint("");
+    setQuoteBusy(false);
+    setQuoteError("");
+  }, [quoteInputFingerprint]);
+
+  useEffect(() => {
+    if (
+      membershipOrderIdempotency.current?.fingerprint !==
+      orderRequestFingerprint
+    ) {
+      membershipOrderIdempotency.current = null;
+    }
+  }, [orderRequestFingerprint]);
+
+  function orderIdempotencyKey(fingerprint: string) {
+    const previous = membershipOrderIdempotency.current;
+    if (previous?.fingerprint === fingerprint) return previous.key;
+    const key = crypto.randomUUID();
+    membershipOrderIdempotency.current = { fingerprint, key };
+    return key;
+  }
+
+  function clearOrderIdempotency(fingerprint: string) {
+    if (membershipOrderIdempotency.current?.fingerprint === fingerprint) {
+      membershipOrderIdempotency.current = null;
+    }
+  }
+
+  async function refreshQuote(input = quoteRequest) {
+    if (!input || workspace.mode !== "authenticated") return null;
+    const requestedFingerprint = membershipQuoteFingerprint(input);
+    setQuoteBusy(true);
+    setQuoteError("");
+    try {
+      const result = await quoteMembershipOrder(input);
+      if (currentQuoteFingerprint.current !== requestedFingerprint) return null;
+      setQuote(result);
+      setQuotedInputFingerprint(requestedFingerprint);
+      return result;
+    } catch (caught) {
+      if (currentQuoteFingerprint.current !== requestedFingerprint) return null;
+      setQuote(null);
+      setQuotedInputFingerprint("");
+      setQuoteError(caught instanceof BrowserApiError ? caught.message : "会员报价暂时不可用。");
+      return null;
+    } finally {
+      if (currentQuoteFingerprint.current === requestedFingerprint) {
+        setQuoteBusy(false);
+      }
+    }
+  }
 
   return (
     <div className="page operations-page membership-page">
@@ -436,6 +570,11 @@ export function MembershipPage() {
           </button>
         </div>
       </section>
+      {workspace.data?.membership.legacy_plans?.length ? (
+        <section className="membership-legacy-notice data-panel" aria-label="历史会员方案">
+          <div><ShieldCheck size={18} /><span><strong>专业版与定制版当前暂停公开销售</strong><small>历史订单和未到期权益继续保留；不能新购、续费或由普通管理员赠送。功能完成并通过独立验收后，可通过新策略版本恢复，无需重写订单系统。</small></span></div>
+        </section>
+      ) : null}
       <section className="current-plan-band data-panel">
         <span className="membership-emblem">
           <Crown size={25} />
@@ -600,7 +739,7 @@ export function MembershipPage() {
         ) : (
           <small>会员方案资料正在读取。</small>
         )}
-        <small>所有方案均为一次性付款；项目制周期以方案资料为准。</small>
+        <small>公开方案均为一次性付款，到期不会自动扣款。</small>
       </div>
       {plans.length ? (
         <div className="membership-grid">
@@ -608,7 +747,6 @@ export function MembershipPage() {
             const planCycle = selectedBillingCycle(plan, cycle);
             const price = planCycle ? plan.prices?.[planCycle] : undefined;
             const freePlan = plan.key === "免费版";
-            const projectPlan = planCycle === "project";
             const isCurrentPlan =
               workspace.mode === "authenticated" && plan.key === currentPlanKey;
             const isCoveredPlan = plan.purchase_action === "covered";
@@ -632,9 +770,7 @@ export function MembershipPage() {
                   </h3>
                   <strong>{freePlan ? "免费" : priceText(price)}</strong>
                   <small>
-                    {projectPlan
-                      ? "项目制报价"
-                      : billingCycleText(planCycle, annualBonusEnabled, locale)}
+                    {billingCycleText(planCycle, annualBonusEnabled, locale)}
                   </small>
                   <p>{membershipText(plan.summary, locale)}</p>
                 </header>
@@ -675,18 +811,14 @@ export function MembershipPage() {
                     : isCoveredPlan
                       ? "当前会员已覆盖"
                       : plan.purchase_action === "renew"
-                        ? projectPlan
-                          ? "继续定制服务"
-                          : "续费当前方案"
+                        ? "续费当前方案"
                         : plan.purchase_action === "upgrade"
                           ? `升级至${membershipText(plan.display_name || plan.key, locale)}`
                           : plan.purchase_action === "unavailable"
                             ? "暂不可购买"
                             : selectedPlan === plan.key
                               ? "已选择"
-                              : projectPlan
-                                ? "提交定制需求"
-                                : isCurrentPlan
+                              : isCurrentPlan
                                   ? "续费当前方案"
                                   : "选择并查看付款方式"}
                 </button>
@@ -696,9 +828,7 @@ export function MembershipPage() {
                   </small>
                 ) : null}
                 <footer>
-                  {projectPlan
-                    ? "项目制 · 价格以订单确认页为准"
-                    : "不会自动续费 · 到期需主动购买"}
+                  不会自动续费 · 到期需主动购买
                 </footer>
               </article>
             );
@@ -716,7 +846,7 @@ export function MembershipPage() {
           <header className="panel-heading">
             <div>
               <span>ORDER CONFIRMATION</span>
-              <h2>{isProjectPlan ? "提交定制需求" : "确认一次性会员订单"}</h2>
+              <h2>确认一次性会员订单</h2>
             </div>
             <ShieldCheck size={20} />
           </header>
@@ -731,43 +861,27 @@ export function MembershipPage() {
               <div>
                 <dt>时长</dt>
                 <dd>
-                  {isProjectPlan
-                    ? "项目制报价"
-                    : billingCycleText(
-                        checkoutCycle,
-                        annualBonusEnabled,
-                        locale,
-                      )}
+                  {billingCycleText(checkoutCycle, annualBonusEnabled, locale)}
                 </dd>
               </div>
               <div>
                 <dt>金额</dt>
-                <dd>{priceText(selectedAmount)}</dd>
+                <dd>
+                  {hasCurrentQuote && quote
+                    ? `HKD ${(quote.final_amount_minor / 100).toLocaleString(getFormatLocale())}`
+                    : quoteBusy
+                      ? "服务端核价中…"
+                      : "请先取得服务端最终报价"}
+                </dd>
               </div>
               <div>
                 <dt>续费方式</dt>
                 <dd>
-                  {isProjectPlan
-                    ? "项目交付 · 不自动续费"
-                    : "到期停止，不自动扣款"}
+                  到期停止，不自动扣款
                 </dd>
               </div>
             </dl>
-            {isProjectPlan ? (
-              <div className="inline-warning">
-                <Crown size={17} />
-                <span>
-                  此方案为项目制报价，不属于固定有效期方案。请先到“帮助与支持”或联系客服说明部署、券商、策略和团队需求，再由顾问确认项目范围与最终报价。
-                </span>
-                <button
-                  className="button tertiary"
-                  type="button"
-                  onClick={() => navigate("/help")}
-                >
-                  联系顾问
-                </button>
-              </div>
-            ) : workspace.mode !== "authenticated" ? (
+            {workspace.mode !== "authenticated" ? (
               <div className="inline-warning checkout-login-gate">
                 <ShieldCheck size={17} />
                 <span>
@@ -786,6 +900,18 @@ export function MembershipPage() {
               </div>
             ) : (
               <>
+                <div className="membership-coupon-row">
+                  <label htmlFor="membership-coupon"><span>优惠码</span><input id="membership-coupon" name="membership-coupon" autoComplete="off" spellCheck={false} maxLength={64} placeholder="输入活动优惠码" value={couponCode} onChange={(event) => setCouponCode(event.target.value.toUpperCase())} /></label>
+                  <button className="button secondary" type="button" disabled={quoteBusy || !selectedPlanDetails || !checkoutCycle} onClick={() => void refreshQuote()}>{quoteBusy ? "核价中…" : couponCode.trim() ? "应用并核价" : "查看最终价格"}</button>
+                </div>
+                {hasCurrentQuote && quote && <dl className="membership-price-breakdown" aria-label="价格明细">
+                  <div><dt>方案列表价</dt><dd>HKD {(quote.list_price_minor / 100).toLocaleString(getFormatLocale())}</dd></div>
+                  <div><dt>优惠码</dt><dd>− HKD {(quote.coupon_discount_minor / 100).toLocaleString(getFormatLocale())}</dd></div>
+                  <div><dt>推荐新客 95 折</dt><dd>− HKD {(quote.referral_discount_minor / 100).toLocaleString(getFormatLocale())}</dd></div>
+                  <div><dt>最终实付</dt><dd>HKD {(quote.final_amount_minor / 100).toLocaleString(getFormatLocale())}</dd></div>
+                </dl>}
+                {quoteError && <p className="form-error" role="alert">{membershipText(quoteError, locale)}</p>}
+                <small className="checkout-policy-note">计算顺序固定为先优惠码、再对符合条件的推荐新客计算 95 折；每单仅可使用一张优惠码，多张优惠码不可叠加。建立订单时服务端会重新核价。</small>
                 <div>
                   <span>付款方式 · 全部人工对账</span>
                   <SegmentedControl
@@ -811,6 +937,7 @@ export function MembershipPage() {
                 </div>
                 <label className="terms-check">
                   <input
+                    name="membership-terms-accepted"
                     type="checkbox"
                     checked={termsAccepted}
                     onChange={(event) => setTermsAccepted(event.target.checked)}
@@ -824,6 +951,8 @@ export function MembershipPage() {
                   type="button"
                   disabled={
                     !termsAccepted ||
+                    !hasCurrentQuote ||
+                    quoteBusy ||
                     !paymentAvailability?.[paymentMethod]?.available
                   }
                   onClick={async () => {
@@ -834,17 +963,43 @@ export function MembershipPage() {
                       });
                       return;
                     }
-                    if (!selectedPlanDetails || !checkoutCycle) return;
+                    const displayedQuote = quote;
+                    if (!quoteRequest || !hasCurrentQuote || !displayedQuote) return;
+                    const requestFingerprint = quoteInputFingerprint;
+                    const orderFingerprint = membershipOrderFingerprint(
+                      quoteRequest,
+                      paymentMethod,
+                      termsAccepted,
+                    );
+                    const verifiedQuote = await refreshQuote(quoteRequest);
+                    if (
+                      !verifiedQuote ||
+                      currentQuoteFingerprint.current !== requestFingerprint ||
+                      !quoteMatchesRequest(verifiedQuote, quoteRequest)
+                    ) {
+                      return;
+                    }
+                    if (!quoteMatchesDisplayedQuote(displayedQuote, verifiedQuote)) {
+                      setOrderStatus({
+                        kind: "plain",
+                        text: "最终报价已更新，请核对后再次建立订单。",
+                      });
+                      return;
+                    }
                     try {
                       const order = await createMembershipOrder(
                         {
-                          plan: selectedPlanDetails.key,
-                          cycle: checkoutCycle,
+                          plan: quoteRequest.plan,
+                          cycle: quoteRequest.cycle,
                           method: paymentMethod,
                           terms_accepted: termsAccepted,
+                          ...(quoteRequest.coupon_code
+                            ? { coupon_code: quoteRequest.coupon_code }
+                            : {}),
                         },
-                        crypto.randomUUID(),
+                        orderIdempotencyKey(orderFingerprint),
                       );
+                      clearOrderIdempotency(orderFingerprint);
                       setProofOrder({
                         orderNo: order.order_no,
                         method: paymentMethod,
@@ -867,10 +1022,17 @@ export function MembershipPage() {
                         });
                       }
                     } catch (caught) {
+                      const safelyRejected =
+                        caught instanceof BrowserApiError &&
+                        caught.status >= 400 &&
+                        caught.status < 500;
+                      if (safelyRejected) clearOrderIdempotency(orderFingerprint);
                       setOrderStatus({
                         kind: "plain",
                         text:
-                          caught instanceof BrowserApiError
+                          !safelyRejected
+                            ? "订单结果暂时无法确认。请保持当前方案、时长、优惠码和付款方式后重试，系统会安全复用本次请求。"
+                            : caught instanceof BrowserApiError
                             ? caught.message
                             : "会员订单建立失败",
                       });

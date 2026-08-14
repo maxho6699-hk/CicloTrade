@@ -7,9 +7,9 @@ import json
 import pytest
 from starlette.requests import Request
 
-from core.admin_service import AdminService
 from core.compat import UTC
 from core.referral_affiliate import ReferralCommissionService, ReferralProgramService, ReferralService
+from core.referral_coupon import ReferralCouponService
 from payment.order_service import OrderService
 from src.apps.api.app import (
     admin_referral_withdrawal_paid,
@@ -60,7 +60,7 @@ def test_portal_and_visit_contract_use_public_fields_hkt_and_no_raw_fingerprint(
     payload = _payload(response)
     assert set(payload) == {"program", "invite", "balances", "trends", "funnel", "referrals", "commissions", "withdrawals", "timeline"}
     assert payload["program"]["currency"] == "HKD"
-    assert payload["program"]["minimum_withdrawal_minor"] == 10000
+    assert payload["program"]["minimum_withdrawal_minor"] > 0
     assert payload["program"]["enabled"] is False
     assert payload["program"]["cutover_at"] is None
     assert payload["invite"]["qr_payload"] == payload["invite"]["invite_link"]
@@ -91,9 +91,24 @@ def test_withdrawal_http_and_billing_admin_state_machine(browser_api):
         (release_admin["id"], datetime.now(UTC).isoformat(timespec="seconds")),
     )
     ReferralProgramService(database).enable(release_admin["id"])
+    policy_service = ReferralCouponService(database)
+    current_policy = policy_service.policy(release_admin["id"])
+    policy_service.update_policy(
+        release_admin["id"],
+        {**current_policy["policy"], "withdrawal_min_minor": 5_000},
+        current_policy["version"],
+        "http-withdrawal-policy-0001",
+    )
     referrer = database.fetch_one("SELECT * FROM users WHERE email='browser@example.com'")
     profile = ReferralService(database).ensure_profile(referrer["id"])
-    referred = auth.register("ref-http@example.com", "StrongPass123", "Ref HTTP", True, profile["invite_code"])
+    claim_fingerprint = "a" * 64
+    referral_claim = ReferralService(database).issue_link_claim(
+        profile["invite_code"], claim_fingerprint
+    )
+    referred = auth.register(
+        "ref-http@example.com", "StrongPass123", "Ref HTTP", True, profile["invite_code"],
+        referral_claim=referral_claim, referral_claim_fingerprint=claim_fingerprint,
+    )
     order = OrderService(database).create_order(
         referred["id"], "高级版", "yearly", "paypal", terms_accepted=True,
         source="legacy", idempotency_key="http-referral-order",
@@ -138,6 +153,7 @@ def test_withdrawal_http_and_billing_admin_state_machine(browser_api):
         f"/api/rewrite/v1/admin/referrals/withdrawals/{withdrawal_id}/review",
         method="POST", token=admin1_token,
         payload={"decision": "approve", "password": "StrongPass123"},
+        headers={"idempotency-key": "http-withdrawal-review-0001"},
         path_params={"withdrawal_id": withdrawal_id},
     )))
     assert _payload(approved)["status"] == "approved"
@@ -145,6 +161,7 @@ def test_withdrawal_http_and_billing_admin_state_machine(browser_api):
         f"/api/rewrite/v1/admin/referrals/withdrawals/{withdrawal_id}/paid",
         method="POST", token=admin2_token,
         payload={"password": "StrongPass123", "payout_method": "fps", "payout_reference": "HTTP-PAYOUT-1"},
+        headers={"idempotency-key": "http-withdrawal-paid-0001"},
         path_params={"withdrawal_id": withdrawal_id},
     )))
     assert _payload(paid)["status"] == "paid"

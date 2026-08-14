@@ -295,3 +295,63 @@ def test_policy_rejects_malformed_bonus_tiers(db, tiers):
     value = {**current["policy"], "bonus_tiers": tiers}
     with pytest.raises(ValueError, match="政策字段"):
         service.update_policy(admin["id"], value, current["version"], "policy-tier-invalid-0001")
+
+
+def test_policy_idempotency_replay_returns_its_original_snapshot(db):
+    database, _auth, admin = db
+    service = ReferralCouponService(database)
+    initial = service.policy(admin["id"])
+    first_value = {**initial["policy"], "hold_days": initial["policy"]["hold_days"] + 1}
+    first = service.update_policy(
+        admin["id"], first_value, initial["version"], "policy-replay-first-0001"
+    )
+    second_value = {**first["policy"], "hold_days": first["policy"]["hold_days"] + 1}
+    second = service.update_policy(
+        admin["id"], second_value, first["version"], "policy-replay-second-0001"
+    )
+
+    replay = service.update_policy(
+        admin["id"], first_value, initial["version"], "policy-replay-first-0001"
+    )
+
+    assert first == {"version": initial["version"] + 1, "policy": first_value}
+    assert second["version"] == first["version"] + 1
+    assert replay == first
+
+
+@pytest.mark.parametrize(("field", "invalid_value"), [
+    ("campaign_name", 42),
+    ("campaign_name", "   "),
+    ("campaign_name", "x" * 121),
+    ("max_discount_minor", True),
+    ("max_discount_minor", "30000"),
+    ("max_discount_minor", 0),
+    ("max_discount_minor", -1),
+    ("max_discount_minor", 100_001),
+    ("discount_value", True),
+    ("discount_value", "1000"),
+    ("discount_value", None),
+    ("discount_value", []),
+])
+def test_coupon_validation_rejects_invalid_values_without_persistent_side_effects(db, field, invalid_value):
+    database, _auth, admin = db
+    now = datetime.now(UTC)
+    payload = {
+        "code": "SAFEINPUT", "campaign_name": "Launch", "discount_type": "percent",
+        "discount_value": 1000, "max_discount_minor": 30_000,
+        "starts_at": (now - timedelta(minutes=1)).isoformat(),
+        "expires_at": (now + timedelta(days=1)).isoformat(), "min_spend_minor": 0,
+        "total_use_limit": 10, "per_user_limit": 1, "applicable_plans": ["标准版"],
+        "applicable_cycles": ["monthly"], "enabled": True,
+    }
+    payload[field] = invalid_value
+    coupon_count = database.fetch_one("SELECT COUNT(*) count FROM membership_coupons")["count"]
+    event_count = database.fetch_one("SELECT COUNT(*) count FROM membership_promotion_admin_events")["count"]
+
+    with pytest.raises(ValueError):
+        ReferralCouponService(database, plan_policy=_CommercePolicy()).create_coupon(
+            admin["id"], payload, "coupon-invalid-input-0001"
+        )
+
+    assert database.fetch_one("SELECT COUNT(*) count FROM membership_coupons")["count"] == coupon_count
+    assert database.fetch_one("SELECT COUNT(*) count FROM membership_promotion_admin_events")["count"] == event_count

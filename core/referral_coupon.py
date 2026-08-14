@@ -151,28 +151,86 @@ class ReferralCouponService:
             raise PermissionError("仅超级管理员可管理优惠码。")
 
     @staticmethod
-    def _event(conn: Any, actor_id: int, action: str, entity_type: str, entity_public_id: str, key: str, payload: dict[str, Any], now: datetime) -> bool:
-        if not 8 <= len(key) <= 128:
+    def _event_details(conn: Any, actor_id: int, key: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        if not isinstance(key, str) or not 8 <= len(key) <= 128:
             raise ValueError("管理幂等键无效。")
         digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-        existing = conn.execute("SELECT request_sha256 FROM membership_promotion_admin_events WHERE actor_id=? AND idempotency_key=?", (actor_id, key)).fetchone()
-        if existing:
-            if existing["request_sha256"] != digest: raise ValueError("幂等键已用于不同的管理操作。")
+        existing = conn.execute(
+            "SELECT request_sha256,details_json FROM membership_promotion_admin_events WHERE actor_id=? AND idempotency_key=?",
+            (actor_id, key),
+        ).fetchone()
+        if not existing:
+            return None
+        if existing["request_sha256"] != digest:
+            raise ValueError("幂等键已用于不同的管理操作。")
+        try:
+            details = json.loads(existing["details_json"])
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("管理幂等事件无效。") from exc
+        if not isinstance(details, dict):
+            raise ValueError("管理幂等事件无效。")
+        return details
+
+    @classmethod
+    def _event(
+        cls,
+        conn: Any,
+        actor_id: int,
+        action: str,
+        entity_type: str,
+        entity_public_id: str,
+        key: str,
+        payload: dict[str, Any],
+        now: datetime,
+        details: dict[str, Any] | None = None,
+    ) -> bool:
+        if cls._event_details(conn, actor_id, key, payload) is not None:
             return False
-        conn.execute("INSERT INTO membership_promotion_admin_events(public_id,actor_id,action,entity_type,entity_public_id,idempotency_key,request_sha256,details_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)", (_public_id(), actor_id, action, entity_type, entity_public_id, key, digest, json.dumps(payload, ensure_ascii=False, sort_keys=True), _iso(now)))
+        digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        conn.execute(
+            "INSERT INTO membership_promotion_admin_events(public_id,actor_id,action,entity_type,entity_public_id,idempotency_key,request_sha256,details_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                _public_id(), actor_id, action, entity_type, entity_public_id, key, digest,
+                json.dumps(details if details is not None else payload, ensure_ascii=False, sort_keys=True), _iso(now),
+            ),
+        )
         return True
 
     def create_coupon(self, actor_id: int, payload: dict[str, Any], idempotency_key: str) -> dict[str, Any]:
         required = {"code","campaign_name","discount_type","discount_value","max_discount_minor","starts_at","expires_at","min_spend_minor","total_use_limit","per_user_limit","applicable_plans","applicable_cycles","enabled"}
-        if set(payload) != required or payload["discount_type"] not in {"percent","fixed_hkd"} or not isinstance(payload["applicable_plans"], list) or not isinstance(payload["applicable_cycles"], list) or not isinstance(payload["enabled"], bool): raise ValueError("优惠码字段无效。")
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != required
+            or not isinstance(payload["discount_type"], str)
+            or payload["discount_type"] not in {"percent", "fixed_hkd"}
+            or not isinstance(payload["applicable_plans"], list)
+            or not isinstance(payload["applicable_cycles"], list)
+            or not isinstance(payload["enabled"], bool)
+        ):
+            raise ValueError("优惠码字段无效。")
+        campaign_name = payload["campaign_name"]
+        max_discount = payload["max_discount_minor"]
+        if not isinstance(campaign_name, str) or not 1 <= len(campaign_name.strip()) <= 120:
+            raise ValueError("优惠活动名称无效。")
+        if max_discount is not None and (
+            not isinstance(max_discount, int)
+            or isinstance(max_discount, bool)
+            or not 1 <= max_discount <= 100_000
+        ):
+            raise ValueError("优惠上限无效。")
+        if any(not isinstance(payload[k], int) or isinstance(payload[k], bool) for k in ("discount_value", "min_spend_minor", "total_use_limit", "per_user_limit")):
+            raise ValueError("优惠码金额或次数无效。")
+        discount_value = payload["discount_value"]
+        if payload["discount_type"] == "percent" and not 1 <= discount_value <= 1_500:
+            raise ValueError("优惠码超过15%需要独立财务批准。")
+        if payload["discount_type"] == "fixed_hkd" and not 1 <= discount_value <= 100_000:
+            raise ValueError("固定优惠超过平台安全上限。")
         code = _canonical_code(payload["code"]); now = datetime.now(UTC)
-        if payload["discount_type"] == "percent" and not 1 <= int(payload["discount_value"]) <= 1_500: raise ValueError("优惠码超过15%需要独立财务批准。")
-        if payload["discount_type"] == "fixed_hkd" and (not isinstance(payload["max_discount_minor"], int) or payload["max_discount_minor"] > 100_000): raise ValueError("固定优惠超过平台安全上限。")
         try:
             starts_at = datetime.fromisoformat(str(payload["starts_at"])); expires_at = datetime.fromisoformat(str(payload["expires_at"]))
             if starts_at.tzinfo is None or expires_at.tzinfo is None or expires_at.astimezone(UTC) <= starts_at.astimezone(UTC): raise ValueError
         except ValueError as exc: raise ValueError("优惠码时间范围无效。") from exc
-        if any(not isinstance(payload[k], int) or isinstance(payload[k], bool) for k in ("discount_value","min_spend_minor","total_use_limit","per_user_limit")) or int(payload["min_spend_minor"]) < 0 or int(payload["total_use_limit"]) < 1 or int(payload["per_user_limit"]) < 1: raise ValueError("优惠码金额或次数无效。")
+        if int(payload["min_spend_minor"]) < 0 or int(payload["total_use_limit"]) < 1 or int(payload["per_user_limit"]) < 1: raise ValueError("优惠码金额或次数无效。")
         with self.db.transaction() as conn:
             conn.execute("BEGIN IMMEDIATE"); self._require_admin(conn, actor_id)
             from payment.promotion_adapter import PromotionOrderAdapter
@@ -186,7 +244,7 @@ class ReferralCouponService:
             public_id = _public_id()
             created = self._event(conn, actor_id, "COUPON_CREATED", "coupon", public_id, idempotency_key, payload, now)
             if created:
-                conn.execute("INSERT INTO membership_coupons(public_id,code,campaign_name,discount_type,discount_value,max_discount_minor,min_spend_minor,total_use_limit,per_user_limit,applicable_plans_json,applicable_cycles_json,starts_at,expires_at,enabled,created_by,created_at,updated_by,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (public_id, code, str(payload["campaign_name"]).strip(), payload["discount_type"], int(payload["discount_value"]), payload["max_discount_minor"], int(payload["min_spend_minor"]), int(payload["total_use_limit"]), int(payload["per_user_limit"]), json.dumps(payload["applicable_plans"], ensure_ascii=False), json.dumps(payload["applicable_cycles"]), str(payload["starts_at"]), str(payload["expires_at"]), int(payload["enabled"]), actor_id, _iso(now), actor_id, _iso(now)))
+                conn.execute("INSERT INTO membership_coupons(public_id,code,campaign_name,discount_type,discount_value,max_discount_minor,min_spend_minor,total_use_limit,per_user_limit,applicable_plans_json,applicable_cycles_json,starts_at,expires_at,enabled,created_by,created_at,updated_by,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (public_id, code, campaign_name.strip(), payload["discount_type"], int(payload["discount_value"]), max_discount, int(payload["min_spend_minor"]), int(payload["total_use_limit"]), int(payload["per_user_limit"]), json.dumps(payload["applicable_plans"], ensure_ascii=False), json.dumps(payload["applicable_cycles"]), str(payload["starts_at"]), str(payload["expires_at"]), int(payload["enabled"]), actor_id, _iso(now), actor_id, _iso(now)))
             row = conn.execute("SELECT * FROM membership_coupons WHERE public_id=?" if created else "SELECT * FROM membership_coupons WHERE code=? COLLATE NOCASE", (public_id if created else code,)).fetchone()
             return dict(row)
 
@@ -250,15 +308,29 @@ class ReferralCouponService:
         ):
             raise ValueError("推广政策字段无效。")
         now = datetime.now(UTC)
+        request = {"policy": value, "expected_version": expected_version}
         with self.db.transaction() as conn:
             conn.execute("BEGIN IMMEDIATE"); self._require_admin(conn, actor_id)
-            if self._event(conn, actor_id, "REFERRAL_POLICY_UPDATED", "policy", POLICY_KEY, idempotency_key, {"policy": value, "expected_version": expected_version}, now):
-                current, _ = self._policy(conn)
-                if current != int(expected_version): raise ValueError("推广政策版本已变更，请刷新后重试。")
-                serialized = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-                digest = hashlib.sha256(serialized.encode()).hexdigest()
-                conn.execute("INSERT INTO referral_coupon_policy_versions(policy_key,version,value_json,config_sha256,effective_at,created_by,created_at) VALUES (?,?,?,?,?,?,?)", (POLICY_KEY, current + 1, serialized, digest, _iso(now), actor_id, _iso(now)))
-            version, policy = self._policy(conn); return {"version": version, "policy": policy}
+            replay = self._event_details(conn, actor_id, idempotency_key, request)
+            if replay is not None:
+                receipt = replay.get("receipt")
+                if isinstance(receipt, dict) and set(receipt) == {"version", "policy"}:
+                    return receipt
+                original_request = replay.get("request", replay)
+                if isinstance(original_request, dict) and isinstance(original_request.get("policy"), dict):
+                    return {"version": int(original_request["expected_version"]) + 1, "policy": original_request["policy"]}
+                raise ValueError("管理幂等事件无效。")
+            current, _ = self._policy(conn)
+            if current != int(expected_version): raise ValueError("推广政策版本已变更，请刷新后重试。")
+            response = {"version": current + 1, "policy": value}
+            self._event(
+                conn, actor_id, "REFERRAL_POLICY_UPDATED", "policy", POLICY_KEY, idempotency_key,
+                request, now, {"request": request, "receipt": response},
+            )
+            serialized = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            digest = hashlib.sha256(serialized.encode()).hexdigest()
+            conn.execute("INSERT INTO referral_coupon_policy_versions(policy_key,version,value_json,config_sha256,effective_at,created_by,created_at) VALUES (?,?,?,?,?,?,?)", (POLICY_KEY, response["version"], serialized, digest, _iso(now), actor_id, _iso(now)))
+            return response
 
     def attribution_summary(self, actor_id: int) -> dict[str, Any]:
         with self.db.transaction() as conn:

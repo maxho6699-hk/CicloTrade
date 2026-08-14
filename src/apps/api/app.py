@@ -110,6 +110,7 @@ from core.database import DatabaseManager
 from core.feature_catalog import FeatureCatalogConflict, FeatureCatalogValidationError
 from core.feedback import FeedbackError, FeedbackService
 from core.referral_affiliate import ReferralService, ReferralWalletService
+from core.referral_coupon import ReferralCouponService
 from core.official_option_sim_journal import OfficialOptionSimulationJournal
 from core.auth import AuthError, AuthService, email_verification_required
 from core.compat import UTC
@@ -122,7 +123,7 @@ from notification.telegram_referrals import (
 )
 from notification.telegram_bot import telegram_configured
 from notification.templates import auth_email
-from payment.order_service import MembershipPlanConflict
+from payment.order_service import MembershipPlanConflict, _EntitlementCommercePolicy
 from payment.proof_storage import read_payment_proof
 from data.datasource import DataSourceError, get_resilient_data_source, public_market_status
 from data.opend_adapter import OpenDAdapter, OptionExpiryUnavailableError
@@ -832,6 +833,35 @@ def _withdrawal_public(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _coupon_public(row: dict[str, Any]) -> dict[str, Any]:
+    try:
+        plans = json.loads(str(row.get("applicable_plans_json") or "[]"))
+        cycles = json.loads(str(row.get("applicable_cycles_json") or "[]"))
+    except json.JSONDecodeError as exc:
+        raise ApiError("优惠码适用范围无效。", 503) from exc
+    if not isinstance(plans, list) or not isinstance(cycles, list):
+        raise ApiError("优惠码适用范围无效。", 503)
+    return {
+        "coupon_id": row.get("public_id"),
+        "code": row.get("code"),
+        "campaign_name": row.get("campaign_name"),
+        "discount_type": row.get("discount_type"),
+        "discount_value": int(row.get("discount_value") or 0),
+        "max_discount_minor": row.get("max_discount_minor"),
+        "min_spend_minor": int(row.get("min_spend_minor") or 0),
+        "total_use_limit": int(row.get("total_use_limit") or 0),
+        "per_user_limit": int(row.get("per_user_limit") or 0),
+        "applicable_plans": plans,
+        "applicable_cycles": cycles,
+        "starts_at": row.get("starts_at"),
+        "expires_at": row.get("expires_at"),
+        "enabled": bool(row.get("enabled")),
+        "version": int(row.get("version") or 0),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
 async def referral_portal(request: Request) -> JSONResponse:
     identity = _identity(request)
     base_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
@@ -940,10 +970,17 @@ async def admin_referral_withdrawal_review(request: Request) -> JSONResponse:
     public_id = str(request.path_params.get("withdrawal_id") or "").strip().upper()
     if not _REFERRAL_PUBLIC_ID_PATTERN.fullmatch(public_id):
         raise ApiError("提款申请编号无效。")
+    idempotency_key = request.headers.get("idempotency-key", "").strip()
     payload = await _json_body(request)
     decision = payload.get("decision")
-    allowed = {"decision", "password"} if decision == "approve" else {"decision", "password", "reason"}
-    if set(payload) != allowed or decision not in {"approve", "reject"} or not isinstance(payload.get("password"), str):
+    allowed = {"decision", "password", "reason"}
+    if (
+        not {"decision", "password"}.issubset(payload)
+        or not set(payload).issubset(allowed)
+        or decision not in {"approve", "reject"}
+        or not isinstance(payload.get("password"), str)
+        or ("reason" in payload and not isinstance(payload.get("reason"), str))
+    ):
         raise ApiError("提款审核字段无效。")
     client_ip = request.client.host if request.client else "unknown"
     try:
@@ -951,6 +988,7 @@ async def admin_referral_withdrawal_review(request: Request) -> JSONResponse:
         row = await run_in_threadpool(
             ReferralWalletService(_auth_service(request).db).review,
             identity.id, public_id, decision, str(payload.get("reason") or ""),
+            idempotency_key,
         )
     except AuthError as exc:
         status = 429 if "过多" in str(exc) or "稍后" in str(exc) else 403
@@ -971,6 +1009,7 @@ async def admin_referral_withdrawal_paid(request: Request) -> JSONResponse:
     public_id = str(request.path_params.get("withdrawal_id") or "").strip().upper()
     if not _REFERRAL_PUBLIC_ID_PATTERN.fullmatch(public_id):
         raise ApiError("提款申请编号无效。")
+    idempotency_key = request.headers.get("idempotency-key", "").strip()
     payload = await _json_body(request)
     if set(payload) != {"password", "payout_method", "payout_reference"} or not isinstance(payload.get("password"), str):
         raise ApiError("付款确认字段无效。")
@@ -980,6 +1019,7 @@ async def admin_referral_withdrawal_paid(request: Request) -> JSONResponse:
         row = await run_in_threadpool(
             ReferralWalletService(_auth_service(request).db).confirm_paid,
             identity.id, public_id, payload["payout_method"], payload["payout_reference"],
+            idempotency_key,
         )
     except AuthError as exc:
         status = 429 if "过多" in str(exc) or "稍后" in str(exc) else 403
@@ -993,6 +1033,114 @@ async def admin_referral_withdrawal_paid(request: Request) -> JSONResponse:
     except Exception as exc:
         logger.warning("Referral paid notice was not queued (error_type=%s)", type(exc).__name__)
     return JSONResponse(_withdrawal_public(row), headers=_admin_headers())
+
+
+async def admin_referral_policy(request: Request) -> JSONResponse:
+    identity, _ = _admin_identity(request)
+    service = ReferralCouponService(_auth_service(request).db)
+    if request.method == "GET":
+        return JSONResponse(service.policy(identity.id), headers=_admin_headers())
+    idempotency_key = request.headers.get("idempotency-key", "").strip()
+    payload = await _json_body(request, limit=32_768)
+    if (
+        set(payload) != {"password", "expected_version", "policy"}
+        or not isinstance(payload.get("password"), str)
+        or not isinstance(payload.get("expected_version"), int)
+        or isinstance(payload.get("expected_version"), bool)
+        or not isinstance(payload.get("policy"), dict)
+    ):
+        raise ApiError("推广政策字段无效。")
+    client_ip = request.client.host if request.client else "unknown"
+    try:
+        _auth_service(request).verify_password(identity.id, payload["password"], client_ip)
+        result = await run_in_threadpool(
+            service.update_policy,
+            identity.id, payload["policy"], payload["expected_version"], idempotency_key,
+        )
+    except AuthError as exc:
+        raise ApiError(str(exc), 403) from exc
+    except PermissionError as exc:
+        raise ApiError(str(exc), 403) from exc
+    except ValueError as exc:
+        raise ApiError(str(exc), 409 if "版本" in str(exc) or "幂等键" in str(exc) else 400) from exc
+    return JSONResponse(result, headers=_admin_headers())
+
+
+async def admin_referral_coupons(request: Request) -> JSONResponse:
+    identity, _ = _admin_identity(request)
+    service = ReferralCouponService(
+        _auth_service(request).db, plan_policy=_EntitlementCommercePolicy()
+    )
+    if request.method == "GET":
+        rows = await run_in_threadpool(service.list_coupons, identity.id)
+        return JSONResponse({"items": [_coupon_public(row) for row in rows]}, headers=_admin_headers())
+    idempotency_key = request.headers.get("idempotency-key", "").strip()
+    payload = await _json_body(request, limit=32_768)
+    if set(payload) != {"password", "coupon"} or not isinstance(payload.get("password"), str) or not isinstance(payload.get("coupon"), dict):
+        raise ApiError("优惠码管理字段无效。")
+    client_ip = request.client.host if request.client else "unknown"
+    try:
+        _auth_service(request).verify_password(identity.id, payload["password"], client_ip)
+        row = await run_in_threadpool(
+            service.create_coupon, identity.id, payload["coupon"], idempotency_key,
+        )
+    except AuthError as exc:
+        raise ApiError(str(exc), 403) from exc
+    except PermissionError as exc:
+        raise ApiError(str(exc), 403) from exc
+    except ValueError as exc:
+        raise ApiError(str(exc), 409 if "幂等键" in str(exc) else 400) from exc
+    return JSONResponse(_coupon_public(row), status_code=201, headers=_admin_headers())
+
+
+async def admin_referral_coupon_pause(request: Request) -> JSONResponse:
+    identity, _ = _admin_identity(request)
+    coupon_id = str(request.path_params.get("coupon_id") or "").strip().upper()
+    if not re.fullmatch(r"CPN[A-F0-9]{24}", coupon_id):
+        raise ApiError("优惠码编号无效。")
+    idempotency_key = request.headers.get("idempotency-key", "").strip()
+    payload = await _json_body(request)
+    if (
+        set(payload) != {"password", "expected_version"}
+        or not isinstance(payload.get("password"), str)
+        or not isinstance(payload.get("expected_version"), int)
+        or isinstance(payload.get("expected_version"), bool)
+    ):
+        raise ApiError("暂停优惠码字段无效。")
+    client_ip = request.client.host if request.client else "unknown"
+    try:
+        _auth_service(request).verify_password(identity.id, payload["password"], client_ip)
+        row = await run_in_threadpool(
+            ReferralCouponService(_auth_service(request).db).pause_coupon,
+            identity.id, coupon_id, payload["expected_version"], idempotency_key,
+        )
+    except AuthError as exc:
+        raise ApiError(str(exc), 403) from exc
+    except PermissionError as exc:
+        raise ApiError(str(exc), 403) from exc
+    except ValueError as exc:
+        raise ApiError(str(exc), 409 if "版本" in str(exc) or "幂等键" in str(exc) else 400) from exc
+    return JSONResponse(_coupon_public(row), headers=_admin_headers())
+
+
+async def admin_referral_analytics(request: Request) -> JSONResponse:
+    identity, _ = _admin_identity(request)
+    try:
+        payload = await run_in_threadpool(
+            ReferralCouponService(_auth_service(request).db).analytics,
+            identity.id,
+            coupon_code=request.query_params.get("coupon_code") or None,
+            campaign=request.query_params.get("campaign") or None,
+            status=request.query_params.get("status") or None,
+            started_at=request.query_params.get("started_at") or None,
+            ended_at=request.query_params.get("ended_at") or None,
+            promotion_type=request.query_params.get("promotion_type", "all"),
+        )
+    except PermissionError as exc:
+        raise ApiError(str(exc), 403) from exc
+    except ValueError as exc:
+        raise ApiError(str(exc)) from exc
+    return JSONResponse(payload, headers=_admin_headers())
 
 
 def _admin_headers() -> dict[str, str]:
@@ -2956,6 +3104,25 @@ async def membership_orders(request: Request) -> JSONResponse:
     return JSONResponse(order, status_code=201)
 
 
+async def membership_quote(request: Request) -> JSONResponse:
+    identity = _identity(request)
+    try:
+        quote = _write_service(request).quote_membership_order(
+            identity, await _json_body(request, limit=4096)
+        )
+    except MembershipPlanConflict as exc:
+        raise ApiError(str(exc), 409) from exc
+    except PermissionError as exc:
+        raise ApiError(str(exc), 403) from exc
+    except ValueError as exc:
+        message = str(exc)
+        status = 409 if any(value in message for value in (
+            "当前会员已覆盖", "当前会员策略", "幂等键", "使用次数已用尽",
+        )) else 400
+        raise ApiError(message, status) from exc
+    return JSONResponse(quote)
+
+
 async def membership_order_proof(request: Request) -> JSONResponse:
     identity = _identity(request)
     order_no = str(request.path_params.get("order_no", "")).strip()
@@ -3092,6 +3259,10 @@ routes = [
     Route("/api/rewrite/v1/admin/referrals/withdrawals", admin_referral_withdrawals, methods=["GET"]),
     Route("/api/rewrite/v1/admin/referrals/withdrawals/{withdrawal_id:str}/review", admin_referral_withdrawal_review, methods=["POST"]),
     Route("/api/rewrite/v1/admin/referrals/withdrawals/{withdrawal_id:str}/paid", admin_referral_withdrawal_paid, methods=["POST"]),
+    Route("/api/rewrite/v1/admin/referrals/policy", admin_referral_policy, methods=["GET", "PUT"]),
+    Route("/api/rewrite/v1/admin/referrals/coupons", admin_referral_coupons, methods=["GET", "POST"]),
+    Route("/api/rewrite/v1/admin/referrals/coupons/{coupon_id:str}/pause", admin_referral_coupon_pause, methods=["POST"]),
+    Route("/api/rewrite/v1/admin/referrals/analytics", admin_referral_analytics, methods=["GET"]),
     Route("/api/rewrite/v1/admin/brokers", admin_brokers, methods=["GET"]),
     Route("/api/rewrite/v1/admin/broker-access-applications", admin_broker_access_applications, methods=["GET"]),
     Route("/api/rewrite/v1/admin/broker-access-applications/{application_id:str}/review", admin_broker_access_application_review, methods=["POST"]),
@@ -3135,6 +3306,7 @@ routes = [
     Route("/api/rewrite/internal/v1/system-cycle-research/heartbeat", system_cycle_research_heartbeat, methods=["POST"]),
     Route(COMPUTE_EVIDENCE_INTERNAL_PATH, compute_evidence_accept, methods=["POST"]),
     Route("/api/rewrite/v1/membership", membership, methods=["GET"]),
+    Route("/api/rewrite/v1/membership/quote", membership_quote, methods=["POST"]),
     Route("/api/rewrite/v1/telegram/status", telegram_status, methods=["GET"]),
     Route("/api/rewrite/v1/settings", settings, methods=["GET"]),
     Route("/api/rewrite/v1/settings/risk", risk_settings, methods=["PUT"]),

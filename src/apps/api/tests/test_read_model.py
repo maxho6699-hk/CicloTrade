@@ -10,7 +10,6 @@ from core.auth import AuthService, _token
 from core.compat import UTC
 from core.database import DatabaseManager
 from core.membership import MembershipPlanConflict, add_membership_entitlement
-from core.plans import PLAN_ORDER, PLANS, plan_display_name
 from core.quant_journal import OfficialPaperJournalV2, QuantJournal
 from payment.order_service import OrderService
 from src.apps.api.read_model import ReadModelAuthError, ReadOnlyLegacyRepository
@@ -388,10 +387,10 @@ def test_membership_order_behavior_matrix_uses_authoritative_entitlements(compat
         )
 
     upgrade = orders.create_order(
-        user["id"], "专业版", "monthly", "fps", terms_accepted=True,
+        user["id"], "高级版", "monthly", "fps", terms_accepted=True,
         idempotency_key="matrix-upgrade-order",
     )
-    assert upgrade["plan_type"] == "专业版"
+    assert upgrade["plan_type"] == "高级版"
 
     with database.transaction() as connection:
         add_membership_entitlement(
@@ -427,24 +426,20 @@ def test_membership_plan_contract_projects_the_canonical_plan_matrix(compatibili
 
     payload = repository.membership(identity)
 
-    assert [item["key"] for item in payload["plans"]] == list(PLAN_ORDER)
+    assert [item["key"] for item in payload["plans"]] == ["免费版", "标准版", "高级版"]
     for item in payload["plans"]:
-        plan = PLANS[item["key"]]
-        assert item["display_name"] == plan_display_name(item["key"])
-        assert item["prices"] == plan["prices"]
-        assert item["summary"] == plan["summary"]
-        assert item["features"] == list(plan["features"])
+        assert item["lifecycle"] == "active_public"
+
+    assert [item["key"] for item in payload["legacy_plans"]] == ["专业版", "定制版"]
+    assert all(item["lifecycle"] == "retired_legacy" for item in payload["legacy_plans"])
+    assert all(item["can_purchase"] is False for item in payload["legacy_plans"])
 
     by_key = {item["key"]: item for item in payload["plans"]}
     assert by_key["免费版"]["purchase_action"] == "unavailable"
     assert by_key["免费版"]["can_purchase"] is False
     assert by_key["标准版"]["purchase_action"] == "upgrade"
     assert by_key["标准版"]["can_purchase"] is True
-    assert "1 个自动交易控制账号名额（仍需主动授权券商）" in by_key["高级版"]["features"]
-    assert "最多 5 个自动交易控制账号名额（仍需主动授权券商）" in by_key["专业版"]["features"]
-    for feature in ("期权链、期权报价 K 线、Greeks 与 IV", "单腿与多腿期权组合研究"):
-        assert feature not in by_key["高级版"]["features"]
-        assert feature in by_key["专业版"]["features"]
+    assert "真实期权自动交易项目申请入口（不保证审批、权限或运行）" in by_key["高级版"]["features"]
 
     expiry = (datetime.now(UTC) + timedelta(days=30)).isoformat()
     database.execute(
@@ -457,8 +452,7 @@ def test_membership_plan_contract_projects_the_canonical_plan_matrix(compatibili
     assert advanced_by_key["标准版"]["can_purchase"] is False
     assert advanced_by_key["高级版"]["purchase_action"] == "renew"
     assert advanced_by_key["高级版"]["can_purchase"] is True
-    assert advanced_by_key["专业版"]["purchase_action"] == "upgrade"
-    assert advanced_by_key["专业版"]["can_purchase"] is True
+    assert "专业版" not in advanced_by_key
     database.execute(
         "UPDATE users SET plan_type='专业版',subscription_expire=? WHERE id=?", (expiry, user["id"])
     )

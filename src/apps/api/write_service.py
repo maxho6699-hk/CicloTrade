@@ -294,8 +294,14 @@ class BrowserWriteService:
     def create_membership_order(
         self, identity: BrowserIdentity, payload: dict[str, Any], idempotency_key: str
     ) -> dict[str, Any]:
-        if set(payload) != {"plan", "cycle", "method", "terms_accepted"}:
+        if set(payload) not in (
+            {"plan", "cycle", "method", "terms_accepted"},
+            {"plan", "cycle", "method", "terms_accepted", "coupon_code"},
+        ):
             raise ValueError("会员订单字段不完整或包含未知字段。")
+        coupon_code = payload.get("coupon_code")
+        if coupon_code is not None and not isinstance(coupon_code, str):
+            raise ValueError("优惠码字段无效。")
         method = str(payload["method"]).strip().lower()
         if method not in MANUAL_PAYMENT_METHODS:
             raise ValueError("新订单仅支持 FPS、支付宝或微信支付人工付款。")
@@ -307,10 +313,17 @@ class BrowserWriteService:
             terms_accepted=payload["terms_accepted"] is True,
             idempotency_key=idempotency_key,
             source="web",
+            coupon_code=coupon_code,
         )
         response = {
             key: order.get(key)
-            for key in ("order_no", "plan_type", "billing_cycle", "amount", "currency", "pay_method", "status", "created_at", "expires_at")
+            for key in (
+                "order_no", "plan_type", "billing_cycle", "amount", "currency",
+                "pay_method", "status", "created_at", "expires_at",
+                "list_price_minor", "coupon_discount_minor",
+                "referral_discount_minor", "final_amount_minor",
+                "coupon_code_snapshot",
+            )
         }
         response.update(
             payment_profile_public(
@@ -318,6 +331,21 @@ class BrowserWriteService:
             )
         )
         return response
+
+    def quote_membership_order(
+        self, identity: BrowserIdentity, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        if set(payload) not in ({"plan", "cycle"}, {"plan", "cycle", "coupon_code"}):
+            raise ValueError("会员报价字段不完整或包含未知字段。")
+        coupon_code = payload.get("coupon_code")
+        if coupon_code is not None and not isinstance(coupon_code, str):
+            raise ValueError("优惠码字段无效。")
+        return OrderService(self.db).quote_order(
+            identity.id,
+            str(payload.get("plan") or ""),
+            str(payload.get("cycle") or ""),
+            coupon_code=coupon_code,
+        )
 
     def membership_payment_qr(self, identity: BrowserIdentity, order_no: str) -> bytes:
         order = OrderService(self.db).get_order_for_user(identity.id, str(order_no).strip())

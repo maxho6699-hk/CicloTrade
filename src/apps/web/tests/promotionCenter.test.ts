@@ -19,6 +19,7 @@ test('promotion dashboard exposes every authoritative balance and complete histo
 })
 
 test('promotion states, copy feedback, and audit tones remain truthful', () => {
+  assert.match(page, /aria-label=\{localizeText\('复制邀请记录 ID'\)\}/)
   assert.match(page, /推广计划暂未开放/)
   assert.match(page, /当前账户无推广权限/)
   assert.match(page, /`referral:\$\{referral\.referral_id\}`/)

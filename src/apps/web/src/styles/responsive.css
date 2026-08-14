@@ -273,8 +273,11 @@
   .current-plan-band > .button { grid-column: 2; }
   .panel-actions { align-items: stretch; flex-direction: column; }
   .panel-actions .button { width: 100%; }
-  .membership-grid { display: flex; gap: 10px; padding-bottom: 8px; overflow-x: auto; scroll-snap-type: x mandatory; }
-  .membership-card { width: min(82vw, 310px); flex: 0 0 min(82vw, 310px); scroll-snap-align: start; }
+  .membership-grid { grid-template-columns: 1fr; }
+  .membership-card { width: auto; }
+  .membership-coupon-row { grid-template-columns: 1fr; }
+  .membership-coupon-row .button { width: 100%; }
+  .checkout-body .membership-price-breakdown { grid-template-columns: 1fr 1fr; }
   .billing-cycle-bar .membership-cycle-control,
   .membership-payment-control { width: 100%; overflow-x: auto; }
   .lab-status-strip { align-items: flex-start; flex-direction: column; }

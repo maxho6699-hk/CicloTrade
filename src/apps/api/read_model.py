@@ -17,10 +17,11 @@ from core.broker_catalog import public_us_launch_broker_catalog
 from core.compat import UTC
 from core.broker_authorization import broker_execution_authorized
 from core.plans import (
-    CAPABILITIES, PLAN_ORDER, PLANS, effective_plan, plan_display_name,
+    CAPABILITIES, PLAN_ORDER, effective_plan, plan_display_name,
     trading_limits, web_recommendation_visibility,
 )
 from core.membership import membership_purchase_state, resolve_membership_snapshot
+from core.entitlement_policy import current_policy
 from core.official_paper_consumers import (
     OFFICIAL_PAPER_V2,
     active_events as official_consumer_events,
@@ -622,20 +623,70 @@ class ReadOnlyLegacyRepository:
                     item["payment_qr_available"] = False
                 orders.append(item)
             execution = self._execution_snapshot(connection, identity)
+            published_policy = current_policy(connection)
+            policy_document = (
+                published_policy.policy if published_policy is not None else None
+            )
+            policy_plans = (
+                list(policy_document.get("plans") or [])
+                if isinstance(policy_document, dict) else []
+            )
+            public_plan_order = (
+                list(policy_document.get("public_plan_order") or [])
+                if isinstance(policy_document, dict) else []
+            )
+
+        plans_by_key = {
+            str(item.get("key")): item for item in policy_plans
+            if isinstance(item, dict) and item.get("key")
+        }
+        public_plans = []
+        for key in public_plan_order:
+            item = plans_by_key.get(str(key))
+            if not item or item.get("lifecycle") != "active_public":
+                continue
+            purchase = membership_purchase_state(plan, str(key))
+            commerce = item.get("commerce") if isinstance(item.get("commerce"), dict) else {}
+            can_purchase = bool(purchase["can_purchase"] and commerce.get(
+                "renewable" if purchase["purchase_action"] == "renew" else "upgrade_target"
+            )) if str(key) != "免费版" else False
+            public_plans.append({
+                "key": str(key),
+                "display_name": str(item.get("display_name") or plan_display_name(str(key))),
+                "prices": dict(item.get("prices") or {}),
+                "summary": str(item.get("summary") or ""),
+                "features": list(item.get("features") or []),
+                "lifecycle": str(item.get("lifecycle") or "active_public"),
+                "can_purchase": can_purchase,
+                "purchase_action": purchase["purchase_action"] if can_purchase else (
+                    purchase["purchase_action"] if purchase["purchase_action"] == "covered" else "unavailable"
+                ),
+                "blocked_reason": purchase["blocked_reason"] if not purchase["can_purchase"] else (
+                    None if can_purchase else "当前会员策略暂未开放此商业动作。"
+                ),
+            })
+        legacy_plans = [
+            {
+                "key": str(item.get("key")),
+                "display_name": str(item.get("display_name") or plan_display_name(str(item.get("key")))),
+                "lifecycle": "retired_legacy",
+                "summary": str(item.get("summary") or "仅保留历史订单与未到期权益。"),
+                "can_purchase": False,
+                "can_renew": False,
+            }
+            for item in policy_plans
+            if isinstance(item, dict) and item.get("lifecycle") == "retired_legacy"
+        ]
         return {
             "current": self.me(identity),
             "capabilities": capabilities,
-            "plans": [
-                {
-                    "key": key,
-                    "display_name": plan_display_name(key),
-                    "prices": dict(PLANS[key]["prices"]),
-                    "summary": PLANS[key]["summary"],
-                    "features": list(PLANS[key]["features"]),
-                    **membership_purchase_state(plan, key),
-                }
-                for key in PLAN_ORDER
-            ],
+            "plans": public_plans,
+            "legacy_plans": legacy_plans,
+            "policy": {
+                "key": published_policy.policy_key if published_policy else None,
+                "version": published_policy.version if published_policy else None,
+                "sha256": published_policy.policy_sha256 if published_policy else None,
+            },
             "orders": orders,
             "payment_methods": payment_methods,
             "brokerage": {
