@@ -161,6 +161,24 @@ export function validStrategyResearch97Aggregate(value: unknown): value is Strat
     counts[item.signal] += 1
     return counts
   }, { long: 0, flat: 0, wait: 0 })
+  const tierCounts = cycle.symbols.reduce((counts, item) => {
+    counts[item.tier] += 1
+    return counts
+  }, { A: 0, C: 0 })
+  const historyLatest = value.history.items[0]
+  if (!historyLatest
+    || historyLatest.cycle_id !== cycle.cycle_id
+    || historyLatest.evaluation_date !== cycle.evaluation_date
+    || historyLatest.evaluated_at !== cycle.evaluated_at
+    || historyLatest.coverage_count !== covered
+    || historyLatest.no_data_count !== missing
+    || historyLatest.long_count !== signals.long
+    || historyLatest.flat_count !== signals.flat
+    || historyLatest.wait_count !== signals.wait
+    || tierCounts.A !== 13
+    || tierCounts.C !== 84
+    || value.status.last_result_at !== cycle.evaluated_at
+    || (value.status.state === 'waiting' && value.status.last_result_at !== null)) return false
   return value.status.universe.sha256 === cycle.evidence.universe_sha256
     && value.status.coverage_count === covered
     && value.status.no_data_count === missing
@@ -188,6 +206,8 @@ export async function fetchStrategyResearch97Aggregate(): Promise<StrategyResear
   ])
   const resources = [status, latest, history]
   const forbidden = resources.every((resource) => resource.state === 'error' && resource.error.status === 403)
+  const historyOnlyError = history.state === 'error' && status.state === 'ready' && latest.state === 'ready'
+  if (historyOnlyError) return { phase: 'partial', status, latest, history, reason: 'resource_error', forbidden: false }
   if (resources.some((resource) => resource.state === 'error')) return { phase: 'error', status, latest, history, reason: 'resource_error', forbidden }
   if (resources.some((resource) => resource.state === 'unavailable')) return { phase: 'partial', status, latest, history, reason: 'resource_unavailable', forbidden: false }
   if (status.state !== 'ready' || latest.state !== 'ready' || history.state !== 'ready') return { phase: 'error', status, latest, history, reason: 'resource_error', forbidden: false }

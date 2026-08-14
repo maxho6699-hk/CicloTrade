@@ -65,6 +65,10 @@ test('fails closed when authority, universe count, or missing-data signal is uns
   assert.equal(validStrategyResearch97Latest({ ...latest, cycle: { ...latest.cycle, symbols: latest.cycle.symbols.map((item, index) => index === 96 ? { ...item, signal: 'long' } : item) } }), false)
   assert.equal(validStrategyResearch97Aggregate({ status, latest: { ...latest, cycle: { ...latest.cycle, evidence: { ...latest.cycle.evidence, universe_sha256: 'f'.repeat(64) } } }, history }), false)
   assert.equal(validStrategyResearch97Aggregate({ status: { ...status, coverage_count: 95, no_data_count: 2 }, latest, history }), false)
+  assert.equal(validStrategyResearch97Aggregate({ status, latest, history: { ...history, items: [{ ...history.items[0], cycle_id: 'different-cycle' }] } }), false)
+  assert.equal(validStrategyResearch97Aggregate({ status, latest, history: { ...history, items: [{ ...history.items[0], long_count: 31 }] } }), false)
+  assert.equal(validStrategyResearch97Aggregate({ status, latest: { ...latest, cycle: { ...latest.cycle, symbols: latest.cycle.symbols.map((item, index) => index === 13 ? { ...item, tier: 'A' as const } : item) } }, history }), false)
+  assert.equal(validStrategyResearch97Aggregate({ status: { ...status, last_result_at: null }, latest, history }), false)
 })
 
 test('fetches only the three read-only expanded-research endpoints', async () => {
@@ -102,6 +106,26 @@ test('aggregate loader preserves partial resources instead of converting unavail
     assert.equal(result.reason, 'resource_unavailable')
     assert.equal(result.status.state, 'unavailable')
     assert.equal(result.history.state, 'unavailable')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('aggregate loader preserves status and latest when history fails independently', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const path = String(input)
+    if (path.endsWith('/history?limit=20')) return new Response(JSON.stringify({ error: 'temporarily unavailable' }), { status: 503 })
+    const payload = path.endsWith('/status') ? status : latest
+    return new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }
+  try {
+    const result = await fetchStrategyResearch97Aggregate()
+    assert.equal(result.phase, 'partial')
+    assert.equal(result.reason, 'resource_error')
+    assert.equal(result.status.state, 'ready')
+    assert.equal(result.latest.state, 'ready')
+    assert.equal(result.history.state, 'error')
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -160,4 +184,18 @@ test('panel owns Tier/status/search pagination and explicit partial/stale states
   assert.match(panel, /phase: 'partial'/)
   assert.match(panel, /statusData\?\.state === 'stale'/)
   assert.match(panel, /aria-live="polite"/)
+  assert.match(panel, /research_query/)
+  assert.match(panel, /research_page/)
+  assert.match(panel, /strategy-research-97-filter-empty/)
+  assert.match(panel, /autoComplete="off"/)
+  assert.match(panel, /spellCheck={false}/)
+})
+
+test('panel keeps touch-safe focus styles and a zero-result state', async () => {
+  const panel = await readFile(new URL('../src/components/StrategyResearch97Panel.tsx', import.meta.url), 'utf8')
+  const styles = await readFile(new URL('../src/styles/strategy-research-97.css', import.meta.url), 'utf8')
+  assert.match(panel, /text\.noMatches/)
+  assert.match(styles, /focus-visible/)
+  assert.match(styles, /min-height: 44px/)
+  assert.match(styles, /max-width: 390px/)
 })
