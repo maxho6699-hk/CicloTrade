@@ -52,6 +52,15 @@ export interface FeatureCatalogPayload {
   preferences: FeaturePreferences
 }
 
+export function featureOpenRoute(item: FeatureCatalogItem): string | null {
+  if (item.availability === 'available') return item.route
+  if (item.availability === 'locked') return '/membership'
+  if ((item.availability === 'degraded' || item.availability === 'unavailable') && item.actions.researchUrl) {
+    return item.actions.researchUrl
+  }
+  return null
+}
+
 export interface MorePageCopy {
   kicker: string
   title: string
@@ -253,6 +262,8 @@ const FEATURE_REASON_COPY: Readonly<Record<string, string>> = {
   '运行状态证明已超过 5 分钟，请刷新后重试。': '執行狀態證明已超過 5 分鐘，請重新整理後再試。',
   '运行状态组合无法验证，功能已安全停用。': '執行狀態組合無法驗證，功能已安全停用。',
   '当前数据或服务未达到可用门限。': '目前資料或服務未達到可用門檻。',
+  '研究证据已过期；可查看只读状态，但不能固定为常用工具。': '研究證據已過期；可檢視只讀狀態，但不能固定為常用工具。',
+  '研究覆盖尚未完整或服务正在降级；可查看只读状态，但不能固定为常用工具。': '研究覆蓋尚未完整或服務正在降級；可檢視只讀狀態，但不能固定為常用工具。',
   '该能力仍在独立开发与验收中，当前会员不包含此功能。': '該功能仍在獨立開發與驗收中，目前會員不包含此功能。',
   '当前会员未包含此研究深度；风险与数据状态仍永久免费可见。': '目前會員未包含此研究深度；風險與資料狀態仍可永久免費查看。',
 }

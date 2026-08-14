@@ -74,6 +74,19 @@ test('fails closed when authority, universe count, or missing-data signal is uns
   assert.equal(validStrategyResearch97Aggregate({ status: { ...status, last_result_at: null }, latest, history }), false)
 })
 
+test('normalizes unavailable resources to explicit empty waiting states', () => {
+  const unavailableStatus = { ...status, available: false, state: 'waiting' as const, last_heartbeat_at: null, last_result_at: null, expires_at: null, coverage_count: 0, no_data_count: 97, spool: null }
+  const unavailableLatest = { ...latest, available: false, cycle: null }
+  const unavailableHistory = { ...history, available: false, items: [] }
+  assert.equal(validStrategyResearch97Status(unavailableStatus), true)
+  assert.equal(validStrategyResearch97Latest(unavailableLatest), true)
+  assert.equal(validStrategyResearch97History(unavailableHistory), true)
+  assert.equal(validStrategyResearch97Status({ ...unavailableStatus, coverage_count: 1, no_data_count: 96 }), false)
+  assert.equal(validStrategyResearch97Status({ ...unavailableStatus, last_result_at: status.last_result_at }), false)
+  assert.equal(validStrategyResearch97Latest({ ...unavailableLatest, cycle: latest.cycle }), false)
+  assert.equal(validStrategyResearch97History({ ...unavailableHistory, items: history.items }), false)
+})
+
 test('fetches only the three read-only expanded-research endpoints', async () => {
   const originalFetch = globalThis.fetch
   const paths: string[] = []
@@ -181,6 +194,7 @@ test('overview card keeps stable and expanded chains distinct and links to resea
 test('panel owns Tier/status/search pagination and explicit partial/stale states', async () => {
   const panel = await readFile(new URL('../src/components/StrategyResearch97Panel.tsx', import.meta.url), 'utf8')
   assert.match(panel, /PAGE_SIZE = 18/)
+  assert.match(panel, /NARROW_PAGE_SIZE = 8/)
   assert.match(panel, /tierFilter/)
   assert.match(panel, /signalFilter/)
   assert.match(panel, /setPage\(1\)/)
@@ -190,6 +204,7 @@ test('panel owns Tier/status/search pagination and explicit partial/stale states
   assert.match(panel, /research_query/)
   assert.match(panel, /research_page/)
   assert.match(panel, /strategy-research-97-filter-empty/)
+  assert.match(panel, /setSearchParams\(next, \{ replace: true \}\)/)
   assert.match(panel, /autoComplete="off"/)
   assert.match(panel, /spellCheck={false}/)
 })

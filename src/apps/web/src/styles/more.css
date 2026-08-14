@@ -5,7 +5,7 @@
 .more-search:focus-within { border-color: var(--info); box-shadow: 0 0 0 2px color-mix(in srgb, var(--info) 18%, transparent); }
 .more-search input { min-width: 0; min-height: 42px; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 14px; }
 .feature-view-toggle { display: inline-flex; min-height: 44px; flex: 0 0 auto; padding: 2px; border: 1px solid var(--border-strong); border-radius: var(--radius-control); background: var(--surface-subtle); }
-.feature-view-toggle button { display: inline-flex; min-height: 38px; align-items: center; gap: 5px; padding: 0 10px; border: 0; border-radius: calc(var(--radius-control) - 2px); background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; }
+.feature-view-toggle button { display: inline-flex; min-height: 44px; align-items: center; gap: 5px; padding: 0 10px; border: 0; border-radius: calc(var(--radius-control) - 2px); background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; }
 .feature-view-toggle button.active { background: var(--surface-raised); box-shadow: 0 1px 2px var(--shadow-color); color: var(--text); }
 .pin-manager { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px 16px; padding: 14px 15px; border-block: 1px solid var(--border-subtle); background: var(--surface-subtle); }
 .pin-manager h2 { margin: 0; font-size: 15px; }

@@ -4,6 +4,7 @@ import test from 'node:test'
 
 import {
   decodeFeatureCatalog,
+  featureOpenRoute,
   featureSearchText,
   filterFeatureCatalog,
   formatMorePageCopy,
@@ -108,6 +109,8 @@ test('fixed server reasons are localized while unknown operational detail remain
     ['运行状态证明已超过 5 分钟，请刷新后重试。', '執行狀態證明已超過 5 分鐘，請重新整理後再試。'],
     ['运行状态组合无法验证，功能已安全停用。', '執行狀態組合無法驗證，功能已安全停用。'],
     ['当前数据或服务未达到可用门限。', '目前資料或服務未達到可用門檻。'],
+    ['研究证据已过期；可查看只读状态，但不能固定为常用工具。', '研究證據已過期；可檢視只讀狀態，但不能固定為常用工具。'],
+    ['研究覆盖尚未完整或服务正在降级；可查看只读状态，但不能固定为常用工具。', '研究覆蓋尚未完整或服務正在降級；可檢視只讀狀態，但不能固定為常用工具。'],
     ['该能力仍在独立开发与验收中，当前会员不包含此功能。', '該功能仍在獨立開發與驗收中，目前會員不包含此功能。'],
     ['当前会员未包含此研究深度；风险与数据状态仍永久免费可见。', '目前會員未包含此研究深度；風險與資料狀態仍可永久免費查看。'],
   ] as const
@@ -125,6 +128,17 @@ test('planned entries remain visible but never actionable or pinnable', () => {
   assert.equal(planned.availability, 'planned')
   assert.equal(planned.access, 'wait')
   assert.equal(planned.pinAllowed, false)
+})
+
+test('status-bearing research entries remain readable while degraded but never pinnable', () => {
+  const decoded = decodeFeatureCatalog(payload)
+  const available = decoded.items.find((item) => item.key === 'stock-screener')!
+  const degraded = { ...available, availability: 'degraded' as const, pinAllowed: false }
+  const unavailable = { ...available, availability: 'unavailable' as const, pinAllowed: false }
+  assert.equal(featureOpenRoute(degraded), '/discover?tool=screener')
+  assert.equal(featureOpenRoute(unavailable), '/discover?tool=screener')
+  assert.equal(featureOpenRoute({ ...degraded, actions: {} }), null)
+  assert.equal(featureOpenRoute({ ...available, availability: 'planned', pinAllowed: false }), null)
 })
 
 test('pin edits remain local until a complete zero or three-to-five selection can be saved', () => {
@@ -181,6 +195,8 @@ test('More page remembers an explicit display choice and uses a responsive first
   assert.match(source, /window\.localStorage\.getItem\(FEATURE_CATALOG_VIEW_STORAGE_KEY\)/)
   assert.match(source, /aria-pressed=\{view === 'list'\}/)
   assert.match(source, /aria-pressed=\{view === 'icon'\}/)
+  const styles = readFileSync(new URL('../src/styles/more.css', import.meta.url), 'utf8')
+  assert.match(styles, /\.feature-view-toggle button \{[^}]*min-height: 44px/)
 })
 
 test('icon view pin actions keep an accessible name while list view retains visible copy', () => {

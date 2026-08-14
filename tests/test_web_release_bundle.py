@@ -65,6 +65,7 @@ def _source_repo(tmp_path: Path) -> Path:
         "migrations/0033_membership_promotion_settlement.sql": b"SELECT 33;\n",
         "migrations/0034_personal_paper.sql": b"SELECT 34;\n",
         "migrations/0035_entitlement_policy_versions.sql": b"SELECT 35;\n",
+        "migrations/backtest/0012_expanded_research_receipts.sql": b"SELECT 12;\n",
     }
     for name, content in files.items():
         path = root / name
@@ -102,22 +103,25 @@ def _rebind_artifact(path: Path, manifest: Path) -> None:
 
 
 def _rewrite_tar(source: Path, target: Path, *, remove: str | None = None, add: dict[str, bytes] | None = None, link: bool = False) -> None:
-    with tarfile.open(source, "r:gz") as old, tarfile.open(target, "w:gz", compresslevel=9) as new:
-        for member in old.getmembers():
-            if member.name == remove:
-                continue
-            payload = old.extractfile(member).read() if member.isfile() else b""
-            new.addfile(member, BytesIO(payload) if member.isfile() else None)
-        for name, content in (add or {}).items():
-            info = tarfile.TarInfo(name)
-            info.mode = 0o644
-            info.size = len(content)
-            new.addfile(info, BytesIO(content))
-        if link:
-            info = tarfile.TarInfo("linked")
-            info.type = tarfile.SYMTYPE
-            info.linkname = "app.py"
-            new.addfile(info)
+    with tarfile.open(source, "r:gz") as old, target.open("wb") as destination:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=destination, mtime=1) as compressed:
+            with tarfile.open(mode="w", fileobj=compressed, format=tarfile.USTAR_FORMAT) as new:
+                for member in old.getmembers():
+                    if member.name == remove:
+                        continue
+                    payload = old.extractfile(member).read() if member.isfile() else b""
+                    new.addfile(member, BytesIO(payload) if member.isfile() else None)
+                for name, content in (add or {}).items():
+                    info = tarfile.TarInfo(name)
+                    info.mode, info.mtime = 0o644, 1
+                    info.uid = info.gid = 0
+                    info.size = len(content)
+                    new.addfile(info, BytesIO(content))
+                if link:
+                    info = tarfile.TarInfo("linked")
+                    info.type = tarfile.SYMTYPE
+                    info.linkname = "app.py"
+                    new.addfile(info)
 
 
 def test_build_is_reproducible_and_verifies(tmp_path: Path) -> None:
@@ -130,6 +134,7 @@ def test_build_is_reproducible_and_verifies(tmp_path: Path) -> None:
     assert artifact.read_bytes() == second.read_bytes()
     assert verifier.verify_release(root, artifact, manifest) == []
     assert data["migrations"]["required"][-1] == "0035_entitlement_policy_versions.sql"
+    assert data["migrations"]["required_backtest"] == ["0012_expanded_research_receipts.sql"]
     assert data["lifecycle"] == {"allowed_actions": ["restart"], "service": "ciclotrade-rewrite-api.service"}
 
 
@@ -140,6 +145,68 @@ def test_builder_excludes_markdown_runtime_instructions(tmp_path: Path) -> None:
     with tarfile.open(artifact, "r:gz") as archive:
         assert "sandbox_runner/README.md" not in archive.getnames()
     assert verifier.verify_release(root, artifact, manifest) == []
+
+
+def test_builder_requires_expanded_research_backtest_migration(tmp_path: Path) -> None:
+    root = _source_repo(tmp_path)
+    required = root / "migrations/backtest/0012_expanded_research_receipts.sql"
+    required.unlink()
+    _run(root, "add", "-u")
+    _run(root, "commit", "-m", "remove required backtest migration")
+    with pytest.raises(builder.ReleaseBuildError, match="missing required runtime inputs"):
+        builder.build_release(
+            root,
+            tmp_path / "release.tar.gz",
+            tmp_path / "release.json",
+            baseline=_run(root, "rev-parse", "HEAD"),
+            source_date_epoch=1,
+        )
+
+
+def test_verifier_requires_backtest_migration_in_manifest_and_archive(tmp_path: Path) -> None:
+    root = _source_repo(tmp_path)
+    artifact, manifest, _ = _bundle(root, tmp_path)
+    data = verifier.read_manifest(manifest)
+    data["files"] = [
+        item for item in data["files"]
+        if item["path"] != "migrations/backtest/0012_expanded_research_receipts.sql"
+    ]
+    _write_manifest(manifest, data)
+    violations = verifier.verify_release(root, artifact, manifest)
+    assert "manifest is missing required backtest migration" in violations
+    assert "archive has paths absent from manifest" in violations
+
+    removed = tmp_path / "missing-backtest.tar.gz"
+    _rewrite_tar(artifact, removed, remove="migrations/backtest/0012_expanded_research_receipts.sql")
+    _rebind_artifact(removed, manifest)
+    violations = verifier.verify_release(root, removed, manifest)
+    assert "archive is missing required backtest migration" in violations
+
+
+def test_verifier_rejects_rebound_archive_with_unapproved_backtest_migration(tmp_path: Path) -> None:
+    root = _source_repo(tmp_path)
+    artifact, manifest, _ = _bundle(root, tmp_path)
+    injected = tmp_path / "injected.tar.gz"
+    _rewrite_tar(artifact, injected, add={"migrations/backtest/0099_not_required.sql": b"SELECT 99;\n"})
+    _rebind_artifact(injected, manifest)
+    violations = verifier.verify_release(root, injected, manifest)
+    assert "archive contains a path outside the release allowlist" in violations
+
+
+@pytest.mark.parametrize("path", [
+    "migrations/Backtest/0012_expanded_research_receipts.sql",
+    "Tests/fixture.py",
+    "Cache/data.bin",
+    "Logs/app.log",
+    "Worker/job.py",
+    "Ｔｅｓｔｓ/fixture.py",
+    "core\\Tests\\fixture.py",
+    "core//Tests/fixture.py",
+    "core/./Tests/fixture.py",
+])
+def test_builder_and_verifier_forbid_casefolded_and_normalized_paths(path: str) -> None:
+    assert builder._is_forbidden(path)
+    assert verifier._forbidden_path(path)
 
 
 @pytest.mark.parametrize("path, content", [

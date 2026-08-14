@@ -1696,9 +1696,26 @@ async def _feature_catalog_runtime(request: Request, identity: BrowserIdentity) 
         if model is not None
         else ExpandedResearchReadModel.unavailable_status()
     )
-    available = bool(status.get("available"))
-    if available:
+    available = status.get("available") is True
+    state = status.get("state")
+    coverage_count = status.get("coverage_count")
+    no_data_count = status.get("no_data_count")
+    healthy = (
+        available
+        and state == "healthy"
+        and isinstance(coverage_count, int)
+        and not isinstance(coverage_count, bool)
+        and coverage_count == 97
+        and isinstance(no_data_count, int)
+        and not isinstance(no_data_count, bool)
+        and no_data_count == 0
+    )
+    if healthy:
         data_state, health, reason = "ready", "healthy", None
+    elif available and state == "stale":
+        data_state, health, reason = "stale", "degraded", "研究证据已过期；可查看只读状态，但不能固定为常用工具。"
+    elif available:
+        data_state, health, reason = "delayed", "degraded", "研究覆盖尚未完整或服务正在降级；可查看只读状态，但不能固定为常用工具。"
     else:
         data_state, health, reason = "missing", "unavailable", "尚未取得可核验的数据新鲜度或服务健康证明。"
     return {

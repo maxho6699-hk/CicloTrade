@@ -24,6 +24,7 @@ const TRADITIONAL: ResearchCopy = {
 }
 
 const PAGE_SIZE = 18
+const NARROW_PAGE_SIZE = 8
 const QUERY_KEYS = { query: 'research_query', tier: 'research_tier', signal: 'research_signal', page: 'research_page' } as const
 
 function parseTier(value: string | null): TierFilter { return value === 'A' || value === 'C' ? value : 'all' }
@@ -43,6 +44,22 @@ function displayTimestamp(value: string | null, formatLocale: string): string {
 function stateClass(state: StrategyResearch97State): string { return `strategy-research-97-state ${state}` }
 function signalClass(signal: StrategyResearch97Signal): string { return `strategy-research-97-signal ${signal}` }
 function dataStateLabel(state: StrategyResearch97DataState, text: ResearchCopy): string { return state === 'fresh' ? text.fresh : state === 'stale' ? text.stale : text.dataMissing }
+
+function pageCountForLoad(loadState: LoadState, query: string, tier: TierFilter, signal: SignalFilter, pageSize: number): number {
+  if (loadState.phase !== 'ready' && loadState.phase !== 'partial') return 1
+  const latest = loadState.load.latest.state === 'error' ? null : loadState.load.latest.data
+  const cycle = latest?.cycle ?? loadState.load.data?.latest.cycle ?? null
+  if (!cycle) return 1
+  const normalizedQuery = query.trim().toUpperCase()
+  const filteredCount = cycle.symbols.filter((item) => {
+    const matchesTier = tier === 'all' || item.tier === tier
+    const matchesSignal = signal === 'all' || item.signal === signal || item.data_state === signal
+    const matchesQuery = !normalizedQuery || item.symbol.includes(normalizedQuery)
+    return matchesTier && matchesSignal && matchesQuery
+  }).length
+  return Math.max(1, Math.ceil(filteredCount / pageSize))
+}
+
 export function StrategyResearch97Panel() {
   const { locale, formatLocale } = useLocale()
   const text = locale === 'zh-Hant' ? TRADITIONAL : SIMPLIFIED
@@ -52,6 +69,15 @@ export function StrategyResearch97Panel() {
   const [signal, setSignal] = useState<SignalFilter>(() => parseSignal(searchParams.get(QUERY_KEYS.signal)))
   const [query, setQuery] = useState(() => searchParams.get(QUERY_KEYS.query) ?? '')
   const [page, setPage] = useState(() => parsePage(searchParams.get(QUERY_KEYS.page)))
+  const [isNarrowViewport, setIsNarrowViewport] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 390px)').matches)
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(max-width: 390px)')
+    const updateViewport = () => setIsNarrowViewport(mediaQuery.matches)
+    updateViewport()
+    mediaQuery.addEventListener('change', updateViewport)
+    return () => mediaQuery.removeEventListener('change', updateViewport)
+  }, [])
 
   const updateUrl = (changes: Record<string, string | undefined>) => {
     const next = new URLSearchParams(searchParams)
@@ -65,6 +91,17 @@ export function StrategyResearch97Panel() {
     setQuery(searchParams.get(QUERY_KEYS.query) ?? '')
     setPage(parsePage(searchParams.get(QUERY_KEYS.page)))
   }, [searchParams])
+
+  useEffect(() => {
+    const pageCount = pageCountForLoad(loadState, query, tier, signal, isNarrowViewport ? NARROW_PAGE_SIZE : PAGE_SIZE)
+    const safePage = Math.min(page, pageCount)
+    if (page === safePage) return
+    const next = new URLSearchParams(searchParams)
+    if (safePage > 1) next.set(QUERY_KEYS.page, String(safePage))
+    else next.delete(QUERY_KEYS.page)
+    setPage(safePage)
+    setSearchParams(next, { replace: true })
+  }, [isNarrowViewport, loadState, page, query, searchParams, setSearchParams, signal, tier])
 
   useEffect(() => {
     let current = true
@@ -90,6 +127,7 @@ export function StrategyResearch97Panel() {
   const cycle = latest?.cycle ?? load.data?.latest.cycle ?? null
   const partial = load.phase === 'partial'
   const stateLabel = statusData ? text.status[statusData.state] : text.unavailable
+  const pageSize = isNarrowViewport ? NARROW_PAGE_SIZE : PAGE_SIZE
   const normalizedQuery = query.trim().toUpperCase()
   const filteredSymbols = cycle?.symbols.filter((item) => {
     const matchesTier = tier === 'all' || item.tier === tier
@@ -97,9 +135,9 @@ export function StrategyResearch97Panel() {
     const matchesQuery = !normalizedQuery || item.symbol.includes(normalizedQuery)
     return matchesTier && matchesSignal && matchesQuery
   }) ?? []
-  const pageCount = Math.max(1, Math.ceil(filteredSymbols.length / PAGE_SIZE))
+  const pageCount = Math.max(1, Math.ceil(filteredSymbols.length / pageSize))
   const safePage = Math.min(page, pageCount)
-  const visibleSymbols = filteredSymbols.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
+  const visibleSymbols = filteredSymbols.slice((safePage - 1) * pageSize, safePage * pageSize)
 
   const changeTier = (next: TierFilter) => { setTier(next); setPage(1); updateUrl({ [QUERY_KEYS.tier]: next === 'all' ? undefined : next, [QUERY_KEYS.page]: undefined }) }
   const changeSignal = (next: SignalFilter) => { setSignal(next); setPage(1); updateUrl({ [QUERY_KEYS.signal]: next === 'all' ? undefined : next, [QUERY_KEYS.page]: undefined }) }

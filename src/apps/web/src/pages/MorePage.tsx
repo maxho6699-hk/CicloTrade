@@ -10,6 +10,7 @@ import {
   filterFeatureCatalog,
   formatMorePageCopy,
   FEATURE_CATALOG_VIEW_STORAGE_KEY,
+  featureOpenRoute,
   isValidPinnedSelection,
   localizeFeature,
   localizeFeatureReason,
@@ -47,7 +48,7 @@ function FeatureCard({ item, pinned, copy, view, onOpen, onTogglePin }: { item: 
   const featureCopy = localizeFeature(item, locale)
   const localizedReason = localizeFeatureReason(item.reason, locale)
   const Icon = FEATURE_ICONS[item.icon]
-  const disabled = item.availability === 'planned' || item.availability === 'unavailable' || item.availability === 'degraded'
+  const disabled = featureOpenRoute(item) === null
   const pinLabel = pinned ? copy.unpin : copy.pin
   return (
     <article className={`feature-card feature-card--${view} ${item.availability}`}>
@@ -111,6 +112,8 @@ export function MorePage({ catalog, loading = false, error = null, copy: injecte
   const pinsValid = isValidPinnedSelection(draftPins)
 
   const open = async (item: FeatureCatalogItem) => {
+    const route = featureOpenRoute(item)
+    if (!route) return
     if (item.availability === 'available') {
       if (onRecordRecent && catalogSnapshot) {
         try {
@@ -122,8 +125,8 @@ export function MorePage({ catalog, loading = false, error = null, copy: injecte
         }
       }
       if (onOpenFeature) onOpenFeature(item)
-      else navigate(item.route)
-    } else if (item.availability === 'locked') navigate('/membership')
+      else navigate(route)
+    } else navigate(route)
   }
 
   const togglePin = (key: string) => {

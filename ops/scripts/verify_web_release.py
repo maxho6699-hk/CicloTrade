@@ -22,6 +22,10 @@ MAX_MEMBER_BYTES = 32 * 1024 * 1024
 MAX_TOTAL_MEMBER_BYTES = 256 * 1024 * 1024
 MAX_MEMBERS = 10_000
 REQUIRED_MIGRATIONS = ["0032_membership_promotions.sql", "0033_membership_promotion_settlement.sql", "0034_personal_paper.sql", "0035_entitlement_policy_versions.sql"]
+REQUIRED_BACKTEST_MIGRATIONS = ["0012_expanded_research_receipts.sql"]
+REQUIRED_BACKTEST_MIGRATION_PATHS = {
+    f"migrations/backtest/{name}" for name in REQUIRED_BACKTEST_MIGRATIONS
+}
 EXPECTED_EXISTING_MIGRATIONS = ["0034_personal_paper.sql"]
 LIFECYCLE = {"allowed_actions": ["restart"], "service": "ciclotrade-rewrite-api.service"}
 EXACT_FILES = {"app.py", "asgi_app.py", "config.yaml", "requirements.txt"}
@@ -118,14 +122,18 @@ def _collision_key(name: str) -> str:
 
 
 def _forbidden_path(name: str) -> bool:
-    lower = name.casefold()
+    normalized = unicodedata.normalize("NFKC", name).replace("\\", "/")
+    lower = normalized.casefold()
     parts = lower.split("/")
     basename = parts[-1]
     if basename.endswith((".md", ".markdown")):
         return True
     if any(part in {"tests", "cache", "node_modules", "worker", "logs"} for part in parts):
         return True
-    if lower.startswith("ops/opend/") or lower.startswith("migrations/backtest/") or "opend" in lower:
+    if lower.startswith("ops/opend/") or (
+        lower.startswith("migrations/backtest/")
+        and normalized not in REQUIRED_BACKTEST_MIGRATION_PATHS
+    ) or "opend" in lower:
         return True
     if ".env" in basename or "worker" in basename or basename.endswith((".map", ".db", ".sqlite", ".sqlite3", ".wal", ".shm", ".log")):
         return True
@@ -136,6 +144,8 @@ def _allowed_release_path(name: str) -> bool:
     if name in EXACT_FILES:
         return True
     if name.startswith("migrations/"):
+        if name in REQUIRED_BACKTEST_MIGRATION_PATHS:
+            return True
         return name.count("/") == 1 and name.endswith(".sql")
     return name.startswith(ALLOWED_PREFIXES)
 
@@ -290,7 +300,11 @@ def _validate_manifest_shape(data: dict[str, Any], root: Path) -> list[str]:
         violations.append("manifest source identity is invalid")
     if data.get("lifecycle") != LIFECYCLE:
         violations.append("manifest lifecycle is not restricted to Rewrite API restart")
-    if data.get("migrations") != {"expected_existing": EXPECTED_EXISTING_MIGRATIONS, "required": REQUIRED_MIGRATIONS}:
+    if data.get("migrations") != {
+        "expected_existing": EXPECTED_EXISTING_MIGRATIONS,
+        "required": REQUIRED_MIGRATIONS,
+        "required_backtest": REQUIRED_BACKTEST_MIGRATIONS,
+    }:
         violations.append("manifest migration contract mismatch")
     if type(data.get("source_date_epoch")) is not int or data["source_date_epoch"] < 0:
         violations.append("manifest SOURCE_DATE_EPOCH is invalid")
@@ -385,6 +399,10 @@ def _archive_members(artifact: Path, epoch: int) -> tuple[dict[str, tuple[bytes,
                 content = handle.read(member.size + 1) if handle else b""
                 if len(content) != member.size:
                     return members, violations + ["archive member content is truncated"]
+                if _forbidden_path(name):
+                    violations.append("archive contains forbidden release path")
+                if not _allowed_release_path(name):
+                    violations.append("archive contains a path outside the release allowlist")
                 if _contains_secret(name, content):
                     violations.append("archive contains a secret")
                 members[name] = (content, member.mode & 0o777)
@@ -446,6 +464,11 @@ def verify_release(root: Path, artifact: Path, manifest: Path) -> list[str]:
     members, archive_violations = _archive_members(artifact, data.get("source_date_epoch", -1))
     violations.extend(archive_violations)
     manifest_paths = {item["path"] for item in files if isinstance(item.get("path"), str)}
+    required_backtest_path = next(iter(REQUIRED_BACKTEST_MIGRATION_PATHS))
+    if required_backtest_path not in manifest_paths:
+        violations.append("manifest is missing required backtest migration")
+    if required_backtest_path not in members:
+        violations.append("archive is missing required backtest migration")
     if set(members) - manifest_paths:
         violations.append("archive has paths absent from manifest")
     if manifest_paths - set(members):

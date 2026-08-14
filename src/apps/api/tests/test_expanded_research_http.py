@@ -12,6 +12,7 @@ from core.backtest_queue_database import BacktestQueueDatabase
 from core.compat import UTC
 from core.expanded_research_contracts import AUTHORITY, UNIVERSE_SHA256, canonical_json, receiver_signature
 from core.expanded_research_store import ExpandedResearchStore
+from src.apps.api.expanded_research_read_model import ExpandedResearchReadModel
 from src.apps.api.expanded_research_receiver import ExpandedResearchReceiver
 from src.apps.api.feature_catalog_adapter import FeatureCatalogAdapter
 
@@ -180,7 +181,54 @@ def test_expanded_routes_return_one_consistent_sanitized_projection(browser_api,
         "/api/rewrite/v1/features/catalog", headers,
     ))
     strategy = next(item for item in catalog["items"] if item["key"] == "strategy-research")
-    assert catalog_code == 200 and strategy["availability"] == "available"
+    assert catalog_code == 200 and strategy["availability"] == "degraded"
+    assert strategy["pin_allowed"] is False
+    assert strategy["actions"]["research_url"].endswith("research_scope=expanded")
+
+
+@pytest.mark.parametrize(
+    ("state", "coverage_count", "no_data_count", "expected_availability", "expected_data_state"),
+    [
+        ("stale", 97, 0, "degraded", "stale"),
+        ("degraded", 21, 76, "degraded", "delayed"),
+        ("healthy", 21, 76, "degraded", "delayed"),
+    ],
+)
+def test_feature_catalog_never_marks_partial_or_stale_expanded_research_healthy(
+    browser_api,
+    feature_catalog_adapter,
+    monkeypatch,
+    state,
+    coverage_count,
+    no_data_count,
+    expected_availability,
+    expected_data_state,
+):
+    module = importlib.import_module("src.apps.api.app")
+
+    class StubReadModel:
+        def status(self, _identity):
+            return {
+                **ExpandedResearchReadModel.unavailable_status(),
+                "available": True,
+                "state": state,
+                "coverage_count": coverage_count,
+                "no_data_count": no_data_count,
+            }
+
+    monkeypatch.setattr(module, "_expanded_research_read_model", lambda _request: StubReadModel())
+    token = _token(browser_api)
+    code, _, catalog = asyncio.run(_asgi(
+        "/api/rewrite/v1/features/catalog",
+        {"authorization": f"Bearer {token}"},
+    ))
+    strategy = next(item for item in catalog["items"] if item["key"] == "strategy-research")
+    assert code == 200
+    assert strategy["availability"] == expected_availability
+    assert strategy["data_state"] == expected_data_state
+    assert strategy["health"] == "degraded"
+    assert strategy["pin_allowed"] is False
+    assert strategy["actions"]["research_url"].endswith("research_scope=expanded")
 
 
 def test_expanded_latest_history_and_limit_remain_authenticated(browser_api, expanded_receiver):

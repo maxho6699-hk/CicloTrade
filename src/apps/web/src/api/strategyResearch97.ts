@@ -271,6 +271,17 @@ function validStatusCounts(coverage: unknown, noData: unknown): boolean {
   return count(coverage) && count(noData) && coverage + noData === 97
 }
 
+function validUnavailableStatus(value: Record<string, unknown>): boolean {
+  return value.available === false
+    && value.state === 'waiting'
+    && value.coverage_count === 0
+    && value.no_data_count === 97
+    && value.last_heartbeat_at === null
+    && value.last_result_at === null
+    && value.expires_at === null
+    && value.spool === null
+}
+
 export function validStrategyResearch97Status(value: unknown): value is StrategyResearch97Status {
   if (!exactKeys(value, ['available', 'state', 'authority', 'universe', 'last_heartbeat_at', 'last_result_at', 'expires_at', 'coverage_count', 'no_data_count', 'spool'])) return false
   return typeof value.available === 'boolean'
@@ -282,6 +293,7 @@ export function validStrategyResearch97Status(value: unknown): value is Strategy
     && (value.expires_at === null || isoTimestamp(value.expires_at))
     && validStatusCounts(value.coverage_count, value.no_data_count)
     && validSpool(value.spool)
+    && (value.available || validUnavailableStatus(value))
 }
 
 function validSymbol(value: unknown): value is StrategyResearch97Symbol {
@@ -317,7 +329,7 @@ export function validStrategyResearch97Latest(value: unknown): value is Strategy
     && typeof value.available === 'boolean'
     && validAuthority(value.authority)
     && text(value.validation_label)
-    && (value.cycle === null || validCycle(value.cycle))
+    && (value.available ? value.cycle === null || validCycle(value.cycle) : value.cycle === null)
 }
 
 function validHistoryItem(value: unknown): value is StrategyResearch97HistoryItem {
@@ -337,4 +349,5 @@ export function validStrategyResearch97History(value: unknown): value is Strateg
     && value.items.length <= 20
     && value.items.every(validHistoryItem)
     && new Set(value.items.map((item) => item.cycle_id)).size === value.items.length
+    && (value.available || value.items.length === 0)
 }

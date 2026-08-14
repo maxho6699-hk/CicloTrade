@@ -25,6 +25,10 @@ REQUIRED_MIGRATIONS = (
     "0034_personal_paper.sql",
     "0035_entitlement_policy_versions.sql",
 )
+REQUIRED_BACKTEST_MIGRATIONS = ("0012_expanded_research_receipts.sql",)
+REQUIRED_BACKTEST_MIGRATION_PATHS = frozenset(
+    f"migrations/backtest/{name}" for name in REQUIRED_BACKTEST_MIGRATIONS
+)
 EXPECTED_EXISTING_MIGRATIONS = ("0034_personal_paper.sql",)
 LIFECYCLE = {"allowed_actions": ["restart"], "service": "ciclotrade-rewrite-api.service"}
 EXACT_FILES = frozenset({"app.py", "asgi_app.py", "config.yaml", "requirements.txt"})
@@ -98,11 +102,15 @@ def _git_blob_bytes(root: Path, blob: str) -> bytes:
 
 
 def _is_forbidden(path: str) -> bool:
-    parts = path.split("/")
-    lower = path.casefold()
+    normalized = unicodedata.normalize("NFKC", path).replace("\\", "/")
+    lower = normalized.casefold()
+    parts = lower.split("/")
     if any(part in {"tests", "cache", "node_modules", "worker", "logs"} for part in parts):
         return True
-    if path.startswith("ops/opend/") or path.startswith("migrations/backtest/"):
+    if lower.startswith("ops/opend/") or (
+        lower.startswith("migrations/backtest/")
+        and normalized not in REQUIRED_BACKTEST_MIGRATION_PATHS
+    ):
         return True
     name = parts[-1].casefold()
     if name.endswith((".md", ".markdown")):
@@ -118,6 +126,8 @@ def allowed_release_path(path: str) -> bool:
     if path in EXACT_FILES:
         return True
     if path.startswith("migrations/"):
+        if path in REQUIRED_BACKTEST_MIGRATION_PATHS:
+            return True
         return path.count("/") == 1 and path.endswith(".sql")
     return path.startswith(ALLOWED_PREFIXES)
 
@@ -127,6 +137,7 @@ def _release_records(root: Path) -> list[tuple[str, str, int]]:
     paths = {path for path, _, _ in records}
     required = {"app.py", "asgi_app.py", "requirements.txt", "src/apps/web/dist/index.html"}
     required.update(f"migrations/{name}" for name in REQUIRED_MIGRATIONS)
+    required.update(REQUIRED_BACKTEST_MIGRATION_PATHS)
     if required - paths:
         raise ReleaseBuildError("release allowlist is missing required runtime inputs")
     ordered = sorted(records)
@@ -250,7 +261,11 @@ def build_release(root: Path, artifact: Path, manifest: Path, *, baseline: str, 
         "files": files,
         "inputs": inputs,
         "lifecycle": LIFECYCLE,
-        "migrations": {"expected_existing": list(EXPECTED_EXISTING_MIGRATIONS), "required": list(REQUIRED_MIGRATIONS)},
+        "migrations": {
+            "expected_existing": list(EXPECTED_EXISTING_MIGRATIONS),
+            "required": list(REQUIRED_MIGRATIONS),
+            "required_backtest": list(REQUIRED_BACKTEST_MIGRATIONS),
+        },
         "runtime": {"node": _runtime_version("node"), "npm": _runtime_version("npm"), "python": platform.python_version()},
         "schema": SCHEMA,
         "source": {"baseline": baseline_commit, "commit": commit, "tree": tree},
