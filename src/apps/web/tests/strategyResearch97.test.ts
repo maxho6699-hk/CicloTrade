@@ -5,6 +5,8 @@ import {
   fetchStrategyResearch97History,
   fetchStrategyResearch97Latest,
   fetchStrategyResearch97Status,
+  fetchStrategyResearch97Aggregate,
+  validStrategyResearch97Aggregate,
   validStrategyResearch97History,
   validStrategyResearch97Latest,
   validStrategyResearch97Status,
@@ -21,6 +23,7 @@ function symbols() {
   return Array.from({ length: 97 }, (_, index) => ({
     market: 'US' as const,
     symbol: `STK${String(index + 1).padStart(2, '0')}`,
+    tier: index < 13 ? 'A' as const : 'C' as const,
     data_state: index === 96 ? 'missing' as const : 'fresh' as const,
     signal: index === 96 ? 'wait' as const : index % 3 === 0 ? 'long' as const : index % 3 === 1 ? 'flat' as const : 'wait' as const,
     rationale: index === 96 ? null : '研究标签由服务端周期回传。',
@@ -51,6 +54,7 @@ test('accepts the strict expanded-research authority and 97-symbol coverage', ()
   assert.equal(validStrategyResearch97Status(status), true)
   assert.equal(validStrategyResearch97Latest(latest), true)
   assert.equal(validStrategyResearch97History(history), true)
+  assert.equal(validStrategyResearch97Aggregate({ status, latest, history }), true)
   assert.equal(status.coverage_count + status.no_data_count, 97)
   assert.equal(latest.cycle.summary.wait_count > 0, true)
 })
@@ -59,6 +63,8 @@ test('fails closed when authority, universe count, or missing-data signal is uns
   assert.equal(validStrategyResearch97Status({ ...status, authority: { ...authority, actionable: true } }), false)
   assert.equal(validStrategyResearch97Status({ ...status, universe: { ...universe, count: 13 } }), false)
   assert.equal(validStrategyResearch97Latest({ ...latest, cycle: { ...latest.cycle, symbols: latest.cycle.symbols.map((item, index) => index === 96 ? { ...item, signal: 'long' } : item) } }), false)
+  assert.equal(validStrategyResearch97Aggregate({ status, latest: { ...latest, cycle: { ...latest.cycle, evidence: { ...latest.cycle.evidence, universe_sha256: 'f'.repeat(64) } } }, history }), false)
+  assert.equal(validStrategyResearch97Aggregate({ status: { ...status, coverage_count: 95, no_data_count: 2 }, latest, history }), false)
 })
 
 test('fetches only the three read-only expanded-research endpoints', async () => {
@@ -81,11 +87,56 @@ test('fetches only the three read-only expanded-research endpoints', async () =>
   }
 })
 
+test('aggregate loader preserves partial resources instead of converting unavailable data into empty', async () => {
+  const originalFetch = globalThis.fetch
+  const unavailableStatus = { ...status, available: false, state: 'waiting' as const, last_heartbeat_at: null, last_result_at: null, expires_at: null, coverage_count: 0, no_data_count: 97, spool: null }
+  const unavailableHistory = { available: false, authority, limit: 20 as const, items: [] }
+  globalThis.fetch = async (input) => {
+    const path = String(input)
+    const payload = path.endsWith('/status') ? unavailableStatus : path.includes('/history?') ? unavailableHistory : latest
+    return new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }
+  try {
+    const result = await fetchStrategyResearch97Aggregate()
+    assert.equal(result.phase, 'partial')
+    assert.equal(result.reason, 'resource_unavailable')
+    assert.equal(result.status.state, 'unavailable')
+    assert.equal(result.history.state, 'unavailable')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('aggregate loader rejects cross-source hash drift and preserves forbidden as an explicit state', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const path = String(input)
+    const payload = path.endsWith('/status') ? status : path.includes('/history?') ? history : { ...latest, cycle: { ...latest.cycle, evidence: { ...latest.cycle.evidence, universe_sha256: 'f'.repeat(64) } } }
+    return new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }
+  try {
+    const mismatch = await fetchStrategyResearch97Aggregate()
+    assert.equal(mismatch.phase, 'error')
+    assert.equal(mismatch.reason, 'cross_source_mismatch')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: 'forbidden' }), { status: 403, headers: { 'Content-Type': 'application/json' } })
+  try {
+    const forbidden = await fetchStrategyResearch97Aggregate()
+    assert.equal(forbidden.phase, 'error')
+    assert.equal(forbidden.forbidden, true)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('the panel exposes all safety states and contains no execution control', async () => {
   const panel = await readFile(new URL('../src/components/StrategyResearch97Panel.tsx', import.meta.url), 'utf8')
   assert.match(panel, /phase: 'loading'/)
   assert.match(panel, /phase: 'forbidden'/)
-  assert.match(panel, /status\.state === 'stale'/)
+  assert.match(panel, /statusData\?\.state === 'stale'/)
   assert.match(panel, /不可执行、不可下单、不可推送 Telegram/)
   assert.doesNotMatch(panel, /自动下单|提交订单|发送Telegram\(/)
 })
@@ -94,7 +145,19 @@ test('overview card keeps stable and expanded chains distinct and links to resea
   const card = await readFile(new URL('../src/components/StrategyResearchOverviewCard.tsx', import.meta.url), 'utf8')
   assert.match(card, /13 股稳定 shadow/)
   assert.match(card, /97 标的扩容 research/)
-  assert.match(card, /reports\?view=影子策略研究/)
+  assert.match(card, /reports\?view=影子策略研究&research_scope=expanded/)
+  assert.match(card, /StrategyResearchOverviewLocale/)
   assert.match(card, /expandedCoverage === null \? '—'/)
   assert.doesNotMatch(card, /下单|Telegram/)
+})
+
+test('panel owns Tier/status/search pagination and explicit partial/stale states', async () => {
+  const panel = await readFile(new URL('../src/components/StrategyResearch97Panel.tsx', import.meta.url), 'utf8')
+  assert.match(panel, /PAGE_SIZE = 18/)
+  assert.match(panel, /tierFilter/)
+  assert.match(panel, /signalFilter/)
+  assert.match(panel, /setPage\(1\)/)
+  assert.match(panel, /phase: 'partial'/)
+  assert.match(panel, /statusData\?\.state === 'stale'/)
+  assert.match(panel, /aria-live="polite"/)
 })

@@ -44,6 +44,7 @@ export interface StrategyResearch97Status {
 export interface StrategyResearch97Symbol {
   market: 'US'
   symbol: string
+  tier: 'A' | 'C'
   data_state: StrategyResearch97DataState
   signal: StrategyResearch97Signal
   rationale: string | null
@@ -100,6 +101,32 @@ export interface StrategyResearch97History {
   items: StrategyResearch97HistoryItem[]
 }
 
+export interface StrategyResearch97Aggregate {
+  status: StrategyResearch97Status
+  latest: StrategyResearch97Latest
+  history: StrategyResearch97History
+}
+
+export interface StrategyResearch97ResourceError {
+  status: number
+  message: string
+}
+
+export type StrategyResearch97Resource<T> =
+  | { state: 'ready'; data: T }
+  | { state: 'unavailable'; data: T }
+  | { state: 'error'; error: StrategyResearch97ResourceError }
+
+export interface StrategyResearch97AggregateLoad {
+  phase: 'ready' | 'partial' | 'error'
+  status: StrategyResearch97Resource<StrategyResearch97Status>
+  latest: StrategyResearch97Resource<StrategyResearch97Latest>
+  history: StrategyResearch97Resource<StrategyResearch97History>
+  data?: StrategyResearch97Aggregate
+  reason?: 'resource_unavailable' | 'resource_error' | 'cross_source_mismatch'
+  forbidden: boolean
+}
+
 const BASE_PATH = '/api/rewrite/v1/strategy-research/expanded'
 
 export async function fetchStrategyResearch97Status(): Promise<StrategyResearch97Status> {
@@ -118,6 +145,55 @@ export async function fetchStrategyResearch97History(): Promise<StrategyResearch
   const payload = await authenticatedJsonRequest<unknown>(`${BASE_PATH}/history?limit=20`)
   if (!validStrategyResearch97History(payload)) throw new BrowserApiError('扩容策略研究历史响应格式无效。', 502)
   return payload
+}
+
+export function validStrategyResearch97Aggregate(value: unknown): value is StrategyResearch97Aggregate {
+  if (!exactKeys(value, ['status', 'latest', 'history'])
+    || !validStrategyResearch97Status(value.status)
+    || !validStrategyResearch97Latest(value.latest)
+    || !validStrategyResearch97History(value.history)
+    || !value.status.available || !value.latest.available || !value.history.available
+    || value.latest.cycle === null) return false
+  const cycle = value.latest.cycle
+  const missing = cycle.symbols.filter((item) => item.data_state === 'missing').length
+  const covered = cycle.symbols.length - missing
+  const signals = cycle.symbols.filter((item) => item.data_state !== 'missing').reduce((counts, item) => {
+    counts[item.signal] += 1
+    return counts
+  }, { long: 0, flat: 0, wait: 0 })
+  return value.status.universe.sha256 === cycle.evidence.universe_sha256
+    && value.status.coverage_count === covered
+    && value.status.no_data_count === missing
+    && cycle.summary.no_data_count === missing
+    && cycle.summary.long_count === signals.long
+    && cycle.summary.flat_count === signals.flat
+    && cycle.summary.wait_count === signals.wait
+}
+
+async function settleResource<T>(load: () => Promise<T>, available: (value: T) => boolean): Promise<StrategyResearch97Resource<T>> {
+  try {
+    const data = await load()
+    return available(data) ? { state: 'ready', data } : { state: 'unavailable', data }
+  } catch (error: unknown) {
+    if (error instanceof BrowserApiError) return { state: 'error', error: { status: error.status, message: error.message } }
+    return { state: 'error', error: { status: 500, message: '研究资源读取失败。' } }
+  }
+}
+
+export async function fetchStrategyResearch97Aggregate(): Promise<StrategyResearch97AggregateLoad> {
+  const [status, latest, history] = await Promise.all([
+    settleResource(fetchStrategyResearch97Status, (value) => value.available),
+    settleResource(fetchStrategyResearch97Latest, (value) => value.available),
+    settleResource(fetchStrategyResearch97History, (value) => value.available),
+  ])
+  const resources = [status, latest, history]
+  const forbidden = resources.every((resource) => resource.state === 'error' && resource.error.status === 403)
+  if (resources.some((resource) => resource.state === 'error')) return { phase: 'error', status, latest, history, reason: 'resource_error', forbidden }
+  if (resources.some((resource) => resource.state === 'unavailable')) return { phase: 'partial', status, latest, history, reason: 'resource_unavailable', forbidden: false }
+  if (status.state !== 'ready' || latest.state !== 'ready' || history.state !== 'ready') return { phase: 'error', status, latest, history, reason: 'resource_error', forbidden: false }
+  const data = { status: status.data, latest: latest.data, history: history.data }
+  if (!validStrategyResearch97Aggregate(data)) return { phase: 'error', status, latest, history, reason: 'cross_source_mismatch', forbidden: false }
+  return { phase: 'ready', status, latest, history, data, forbidden: false }
 }
 
 function plainObject(value: unknown): value is Record<string, unknown> {
@@ -185,9 +261,10 @@ export function validStrategyResearch97Status(value: unknown): value is Strategy
 }
 
 function validSymbol(value: unknown): value is StrategyResearch97Symbol {
-  return exactKeys(value, ['market', 'symbol', 'data_state', 'signal', 'rationale', 'updated_at'])
+  return exactKeys(value, ['market', 'symbol', 'tier', 'data_state', 'signal', 'rationale', 'updated_at'])
     && value.market === 'US'
     && text(value.symbol)
+    && (value.tier === 'A' || value.tier === 'C')
     && ['fresh', 'stale', 'missing'].includes(value.data_state as string)
     && ['long', 'flat', 'wait'].includes(value.signal as string)
     && (value.rationale === null || text(value.rationale))
