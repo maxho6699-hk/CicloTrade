@@ -813,7 +813,7 @@ export function MembershipPage() {
                       : plan.purchase_action === "renew"
                         ? "续费当前方案"
                         : plan.purchase_action === "upgrade"
-                          ? `升级至${membershipText(plan.display_name || plan.key, locale)}`
+                          ? `${membershipText('升级至', locale)}${membershipText(plan.display_name || plan.key, locale)}`
                           : plan.purchase_action === "unavailable"
                             ? "暂不可购买"
                             : selectedPlan === plan.key

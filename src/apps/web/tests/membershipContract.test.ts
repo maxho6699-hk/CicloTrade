@@ -66,6 +66,11 @@ test('membership buttons consume authoritative purchase actions instead of array
   assert.match(pageSource, /plan\.purchase_action === "covered"/)
   assert.match(pageSource, /plan\.purchase_action === "renew"/)
   assert.match(pageSource, /plan\.purchase_action === "upgrade"/)
+  assert.match(
+    pageSource,
+    /\$\{membershipText\('升级至', locale\)\}\$\{membershipText\(plan\.display_name \|\| plan\.key, locale\)\}/,
+  )
+  assert.doesNotMatch(pageSource, /`升级至\$\{membershipText\(plan\.display_name \|\| plan\.key, locale\)\}`/)
   assert.match(pageSource, /plan\.can_purchase && !freePlan/)
   assert.match(pageSource, /order\.can_submit_proof/)
   assert.doesNotMatch(pageSource, /currentPlanIndex/)
