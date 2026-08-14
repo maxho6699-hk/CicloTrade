@@ -138,11 +138,64 @@ def policy_account_limit(conn: Any, plan: str) -> int:
     return 0
 
 
+def policy_alert_limit(conn: Any, plan: str) -> int | None:
+    """Return the published-policy alert capacity, failing closed at zero."""
+    capabilities = verified_capabilities(conn, plan)
+    if not capabilities:
+        return 0
+    if "alerts_unlimited" in capabilities:
+        return None
+    if "alerts_10" in capabilities:
+        return 10
+    return 1
+
+
+def policy_market_data_delay(conn: Any, plan: str, instrument_type: str = "stock") -> int:
+    """Resolve website data delay from reviewed capabilities only."""
+    kind = str(instrument_type).strip().lower()
+    if kind not in {"stock", "option"}:
+        raise ValueError("instrument_type must be stock or option")
+    capabilities = verified_capabilities(conn, plan)
+    if kind == "stock":
+        return 0 if "signal_web" in capabilities else 15
+    return 0 if {"option_chain", "option_quote_chart"} <= capabilities else 15
+
+
+def policy_recommendation_delay(conn: Any, plan: str, instrument_type: str = "stock") -> int:
+    """Resolve website recommendation release delay from reviewed policy."""
+    kind = str(instrument_type).strip().lower()
+    if kind not in {"stock", "option"}:
+        raise ValueError("instrument_type must be stock or option")
+    capabilities = verified_capabilities(conn, plan)
+    capability = "tg_stock_signal" if kind == "stock" else "tg_option_signal"
+    return 0 if capability in capabilities else 60 if kind == "stock" else 15
+
+
+def policy_trading_limits(conn: Any, plan: str) -> dict[str, Any]:
+    """Project compatibility limits without granting broker or live rights."""
+    capabilities = verified_capabilities(conn, plan)
+    account_limit = policy_account_limit(conn, plan) if capabilities else 0
+    return {
+        "brokers": account_limit,
+        "broker_accounts": account_limit,
+        "auto_control_accounts": account_limit,
+        "daily_orders": 100 if capabilities else 0,
+        "single_notional": 500_000 if capabilities else 0,
+        "daily_notional": 2_000_000 if capabilities else 0,
+        "api_per_minute": 100 if capabilities else 0,
+        "instruments": ("stock", "option") if "option_auto_live" in capabilities else ("stock",) if capabilities else (),
+    }
+
+
 __all__ = [
     "EntitlementConsumerUnavailable",
     "commerce_decision",
     "membership_purchase_state_from_policy",
     "policy_account_limit",
+    "policy_alert_limit",
+    "policy_market_data_delay",
+    "policy_recommendation_delay",
+    "policy_trading_limits",
     "require_commerce",
     "verified_can",
     "verified_capabilities",

@@ -154,6 +154,7 @@ export function PersonalPaperPage() {
   const [searchParams] = useSearchParams()
   const initialSymbol = (searchParams.get('symbol') ?? '').toUpperCase()
   const initialSide = searchParams.get('side')?.toUpperCase()
+  const initialSource = searchParams.get('source') === 'screener' ? 'screener' : 'manual'
   const [account, setAccount] = useState<PersonalPaperAccount | null>(null)
   const [seasonId, setSeasonId] = useState(() => window.localStorage.getItem(SEASON_STORAGE_KEY) ?? '')
   const [loading, setLoading] = useState(Boolean(seasonId))
@@ -253,7 +254,9 @@ export function PersonalPaperPage() {
       stop_price: needsStop ? Number(stopPrice) : null,
       time_in_force: 'DAY', quote_id: quote.quote_id,
       account_version: account.account_version,
-      source_context: { kind: 'manual', reference_id: null },
+      source_context: symbol === initialSymbol && initialSource === 'screener'
+        ? { kind: 'screener', reference_id: initialSymbol }
+        : { kind: 'manual', reference_id: null },
     }
     try {
       const result = await submitPersonalPaperStockOrder(payload)

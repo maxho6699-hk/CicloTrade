@@ -38,7 +38,7 @@ FILTER_FIELDS = frozenset({
     "actions", "data_states", "max_price", "max_score", "min_price",
     "min_score", "states", "symbols",
 })
-REQUEST_FIELDS = frozenset({"filters", "page", "page_size", "preset", "sort"})
+REQUEST_FIELDS = frozenset({"filters", "page", "page_size", "preset", "schema_version", "sort"})
 PRESET_FIELDS = frozenset({"filters", "name", "sort", "version"})
 PRESET_NAMES = frozenset({"all", "momentum", "pullback", "risk_first"})
 SAFE_RESEARCH_ROUTE = "/discover?tool=screener"
@@ -160,6 +160,8 @@ def validate_request(payload: Mapping[str, Any] | None) -> dict[str, Any]:
     unknown = set(raw) - REQUEST_FIELDS
     if unknown:
         raise StockScreenerError("unknown screener request field")
+    if "schema_version" in raw and raw["schema_version"] != SCHEMA_VERSION:
+        raise StockScreenerError("screener schema version is invalid")
     preset = raw.get("preset", "all")
     if not isinstance(preset, str) or preset not in PRESET_NAMES:
         raise StockScreenerError("invalid screener preset")

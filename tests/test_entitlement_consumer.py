@@ -6,6 +6,10 @@ from core.database import DatabaseManager
 from core.entitlement_consumer import (
     commerce_decision,
     policy_account_limit,
+    policy_alert_limit,
+    policy_market_data_delay,
+    policy_recommendation_delay,
+    policy_trading_limits,
     verified_can,
     verified_capabilities,
 )
@@ -40,6 +44,31 @@ def test_advanced_has_application_only_and_no_runtime_or_account_control(tmp_pat
         assert verified_can(connection, "高级版", "option_auto_live") is False
         assert verified_can(connection, "高级版", "broker_access_apply") is True
         assert policy_account_limit(connection, "高级版") == 0
+        assert policy_trading_limits(connection, "高级版")["broker_accounts"] == 0
+        assert policy_trading_limits(connection, "高级版")["instruments"] == ("stock",)
+
+
+def test_published_policy_drives_alert_and_delivery_contracts(tmp_path):
+    database = _db(tmp_path)
+    with database.transaction() as connection:
+        assert policy_alert_limit(connection, "免费版") == 1
+        assert policy_alert_limit(connection, "标准版") == 10
+        assert policy_alert_limit(connection, "高级版") is None
+        assert policy_market_data_delay(connection, "免费版", "stock") == 15
+        assert policy_market_data_delay(connection, "标准版", "stock") == 0
+        assert policy_recommendation_delay(connection, "标准版", "stock") == 60
+        assert policy_recommendation_delay(connection, "高级版", "stock") == 0
+        assert policy_recommendation_delay(connection, "高级版", "option") == 15
+        assert policy_recommendation_delay(connection, "专业版", "option") == 0
+
+
+def test_policy_projection_fails_closed_without_verified_policy():
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    assert policy_alert_limit(connection, "高级版") == 0
+    assert policy_market_data_delay(connection, "高级版", "stock") == 15
+    assert policy_recommendation_delay(connection, "高级版", "stock") == 60
+    assert policy_trading_limits(connection, "高级版")["instruments"] == ()
 
 
 def test_retired_plans_keep_compatibility_reads_but_no_commerce(tmp_path):

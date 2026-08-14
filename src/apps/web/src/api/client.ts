@@ -1,5 +1,13 @@
 import type { DrawingTime } from '../data/chartDrawings'
 import { decodeFeatureCatalog, type FeatureCatalogPayload } from '../domain/featureCatalog.ts'
+import {
+  decodeStockScreenerPayload,
+  decodeStockScreenerPreset,
+  decodeStockScreenerRequest,
+  type StockScreenerPayload,
+  type StockScreenerPreset,
+  type StockScreenerRequest,
+} from '../domain/stockScreener.ts'
 
 export interface SessionUser {
   id: number
@@ -1386,6 +1394,34 @@ export async function recordRecentFeature(key: string, expectedVersion: number):
     body: JSON.stringify({ key, expected_version: expectedVersion }),
   }))
   window.dispatchEvent(new CustomEvent(FEATURE_CATALOG_UPDATED_EVENT, { detail: decoded }))
+  return decoded
+}
+
+export async function fetchStockScreener(payload: StockScreenerRequest): Promise<StockScreenerPayload> {
+  const normalized = decodeStockScreenerRequest(payload)
+  if (!normalized) throw new BrowserApiError('选股请求无效。', 400)
+  const decoded = decodeStockScreenerPayload(await request<unknown>('/api/rewrite/v1/stock-screener/query', {
+    method: 'POST', body: JSON.stringify(normalized),
+  }))
+  if (!decoded) throw new BrowserApiError('选股响应格式无效。', 502)
+  return decoded
+}
+
+export async function fetchStockScreenerPreset(): Promise<StockScreenerPreset | null> {
+  const payload = await request<unknown>('/api/rewrite/v1/stock-screener/preset')
+  if (payload === null) return null
+  const decoded = decodeStockScreenerPreset(payload)
+  if (!decoded) throw new BrowserApiError('选股预设响应格式无效。', 502)
+  return decoded
+}
+
+export async function saveStockScreenerPreset(payload: StockScreenerPreset): Promise<StockScreenerPreset> {
+  const normalized = decodeStockScreenerPreset(payload)
+  if (!normalized) throw new BrowserApiError('选股预设无效。', 400)
+  const decoded = decodeStockScreenerPreset(await request<unknown>('/api/rewrite/v1/stock-screener/preset', {
+    method: 'PUT', body: JSON.stringify(normalized),
+  }))
+  if (!decoded) throw new BrowserApiError('选股预设响应格式无效。', 502)
   return decoded
 }
 

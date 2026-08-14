@@ -11,6 +11,7 @@ import pytest
 
 from core.auth import AuthService
 from core.database import DatabaseManager
+from core.membership import add_membership_entitlement
 from core.personal_paper.quote_proof import ActionableStockQuote, QuoteProofError
 from src.apps.api.app import app
 from src.apps.api.feature_catalog_adapter import FeatureCatalogAdapter
@@ -93,7 +94,7 @@ def routed_api(tmp_path, monkeypatch):
         app.state.feature_catalog_adapter = previous["feature"]
 
 
-def test_eight_routes_are_registered_and_require_bearer(routed_api):
+def test_personal_feature_and_screener_routes_require_bearer(routed_api):
     expected = {
         ("/api/rewrite/v1/personal-paper/seasons", "POST"),
         ("/api/rewrite/v1/personal-paper/seasons/{season_id:str}", "GET"),
@@ -103,11 +104,15 @@ def test_eight_routes_are_registered_and_require_bearer(routed_api):
         ("/api/rewrite/v1/features/catalog", "GET"),
         ("/api/rewrite/v1/features/preferences", "PUT"),
         ("/api/rewrite/v1/features/recent", "PUT"),
+        ("/api/rewrite/v1/stock-screener/query", "POST"),
+        ("/api/rewrite/v1/stock-screener/preset", "GET"),
+        ("/api/rewrite/v1/stock-screener/preset", "PUT"),
     }
     actual = {
         (route.path, method) for route in app.routes for method in route.methods
         if route.path.startswith("/api/rewrite/v1/personal-paper")
         or route.path.startswith("/api/rewrite/v1/features/")
+        or route.path.startswith("/api/rewrite/v1/stock-screener/")
     }
     assert expected <= actual
     for path, method in expected:
@@ -176,6 +181,60 @@ def test_feature_routes_reject_client_authority_and_isolate_preferences(routed_a
         payload={"expected_version": 0, "pinned": [], "recent": []},
     ))
     assert stale_status == 409
+
+
+def test_stock_screener_routes_bind_policy_data_and_user_presets(routed_api):
+    database, first, _, token_a, token_b = routed_api
+    with database.transaction() as connection:
+        add_membership_entitlement(
+            connection, first["id"], "标准版", 30,
+            source_kind="pytest", source_ref="screener-route", now=NOW,
+        )
+    repository = app.state.repository
+    original = repository.recommendations
+    repository.recommendations = lambda _identity, limit=100: {"items": [{
+        "event_id": 7, "state": "official", "action": "BUY", "market": "US",
+        "instrument_type": "stock", "symbol": "AAPL", "currency": "USD",
+        "reference_price": 200, "current_price": 201, "rationale": "趋势确认",
+        "invalidation": "跌破支撑", "risk": "波动风险", "contract_status": "complete",
+        "actionable": True, "missing_fields": [], "quote_at": NOW.isoformat(),
+        "occurred_at": NOW.isoformat(),
+    }][:limit]}
+    query = {
+        "schema_version": 1, "preset": "all", "filters": {},
+        "sort": {"field": "updated_at", "direction": "desc"},
+        "page": 1, "page_size": 20,
+    }
+    try:
+        status, result = asyncio.run(_asgi(
+            "/api/rewrite/v1/stock-screener/query", method="POST", token=token_a, payload=query,
+        ))
+        assert status == 200
+        assert result["items"][0]["symbol"] == "AAPL"
+        assert result["items"][0]["paper_prefill"] == {"market": "US", "symbol": "AAPL", "side": "BUY"}
+        denied, _ = asyncio.run(_asgi(
+            "/api/rewrite/v1/stock-screener/query", method="POST", token=token_b, payload=query,
+        ))
+        assert denied == 403
+        empty_status, empty = asyncio.run(_asgi(
+            "/api/rewrite/v1/stock-screener/preset", token=token_a,
+        ))
+        assert empty_status == 200 and empty is None
+        preset = {
+            "schema_version": 1, "version": 0, "name": "我的筛选",
+            "filters": {"symbols": ["AAPL"]},
+            "sort": {"field": "updated_at", "direction": "desc"},
+        }
+        saved_status, saved = asyncio.run(_asgi(
+            "/api/rewrite/v1/stock-screener/preset", method="PUT", token=token_a, payload=preset,
+        ))
+        assert saved_status == 200 and saved["version"] == 1
+        stale_status, _ = asyncio.run(_asgi(
+            "/api/rewrite/v1/stock-screener/preset", method="PUT", token=token_a, payload=preset,
+        ))
+        assert stale_status == 409
+    finally:
+        repository.recommendations = original
 
 
 def test_personal_builder_requires_independent_secret(monkeypatch):

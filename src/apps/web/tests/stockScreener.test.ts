@@ -84,14 +84,21 @@ test('only server-supplied actions produce research, alert, and personal-paper n
   assert.equal(decodeStockScreenerPayload(payload({ items: [item({ action: 'hold', paper_prefill: null, actionable: false, blocked_reason: 'candidate_action_not_tradeable' })] }))?.items[0].paper_prefill, null)
 })
 
-test('screener keeps its Opportunities query slot but contains no sample rows, fake columns, client fetch, or fixed paper prefill', async () => {
-  const [page, panel, domain, css] = await Promise.all([
+test('screener keeps its Opportunities query slot and wires only through the typed route adapter', async () => {
+  const [page, route, client, panel, domain, css] = await Promise.all([
     readFile(new URL('../src/pages/OpportunitiesPage.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/pages/StockScreenerRoute.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/api/client.ts', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/StockScreenerPanel.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/domain/stockScreener.ts', import.meta.url), 'utf8'),
     readFile(new URL('../src/styles/screener.css', import.meta.url), 'utf8'),
   ])
-  assert.match(page, /searchParams\.get\('tool'\) === 'screener'.*<StockScreenerPanel/)
+  assert.match(page, /searchParams\.get\('tool'\) === 'screener'.*<StockScreenerRoute/)
+  assert.match(route, /fetchStockScreener/)
+  assert.match(route, /fetchStockScreenerPreset/)
+  assert.match(route, /saveStockScreenerPreset/)
+  assert.match(client, /\/api\/rewrite\/v1\/stock-screener\/query/)
+  assert.match(client, /decodeStockScreenerPayload/)
   assert.doesNotMatch(panel, /SAMPLE_ROWS|示例筛选结果|marketCap|trendCol|riskCol/)
   assert.doesNotMatch(panel, /fetch\(|from ['"]\.\.\/api\/client/)
   assert.doesNotMatch(domain, /side: 'BUY' \}\)}/)

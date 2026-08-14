@@ -15,7 +15,7 @@ import { useMemo, useState, type ReactNode } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useWorkspace } from '../api/workspace-context'
 import { PageHeader } from '../components/PageHeader'
-import { StockScreenerPanel } from '../components/StockScreenerPanel'
+import { StockScreenerRoute } from './StockScreenerRoute'
 import { WatchlistToggle } from '../components/WatchlistToggle'
 import { SegmentedControl } from '../components/ui/SegmentedControl'
 import { getFormatLocale } from '../i18n/runtime'
@@ -163,7 +163,7 @@ export function OpportunitiesPage() {
     }
   }
 
-  if (searchParams.get('tool') === 'screener') return <StockScreenerPanel />
+  if (searchParams.get('tool') === 'screener') return <StockScreenerRoute />
 
   if (selectedCandidate?.kind === 'option' && !hasOptionResearch) {
     return (

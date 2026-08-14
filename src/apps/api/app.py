@@ -40,6 +40,7 @@ from src.apps.api.read_model import (
 from src.apps.api.write_service import BrowserWriteService
 from src.apps.api.chart_drawings import ChartDrawingConflict, ChartDrawingError, ChartDrawingService
 from src.apps.api.feature_catalog_adapter import FeatureCatalogAdapter
+from src.apps.api.stock_screener_adapter import ApiStockScreenerAdapter
 from src.apps.api.market_stream import RealtimeCandleTracker
 from src.apps.api.personal_paper import PersonalPaperApi, build_personal_paper_api
 from src.apps.api.backtest_jobs import (
@@ -108,14 +109,20 @@ from core.broker_access_applications import (
 )
 from core.database import DatabaseManager
 from core.feature_catalog import FeatureCatalogConflict, FeatureCatalogValidationError
+from core.stock_screener import (
+    StockScreenerAccessError,
+    StockScreenerConflict,
+    StockScreenerError,
+    validate_request as validate_stock_screener_request,
+)
 from core.feedback import FeedbackError, FeedbackService
 from core.referral_affiliate import ReferralService, ReferralWalletService
 from core.referral_coupon import ReferralCouponService
 from core.official_option_sim_journal import OfficialOptionSimulationJournal
 from core.auth import AuthError, AuthService, email_verification_required
 from core.compat import UTC
-from core.entitlement_consumer import verified_can
-from core.plans import effective_plan, plan_display_name, web_market_data_visibility
+from core.entitlement_consumer import policy_market_data_delay, verified_can
+from core.plans import effective_plan, plan_display_name
 from notification.email_sender import send_email, smtp_configured
 from notification.telegram_billing import queue_manual_payment_review_notice
 from notification.telegram_referrals import (
@@ -372,6 +379,10 @@ def _feature_catalog_adapter(request: Request) -> FeatureCatalogAdapter:
     return service
 
 
+def _stock_screener_adapter(request: Request, user_id: int) -> ApiStockScreenerAdapter:
+    return ApiStockScreenerAdapter(DatabaseManager(str(_repository(request).db_path)), user_id)
+
+
 async def _json_body(request: Request, limit: int = 16_384) -> dict[str, Any]:
     length = request.headers.get("content-length")
     try:
@@ -441,6 +452,15 @@ def _identity_has_capability(identity: BrowserIdentity, capability: str) -> bool
             return verified_can(connection, identity.effective_plan, capability)
     except Exception:
         return False
+
+
+def _market_data_delay(request: Request, identity: BrowserIdentity, instrument_type: str = "stock") -> int:
+    """Resolve website data visibility from the reviewed policy, fail closed."""
+    try:
+        with _repository(request).connection() as connection:
+            return policy_market_data_delay(connection, identity.effective_plan, instrument_type)
+    except Exception:
+        return 15
 
 
 def _bounded_int(request: Request, name: str, default: int, maximum: int) -> int:
@@ -1412,6 +1432,60 @@ async def recommendations(request: Request) -> JSONResponse:
             identity, limit=_bounded_int(request, "limit", 20, 100)
         )
     )
+
+
+def _stock_screener_response(payload: Any) -> JSONResponse:
+    return JSONResponse(payload, headers={
+        "Cache-Control": "private, no-store",
+        "Pragma": "no-cache",
+        "Vary": "Cookie, Authorization",
+        "X-Content-Type-Options": "nosniff",
+    })
+
+
+async def stock_screener_query(request: Request) -> JSONResponse:
+    identity = _identity(request)
+    payload = await _json_body(request)
+    try:
+        normalized = validate_stock_screener_request(payload)
+    except StockScreenerError as exc:
+        raise ApiError(str(exc)) from exc
+    recommendations_payload = await run_in_threadpool(
+        _repository(request).recommendations, identity, limit=100,
+    )
+    eligible = [
+        item for item in recommendations_payload.get("items", [])
+        if item.get("state") in {"official", "research"}
+        and item.get("market") == "US"
+        and item.get("instrument_type") == "stock"
+    ]
+    try:
+        result = await run_in_threadpool(
+            _stock_screener_adapter(request, identity.id).read_recommendations,
+            eligible,
+            normalized,
+        )
+    except StockScreenerAccessError as exc:
+        raise ApiError(str(exc), 403) from exc
+    except StockScreenerError as exc:
+        raise ApiError("选股数据暂时不可用。", 503) from exc
+    return _stock_screener_response(result)
+
+
+async def stock_screener_preset(request: Request) -> JSONResponse:
+    identity = _identity(request)
+    adapter = _stock_screener_adapter(request, identity.id)
+    try:
+        if request.method == "GET":
+            return _stock_screener_response(await run_in_threadpool(adapter.load_preset))
+        payload = await _json_body(request)
+        return _stock_screener_response(await run_in_threadpool(adapter.save_preset, payload))
+    except StockScreenerConflict as exc:
+        raise ApiError(str(exc), 409) from exc
+    except StockScreenerAccessError as exc:
+        raise ApiError(str(exc), 403) from exc
+    except StockScreenerError as exc:
+        raise ApiError(str(exc)) from exc
 
 
 async def feedback(request: Request) -> JSONResponse:
@@ -2436,9 +2510,7 @@ async def market_candles(request: Request) -> JSONResponse:
         raise ApiError("K线周期无效。")
     period, interval, resample_rule = MARKET_TIMEFRAMES[timeframe]
     market_name = "A股" if symbol.isdigit() else "美股"
-    delivery_delay_minutes = web_market_data_visibility(
-        identity.effective_plan, "stock"
-    )["delivery_delay_minutes"]
+    delivery_delay_minutes = _market_data_delay(request, identity, "stock")
     try:
         frame, source, fallback_from = await run_in_threadpool(
             _market_bars_with_fallback, symbol, market_name, period, interval
@@ -2528,7 +2600,7 @@ async def market_stream(request: Request) -> StreamingResponse:
     }
     if timeframe not in valid_timeframes:
         raise ApiError("实时 K 线周期无效。")
-    delay = web_market_data_visibility(identity.effective_plan, "stock")["delivery_delay_minutes"]
+    delay = _market_data_delay(request, identity, "stock")
     if symbol.isdigit() or delay:
         async def delayed_stream():
             # Never use the current OpenD quote to reconstruct a delayed bar.
@@ -2602,9 +2674,7 @@ async def market_quote(request: Request) -> JSONResponse:
     identity = _identity(request)
     symbol = _equity_quote_symbol(request)
     market_name = "A股" if symbol.isdigit() else "美股"
-    delivery_delay_minutes = web_market_data_visibility(
-        identity.effective_plan, "stock"
-    )["delivery_delay_minutes"]
+    delivery_delay_minutes = _market_data_delay(request, identity, "stock")
     if delivery_delay_minutes:
         return await _delayed_market_quote(
             symbol,
@@ -2709,7 +2779,7 @@ async def market_quote(request: Request) -> JSONResponse:
 async def market_status(request: Request) -> JSONResponse:
     """Return the authenticated, vendor-neutral website data boundary."""
     identity = _identity(request)
-    visibility = web_market_data_visibility(identity.effective_plan, "stock")
+    visibility = {"delivery_delay_minutes": _market_data_delay(request, identity, "stock")}
     upstream = await run_in_threadpool(_upstream_market_status)
     provider_realtime = bool(
         upstream["connected"]
@@ -3279,6 +3349,8 @@ routes = [
     Route("/api/rewrite/v1/broker-access-applications", broker_access_applications, methods=["GET", "POST"]),
     Route("/api/rewrite/v1/broker-access-applications/{application_id:str}/withdraw", broker_access_application_withdraw, methods=["POST"]),
     Route("/api/rewrite/v1/recommendations", recommendations, methods=["GET"]),
+    Route("/api/rewrite/v1/stock-screener/query", stock_screener_query, methods=["POST"]),
+    Route("/api/rewrite/v1/stock-screener/preset", stock_screener_preset, methods=["GET", "PUT"]),
     Route("/api/rewrite/v1/quant/timeline", quant_timeline, methods=["GET"]),
     Route("/api/rewrite/v1/quant/performance", quant_performance, methods=["GET"]),
     Route("/api/rewrite/v1/portfolio", portfolio, methods=["GET"]),

@@ -28,8 +28,9 @@ from starlette.routing import Route
 from core.alerts import AlertService
 from core.auth import AuthError, AuthService
 from core.database import get_database
+from core.entitlement_consumer import policy_trading_limits, verified_can
 from core.membership import authoritative_membership_user
-from core.plans import can, effective_plan, trading_limits
+from core.plans import effective_plan
 from core.quant_journal import QuantJournal
 from core.signal_imports import SignalImportService
 from core.user_settings import load_user_settings
@@ -210,7 +211,9 @@ def _api_user(request):
         user = authoritative_membership_user(database, user)
     except Exception as exc:
         raise ApiError("会员权限暂时无法核验，请稍后重试。", 503) from exc
-    if not can(effective_plan(user), "api"):
+    with database.transaction() as connection:
+        allowed = verified_can(connection, effective_plan(user), "api_access")
+    if not allowed:
         raise ApiError("API 读写仅限专业版与定制版。", 403)
     return user
 
@@ -221,14 +224,15 @@ def _consume_api_quota(user: dict) -> None:
     # such records before this helper in the real request path.
     if not user.get("plan_type"):
         return
-    limit = trading_limits(effective_plan(user)).get("api_per_minute")
+    database = get_database()
+    with database.transaction() as connection:
+        limit = policy_trading_limits(connection, effective_plan(user)).get("api_per_minute")
     if limit is None:
         return
     if int(limit) <= 0:
         raise ApiError("当前订阅方案不具备 API 配额。", 403)
     now = datetime.now(UTC)
     key = AuthService._rate_key("api-user", str(user["id"]), "*")
-    database = get_database()
     with database.transaction() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(

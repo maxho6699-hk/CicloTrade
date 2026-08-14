@@ -16,10 +16,12 @@ from core.auth import AuthError, _decode_token
 from core.broker_catalog import public_us_launch_broker_catalog
 from core.compat import UTC
 from core.broker_authorization import broker_execution_authorized
-from core.plans import effective_plan, plan_display_name, trading_limits, web_recommendation_visibility
+from core.plans import effective_plan, plan_display_name
 from core.entitlement_consumer import (
     membership_purchase_state_from_policy,
     policy_account_limit,
+    policy_recommendation_delay,
+    policy_trading_limits,
     verified_capabilities,
 )
 from core.membership import resolve_membership_snapshot
@@ -560,10 +562,7 @@ class ReadOnlyLegacyRepository:
         plan = identity.effective_plan
         with self.connection() as connection:
             capabilities = sorted(verified_capabilities(connection, plan))
-            limits = trading_limits(plan)
-            limits["auto_control_accounts"] = policy_account_limit(connection, plan)
-            limits["broker_accounts"] = limits["auto_control_accounts"]
-            limits["brokers"] = limits["auto_control_accounts"]
+            limits = policy_trading_limits(connection, plan)
             annual_bonus_enabled = True
             if self._table_exists(connection, "platform_controls"):
                 annual_bonus = connection.execute(
@@ -800,6 +799,11 @@ class ReadOnlyLegacyRepository:
         current = datetime.now(UTC) if now is None else (
             now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
         )
+        with self.connection() as connection:
+            delays = {
+                kind: policy_recommendation_delay(connection, plan, kind)
+                for kind in ("stock", "option")
+            }
         output = {int(event["id"]): [] for event in event_rows}
         for event in event_rows:
             recorded_at = _timestamp(event["recorded_at"])
@@ -809,7 +813,7 @@ class ReadOnlyLegacyRepository:
                 item.pop("leg_no", None)
                 event_id = int(event["id"])
                 instrument_type = str(item["instrument_type"])
-                delay = web_recommendation_visibility(plan, instrument_type)["delivery_delay_minutes"]
+                delay = delays[instrument_type]
                 available_at = _recommendation_available_at(event["recorded_at"], delay)
                 if recorded_at is None or available_at is None or recorded_at > current or available_at > current:
                     item = {"instrument_type": instrument_type, "locked": True}
@@ -923,12 +927,14 @@ class ReadOnlyLegacyRepository:
             if len(items) >= limit:
                 break
         plan = identity.effective_plan
+        with self.connection() as connection:
+            delivery = {
+                instrument: policy_recommendation_delay(connection, plan, instrument)
+                for instrument in ("stock", "option")
+            }
         return {
             "items": items[:limit], "source": "immutable_quant_journal", "fresh_marks": False,
-            "delivery": {
-                instrument: web_recommendation_visibility(plan, instrument)["delivery_delay_minutes"]
-                for instrument in ("stock", "option")
-            },
+            "delivery": delivery,
         }
 
     def performance(self, identity: BrowserIdentity, *, limit: int = 200) -> dict[str, Any]:

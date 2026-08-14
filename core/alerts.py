@@ -11,9 +11,9 @@ import re
 from typing import Any
 
 from core.database import DatabaseManager, get_database
-from core.entitlement_consumer import verified_can
+from core.entitlement_consumer import policy_alert_limit, verified_can
 from core.membership import authoritative_membership_user
-from core.plans import alert_limit, effective_plan
+from core.plans import effective_plan
 
 
 CONDITION_TYPES = {"price", "volume", "volume_ratio", "rsi", "macd", "ma", "change"}
@@ -295,11 +295,14 @@ class AlertService:
             raise ValueError("条件逻辑只能是 AND 或 OR。")
         normalized = normalize_conditions(conditions, operator=operator, target=target)
         actual_plan = self._user_plan(user_id, plan)
-        limit = alert_limit(actual_plan)
-        max_conditions = 1 if actual_plan == "免费版" else 3 if actual_plan == "标准版" else 5
+        with self.db.transaction() as conn:
+            limit = policy_alert_limit(conn, actual_plan)
+        if limit == 0:
+            raise ValueError("当前会员策略无法核验预警权限。")
+        max_conditions = 5 if limit is None else 3 if limit >= 10 else 1
         if len(normalized) > max_conditions:
             raise ValueError(f"{actual_plan}每条预警最多 {max_conditions} 个条件。")
-        if actual_plan == "免费版" and normalized[0]["type"] != "price":
+        if max_conditions == 1 and normalized[0]["type"] != "price":
             raise ValueError("免费版仅支持价格单条件预警。")
         first = normalized[0]
         metadata = normalize_alert_metadata(
@@ -311,13 +314,14 @@ class AlertService:
         )
         # Legacy callers had no channel field. Preserve the historical delivery
         # pipeline; dispatch still applies membership and consent at send time.
+        explicit_channels = channels is not None
         if channels is None:
             metadata["channels"] = ["website", "telegram"]
         if metadata["trigger_mode"].startswith("crosses_") and not any(
             item.get("type") == "price" for item in normalized
         ):
             raise ValueError("上穿或下穿只适用于价格条件。")
-        if "telegram" in metadata["channels"]:
+        if explicit_channels and "telegram" in metadata["channels"]:
             with self.db.transaction() as conn:
                 if not verified_can(conn, actual_plan, "tg_stock_signal"):
                     raise ValueError("当前会员策略不能使用 Telegram 价格预警，请升级后再选择该渠道。")
