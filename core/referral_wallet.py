@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 import hashlib
+import json
 from typing import Any
 
 from core.compat import UTC
@@ -31,6 +32,75 @@ class ReferralWalletService:
 
     def release_due(self, user_id: int) -> None:
         ReferralCommissionService(self.db).release_due(int(user_id))
+
+    @staticmethod
+    def _admin_action_receipt(
+        conn: Any,
+        *,
+        actor_id: int,
+        action: str,
+        public_id: str,
+        idempotency_key: str,
+        request: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        key = str(idempotency_key or "").strip()
+        if not 8 <= len(key) <= 128:
+            raise ValueError("提款管理操作必须提供 8 至 128 字符的幂等键。")
+        digest = hashlib.sha256(
+            json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        event = conn.execute(
+            """SELECT * FROM membership_promotion_admin_events
+               WHERE idempotency_key=?
+                 AND (actor_id=? OR entity_type='withdrawal_admin_action')""",
+            (key, int(actor_id)),
+        ).fetchone()
+        if not event:
+            return None
+        if (
+            int(event["actor_id"]) != int(actor_id)
+            or event["action"] != action
+            or event["entity_type"] != "withdrawal_admin_action"
+            or event["entity_public_id"] != public_id
+            or event["request_sha256"] != digest
+        ):
+            raise ValueError("提款管理幂等键已用于不同请求。")
+        try:
+            receipt = json.loads(event["details_json"])["receipt"]
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("提款管理操作回执无效。") from exc
+        if not isinstance(receipt, dict):
+            raise ValueError("提款管理操作回执无效。")
+        return receipt
+
+    @staticmethod
+    def _record_admin_action_receipt(
+        conn: Any,
+        *,
+        actor_id: int,
+        action: str,
+        public_id: str,
+        idempotency_key: str,
+        request: dict[str, Any],
+        receipt: dict[str, Any],
+        now: datetime,
+    ) -> None:
+        key = str(idempotency_key or "").strip()
+        digest = hashlib.sha256(
+            json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        conn.execute(
+            """INSERT INTO membership_promotion_admin_events
+               (public_id,actor_id,action,entity_type,entity_public_id,idempotency_key,
+                request_sha256,details_json,created_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                _public_id("WAC"), int(actor_id), action, "withdrawal_admin_action",
+                public_id, key, digest,
+                json.dumps({"receipt": receipt}, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                _iso(now),
+            ),
+        )
 
     def request_withdrawal(
         self, user_id: int, amount_minor: int, idempotency_key: str
@@ -168,12 +238,15 @@ class ReferralWalletService:
         ).fetchone())
 
     def review(
-        self, actor_id: int, public_id: str, decision: str, reason: str = ""
+        self, actor_id: int, public_id: str, decision: str, reason: str, idempotency_key: str
     ) -> dict[str, Any]:
         if decision not in {"approve", "reject"}:
             raise ValueError("提款审核决定无效。")
-        if decision == "reject" and not 1 <= len(str(reason).strip()) <= 500:
+        public_id = str(public_id or "").strip().upper()
+        reason = str(reason).strip()
+        if decision == "reject" and not 1 <= len(reason) <= 500:
             raise ValueError("拒绝提款必须填写原因。")
+        action = "WITHDRAWAL_APPROVED" if decision == "approve" else "WITHDRAWAL_REJECTED"
         now = datetime.now(UTC)
         with self.db.transaction() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -190,51 +263,68 @@ class ReferralWalletService:
                 raise PermissionError("管理员不能审核自己的提款申请。")
             target = "approved" if decision == "approve" else "rejected"
             if target == "approved" and int(row["enhanced_review_required"]):
-                if not 1 <= len(str(reason).strip()) <= 500:
+                if not 1 <= len(reason) <= 500:
                     raise ValueError("高金额提款批准必须填写增强审核说明。")
                 if AdminService._require_super_admin_in_transaction(conn, int(actor_id)) != "super_admin":
                     raise PermissionError("高金额提款须由超级管理员完成增强审核。")
-            if row["status"] == target:
-                return dict(row)
-            if row["status"] not in {"submitted", "approved" if target == "rejected" else "submitted"}:
-                raise ValueError("提款申请状态已变更。")
-            if target == "approved":
-                conn.execute(
-                    """UPDATE referral_withdrawal_requests SET status='approved',reviewed_by=?,
-                       reviewed_at=?,approved_by=?,approved_at=? WHERE id=? AND status='submitted'""",
-                    (int(actor_id), _iso(now), int(actor_id), _iso(now), row["id"]),
-                )
-            else:
-                conn.execute(
-                    """UPDATE referral_withdrawal_requests SET status='rejected',reviewed_by=?,
-                       reviewed_at=?,rejection_reason=? WHERE id=? AND status IN ('submitted','approved')""",
-                    (int(actor_id), _iso(now), str(reason).strip(), row["id"]),
-                )
-                group = f"withdrawal:{public_id}:reject"
-                _ledger_batch(
-                    conn, user_id=int(row["user_id"]),
-                    legs=[("reserved", -int(row["amount_minor"])),
-                          ("available", int(row["amount_minor"]))],
-                    entry_type="withdrawal_released",
-                    group_key=group, reference_type="withdrawal", reference_id=public_id,
-                    batch_key=group, now=now,
-                )
-            _audit(
-                conn, actor_user_id=int(actor_id), actor_kind="admin",
-                action=f"WITHDRAWAL_{target.upper()}", entity_type="withdrawal",
-                entity_public_id=public_id, details={"reason": str(reason).strip()}, now=now,
+            request = {
+                "action": "review", "actor_id": int(actor_id), "withdrawal_id": public_id,
+                "decision": decision, "reason": reason,
+            }
+            replay = self._admin_action_receipt(
+                conn, actor_id=int(actor_id), action=action,
+                public_id=public_id, idempotency_key=idempotency_key, request=request,
             )
-            return dict(conn.execute(
+            if replay is not None:
+                return replay
+            if row["status"] != target:
+                if row["status"] not in {"submitted", "approved" if target == "rejected" else "submitted"}:
+                    raise ValueError("提款申请状态已变更。")
+                if target == "approved":
+                    conn.execute(
+                        """UPDATE referral_withdrawal_requests SET status='approved',reviewed_by=?,
+                           reviewed_at=?,approved_by=?,approved_at=? WHERE id=? AND status='submitted'""",
+                        (int(actor_id), _iso(now), int(actor_id), _iso(now), row["id"]),
+                    )
+                else:
+                    conn.execute(
+                        """UPDATE referral_withdrawal_requests SET status='rejected',reviewed_by=?,
+                           reviewed_at=?,rejection_reason=? WHERE id=? AND status IN ('submitted','approved')""",
+                        (int(actor_id), _iso(now), reason, row["id"]),
+                    )
+                    group = f"withdrawal:{public_id}:reject"
+                    _ledger_batch(
+                        conn, user_id=int(row["user_id"]),
+                        legs=[("reserved", -int(row["amount_minor"])),
+                              ("available", int(row["amount_minor"]))],
+                        entry_type="withdrawal_released",
+                        group_key=group, reference_type="withdrawal", reference_id=public_id,
+                        batch_key=group, now=now,
+                    )
+                _audit(
+                    conn, actor_user_id=int(actor_id), actor_kind="admin",
+                    action=f"WITHDRAWAL_{target.upper()}", entity_type="withdrawal",
+                    entity_public_id=public_id, details={"reason": reason}, now=now,
+                )
+            receipt = dict(conn.execute(
                 "SELECT * FROM referral_withdrawal_requests WHERE id=?", (row["id"],)
             ).fetchone())
+            self._record_admin_action_receipt(
+                conn, actor_id=int(actor_id), action=action,
+                public_id=public_id, idempotency_key=idempotency_key, request=request,
+                receipt=receipt, now=now,
+            )
+            return receipt
 
     def confirm_paid(
-        self, actor_id: int, public_id: str, payout_method: str, payout_reference: str
+        self, actor_id: int, public_id: str, payout_method: str, payout_reference: str,
+        idempotency_key: str,
     ) -> dict[str, Any]:
         method = str(payout_method or "").strip().lower()
         if method not in {"fps", "bank", "other"}:
             raise ValueError("付款方式无效。")
         reference = _canonical_payout_reference(payout_reference)
+        public_id = str(public_id or "").strip().upper()
         now = datetime.now(UTC)
         with self.db.transaction() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -249,18 +339,22 @@ class ReferralWalletService:
                 raise ValueError("提款申请不存在。")
             if int(row["user_id"]) == int(actor_id):
                 raise PermissionError("管理员不能确认自己的提款付款。")
+            if int(row["approved_by"] or 0) == int(actor_id):
+                raise PermissionError("批准人与确认付款人必须不同。")
+            request = {
+                "action": "paid", "actor_id": int(actor_id), "withdrawal_id": public_id,
+                "payout_method": method, "payout_reference": reference,
+            }
+            replay = self._admin_action_receipt(
+                conn, actor_id=int(actor_id), action="WITHDRAWAL_PAID", public_id=public_id,
+                idempotency_key=idempotency_key, request=request,
+            )
+            if replay is not None:
+                return replay
             if row["status"] == "paid":
-                confirmation = conn.execute(
-                    "SELECT payout_reference FROM referral_payout_confirmations WHERE withdrawal_id=?",
-                    (row["id"],),
-                ).fetchone()
-                if confirmation and confirmation["payout_reference"] == reference:
-                    return dict(row)
                 raise ValueError("提款已经确认付款。")
             if row["status"] != "approved":
                 raise ValueError("只有已批准提款可以确认付款。")
-            if int(row["approved_by"] or 0) == int(actor_id):
-                raise PermissionError("批准人与确认付款人必须不同。")
             try:
                 conn.execute(
                     """INSERT INTO referral_payout_confirmations
@@ -293,9 +387,14 @@ class ReferralWalletService:
                 details={"payout_method": method, "payout_reference_masked": f"***{reference[-4:]}"},
                 now=now,
             )
-            return dict(conn.execute(
+            receipt = dict(conn.execute(
                 "SELECT * FROM referral_withdrawal_requests WHERE id=?", (row["id"],)
             ).fetchone())
+            self._record_admin_action_receipt(
+                conn, actor_id=int(actor_id), action="WITHDRAWAL_PAID", public_id=public_id,
+                idempotency_key=idempotency_key, request=request, receipt=receipt, now=now,
+            )
+            return receipt
 
     def list_admin(self, actor_id: int, status: str = "submitted", limit: int = 100) -> list[dict[str, Any]]:
         from core.admin_service import AdminService

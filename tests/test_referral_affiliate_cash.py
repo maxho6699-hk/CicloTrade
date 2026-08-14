@@ -191,11 +191,11 @@ def test_withdrawal_reservation_review_paid_and_clawback_debt(db):
 
     approver = _admin(db, auth, "approver")
     payer = _admin(db, auth, "payer")
-    approved = wallet.review(approver["id"], request["public_id"], "approve")
+    approved = wallet.review(approver["id"], request["public_id"], "approve", "", "withdraw-review-0001")
     assert approved["status"] == "approved"
     with pytest.raises(PermissionError, match="必须不同"):
-        wallet.confirm_paid(approver["id"], request["public_id"], "fps", "PAYOUT-001")
-    paid = wallet.confirm_paid(payer["id"], request["public_id"], "fps", "PAYOUT-001")
+        wallet.confirm_paid(approver["id"], request["public_id"], "fps", "PAYOUT-001", "withdraw-paid-self-0001")
+    paid = wallet.confirm_paid(payer["id"], request["public_id"], "fps", "PAYOUT-001", "withdraw-paid-0001")
     assert paid["status"] == "paid"
     balances = wallet.balances(referrer["id"])
     assert balances["reserved"] == 0
@@ -209,6 +209,107 @@ def test_withdrawal_reservation_review_paid_and_clawback_debt(db):
     assert wallet.balances(referrer["id"])["available"] < 0
     confirmation = db.fetch_one("SELECT payout_method,payout_reference FROM referral_payout_confirmations")
     assert confirmation == {"payout_method": "fps", "payout_reference": "PAYOUT001"}
+
+
+def test_withdrawal_admin_actions_replay_original_receipts_and_reject_conflicts(db):
+    auth = AuthService(db)
+    referrer, referred = _eligible_pair(db, auth, "action-referrer", "action-referred")
+    _order, commission = _settle_promotion(db, referred["id"], "action-receipt-first")
+    assert commission
+    ReferralCommissionService(db).release_due(
+        referrer["id"], datetime.fromisoformat(commission["available_at"]) + timedelta(seconds=1)
+    )
+    wallet = ReferralWalletService(db)
+    request = wallet.request_withdrawal(referrer["id"], 20_000, "action-withdraw-0001")
+    approver = _admin(db, auth, "action-approver")
+    payer = _admin(db, auth, "action-payer")
+    another_payer = _admin(db, auth, "action-another-payer")
+
+    approved = wallet.review(
+        approver["id"], request["public_id"], "approve", "", "action-review-0001"
+    )
+    assert approved["status"] == "approved"
+    assert wallet.review(
+        approver["id"], request["public_id"], "approve", "", "action-review-0001"
+    ) == approved
+    for decision, reason in (("approve", "changed"), ("reject", "required reason")):
+        with pytest.raises(ValueError, match="幂等键"):
+            wallet.review(approver["id"], request["public_id"], decision, reason, "action-review-0001")
+    with pytest.raises(ValueError, match="幂等键"):
+        wallet.review(payer["id"], request["public_id"], "approve", "", "action-review-0001")
+
+    barrier = threading.Barrier(2)
+    outcomes: list[dict] = []
+
+    def confirm() -> None:
+        barrier.wait()
+        outcomes.append(wallet.confirm_paid(
+            payer["id"], request["public_id"], "fps", "PAYOUT-001", "action-paid-0001"
+        ))
+
+    threads = [threading.Thread(target=confirm), threading.Thread(target=confirm)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(outcomes) == 2
+    assert outcomes[0] == outcomes[1]
+    assert outcomes[0]["status"] == "paid"
+    assert wallet.review(
+        approver["id"], request["public_id"], "approve", "", "action-review-0001"
+    ) == approved
+    assert wallet.confirm_paid(
+        payer["id"], request["public_id"], "fps", "payout001", "action-paid-0001"
+    ) == outcomes[0]
+    for actor_id, method, reference in (
+        (payer["id"], "bank", "PAYOUT-001"),
+        (payer["id"], "fps", "PAYOUT-002"),
+        (another_payer["id"], "fps", "PAYOUT-001"),
+    ):
+        with pytest.raises(ValueError, match="幂等键"):
+            wallet.confirm_paid(actor_id, request["public_id"], method, reference, "action-paid-0001")
+    assert db.fetch_one("SELECT COUNT(*) count FROM referral_payout_confirmations")["count"] == 1
+    assert db.fetch_one(
+        "SELECT COUNT(*) count FROM referral_ledger_entries WHERE entry_type='withdrawal_paid'"
+    )["count"] == 4
+    assert db.fetch_one(
+        """SELECT COUNT(*) count FROM membership_promotion_admin_events
+           WHERE entity_type='withdrawal_admin_action'"""
+    )["count"] == 2
+
+
+def test_high_value_withdrawal_super_admin_accepts_one_character_reason(db):
+    auth = AuthService(db)
+    referrer, referred = _eligible_pair(db, auth, "high-referrer", "high-referred")
+    _order, commission = _settle_promotion(db, referred["id"], "high-value-first")
+    assert commission
+    ReferralCommissionService(db).release_due(
+        referrer["id"], datetime.fromisoformat(commission["available_at"]) + timedelta(seconds=1)
+    )
+    super_admin = db.fetch_one("SELECT id FROM users WHERE email='referral-release@example.com'")
+    assert super_admin
+    from core.referral_coupon import ReferralCouponService
+
+    coupons = ReferralCouponService(db)
+    current = coupons.policy(super_admin["id"])
+    policy = {**current["policy"], "automatic_payout_review_threshold_minor": 20_000}
+    coupons.update_policy(super_admin["id"], policy, current["version"], "high-value-policy-0001")
+    request = ReferralWalletService(db).request_withdrawal(
+        referrer["id"], 20_000, "high-value-withdraw-0001"
+    )
+    assert request["enhanced_review_required"] == 1
+    finance = _admin(db, auth, "high-finance")
+    wallet = ReferralWalletService(db)
+    with pytest.raises(PermissionError, match="超级管理员"):
+        wallet.review(finance["id"], request["public_id"], "approve", "x", "high-finance-review-0001")
+    with pytest.raises(ValueError, match="增强审核说明"):
+        wallet.review(super_admin["id"], request["public_id"], "approve", "", "high-empty-review-0001")
+    with pytest.raises(ValueError, match="增强审核说明"):
+        wallet.review(super_admin["id"], request["public_id"], "approve", "x" * 501, "high-long-review-0001")
+    approved = wallet.review(
+        super_admin["id"], request["public_id"], "approve", "x", "high-valid-review-0001"
+    )
+    assert approved["status"] == "approved"
 
 
 def test_concurrent_withdrawal_only_reserves_once(db):
