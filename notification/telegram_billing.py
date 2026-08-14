@@ -9,7 +9,8 @@ from html import escape
 from typing import Any
 
 from core.admin_service import AdminService
-from core.plans import PLANS, plan_display_name
+from core.plans import plan_display_name
+from notification.entitlement_adapter import public_commerce_plans
 from notification.telegram_models import TelegramDeskResponse, TelegramOutbound
 from notification.telegram_outbox import enqueue_telegram_outbound
 from notification.telegram_bot import download_telegram_file
@@ -27,8 +28,6 @@ from payment.receiving_profile import ReceivingProfileService
 _PLAN_SLUGS = {
     "standard": "标准版",
     "advanced": "高级版",
-    "professional": "专业版",
-    "custom": "定制版",
 }
 _CYCLE_LABELS = {
     "monthly": "月付",
@@ -73,13 +72,14 @@ def _user_chat(database, user_id: int) -> str | None:
     return str(row["chat_id"]) if row else None
 
 
-def _valid_order_options(slug: str, cycle: str, method: str) -> tuple[str, float]:
+def _valid_order_options(database, slug: str, cycle: str, method: str) -> tuple[str, float]:
     if slug not in _PLAN_SLUGS or method not in MANUAL_PAYMENT_METHODS:
         raise ValueError("订单选项无效。")
     plan = _PLAN_SLUGS[slug]
-    if cycle not in PLANS[plan]["prices"]:
-        raise ValueError("此方案不支持所选付款周期。")
-    return plan, float(PLANS[plan]["prices"][cycle])
+    item = next((entry for entry in public_commerce_plans(database, "purchasable") if entry["key"] == plan), None)
+    if item is None or cycle not in item["prices"]:
+        raise ValueError("此方案目前不可新购或续费。")
+    return plan, float(item["prices"][cycle])
 
 
 def _order_idempotency(user_id: int, slug: str, cycle: str, method: str) -> str:
@@ -97,7 +97,7 @@ def _create_order(
 ) -> TelegramDeskResponse:
     if not account:
         return _binding_required()
-    plan, amount = _valid_order_options(slug, cycle, method)
+    plan, amount = _valid_order_options(database, slug, cycle, method)
     method_label = PAYMENT_METHOD_LABELS[method]
     service = OrderService(database)
     order = service.create_order(

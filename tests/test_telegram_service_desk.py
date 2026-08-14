@@ -274,7 +274,8 @@ def test_service_desk_exposes_plan_cycle_and_available_payment_method(db):
     plans = telegram_desk_response(db, "810001", "desk:plans", callback=True)
     plan_buttons = [button["callback_data"] for row in plans.keyboard for button in row if "callback_data" in button]
     assert user["email"] not in plans.message
-    assert {"buy:plan:standard", "buy:plan:advanced", "buy:plan:professional", "buy:plan:custom"} <= set(plan_buttons)
+    assert {"buy:plan:standard", "buy:plan:advanced"} <= set(plan_buttons)
+    assert not any("professional" in item or "custom" in item for item in plan_buttons)
 
     detail = telegram_desk_response(db, "810001", "buy:plan:standard", callback=True)
     assert any(button.get("callback_data") == "buy:cycle:standard:monthly" for row in detail.keyboard for button in row)
@@ -293,6 +294,36 @@ def test_service_desk_exposes_plan_cycle_and_available_payment_method(db):
     assert not any("paypal" in value or "paddle" in value for value in method_buttons)
     confirmation = telegram_desk_response(db, "810001", "buy:method:standard:monthly:fps", callback=True)
     assert any(button.get("callback_data") == "buy:create:standard:monthly:fps" for row in confirmation.keyboard for button in row)
+
+
+@pytest.mark.parametrize("legacy", [
+    "buy:plan:professional",
+    "buy:cycle:professional:monthly",
+    "buy:method:professional:monthly:fps",
+    "buy:create:professional:monthly:fps",
+    "buy:create:custom:project:fps",
+])
+def test_retired_plan_callbacks_fail_closed_without_creating_an_order(db, legacy):
+    _bound_user(db, "retired-plan", "810099")
+
+    response = telegram_desk_response(db, "810099", legacy, callback=True)
+
+    assert "无法完成操作" in response.message
+    assert db.fetch_one("SELECT COUNT(*) count FROM subscription_orders")["count"] == 0
+
+
+def test_advanced_member_sees_only_beta_application_entry_without_execution_claims(db):
+    user = _bound_user(db, "advanced-beta", "810098")
+    db.execute(
+        "UPDATE users SET plan_type='高级版',subscription_expire='2099-01-01T00:00:00+00:00' WHERE id=?",
+        (user["id"],),
+    )
+
+    response = telegram_desk_response(db, "810098", "desk:membership", callback=True)
+    urls = [button.get("url", "") for row in response.keyboard for button in row]
+
+    assert any("program=option_live_beta" in url for url in urls)
+    assert "不保證審批、運行、券商連接或下單" in response.message
 
 
 @pytest.mark.parametrize(("method", "chat_id"), [("alipay", "820001"), ("wechat", "820002")])

@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import ui.pages.admin as admin
+from core.database import DatabaseManager
 
 
 class _SessionState(dict):
@@ -143,3 +144,10 @@ def test_run_action_keeps_membership_key_after_runtime_error(monkeypatch):
 
     assert admin._intent_idempotency_key("admin_membership_trial", *payload) == first
     assert events == ["error"]
+
+
+def test_admin_grant_picker_uses_only_published_grantable_public_plans(tmp_path):
+    plans = admin._grantable_plan_options(DatabaseManager(str(tmp_path / "admin-policy.db")))
+
+    assert plans == ["标准版", "高级版"]
+    assert "专业版" not in plans and "定制版" not in plans

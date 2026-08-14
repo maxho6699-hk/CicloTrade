@@ -16,7 +16,7 @@ import streamlit as st
 
 from core.admin_service import AdminService, ROLE_LABELS
 from core.database import get_database
-from core.plans import PLAN_ORDER
+from core.entitlement_policy import current_policy
 from core.strategy_scoring import StrategyScorer
 from core.user_profiles import UserProfileService
 from data.opend_control import (
@@ -40,6 +40,20 @@ from ui.components import page_heading, section_label
 
 
 _OPEND_CAPTCHA_TTL_SECONDS = 120.0
+
+
+def _grantable_plan_options(database) -> list[str]:
+    """Read grantable tiers from the current published policy; fail closed."""
+    with database.transaction() as conn:
+        policy = current_policy(conn)
+        if policy is None:
+            return []
+        return [
+            str(item["key"])
+            for item in policy.policy["plans"]
+            if item["lifecycle"] == "active_public"
+            and item["commerce"].get("admin_grantable") is True
+        ]
 
 
 def _intent_idempotency_key(intent: str, *payload: object) -> str:
@@ -204,7 +218,7 @@ def _render_users(service: AdminService, actor_id: int, role: str) -> None:
     if service.has_permission(role, "membership_grant") and not service.has_permission(role, "billing"):
         section_label("赠送体验", "客服可赠送体验，但不能直接调整正式会员等级")
         with st.form("support_membership_trial"):
-            trial_plan = st.selectbox("体验方案", ["标准版", "高级版", "专业版"], key="support_trial_plan")
+            trial_plan = st.selectbox("体验方案", _grantable_plan_options(get_database()), key="support_trial_plan")
             trial_days = st.number_input("体验天数", min_value=1, max_value=90, value=7, step=1, key="support_trial_days")
             trial_reason = st.text_input("赠送原因（必填）", max_chars=240, key="support_trial_reason")
             trial_note = st.text_area("备注（选填）", max_chars=500, key="support_trial_note")
@@ -345,11 +359,15 @@ def _render_billing(service: AdminService, actor_id: int) -> None:
         key="billing_user",
     )
     selected = next(row for row in users if row["id"] == selected_id)
+    grantable_plans = _grantable_plan_options(get_database())
+    if not grantable_plans:
+        st.error("当前没有已发布且可赠送的会员方案。", icon=":material/error:")
+        return
     with st.form("admin_subscription_adjust"):
         plan = st.selectbox(
             "订阅方案",
-            PLAN_ORDER,
-            index=PLAN_ORDER.index(selected["plan_type"]) if selected["plan_type"] in PLAN_ORDER else 0,
+            grantable_plans,
+            index=grantable_plans.index(selected["plan_type"]) if selected["plan_type"] in grantable_plans else 0,
         )
         days = st.number_input(
             "增加有效期（天）",
@@ -385,7 +403,7 @@ def _render_billing(service: AdminService, actor_id: int) -> None:
     if service.has_permission(service.role_for(actor_id), "membership_grant"):
         section_label("赠送体验", "客服/运营可赠送 1–90 天；不会自动给新用户试用")
         with st.form("admin_membership_trial"):
-            trial_plan = st.selectbox("体验方案", ["标准版", "高级版", "专业版"], key="trial_plan")
+            trial_plan = st.selectbox("体验方案", grantable_plans, key="trial_plan")
             trial_days = st.number_input("体验天数", min_value=1, max_value=90, value=7, step=1, key="trial_days")
             trial_reason = st.text_input("赠送原因（必填）", max_chars=240, key="trial_reason")
             trial_note = st.text_area("体验备注（选填）", max_chars=500, key="trial_note")

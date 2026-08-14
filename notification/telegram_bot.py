@@ -20,6 +20,7 @@ from urllib.request import Request, urlopen
 from core.config_loader import get_config
 from core.membership import authoritative_membership_user
 from core.plans import can, effective_plan
+from notification.entitlement_adapter import policy_allows
 from core.user_settings import load_user_settings, merge_user_settings
 
 
@@ -80,6 +81,8 @@ def entitled_user_target(user: dict[str, Any], settings: dict[str, Any], event: 
     system_event = event in {"system_exception", "membership_update"}
     capability = "tg_option_signal" if option_event else "tg_system" if system_event else "tg_stock_signal"
     required_event = None if event == "membership_update" else event
+    # Delivery call sites do not own a database handle yet; interactive Bot
+    # capability gates below use the published-policy adapter.
     return verified_user_target(settings, required_event) if can(effective_plan(user), capability) else None
 
 
@@ -108,14 +111,13 @@ _CALLBACK_PATTERNS = (
     re.compile(r"^timeline:(?:choose|custom):(?:stock|option)$"),
     re.compile(r"^timeline:show:(?:stock|option):[1-9][0-9]{0,2}:(?:0|[1-9][0-9]{0,2})$"),
     re.compile(r"^timeline:pnl:(?:today|yesterday|7d):(?:0|[1-9][0-9]{0,2})$"),
-    re.compile(r"^buy:plan:(?:standard|advanced|professional|custom)$"),
+    re.compile(r"^buy:plan:(?:standard|advanced)$"),
     re.compile(
-        r"^buy:cycle:(?:standard|advanced|professional|custom):"
-        r"(?:monthly|quarterly|yearly|project)$"
+        r"^buy:cycle:(?:standard|advanced):(?:monthly|quarterly|yearly)$"
     ),
     re.compile(
-        r"^buy:(?:method|create):(?:standard|advanced|professional|custom):"
-        r"(?:monthly|quarterly|yearly|project):(?:fps|alipay|wechat)$"
+        r"^buy:(?:method|create):(?:standard|advanced):"
+        r"(?:monthly|quarterly|yearly):(?:fps|alipay|wechat)$"
     ),
     re.compile(r"^pay:claimed:TA[0-9A-F]{12,40}$"),
     re.compile(r"^admin:(?:approve|reject):[1-9][0-9]{0,9}:[1-9][0-9]{0,3}$"),
@@ -296,7 +298,7 @@ def telegram_notification_keyboard(database, chat_id: str) -> TelegramKeyboard:
     events = settings.get("tg_events") if isinstance(settings.get("tg_events"), dict) else {}
     buttons: list[dict[str, str]] = []
     for name, (keys, capability, label) in _NOTIFY_COMMANDS.items():
-        if can(effective_plan(row), capability):
+        if policy_allows(database, row, capability):
             enabled = all(events.get(key) is True for key in keys)
             buttons.append(
                 {
@@ -353,7 +355,7 @@ def update_notification_preference(database, chat_id: str, command: str) -> str:
         events = settings.get("tg_events") if isinstance(settings.get("tg_events"), dict) else {}
         lines = ["⚙️ <b>CicloTrade · 私人通知設定</b>", "", "<blockquote>"]
         for keys, capability, label in _NOTIFY_COMMANDS.values():
-            included = can(effective_plan(row), capability)
+            included = policy_allows(database, row, capability)
             enabled = included and all(events.get(key) is True for key in keys)
             state = "已開啟" if enabled else "已關閉" if included else "目前會員未開放"
             lines.append(f"{'✅' if enabled else '◻️' if included else '🔒'} <b>{label}</b> · {state}")
@@ -365,7 +367,7 @@ def update_notification_preference(database, chat_id: str, command: str) -> str:
     if len(parts) != 3 or parts[0] != "/notify" or parts[1] not in _NOTIFY_COMMANDS or parts[2] not in {"on", "off", "toggle"}:
         return "⚠️ 無法識別此操作，請使用下方通知按鈕。"
     keys, capability, label = _NOTIFY_COMMANDS[parts[1]]
-    if not can(effective_plan(row), capability):
+    if not policy_allows(database, row, capability):
         return f"🔒 <b>{label}</b>不在目前會員等級內，設定未改變。\n\n" + status()
     events = dict(settings.get("tg_events") or {})
     enabled = not all(events.get(key) is True for key in keys) if parts[2] == "toggle" else parts[2] == "on"
