@@ -42,6 +42,7 @@ TEXT_SUFFIXES = {
     ".sh", ".txt", ".toml", ".yaml", ".yml",
 }
 NODE_PROCESS_SPAWN = re.compile(r"\b(?:exec|execFile|spawn|spawnSync)\s*\(|\.\s*(?:exec|execFile|spawn|spawnSync)\s*\(", re.IGNORECASE)
+NODE_CHILD_PROCESS_MODULE = re.compile(r"\b(?:node:)?child_process\b", re.IGNORECASE)
 PYTHON_SUBPROCESS_FUNCTIONS = frozenset({"run", "call", "Popen", "check_call", "check_output"})
 SAFE_SUBPROCESS_EXECUTABLES = frozenset({"git", "node", "npm"})
 
@@ -153,15 +154,57 @@ def _python_literal(node: ast.AST, values: dict[str, object]) -> object | None:
 def _python_call_kind(node: ast.Call, subprocess_modules: set[str], subprocess_functions: set[str], os_modules: set[str], os_system_functions: set[str]) -> str | None:
     if isinstance(node.func, ast.Name):
         if node.func.id in subprocess_functions:
-            return "subprocess"
+            return "subprocess_alias"
         if node.func.id in os_system_functions:
             return "os.system"
     if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+        if node.func.value.id == "subprocess" and node.func.attr in PYTHON_SUBPROCESS_FUNCTIONS:
+            return "subprocess_direct"
         if node.func.value.id in subprocess_modules and node.func.attr in PYTHON_SUBPROCESS_FUNCTIONS:
-            return "subprocess"
+            return "subprocess_alias"
         if node.func.value.id in os_modules and node.func.attr == "system":
             return "os.system"
     return None
+
+
+def _python_symbol_kind(node: ast.AST, subprocess_modules: set[str], subprocess_functions: set[str], os_modules: set[str], os_system_functions: set[str]) -> str | None:
+    if isinstance(node, ast.Name):
+        if node.id in subprocess_modules:
+            return "subprocess_module"
+        if node.id in subprocess_functions:
+            return "subprocess_function"
+        if node.id in os_modules:
+            return "os_module"
+        if node.id in os_system_functions:
+            return "os_system"
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        if node.value.id in subprocess_modules and node.attr in PYTHON_SUBPROCESS_FUNCTIONS:
+            return "subprocess_function"
+        if node.value.id in os_modules and node.attr == "system":
+            return "os_system"
+    return None
+
+
+def _propagate_python_process_aliases(tree: ast.AST, subprocess_modules: set[str], subprocess_functions: set[str], os_modules: set[str], os_system_functions: set[str]) -> None:
+    assignments = [node for node in ast.walk(tree) if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None]
+    changed = True
+    while changed:
+        changed = False
+        for node in assignments:
+            kind = _python_symbol_kind(node.value, subprocess_modules, subprocess_functions, os_modules, os_system_functions)
+            if kind is None:
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            destination = {
+                "subprocess_module": subprocess_modules,
+                "subprocess_function": subprocess_functions,
+                "os_module": os_modules,
+                "os_system": os_system_functions,
+            }[kind]
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id not in destination:
+                    destination.add(target.id)
+                    changed = True
 
 
 def _scan_python_process_spawns(label: str, text: str) -> list[str]:
@@ -188,7 +231,7 @@ def _scan_python_process_spawns(label: str, text: str) -> list[str]:
                     subprocess_functions.add(alias.asname or alias.name)
                 if node.module == "os" and alias.name == "system":
                     os_system_functions.add(alias.asname or alias.name)
-        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
             value = _python_literal(node.value, values) if node.value is not None else None
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             for target in targets:
@@ -197,6 +240,7 @@ def _scan_python_process_spawns(label: str, text: str) -> list[str]:
                         values.pop(target.id, None)
                     else:
                         values[target.id] = value
+    _propagate_python_process_aliases(tree, subprocess_modules, subprocess_functions, os_modules, os_system_functions)
     violations: list[str] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -205,7 +249,10 @@ def _scan_python_process_spawns(label: str, text: str) -> list[str]:
         if kind == "os.system":
             violations.append(f"{label}: process-spawn lifecycle invocation")
             continue
-        if kind != "subprocess":
+        if kind == "subprocess_alias":
+            violations.append(f"{label}: process-spawn lifecycle invocation")
+            continue
+        if kind != "subprocess_direct":
             continue
         shell = next((keyword.value for keyword in node.keywords if keyword.arg == "shell"), ast.Constant(False))
         command = node.args[0] if node.args else None
@@ -216,7 +263,7 @@ def _scan_python_process_spawns(label: str, text: str) -> list[str]:
 
 
 def _scan_node_process_spawns(label: str, text: str) -> list[str]:
-    return [f"{label}: process-spawn lifecycle invocation"] if NODE_PROCESS_SPAWN.search(text) else []
+    return [f"{label}: process-spawn lifecycle invocation"] if NODE_CHILD_PROCESS_MODULE.search(text) or NODE_PROCESS_SPAWN.search(text) else []
 
 
 def _scan_command_text(label: str, content: bytes) -> list[str]:

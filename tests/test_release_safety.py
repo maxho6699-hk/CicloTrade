@@ -129,9 +129,30 @@ def test_ast_rejects_indirect_alias_dynamic_and_shell_process_spawns(tmp_path, m
 
 
 @pytest.mark.parametrize("contents", [
+    "runner = subprocess.run\nrunner(['git', 'status'])",
+    "sp = subprocess\nsp.run(['git', 'status'])",
+    "first = second = subprocess.run\nsecond(['git', 'status'])",
+    "def deploy():\n    runner = subprocess.run\n    runner(['git', 'status'])",
+    "runner = subprocess.run\nlaunch = runner\nlaunch(['git', 'status'])",
+    "from subprocess import run as runner\nrunner(['git', 'status'])",
+    "import subprocess as sp\nsp.run(['git', 'status'])",
+])
+def test_ast_rejects_callable_module_chained_and_scoped_aliases(tmp_path, monkeypatch, contents):
+    source = tmp_path / "ops/deploy.py"
+    source.parent.mkdir(exist_ok=True)
+    source.write_text("import subprocess\n" + contents)
+    monkeypatch.setattr(release_safety, "tracked_release_surface", lambda _root: [source])
+    assert any("process-spawn lifecycle" in item for item in release_safety.scan_tracked_surface(tmp_path))
+
+
+@pytest.mark.parametrize("contents", [
     "const cmd = 'systemctl'; const action = 'restart'; spawn(cmd, [action, 'futu-opend.service']);",
     "const cmd = 'systemctl'; child_process.spawn(cmd, ['restart', 'futu-opend.service']);",
     "const cp = require('child_process'); cp.spawn('systemctl', ['restart', 'futu-opend.service']);",
+    "const { spawn: runner } = require('node:child_process'); runner('git', ['status']);",
+    "import { execFile as runner } from 'child_process'; runner('git', ['status']);",
+    "const runner = child_process.spawn; runner('git', ['status']);",
+    "const moduleName = 'ｎｏｄｅ：ｃｈｉｌｄ＿ｐｒｏｃｅｓｓ'; require(moduleName);",
 ])
 def test_node_process_spawns_fail_closed_even_with_indirect_values(tmp_path, monkeypatch, contents):
     source = tmp_path / "ops/deploy.js"
