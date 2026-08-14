@@ -1120,7 +1120,10 @@ def test_bootstrap_execution_accounts_are_user_scoped_redacted_and_display_only(
     assert set(by_alias) == {"current-tiger"}
     assert by_alias["current-tiger"]["authorized"] is True
     assert primary["execution_control"]["has_authorized_broker_account"] is True
-    assert primary["execution_control"]["can_increase_exposure"] is True
+    assert primary["execution_control"]["can_increase_exposure"] is False
+    assert primary["execution_control"]["can_reduce_exposure"] is True
+    assert primary["execution_control"]["account_limit"] == 0
+    assert "当前会员没有自动交易控制账号名额" in primary["execution_control"]["block_reasons"]
     assert primary["membership"]["brokerage"]["accounts"] == accounts
     allowed_account_fields = {"id", "provider", "alias", "mode", "status", "authorized", "active", "last_checked"}
     assert all(set(account) == allowed_account_fields for account in accounts)
