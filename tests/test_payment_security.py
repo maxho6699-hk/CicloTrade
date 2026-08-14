@@ -1514,6 +1514,7 @@ def test_order_api_rejects_bad_inputs_and_honors_global_pause(monkeypatch):
 
     monkeypatch.setattr(asgi_app, "get_database", Database)
     monkeypatch.setattr(asgi_app, "OrderManager", Manager)
+    monkeypatch.setattr(asgi_app, "entitled_user_target", lambda *args: None)
     response = asyncio.run(asgi_app.api_orders(Request({
         "symbol": "aapl", "side": "buy", "quantity": 1, "price": 100,
         "mode": "live", "confirm_live": True,
