@@ -168,6 +168,18 @@ def test_limits_duplicates_symbols_and_keeps_symbol_tie_break_ascending():
         screen_candidates([bad], now=NOW)
 
 
+def test_candidate_iterator_is_bounded_before_materialization():
+    with pytest.raises(StockScreenerError, match="candidate count"):
+        screen_candidates((candidate(f"A{index:03d}") for index in range(501)), now=NOW)
+
+    def infinite_candidates():
+        while True:
+            yield candidate("A000")
+
+    with pytest.raises(StockScreenerError, match="candidate count"):
+        screen_candidates(infinite_candidates(), now=NOW)
+
+
 def test_data_health_states_are_preserved_and_not_promoted():
     result = screen_candidates(
         [candidate("AAPL", data_state="stale", health="degraded")],

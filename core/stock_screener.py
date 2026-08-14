@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 import json
+from itertools import islice
 from math import isfinite
 import re
 from typing import Any, Callable, Iterable, Mapping
@@ -383,7 +384,7 @@ def screen_candidates(
         raise StockScreenerError("now must include a timezone")
     normalized_request = validate_request(request)
     try:
-        raw_candidates = list(candidates)
+        raw_candidates = list(islice(iter(candidates), CANDIDATE_MAX + 1))
     except (TypeError, ValueError) as exc:
         raise StockScreenerError("candidates must be iterable") from exc
     if len(raw_candidates) > CANDIDATE_MAX:
