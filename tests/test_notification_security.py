@@ -4,6 +4,7 @@ import pytest
 
 from core.auth import AuthService
 from core.database import DatabaseManager
+from core.entitlement_policy import seed_canonical_policy
 from notification.telegram_bot import (
     TelegramDeliveryUncertain,
     confirm_verification,
@@ -77,17 +78,22 @@ def test_telegram_global_switch_fails_closed_before_network(monkeypatch):
         send_telegram("trade action", chat_id="123456789")
 
 
-def test_private_telegram_target_rechecks_plan_entitlement():
+def test_private_telegram_target_rechecks_plan_entitlement(tmp_path):
+    database = DatabaseManager(str(tmp_path / "published-policy.db"))
+    with database.transaction() as conn:
+        seed_canonical_policy(conn)
     settings = {
         "tg_events": {"price_alert": True, "option_signal": True},
         "telegram": {"chat_id": "123456789", "consent": True, "verified": True},
     }
     future = "2099-01-01T00:00:00+00:00"
 
-    assert entitled_user_target({"plan_type": "标准版", "subscription_expire": future}, settings, "price_alert") is None
-    assert entitled_user_target({"plan_type": "高级版", "subscription_expire": future}, settings, "price_alert") == "123456789"
-    assert entitled_user_target({"plan_type": "高级版", "subscription_expire": future}, settings, "option_signal") is None
-    assert entitled_user_target({"plan_type": "专业版", "subscription_expire": future}, settings, "option_signal") == "123456789"
+    assert entitled_user_target(database, {"plan_type": "标准版", "subscription_expire": future}, settings, "price_alert") is None
+    assert entitled_user_target(database, {"plan_type": "高级版", "subscription_expire": future}, settings, "price_alert") == "123456789"
+    assert entitled_user_target(database, {"plan_type": "高级版", "subscription_expire": future}, settings, "option_signal") is None
+    assert entitled_user_target(database, {"plan_type": "专业版", "subscription_expire": future}, settings, "option_signal") == "123456789"
+    database.execute("DELETE FROM membership_entitlement_readiness_reviews")
+    assert entitled_user_target(database, {"plan_type": "高级版", "subscription_expire": future}, settings, "price_alert") is None
 
 
 def test_delayed_timeline_hides_actionable_stock_contract_fields():
@@ -131,11 +137,14 @@ def test_telegram_verification_requires_consent_and_is_one_time(tmp_path):
         confirm_verification(db, user["id"], second)
 
 
-def test_membership_update_uses_system_entitlement_without_trade_event_toggle():
+def test_membership_update_uses_system_entitlement_without_trade_event_toggle(tmp_path):
+    database = DatabaseManager(str(tmp_path / "membership-policy.db"))
+    with database.transaction() as conn:
+        seed_canonical_policy(conn)
     settings = {"telegram": {"chat_id": "123456789", "consent": True, "verified": True}}
     future = "2099-01-01T00:00:00+00:00"
 
-    assert entitled_user_target({"plan_type": "标准版", "subscription_expire": future}, settings, "membership_update") == "123456789"
+    assert entitled_user_target(database, {"plan_type": "标准版", "subscription_expire": future}, settings, "membership_update") == "123456789"
 
 
 def test_private_notify_command_syncs_website_settings_and_enforces_plan(tmp_path):

@@ -13,7 +13,7 @@ import pandas as pd
 from core.alerts import AlertService
 from core.database import get_database
 from core.membership import authoritative_membership_user, resolve_membership
-from core.plans import TELEGRAM_CHANNEL_NAMES, can, effective_plan, plan_display_name
+from core.plans import TELEGRAM_CHANNEL_NAMES, plan_display_name
 from core.official_paper_consumers import (
     LEGACY,
     OFFICIAL_PAPER_V2,
@@ -48,6 +48,7 @@ from notification.telegram_bot import (
     telegram_token,
     verified_user_target,
 )
+from notification.entitlement_adapter import policy_allows
 from notification.telegram_outbox import (
     dispatch_telegram_service_outbox as dispatch_telegram_service_outbox,
 )
@@ -206,9 +207,9 @@ def enqueue_quant_signal_deliveries(database=None) -> int:
             for user in users:
                 settings = _settings_json(user.get("settings_json"))
                 if (
-                    not can(effective_plan(user), capability)
+                    not policy_allows(db, user, capability)
                     or not _watches(settings, target["symbol"], target["market"])
-                    or not entitled_user_target(user, settings, event_name)
+                    or not entitled_user_target(db, user, settings, event_name)
                     or not _newer_than_eligibility(target["recorded_at"], user)
                 ):
                     continue
@@ -408,12 +409,12 @@ def dispatch_quant_signal_deliveries(database=None, limit: int = 100) -> int:
             user = authoritative_membership_user(db, user)
         settings = load_user_settings(delivery["user_id"], db) if user else {}
         capability, event_name = _signal_capability(delivery["instrument_type"])
-        target = entitled_user_target(user, settings, event_name)
+        target = entitled_user_target(db, user or {}, settings, event_name)
         market = "CN" if str(delivery["symbol"]).isdigit() else "US"
         if (
             not user
             or not user["is_active"]
-            or not can(effective_plan(user), capability)
+            or not policy_allows(db, user, capability)
             or not target
             or not _watches(settings, delivery["symbol"], market)
         ):
@@ -692,7 +693,7 @@ def dispatch_price_alert_deliveries(database=None, limit: int = 100) -> int:
         if user:
             user = authoritative_membership_user(db, user)
         settings = load_user_settings(delivery["user_id"], db) if user else {}
-        target = entitled_user_target(user or {}, settings, "price_alert")
+        target = entitled_user_target(db, user or {}, settings, "price_alert")
         if not user or not user["is_active"] or not target:
             db.execute(
                 "UPDATE price_alert_deliveries SET status='skipped',last_error='entitlement_or_consent',updated_at=? WHERE id=? AND status='sending'",

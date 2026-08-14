@@ -19,7 +19,6 @@ from urllib.request import Request, urlopen
 
 from core.config_loader import get_config
 from core.membership import authoritative_membership_user
-from core.plans import can, effective_plan
 from notification.entitlement_adapter import policy_allows
 from core.user_settings import load_user_settings, merge_user_settings
 
@@ -74,16 +73,14 @@ def verified_user_target(settings: dict[str, Any], event: str | None = None) -> 
     return target if target.isdigit() and 1 <= len(target) <= 20 else None
 
 
-def entitled_user_target(user: dict[str, Any], settings: dict[str, Any], event: str | None = None) -> str | None:
+def entitled_user_target(database, user: dict[str, Any], settings: dict[str, Any], event: str | None = None) -> str | None:
     """Apply plan entitlement before consent/verification checks."""
     event = event or "stock_signal"
     option_event = event in {"option_signal", "option_order", "option_alert"}
     system_event = event in {"system_exception", "membership_update"}
     capability = "tg_option_signal" if option_event else "tg_system" if system_event else "tg_stock_signal"
     required_event = None if event == "membership_update" else event
-    # Delivery call sites do not own a database handle yet; interactive Bot
-    # capability gates below use the published-policy adapter.
-    return verified_user_target(settings, required_event) if can(effective_plan(user), capability) else None
+    return verified_user_target(settings, required_event) if policy_allows(database, user, capability) else None
 
 
 _NOTIFY_COMMANDS = {

@@ -16,7 +16,7 @@ import unicodedata
 from core.auth import AuthService
 from core.broker_authorization import broker_execution_authorized
 from core.database import DatabaseManager, get_database
-from core.entitlement_policy import current_plan_commerce_decision
+from notification.entitlement_adapter import commerce_plan_allowed
 from core.membership import (
     add_membership_entitlement,
     authoritative_membership_user,
@@ -433,10 +433,7 @@ class AdminService:
             if not user:
                 raise ValueError("用户不存在。")
             now = datetime.now(UTC)
-            _, decision = current_plan_commerce_decision(
-                conn, plan, "admin_grant", as_of=now,
-            )
-            if plan != "免费版" and not decision["allowed"]:
+            if plan != "免费版" and not commerce_plan_allowed(conn, plan, "admin_grant"):
                 raise PermissionError("当前会员策略不允许后台赠送或恢复该方案。")
             current = resolve_membership(conn, user_id, now, sync_cache=True)
             membership_log = conn.execute(
@@ -510,10 +507,7 @@ class AdminService:
             if not user:
                 raise ValueError("用户不存在或已停用。")
             current = resolve_membership(conn, user_id, now, sync_cache=True)
-            _, decision = current_plan_commerce_decision(
-                conn, plan, "admin_grant", as_of=now,
-            )
-            if not decision["allowed"]:
+            if not commerce_plan_allowed(conn, plan, "admin_grant"):
                 raise PermissionError("当前会员策略不允许赠送该体验方案。")
             membership_log = conn.execute(
                 """INSERT INTO user_membership_logs
@@ -554,7 +548,7 @@ class AdminService:
             from notification.templates import telegram_membership
             user = self.db.fetch_one("SELECT id,plan_type,subscription_expire FROM users WHERE id=?", (user_id,)) or {}
             user = authoritative_membership_user(self.db, user)
-            target = entitled_user_target(user, load_user_settings(user_id, self.db), "membership_update")
+            target = entitled_user_target(self.db, user, load_user_settings(user_id, self.db), "membership_update")
             if target and telegram_configured(target):
                 send_telegram(telegram_membership(plan, expiry, reason), chat_id=target, protect_content=True)
         except Exception:

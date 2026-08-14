@@ -17,6 +17,7 @@ import streamlit as st
 from core.admin_service import AdminService, ROLE_LABELS
 from core.database import get_database
 from core.entitlement_policy import current_policy
+from notification.entitlement_adapter import commerce_plan_allowed
 from core.strategy_scoring import StrategyScorer
 from core.user_profiles import UserProfileService
 from data.opend_control import (
@@ -52,7 +53,7 @@ def _grantable_plan_options(database) -> list[str]:
             str(item["key"])
             for item in policy.policy["plans"]
             if item["lifecycle"] == "active_public"
-            and item["commerce"].get("admin_grantable") is True
+            and commerce_plan_allowed(conn, str(item["key"]), "admin_grant")
         ]
 
 

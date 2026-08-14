@@ -403,7 +403,7 @@ async def api_orders(request):
     except ValueError as exc:
         raise ApiError(str(exc)) from exc
     event = "order_filled" if order.get("status") == "FILLED" else "order_submitted"
-    target_chat = entitled_user_target(user, load_user_settings(user["id"], database), event)
+    target_chat = entitled_user_target(database, user, load_user_settings(user["id"], database), event)
     if target_chat and telegram_configured(target_chat):
         try:
             send_telegram(
