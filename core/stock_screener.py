@@ -8,11 +8,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import json
 from math import isfinite
 import re
 from typing import Any, Callable, Iterable, Mapping
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
+
+from core.compat import UTC
+from core.database import DatabaseManager, get_database
 
 
 HONG_KONG = ZoneInfo("Asia/Hong_Kong")
@@ -35,6 +39,7 @@ REQUEST_FIELDS = frozenset({"filters", "page", "page_size", "preset", "sort"})
 PRESET_FIELDS = frozenset({"filters", "name", "sort", "version"})
 PRESET_NAMES = frozenset({"all", "momentum", "pullback", "risk_first"})
 SAFE_RESEARCH_ROUTE = "/discover?tool=screener"
+SCREENER_PRESET_KEY = "stock_screener_preset"
 US_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9]{0,9}(?:[.-][A-Z0-9]{1,5})?$")
 MAX_PRICE = 10_000_000.0
 MAX_CHANGE_PCT = 1_000.0
@@ -138,9 +143,17 @@ def _preset_filters(name: str) -> dict[str, Any]:
     }[name].copy()
 
 
+def _mapping(value: Any, field: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise StockScreenerError(f"{field} must be an object")
+    return dict(value)
+
+
 def validate_request(payload: Mapping[str, Any] | None) -> dict[str, Any]:
     """Validate the public screening DTO and return a normalized copy."""
-    raw = {} if payload is None else dict(payload)
+    raw = _mapping(payload, "request")
     unknown = set(raw) - REQUEST_FIELDS
     if unknown:
         raise StockScreenerError("unknown screener request field")
@@ -174,7 +187,7 @@ def validate_request(payload: Mapping[str, Any] | None) -> dict[str, Any]:
 
 def validate_preset(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Validate a versioned, persistence-neutral preset DTO."""
-    raw = dict(payload)
+    raw = _mapping(payload, "preset")
     if set(raw) - PRESET_FIELDS - {"schema_version"}:
         raise StockScreenerError("preset DTO fields are invalid")
     if "schema_version" in raw and raw["schema_version"] != SCHEMA_VERSION:
@@ -200,6 +213,67 @@ def update_preset(current: Mapping[str, Any] | None, payload: Mapping[str, Any])
         raise StockScreenerConflict("screener preset version has changed")
     incoming["version"] += 1
     return incoming
+
+
+class ScreenerPresetStore:
+    """CAS-protected screener preset storage inside the existing settings row."""
+
+    def __init__(self, database: DatabaseManager | None = None):
+        self.db = database or get_database()
+
+    @staticmethod
+    def _user_id(user_id: int) -> int:
+        if isinstance(user_id, bool) or not isinstance(user_id, int) or user_id <= 0:
+            raise StockScreenerError("user_id must be a positive integer")
+        return user_id
+
+    @staticmethod
+    def _settings(value: Any) -> dict[str, Any]:
+        try:
+            decoded = json.loads(value) if value is not None else {}
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise StockScreenerError("stored user settings are invalid JSON") from exc
+        if not isinstance(decoded, dict):
+            raise StockScreenerError("stored user settings must be an object")
+        return decoded
+
+    def load(self, user_id: int) -> dict[str, Any] | None:
+        user_id = self._user_id(user_id)
+        row = self.db.fetch_one("SELECT settings_json FROM user_settings WHERE user_id=?", (user_id,))
+        settings = self._settings(row["settings_json"] if row else None)
+        raw = settings.get(SCREENER_PRESET_KEY)
+        if raw is None:
+            return None
+        if not isinstance(raw, Mapping):
+            raise StockScreenerError("stored screener preset is invalid")
+        return validate_preset(raw)
+
+    def replace(self, user_id: int, payload: Mapping[str, Any]) -> dict[str, Any]:
+        user_id = self._user_id(user_id)
+        incoming = validate_preset(payload)
+        with self.db.transaction() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT settings_json FROM user_settings WHERE user_id=?", (user_id,)
+            ).fetchone()
+            settings = self._settings(row["settings_json"] if row else None)
+            raw = settings.get(SCREENER_PRESET_KEY)
+            current = None
+            if raw is not None:
+                if not isinstance(raw, Mapping):
+                    raise StockScreenerError("stored screener preset is invalid")
+                current = validate_preset(raw)
+            updated = update_preset(current, incoming)
+            settings[SCREENER_PRESET_KEY] = updated
+            connection.execute(
+                """INSERT INTO user_settings(user_id,settings_json,updated_at) VALUES (?,?,?)
+                   ON CONFLICT(user_id) DO UPDATE SET
+                     settings_json=excluded.settings_json,updated_at=excluded.updated_at""",
+                (user_id, json.dumps(settings, ensure_ascii=False), datetime.now(UTC).isoformat(timespec="seconds")),
+            )
+        return updated
+
+    save = replace
 
 
 def _action_url(symbol: str) -> str:
@@ -384,6 +458,8 @@ def recommendation_to_candidate(recommendation: Mapping[str, Any]) -> dict[str, 
     evidence = recommendation.get("evidence") or {}
     risk = recommendation.get("risk") or {}
     provenance = recommendation.get("provenance") or {}
+    if not isinstance(evidence, Mapping) or not isinstance(risk, Mapping) or not isinstance(provenance, Mapping):
+        raise StockScreenerError("recommendation evidence, risk, and provenance must be objects")
     freshness = {"live": "fresh", "delayed": "delayed", "stale": "stale", "incomplete": "missing"}.get(
         risk.get("data_freshness", "missing"), "missing"
     )
@@ -409,18 +485,13 @@ def recommendation_to_candidate(recommendation: Mapping[str, Any]) -> dict[str, 
 class StockScreenerAdapter:
     """API-facing adapter; persistence remains owned by the caller."""
 
-    plan: str | None = None
     has_capability: Callable[..., bool] | None = None
-    authorized: bool = False
 
     def _check_access(self) -> None:
-        allowed = self.authorized
+        allowed = False
         if self.has_capability is not None:
             try:
-                try:
-                    allowed = bool(self.has_capability("strategy_all"))
-                except TypeError:
-                    allowed = bool(self.has_capability(self.plan, "strategy_all"))
+                allowed = bool(self.has_capability("strategy_all"))
             except Exception:
                 allowed = False
         if not allowed:

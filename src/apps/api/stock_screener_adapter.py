@@ -11,10 +11,8 @@ from core.stock_screener import StockScreenerAdapter, recommendation_to_candidat
 class ApiStockScreenerAdapter:
     """Keep request validation and membership gating outside shared API wiring."""
 
-    def __init__(self, plan: str | None = None, *, has_capability=None, authorized: bool = False):
-        self._screener = StockScreenerAdapter(
-            plan, has_capability=has_capability, authorized=authorized,
-        )
+    def __init__(self, *, has_capability=None):
+        self._screener = StockScreenerAdapter(has_capability=has_capability)
 
     def read(
         self,

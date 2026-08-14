@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 
 import pytest
 
@@ -7,9 +8,12 @@ from core.stock_screener import (
     StockScreenerConflict,
     StockScreenerError,
     StockScreenerAdapter,
+    ScreenerPresetStore,
     screen_candidates,
     update_preset,
 )
+from core.database import DatabaseManager
+from core.auth import AuthService
 
 
 NOW = datetime(2026, 8, 14, 1, 0, tzinfo=__import__("zoneinfo").ZoneInfo("UTC"))
@@ -83,6 +87,14 @@ def test_invalid_request_fails_closed(payload):
         screen_candidates([candidate("AAPL")], payload, now=NOW)
 
 
+@pytest.mark.parametrize("payload", [[], "bad"])
+def test_non_object_request_and_preset_are_stock_screener_errors(payload):
+    with pytest.raises(StockScreenerError):
+        screen_candidates([candidate("AAPL")], payload, now=NOW)
+    with pytest.raises(StockScreenerError):
+        update_preset(None, payload)
+
+
 def test_candidate_rejects_unknown_fields_nonfinite_and_naive_timestamps():
     with pytest.raises(StockScreenerError):
         screen_candidates([candidate("AAPL", submit=True)], now=NOW)
@@ -108,14 +120,13 @@ def test_preset_is_versioned_and_optimistic_without_persistence():
 
 def test_plan_in_progress_or_free_fails_closed():
     with pytest.raises(StockScreenerAccessError):
-        StockScreenerAdapter("免费版").screen([candidate("AAPL")], now=NOW)
-    assert StockScreenerAdapter("专业版", has_capability=lambda capability: capability == "strategy_all").screen([candidate("AAPL")], now=NOW)["total"] == 1
-    assert StockScreenerAdapter("标准版", authorized=True).screen([candidate("AAPL")], now=NOW)["total"] == 1
+        StockScreenerAdapter().screen([candidate("AAPL")], now=NOW)
+    assert StockScreenerAdapter(has_capability=lambda capability: capability == "strategy_all").screen([candidate("AAPL")], now=NOW)["total"] == 1
 
 
 def test_retired_plan_does_not_inherit_legacy_capabilities():
     with pytest.raises(StockScreenerAccessError):
-        StockScreenerAdapter("专业版").screen([candidate("AAPL")], now=NOW)
+        StockScreenerAdapter().screen([candidate("AAPL")], now=NOW)
 
 
 @pytest.mark.parametrize(
@@ -164,3 +175,32 @@ def test_data_health_states_are_preserved_and_not_promoted():
     )
     assert result["items"][0]["data_state"] == "stale"
     assert result["items"][0]["health"] == "degraded"
+
+
+def test_preset_store_is_user_scoped_and_cas_protected(tmp_path):
+    database = DatabaseManager(str(tmp_path / "screener-presets.db"))
+    auth = AuthService(database)
+    user_one = auth.register("preset-one@example.com", "StrongPass123", "One", True)
+    user_two = auth.register("preset-two@example.com", "StrongPass123", "Two", True)
+    store = ScreenerPresetStore(database)
+    payload = {"version": 0, "name": "动量", "filters": {}, "sort": {"field": "updated_at", "direction": "desc"}}
+    assert store.load(user_one["id"]) is None
+    saved = store.replace(user_one["id"], payload)
+    assert saved["version"] == 1
+    assert store.load(user_two["id"]) is None
+    with pytest.raises(StockScreenerConflict):
+        store.replace(user_one["id"], payload)
+    with pytest.raises(StockScreenerError):
+        store.replace(user_one["id"], {**saved, "version": 0})
+
+
+def test_preset_store_rejects_bad_json_without_overwriting_other_settings(tmp_path):
+    database = DatabaseManager(str(tmp_path / "screener-presets-bad-json.db"))
+    user = AuthService(database).register("preset-bad@example.com", "StrongPass123", "Bad", True)
+    database.execute(
+        "INSERT INTO user_settings(user_id,settings_json,updated_at) VALUES (?,?,?)",
+        (user["id"], json.dumps({"risk": {"max_daily_loss": 5}}), "2026-08-14T00:00:00+00:00"),
+    )
+    database.execute("UPDATE user_settings SET settings_json=? WHERE user_id=?", ("{bad", user["id"]))
+    with pytest.raises(StockScreenerError, match="invalid JSON"):
+        ScreenerPresetStore(database).load(user["id"])
