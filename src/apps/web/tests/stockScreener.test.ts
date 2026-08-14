@@ -43,6 +43,7 @@ test('screener decoder fails closed for duplicate symbols, unbounded pages, inva
   assert.equal(decodeStockScreenerPayload(payload({ page_size: 101 })), null)
   assert.equal(decodeStockScreenerPayload(payload({ items: [item({ health: 'unknown' })] })), null)
   assert.equal(decodeStockScreenerPayload(payload({ items: [item({ paper_prefill: { market: 'US', symbol: 'NVDA', side: 'BUY' }, actionable: false, blocked_reason: 'candidate_action_not_tradeable' })] })), null)
+  assert.equal(decodeStockScreenerPayload(payload({ items: [item({ paper_prefill: { market: 'US', symbol: 'NVDA', side: 'SHORT' } })] })), null)
   assert.equal(decodeStockScreenerPayload(payload({ items: [item({ research_url: '/paper?symbol=NVDA' })] })), null)
 })
 

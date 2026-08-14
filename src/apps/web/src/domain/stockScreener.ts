@@ -10,8 +10,8 @@ export interface ScreenerFilters {
   actions?: ScreenerAction[]; data_states?: ScreenerDataState[]; states?: ScreenerCandidateState[]; symbols?: string[]
 }
 
-export interface ScreenerPrefill { market: 'US'; symbol: string; side?: 'BUY' | 'SHORT' }
-export interface ScreenerPaperPrefill { market: 'US'; symbol: string; side: 'BUY' | 'SHORT' }
+export interface ScreenerPrefill { market: 'US'; symbol: string }
+export interface ScreenerPaperPrefill { market: 'US'; symbol: string; side: 'BUY' }
 
 export interface StockScreenerRow {
   symbol: string; name: string; state: ScreenerCandidateState; action: ScreenerAction; score: number | null; price: number; change_pct: number
@@ -66,7 +66,7 @@ function decodeSort(value: unknown): ScreenerSort | null {
 
 function decodePrefill(value: unknown, symbol: string, paper = false): ScreenerPrefill | ScreenerPaperPrefill | null {
   const prefill = object(value), keys = paper ? ['market', 'symbol', 'side'] : ['market', 'symbol']
-  if (!prefill || !exact(prefill, keys) || prefill.market !== 'US' || prefill.symbol !== symbol || (paper && prefill.side !== 'BUY' && prefill.side !== 'SHORT')) return null
+  if (!prefill || !exact(prefill, keys) || prefill.market !== 'US' || prefill.symbol !== symbol || (paper && prefill.side !== 'BUY')) return null
   return prefill as unknown as ScreenerPrefill | ScreenerPaperPrefill
 }
 
