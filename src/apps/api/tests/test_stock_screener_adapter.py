@@ -1,15 +1,29 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
 
+from core.auth import AuthService
+from core.compat import UTC
+from core.database import DatabaseManager
 from core.stock_screener import StockScreenerAccessError
 from core.stock_screener import StockScreenerError
 from src.apps.api.stock_screener_adapter import ApiStockScreenerAdapter
 
 
-def test_api_adapter_keeps_screening_and_preset_save_side_effect_free():
-    adapter = ApiStockScreenerAdapter(has_capability=lambda capability: capability == "strategy_all")
+def _adapter(tmp_path, plan="高级版"):
+    database = DatabaseManager(str(tmp_path / f"screener-{plan}.db"))
+    user = AuthService(database).register("screener@example.com", "StrongPass123", "Screener", True)
+    if plan != "免费版":
+        database.execute(
+            "UPDATE users SET plan_type=?,subscription_expire=? WHERE id=?",
+            (plan, (datetime.now(UTC) + timedelta(days=90)).isoformat(), user["id"]),
+        )
+    return ApiStockScreenerAdapter(database, user["id"])
+
+
+def test_api_adapter_keeps_screening_and_preset_save_side_effect_free(tmp_path):
+    adapter = _adapter(tmp_path)
     now = datetime(2026, 8, 14, tzinfo=ZoneInfo("UTC"))
     result = adapter.read(
         [{
@@ -23,21 +37,30 @@ def test_api_adapter_keeps_screening_and_preset_save_side_effect_free():
     )
     assert result["items"][0]["symbol"] == "AAPL"
     assert result["items"][0]["data_state"] == "delayed"
-    saved = adapter.save_preset(None, {
+    saved = adapter.save_preset({
         "version": 0, "name": "等待", "filters": {"actions": ["wait"]},
         "sort": {"field": "score", "direction": "desc"},
     })
     assert saved["version"] == 1
 
 
-def test_api_adapter_rejects_missing_capability():
+def test_api_adapter_rejects_missing_capability(tmp_path):
     with pytest.raises(StockScreenerAccessError):
-        ApiStockScreenerAdapter().read([])
+        _adapter(tmp_path, "免费版").read([])
 
 
-def test_api_adapter_maps_real_recommendation_without_fabricating_score():
+def test_api_adapter_uses_authoritative_policy_plan_and_rejects_retired_or_client_plan(tmp_path):
+    with pytest.raises(StockScreenerAccessError):
+        _adapter(tmp_path, "专业版").read([])
+    database = DatabaseManager(str(tmp_path / "client-plan.db"))
+    user = AuthService(database).register("client-plan@example.com", "StrongPass123", "Client", True)
+    with pytest.raises(TypeError):
+        ApiStockScreenerAdapter(database, user["id"], plan="高级版")
+
+
+def test_api_adapter_maps_real_recommendation_without_fabricating_score(tmp_path):
     now = datetime(2026, 8, 14, tzinfo=ZoneInfo("UTC"))
-    adapter = ApiStockScreenerAdapter(has_capability=lambda capability: capability == "strategy_all")
+    adapter = _adapter(tmp_path)
     result = adapter.read_recommendations([{
         "state": "official", "action": "BUY", "market": "US", "instrument_type": "stock", "symbol": "AAPL",
         "current_price": 201, "reference_price": 200, "quote_at": now.isoformat(),
@@ -49,15 +72,15 @@ def test_api_adapter_maps_real_recommendation_without_fabricating_score():
     assert result["items"][0]["price"] == 201
 
 
-def test_api_adapter_rejects_malformed_recommendation_nested_objects():
-    adapter = ApiStockScreenerAdapter(has_capability=lambda capability: capability == "strategy_all")
+def test_api_adapter_rejects_malformed_recommendation_nested_objects(tmp_path):
+    adapter = _adapter(tmp_path)
     with pytest.raises(StockScreenerError):
         adapter.read_recommendations([{"state": "official", "action": "BUY", "market": "US", "instrument_type": "option", "symbol": "AAPL"}])
 
 
 @pytest.mark.parametrize("action", ["SHORT", "COVER", "REDUCE", "EXIT"])
-def test_api_adapter_maps_management_actions_without_paper_prefill(action):
-    adapter = ApiStockScreenerAdapter(has_capability=lambda capability: capability == "strategy_all")
+def test_api_adapter_maps_management_actions_without_paper_prefill(tmp_path, action):
+    adapter = _adapter(tmp_path)
     result = adapter.read_recommendations([{
         "state": "official", "action": action, "market": "US", "instrument_type": "stock", "symbol": "AAPL",
         "current_price": 201, "reference_price": 200, "quote_at": "2026-08-14T00:00:00+00:00",
@@ -68,8 +91,8 @@ def test_api_adapter_maps_management_actions_without_paper_prefill(action):
     assert result["items"][0]["action"] in {"short", "reduce", "exit"}
 
 
-def test_api_adapter_blocks_incomplete_or_locked_recommendations():
-    adapter = ApiStockScreenerAdapter(has_capability=lambda capability: capability == "strategy_all")
+def test_api_adapter_blocks_incomplete_or_locked_recommendations(tmp_path):
+    adapter = _adapter(tmp_path)
     incomplete = adapter.read_recommendations([{
         "state": "official", "action": "BUY", "market": "US", "instrument_type": "stock", "symbol": "AAPL",
         "current_price": 201, "reference_price": 200, "quote_at": None,
@@ -83,8 +106,8 @@ def test_api_adapter_blocks_incomplete_or_locked_recommendations():
         }])
 
 
-def test_api_adapter_maps_existing_flat_recommendation_dto_without_score():
-    adapter = ApiStockScreenerAdapter(has_capability=lambda capability: capability == "strategy_all")
+def test_api_adapter_maps_existing_flat_recommendation_dto_without_score(tmp_path):
+    adapter = _adapter(tmp_path)
     result = adapter.read_recommendations([{
         "event_id": 7, "state": "official", "action": "BUY", "market": "US",
         "instrument_type": "stock", "symbol": "MSFT", "currency": "USD",

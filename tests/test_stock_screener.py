@@ -118,15 +118,26 @@ def test_preset_is_versioned_and_optimistic_without_persistence():
         update_preset(updated, payload)
 
 
-def test_plan_in_progress_or_free_fails_closed():
-    with pytest.raises(StockScreenerAccessError):
-        StockScreenerAdapter().screen([candidate("AAPL")], now=NOW)
-    assert StockScreenerAdapter(has_capability=lambda capability: capability == "strategy_all").screen([candidate("AAPL")], now=NOW)["total"] == 1
+def _core_adapter(tmp_path, plan="高级版"):
+    database = DatabaseManager(str(tmp_path / f"core-adapter-{plan}.db"))
+    user = AuthService(database).register("core-screener@example.com", "StrongPass123", "Core", True)
+    if plan != "免费版":
+        database.execute(
+            "UPDATE users SET plan_type=?,subscription_expire=? WHERE id=?",
+            (plan, "2099-01-01T00:00:00+00:00", user["id"]),
+        )
+    return StockScreenerAdapter(database, user["id"])
 
 
-def test_retired_plan_does_not_inherit_legacy_capabilities():
+def test_plan_in_progress_or_free_fails_closed(tmp_path):
     with pytest.raises(StockScreenerAccessError):
-        StockScreenerAdapter().screen([candidate("AAPL")], now=NOW)
+        _core_adapter(tmp_path, "免费版").screen([candidate("AAPL")], now=NOW)
+    assert _core_adapter(tmp_path).screen([candidate("AAPL")], now=NOW)["total"] == 1
+
+
+def test_retired_plan_does_not_inherit_legacy_capabilities(tmp_path):
+    with pytest.raises(StockScreenerAccessError):
+        _core_adapter(tmp_path, "专业版").screen([candidate("AAPL")], now=NOW)
 
 
 @pytest.mark.parametrize(

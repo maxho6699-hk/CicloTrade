@@ -5,14 +5,15 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Iterable, Mapping
 
+from core.database import DatabaseManager
 from core.stock_screener import StockScreenerAdapter, recommendation_to_candidate
 
 
 class ApiStockScreenerAdapter:
     """Keep request validation and membership gating outside shared API wiring."""
 
-    def __init__(self, *, has_capability=None):
-        self._screener = StockScreenerAdapter(has_capability=has_capability)
+    def __init__(self, database: DatabaseManager, user_id: int):
+        self._screener = StockScreenerAdapter(database, user_id)
 
     def read(
         self,
@@ -25,10 +26,12 @@ class ApiStockScreenerAdapter:
 
     def save_preset(
         self,
-        current: Mapping[str, Any] | None,
         payload: Mapping[str, Any],
     ) -> dict[str, Any]:
-        return self._screener.save_preset(current, payload)
+        return self._screener.save_preset(payload)
+
+    def load_preset(self) -> dict[str, Any] | None:
+        return self._screener.load_preset()
 
     def read_recommendations(
         self,

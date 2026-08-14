@@ -12,12 +12,14 @@ import json
 from itertools import islice
 from math import isfinite
 import re
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Iterable, Mapping
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from core.compat import UTC
 from core.database import DatabaseManager, get_database
+from core.entitlement_consumer import verified_can
+from core.membership import authoritative_membership_row
 
 
 HONG_KONG = ZoneInfo("Asia/Hong_Kong")
@@ -471,22 +473,35 @@ def recommendation_to_candidate(recommendation: Mapping[str, Any]) -> dict[str, 
 class StockScreenerAdapter:
     """API-facing adapter; persistence remains owned by the caller."""
 
-    has_capability: Callable[..., bool] | None = None
+    database: DatabaseManager
+    user_id: int
 
     def _check_access(self) -> None:
-        allowed = False
-        if self.has_capability is not None:
-            try:
-                allowed = bool(self.has_capability("strategy_all"))
-            except Exception:
-                allowed = False
-        if not allowed:
-            raise StockScreenerAccessError("当前会员未开放行动型美股选股器。")
+        try:
+            with self.database.transaction() as connection:
+                row = connection.execute(
+                    "SELECT id,plan_type,subscription_expire FROM users WHERE id=? AND is_active=1",
+                    (self.user_id,),
+                ).fetchone()
+                if row is None:
+                    raise StockScreenerAccessError("当前用户不可用。")
+                plan = str(authoritative_membership_row(connection, row).get("plan_type") or "免费版")
+                if verified_can(connection, plan, "strategy_all"):
+                    return
+        except StockScreenerAccessError:
+            raise
+        except Exception as exc:
+            raise StockScreenerAccessError("当前会员策略无法核验。") from exc
+        raise StockScreenerAccessError("当前会员未开放行动型美股选股器。")
 
     def screen(self, candidates: Iterable[Mapping[str, Any]], request: Mapping[str, Any] | None = None, *, now: datetime | None = None) -> dict[str, Any]:
         self._check_access()
         return screen_candidates(candidates, request, now=now)
 
-    def save_preset(self, current: Mapping[str, Any] | None, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def load_preset(self) -> dict[str, Any] | None:
         self._check_access()
-        return update_preset(current, payload)
+        return ScreenerPresetStore(self.database).load(self.user_id)
+
+    def save_preset(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        self._check_access()
+        return ScreenerPresetStore(self.database).replace(self.user_id, payload)
