@@ -142,6 +142,32 @@ def test_builder_excludes_markdown_runtime_instructions(tmp_path: Path) -> None:
     assert verifier.verify_release(root, artifact, manifest) == []
 
 
+@pytest.mark.parametrize("path, content", [
+    ("core/auth.py", b"token = auth_header\npassword = payload['password']\nsecret = os.getenv('SECRET')\n"),
+    ("src/apps/api/earnings_read_model.py", b"secret_sql = 'SELECT secret FROM account'\n"),
+    ("core/auth.py", b"secret = 'hardcoded-secret-value'\n"),
+    ("core/auth.py", b"password: bytes = b'hardcoded-password'\n"),
+    ("core/auth.py", b"api_secret = 'hardcoded-api-secret'\n"),
+])
+def test_secret_detection_is_ast_aware_for_python(path: str, content: bytes) -> None:
+    expected = "hardcoded" in content.decode("utf-8") and "secret_sql" not in content.decode("utf-8")
+    assert verifier._contains_secret(path, content) is expected
+
+
+def test_secret_detection_rejects_private_key_marker_for_every_language() -> None:
+    content = b"-----BEGIN PRIVATE KEY-----\nnot-a-real-key\n"
+    assert verifier._contains_secret("core/key.py", content)
+    assert verifier._contains_secret("config/settings.yaml", content)
+
+
+@pytest.mark.parametrize("path, content", [
+    ("config/settings.yaml", b"api_key: hardcoded-config-value\n"),
+    ("src/apps/web/settings.js", b"const token = 'hardcoded-js-value';\n"),
+])
+def test_secret_detection_remains_conservative_for_non_python_literals(path: str, content: bytes) -> None:
+    assert verifier._contains_secret(path, content)
+
+
 def test_archive_payload_is_the_exact_git_blob_bytes(tmp_path: Path) -> None:
     root = _source_repo(tmp_path)
     artifact, manifest, _ = _bundle(root, tmp_path)

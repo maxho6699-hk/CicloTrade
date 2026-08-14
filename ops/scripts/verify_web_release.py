@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import importlib.util
 import json
@@ -30,7 +31,9 @@ COMMIT = re.compile(r"^[0-9a-f]{40,64}$")
 BLOB = re.compile(r"^[0-9a-f]{40,64}$")
 TOP_LEVEL_KEYS = {"artifact", "files", "inputs", "lifecycle", "migrations", "runtime", "schema", "source", "source_date_epoch"}
 FILE_KEYS = {"mode", "path", "sha256", "size", "source"}
-SECRET_ASSIGNMENT = re.compile(rb"(?im)^\s*(?:[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY)|(?:secret|token|password|api[_-]?key))\s*[:=]\s*['\"]?(?!\$|<|example|replace|your|os\.|env\.)[^\s'\"]{8,}")
+SECRET_ASSIGNMENT = re.compile(rb"(?im)^\s*(?:(?:const|let|var)\s+)?['\"]?(?:[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY)|(?:secret|token|password|api[_-]?key))['\"]?\s*[:=]\s*['\"]?(?!\$|<|example|replace|your|os\.|env\.)[^\s'\";,})]{8,}")
+SENSITIVE_NAME = re.compile(r"(?:^|_)(?:secret|token|password|api[_-]?key)$", re.IGNORECASE)
+SENSITIVE_COMPOSITE_NAMES = frozenset({"secret_key", "token_key", "password_hash", "secret_value"})
 
 
 class ReleaseVerificationError(ValueError):
@@ -137,8 +140,55 @@ def _allowed_release_path(name: str) -> bool:
     return name.startswith(ALLOWED_PREFIXES)
 
 
-def _contains_secret(content: bytes) -> bool:
-    return bool(SECRET_ASSIGNMENT.search(content) or (b"-----BEGIN " in content and b"PRIVATE KEY-----" in content))
+def _sensitive_python_name(name: str) -> bool:
+    folded = name.casefold()
+    return folded in SENSITIVE_COMPOSITE_NAMES or bool(SENSITIVE_NAME.search(folded))
+
+
+def _python_assignment_names(target: ast.AST) -> list[str]:
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, (ast.List, ast.Tuple)):
+        names: list[str] = []
+        for item in target.elts:
+            names.extend(_python_assignment_names(item))
+        return names
+    return []
+
+
+def _contains_python_secret(content: bytes) -> bool:
+    try:
+        text = content.decode("utf-8", errors="strict")
+        if text.startswith("\ufeff"):
+            text = text[1:]
+        tree = ast.parse(text)
+    except (UnicodeDecodeError, SyntaxError):
+        return True
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            targets = [target for target in node.targets for target in _python_assignment_names(target)]
+            value = node.value
+        elif isinstance(node, ast.AnnAssign):
+            targets = _python_assignment_names(node.target)
+            value = node.value
+        elif isinstance(node, ast.NamedExpr):
+            targets = _python_assignment_names(node.target)
+            value = node.value
+        else:
+            continue
+        if not isinstance(value, ast.Constant) or not isinstance(value.value, (str, bytes)) or len(value.value) < 8:
+            continue
+        if any(_sensitive_python_name(target) for target in targets):
+            return True
+    return False
+
+
+def _contains_secret(path: str, content: bytes) -> bool:
+    if b"-----BEGIN " in content and b"PRIVATE KEY-----" in content:
+        return True
+    if Path(path).suffix.casefold() == ".py":
+        return _contains_python_secret(content)
+    return bool(SECRET_ASSIGNMENT.search(content))
 
 
 def _input_hashes(root: Path) -> dict[str, Any]:
@@ -335,7 +385,7 @@ def _archive_members(artifact: Path, epoch: int) -> tuple[dict[str, tuple[bytes,
                 content = handle.read(member.size + 1) if handle else b""
                 if len(content) != member.size:
                     return members, violations + ["archive member content is truncated"]
-                if _contains_secret(content):
+                if _contains_secret(name, content):
                     violations.append("archive contains a secret")
                 members[name] = (content, member.mode & 0o777)
     except (OSError, EOFError, tarfile.TarError):
