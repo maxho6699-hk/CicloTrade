@@ -1,7 +1,11 @@
 import asyncio
+import builtins
 import importlib
 import json
 
+import pytest
+
+from data.datasource import DataSourceError
 from src.apps.api.app import capabilities, health
 
 
@@ -32,6 +36,19 @@ def test_rewrite_capabilities_forbid_external_side_effects():
     assert "ui_locale" in payload["protected_writes"]
     assert "paper_orders" not in payload["protected_writes"]
     assert "/api/rewrite/v1/paper/orders" not in {route.path for route in api_module.routes}
+
+
+def test_missing_opend_runtime_fails_closed_without_blocking_app_import(monkeypatch):
+    original_import = builtins.__import__
+
+    def without_opend(name, *args, **kwargs):
+        if name == "data.opend_adapter":
+            raise ModuleNotFoundError(name)
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_opend)
+    with pytest.raises(DataSourceError, match="OpenD"):
+        api_module.OpenDAdapter()
 
 
 def test_market_search_state_prunes_expired_cache_and_rate_entries():

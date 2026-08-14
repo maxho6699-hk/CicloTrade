@@ -142,7 +142,6 @@ from notification.templates import auth_email
 from payment.order_service import MembershipPlanConflict, _EntitlementCommercePolicy
 from payment.proof_storage import read_payment_proof
 from data.datasource import DataSourceError, get_resilient_data_source, public_market_status
-from data.opend_adapter import OpenDAdapter, OptionExpiryUnavailableError
 from data.yfinance_adapter import YahooOptionExpiryUnavailableError
 from core.personal_paper.quote_proof import ActionableStockQuote, QuoteProofError
 
@@ -151,6 +150,23 @@ load_dotenv(Path(__file__).resolve().parents[3] / ".env")
 
 
 logger = logging.getLogger(__name__)
+
+
+def OpenDAdapter(*args: Any, **kwargs: Any) -> Any:
+    """Load the optional OpenD adapter only when an OpenD-backed path is used."""
+    try:
+        from data.opend_adapter import OpenDAdapter as Adapter
+    except (ImportError, OSError) as exc:
+        raise DataSourceError("OpenD 运行模块不可用。") from exc
+    return Adapter(*args, **kwargs)
+
+
+def _is_opend_expiry_unavailable(error: Exception) -> bool:
+    try:
+        from data.opend_adapter import OptionExpiryUnavailableError
+    except (ImportError, OSError):
+        return False
+    return isinstance(error, OptionExpiryUnavailableError)
 
 
 _CORRELATION_ID_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{8,128}")
@@ -1974,7 +1990,10 @@ def _personal_actionable_quote(
         or not _enabled("MARKET_DATA_REALTIME")
     ):
         raise QuoteProofError("实时美股报价不可用。")
-    quote = OpenDAdapter().stock_quote(symbol)
+    try:
+        quote = OpenDAdapter().stock_quote(symbol)
+    except DataSourceError as exc:
+        raise QuoteProofError("实时美股报价不可用。") from exc
     as_of = _market_datetime(quote.get("quote_at"), "美股")
     current = now.astimezone(UTC)
     if (
@@ -2915,11 +2934,11 @@ async def options_chain(request: Request) -> JSONResponse:
         selected, expiries, calls, puts = await run_in_threadpool(
             adapter.option_chain_with_expiries, symbol, expiry
         )
-    except OptionExpiryUnavailableError as exc:
-        raise ApiError(
-            "请求的期权到期日暂不可用。", 404, code="option_expiry_unavailable"
-        ) from exc
     except DataSourceError as opend_exc:
+        if _is_opend_expiry_unavailable(opend_exc):
+            raise ApiError(
+                "请求的期权到期日暂不可用。", 404, code="option_expiry_unavailable"
+            ) from opend_exc
         fallback = get_resilient_data_source("yfinance")
         try:
             selected, expiries, calls, puts = await run_in_threadpool(
