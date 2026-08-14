@@ -1,106 +1,115 @@
-export type ScreenerMarket = 'US' | 'CN'
-export type ScreenerTrend = 'rising' | 'neutral' | 'falling'
-export type ScreenerRisk = 'low' | 'medium' | 'high'
-export type ScreenerCap = 'large' | 'mid' | 'small'
-export type ScreenerServiceState = 'loading' | 'ready' | 'empty' | 'error' | 'delayed' | 'locked' | 'degraded'
-export type ScreenerSort = 'score-desc' | 'symbol-asc' | 'risk-asc'
+export type ScreenerCandidateState = 'official' | 'research'
+export type ScreenerAction = 'buy' | 'short' | 'wait' | 'hold' | 'reduce' | 'exit'
+export type ScreenerDataState = 'fresh' | 'delayed' | 'stale' | 'missing'
+export type ScreenerHealth = 'healthy' | 'degraded' | 'unavailable'
+export type ScreenerSortField = 'score' | 'symbol' | 'price' | 'change_pct' | 'updated_at'
+export type ScreenerSort = { field: ScreenerSortField; direction: 'asc' | 'desc' }
+
+export interface ScreenerFilters {
+  min_score?: number; max_score?: number; min_price?: number; max_price?: number
+  actions?: ScreenerAction[]; data_states?: ScreenerDataState[]; states?: ScreenerCandidateState[]; symbols?: string[]
+}
+
+export interface ScreenerPrefill { market: 'US'; symbol: string; side?: 'BUY' | 'SHORT' }
+export interface ScreenerPaperPrefill { market: 'US'; symbol: string; side: 'BUY' | 'SHORT' }
 
 export interface StockScreenerRow {
-  symbol: string
-  name: string
-  market: ScreenerMarket
-  trend: ScreenerTrend
-  risk: ScreenerRisk
-  marketCap: ScreenerCap
-  score: number
+  symbol: string; name: string; state: ScreenerCandidateState; action: ScreenerAction; score: number | null; price: number; change_pct: number
+  reasons: string[]; counter_evidence: string[]; risk: string; invalidation: string; data_state: ScreenerDataState; health: ScreenerHealth
+  updated_at: string; hong_kong_time: string; research_url: string; alert_prefill: ScreenerPrefill; paper_prefill: ScreenerPaperPrefill | null
+  blocked_reason: string | null; actionable: boolean
 }
 
 export interface StockScreenerPayload {
-  state: ScreenerServiceState
-  source: 'connected'
-  dataAsOf: string | null
-  rows: StockScreenerRow[]
+  schema_version: 1; preset: 'all' | 'momentum' | 'pullback' | 'risk_first'; filters: ScreenerFilters; sort: ScreenerSort
+  page: number; page_size: number; total: number; items: StockScreenerRow[]
 }
 
-export interface StockScreenerFilters {
-  market: ScreenerMarket | 'all'
-  trend: ScreenerTrend | 'all'
-  risk: ScreenerRisk | 'all'
-  marketCap: ScreenerCap | 'all'
+export interface StockScreenerPreset { schema_version: 1; version: number; name: string; filters: ScreenerFilters; sort: ScreenerSort }
+export type ScreenerViewState = 'pending' | 'success' | 'empty' | 'stale' | 'offline' | 'unknown'
+
+export const SCREENER_DRAFT_KEY = 'ciclotrade.stock-screener.draft.v1'
+const actions = new Set<ScreenerAction>(['buy', 'short', 'wait', 'hold', 'reduce', 'exit'])
+const dataStates = new Set<ScreenerDataState>(['fresh', 'delayed', 'stale', 'missing'])
+const healthStates = new Set<ScreenerHealth>(['healthy', 'degraded', 'unavailable'])
+const candidateStates = new Set<ScreenerCandidateState>(['official', 'research'])
+const sortFields = new Set<ScreenerSortField>(['score', 'symbol', 'price', 'change_pct', 'updated_at'])
+const presets = new Set<StockScreenerPayload['preset']>(['all', 'momentum', 'pullback', 'risk_first'])
+const symbolPattern = /^[A-Z][A-Z0-9]{0,9}(?:[.-][A-Z0-9]{1,5})?$/
+
+function object(value: unknown): Record<string, unknown> | null { return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null }
+function exact(value: Record<string, unknown>, keys: readonly string[]) { return Object.keys(value).length === keys.length && keys.every((key) => key in value) }
+function finite(value: unknown, minimum: number, maximum: number): value is number { return typeof value === 'number' && Number.isFinite(value) && value >= minimum && value <= maximum }
+function text(value: unknown, maximum = 240): value is string { return typeof value === 'string' && value.trim().length > 0 && value.length <= maximum }
+function listOfText(value: unknown, maximum = 8): value is string[] { return Array.isArray(value) && value.length <= maximum && value.every((item) => text(item)) && new Set(value).size === value.length }
+function timestamp(value: unknown): value is string { return text(value, 40) && !Number.isNaN(Date.parse(value)) && /(?:Z|[+-]\d{2}:\d{2})$/.test(value) }
+function hongKongTimestamp(value: unknown): value is string { return timestamp(value) && value.endsWith('+08:00') }
+
+function decodeFilters(value: unknown): ScreenerFilters | null {
+  const filters = object(value)
+  if (!filters || Object.keys(filters).some((key) => !['min_score', 'max_score', 'min_price', 'max_price', 'actions', 'data_states', 'states', 'symbols'].includes(key))) return null
+  for (const key of ['min_score', 'max_score'] as const) if (key in filters && !finite(filters[key], 0, 100)) return null
+  for (const key of ['min_price', 'max_price'] as const) if (key in filters && !finite(filters[key], Number.MIN_VALUE, 10_000_000)) return null
+  if (typeof filters.min_score === 'number' && typeof filters.max_score === 'number' && filters.min_score > filters.max_score) return null
+  if (typeof filters.min_price === 'number' && typeof filters.max_price === 'number' && filters.min_price > filters.max_price) return null
+  if ('actions' in filters && (!Array.isArray(filters.actions) || filters.actions.length > 40 || !filters.actions.every((item) => actions.has(item as ScreenerAction)) || new Set(filters.actions).size !== filters.actions.length)) return null
+  if ('data_states' in filters && (!Array.isArray(filters.data_states) || filters.data_states.length > 40 || !filters.data_states.every((item) => dataStates.has(item as ScreenerDataState)) || new Set(filters.data_states).size !== filters.data_states.length)) return null
+  if ('states' in filters && (!Array.isArray(filters.states) || filters.states.length > 40 || !filters.states.every((item) => candidateStates.has(item as ScreenerCandidateState)) || new Set(filters.states).size !== filters.states.length)) return null
+  if ('symbols' in filters && (!Array.isArray(filters.symbols) || filters.symbols.length > 40 || !filters.symbols.every((item) => typeof item === 'string' && symbolPattern.test(item)) || new Set(filters.symbols).size !== filters.symbols.length)) return null
+  return filters as ScreenerFilters
 }
 
-export const DEFAULT_SCREENER_FILTERS: StockScreenerFilters = {
-  market: 'all', trend: 'rising', risk: 'all', marketCap: 'all',
+function decodeSort(value: unknown): ScreenerSort | null {
+  const sort = object(value)
+  return sort && exact(sort, ['field', 'direction']) && sortFields.has(sort.field as ScreenerSortField) && (sort.direction === 'asc' || sort.direction === 'desc') ? sort as ScreenerSort : null
 }
 
-export const SCREENER_PRESETS: Array<{ id: 'trend' | 'stable' | 'value'; filters: StockScreenerFilters }> = [
-  { id: 'trend', filters: DEFAULT_SCREENER_FILTERS },
-  { id: 'stable', filters: { market: 'all', trend: 'rising', risk: 'low', marketCap: 'large' } },
-  { id: 'value', filters: { market: 'CN', trend: 'neutral', risk: 'medium', marketCap: 'mid' } },
-]
-
-const SERVICE_STATES = new Set<ScreenerServiceState>(['loading', 'ready', 'empty', 'error', 'delayed', 'locked', 'degraded'])
-const MARKETS = new Set<ScreenerMarket>(['US', 'CN'])
-const TRENDS = new Set<ScreenerTrend>(['rising', 'neutral', 'falling'])
-const RISKS = new Set<ScreenerRisk>(['low', 'medium', 'high'])
-const CAPS = new Set<ScreenerCap>(['large', 'mid', 'small'])
-
-function object(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+function decodePrefill(value: unknown, symbol: string, paper = false): ScreenerPrefill | ScreenerPaperPrefill | null {
+  const prefill = object(value), keys = paper ? ['market', 'symbol', 'side'] : ['market', 'symbol']
+  if (!prefill || !exact(prefill, keys) || prefill.market !== 'US' || prefill.symbol !== symbol || (paper && prefill.side !== 'BUY' && prefill.side !== 'SHORT')) return null
+  return prefill as unknown as ScreenerPrefill | ScreenerPaperPrefill
 }
 
-function exactKeys(value: Record<string, unknown>, keys: readonly string[]) {
-  return Object.keys(value).length === keys.length && keys.every((key) => key in value)
+function safeResearchUrl(value: unknown, symbol: string): value is string {
+  if (!text(value, 200) || !value.startsWith('/')) return false
+  const url = new URL(value, 'https://ciclotrade.invalid')
+  return url.origin === 'https://ciclotrade.invalid' && url.pathname === '/discover' && url.searchParams.get('tool') === 'screener' && url.searchParams.get('symbol') === symbol && [...url.searchParams.keys()].every((key) => key === 'tool' || key === 'symbol')
 }
 
 function decodeRow(value: unknown): StockScreenerRow | null {
   const row = object(value)
-  if (!row || !exactKeys(row, ['symbol', 'name', 'market', 'trend', 'risk', 'marketCap', 'score'])) return null
-  if (typeof row.symbol !== 'string' || !/^(?:[A-Z][A-Z0-9.-]{0,15}|\d{6})$/.test(row.symbol)) return null
-  if (typeof row.name !== 'string' || !row.name.trim() || row.name.length > 120) return null
-  if (!MARKETS.has(row.market as ScreenerMarket) || !TRENDS.has(row.trend as ScreenerTrend) || !RISKS.has(row.risk as ScreenerRisk) || !CAPS.has(row.marketCap as ScreenerCap)) return null
-  if (typeof row.score !== 'number' || !Number.isFinite(row.score) || row.score < 0 || row.score > 100) return null
-  return { symbol: row.symbol, name: row.name, market: row.market as ScreenerMarket, trend: row.trend as ScreenerTrend, risk: row.risk as ScreenerRisk, marketCap: row.marketCap as ScreenerCap, score: row.score }
+  const keys = ['symbol', 'name', 'state', 'action', 'score', 'price', 'change_pct', 'reasons', 'counter_evidence', 'risk', 'invalidation', 'data_state', 'health', 'updated_at', 'hong_kong_time', 'research_url', 'alert_prefill', 'paper_prefill', 'blocked_reason', 'actionable']
+  if (!row || !exact(row, keys) || !text(row.symbol, 16) || !symbolPattern.test(row.symbol) || !text(row.name, 120) || !candidateStates.has(row.state as ScreenerCandidateState) || !actions.has(row.action as ScreenerAction) || (row.score !== null && !finite(row.score, 0, 100)) || !finite(row.price, Number.MIN_VALUE, 10_000_000) || !finite(row.change_pct, -1_000, 1_000) || !listOfText(row.reasons) || !listOfText(row.counter_evidence) || !text(row.risk) || !text(row.invalidation) || !dataStates.has(row.data_state as ScreenerDataState) || !healthStates.has(row.health as ScreenerHealth) || !timestamp(row.updated_at) || !hongKongTimestamp(row.hong_kong_time) || !safeResearchUrl(row.research_url, row.symbol)) return null
+  const alert = decodePrefill(row.alert_prefill, row.symbol), paper = row.paper_prefill === null ? null : decodePrefill(row.paper_prefill, row.symbol, true)
+  if (!alert || (row.paper_prefill !== null && !paper) || typeof row.actionable !== 'boolean' || (row.blocked_reason !== null && !text(row.blocked_reason, 120)) || row.actionable !== (paper !== null) || row.actionable !== (row.blocked_reason === null)) return null
+  return { ...row, symbol: row.symbol as string, name: row.name as string, state: row.state as ScreenerCandidateState, action: row.action as ScreenerAction, score: row.score as number | null, price: row.price as number, change_pct: row.change_pct as number, reasons: row.reasons as string[], counter_evidence: row.counter_evidence as string[], risk: row.risk as string, invalidation: row.invalidation as string, data_state: row.data_state as ScreenerDataState, health: row.health as ScreenerHealth, updated_at: row.updated_at as string, hong_kong_time: row.hong_kong_time as string, research_url: row.research_url as string, alert_prefill: alert as ScreenerPrefill, paper_prefill: paper as ScreenerPaperPrefill | null, blocked_reason: row.blocked_reason as string | null, actionable: row.actionable }
 }
 
-/** Rejects unrecognised payloads so an unverified feed cannot be presented as research data. */
-export function decodeStockScreenerPayload(input: unknown): StockScreenerPayload | null {
-  const payload = object(input)
-  if (!payload || !exactKeys(payload, ['state', 'source', 'dataAsOf', 'rows'])) return null
-  if (!SERVICE_STATES.has(payload.state as ScreenerServiceState) || payload.source !== 'connected' || !Array.isArray(payload.rows)) return null
-  if (payload.dataAsOf !== null && (typeof payload.dataAsOf !== 'string' || Number.isNaN(Date.parse(payload.dataAsOf)))) return null
-  const rows = payload.rows.map(decodeRow)
-  if (rows.some((row) => row === null)) return null
-  if (payload.state === 'ready' && (payload.dataAsOf === null || rows.length === 0)) return null
-  return { state: payload.state as ScreenerServiceState, source: 'connected', dataAsOf: payload.dataAsOf as string | null, rows: rows as StockScreenerRow[] }
+/** Reject unsafe, stale-shape, duplicate, or internally inconsistent server data. */
+export function decodeStockScreenerPayload(value: unknown): StockScreenerPayload | null {
+  const payload = object(value)
+  if (!payload || !exact(payload, ['schema_version', 'preset', 'filters', 'sort', 'page', 'page_size', 'total', 'items']) || payload.schema_version !== 1 || !presets.has(payload.preset as StockScreenerPayload['preset']) || !Array.isArray(payload.items) || !finite(payload.page, 1, 1_000) || !Number.isInteger(payload.page) || !finite(payload.page_size, 1, 100) || !Number.isInteger(payload.page_size) || !finite(payload.total, 0, 500) || !Number.isInteger(payload.total) || payload.items.length > payload.page_size) return null
+  const filters = decodeFilters(payload.filters), sort = decodeSort(payload.sort), items = payload.items.map(decodeRow)
+  if (!filters || !sort || items.some((item) => item === null) || new Set(items.map((item) => item!.symbol)).size !== items.length || (payload.total === 0 && items.length !== 0) || (payload.total > 0 && payload.page > Math.ceil(payload.total / payload.page_size))) return null
+  return { schema_version: 1, preset: payload.preset as StockScreenerPayload['preset'], filters, sort, page: payload.page, page_size: payload.page_size, total: payload.total, items: items as StockScreenerRow[] }
 }
 
-export function filterAndSortScreenerRows(rows: StockScreenerRow[], filters: StockScreenerFilters, sort: ScreenerSort) {
-  const visible = rows.filter((row) => (
-    (filters.market === 'all' || row.market === filters.market)
-    && (filters.trend === 'all' || row.trend === filters.trend)
-    && (filters.risk === 'all' || row.risk === filters.risk)
-    && (filters.marketCap === 'all' || row.marketCap === filters.marketCap)
-  ))
-  return visible.sort((left, right) => sort === 'symbol-asc'
-    ? left.symbol.localeCompare(right.symbol)
-    : sort === 'risk-asc'
-      ? RISKS_ORDER[left.risk] - RISKS_ORDER[right.risk] || right.score - left.score
-      : right.score - left.score || left.symbol.localeCompare(right.symbol))
+export function decodeStockScreenerPreset(value: unknown): StockScreenerPreset | null {
+  const preset = object(value)
+  if (!preset || !exact(preset, ['schema_version', 'version', 'name', 'filters', 'sort']) || preset.schema_version !== 1 || !finite(preset.version, 0, Number.MAX_SAFE_INTEGER) || !Number.isInteger(preset.version) || !text(preset.name, 80)) return null
+  const filters = decodeFilters(preset.filters), sort = decodeSort(preset.sort)
+  return filters && sort ? { schema_version: 1, version: preset.version, name: preset.name, filters, sort } : null
 }
 
-const RISKS_ORDER: Record<ScreenerRisk, number> = { low: 0, medium: 1, high: 2 }
+export function decodeStockScreenerDraft(value: string | null): StockScreenerPreset | null { try { return value ? decodeStockScreenerPreset(JSON.parse(value)) : null } catch { return null } }
 
-export function pagedScreenerRows(rows: StockScreenerRow[], page: number, pageSize = 8) {
-  const safePage = Math.max(0, Math.min(page, Math.max(0, Math.ceil(rows.length / pageSize) - 1)))
-  return { page: safePage, pageCount: Math.max(1, Math.ceil(rows.length / pageSize)), rows: rows.slice(safePage * pageSize, (safePage + 1) * pageSize) }
+export function screenerViewState(payload: StockScreenerPayload | null, loading = false): ScreenerViewState {
+  if (loading) return 'pending'
+  if (!payload) return 'unknown'
+  if (payload.total === 0) return 'empty'
+  if (payload.items.some((item) => item.health === 'unavailable')) return 'offline'
+  return payload.items.some((item) => item.data_state !== 'fresh' || item.health !== 'healthy') ? 'stale' : 'success'
 }
 
-function params(row: StockScreenerRow, extras: Record<string, string> = {}) {
-  const search = new URLSearchParams({ market: row.market, symbol: row.symbol, ...extras })
-  return search.toString()
-}
-
-export function researchUrl(row: StockScreenerRow) { return `/research?${params(row)}` }
-export function alertDraftUrl(row: StockScreenerRow) { return `/notifications?${params(row, { draft: 'alert' })}` }
-export function personalPaperPrefillUrl(row: StockScreenerRow) { return `/paper?${params(row, { side: 'BUY' })}` }
+export function alertPrefillUrl(prefill: ScreenerPrefill) { return `/notifications?${new URLSearchParams({ market: prefill.market, symbol: prefill.symbol, draft: 'alert' })}` }
+export function paperPrefillUrl(prefill: ScreenerPaperPrefill) { return `/paper?${new URLSearchParams({ market: prefill.market, symbol: prefill.symbol, side: prefill.side })}` }
