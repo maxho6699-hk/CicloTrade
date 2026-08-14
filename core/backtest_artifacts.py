@@ -29,7 +29,19 @@ def artifact_limit(value: str | None = None) -> int:
 
 class ArtifactStore:
     def __init__(self, root: str | Path | None = None, max_bytes: int | None = None):
-        self.root = Path(root or os.getenv("TRADEAI_BACKTEST_ARTIFACT_DIR", "data/backtest-artifacts")).resolve()
+        root_path = Path(root or os.getenv("TRADEAI_BACKTEST_ARTIFACT_DIR", "data/backtest-artifacts")).expanduser()
+        missing: list[str] = []
+        existing = root_path
+        while not existing.exists():
+            missing.append(existing.name)
+            parent = existing.parent
+            if parent == existing:
+                break
+            existing = parent
+        resolved = existing.resolve(strict=existing.exists())
+        for part in reversed(missing):
+            resolved /= part
+        self.root = resolved
         self.max_bytes = artifact_limit(str(max_bytes)) if max_bytes is not None else artifact_limit()
 
     @staticmethod

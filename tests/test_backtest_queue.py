@@ -494,6 +494,22 @@ def test_immutable_artifacts_do_not_overwrite_or_expose_inputs(tmp_path):
         queue.owner_artifact(job["id"], "result.json", 1)
 
 
+def test_artifact_store_rejects_root_replacement(tmp_path):
+    root = tmp_path / "replaceable-root"
+    outside = tmp_path / "outside-root"
+    store = ArtifactStore(root, max_bytes=2048)
+    outside.mkdir()
+    root.mkdir()
+    root.rmdir()
+    try:
+        root.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    with pytest.raises(ArtifactError, match="路径越界"):
+        store._path("job/input/a0--prices.csv")
+
+
 def test_artifact_orphan_reconcile_preserves_registered_files_and_removes_aged_debris(tmp_path):
     store = ArtifactStore(tmp_path / "reconcile", max_bytes=2048)
     registered_body = b"registered"
