@@ -20,8 +20,7 @@ from core.auth import AuthService
 from core.admin_service import AdminService
 from core.database import DatabaseManager
 from core.membership import add_membership_entitlement
-from core.plans import referral_code
-from core.referral_affiliate import ReferralProgramService
+from core.referral_affiliate import ReferralProgramService, ReferralService
 from payment.order_service import (
     MembershipPlanConflict,
     OrderService,
@@ -73,6 +72,30 @@ def _enable_referral_cash(db: DatabaseManager, name: str) -> None:
         (admin["id"], datetime.now(UTC).isoformat(timespec="seconds")),
     )
     ReferralProgramService(db).enable(admin["id"])
+
+
+def _verified_referral_user(
+    db: DatabaseManager, auth: AuthService, referrer: dict, email: str, name: str
+) -> dict:
+    invite = ReferralService(db).ensure_profile(referrer["id"])["invite_code"]
+    fingerprint = "f" * 64
+    claim = ReferralService(db).issue_link_claim(invite, fingerprint)
+    user = auth.register(
+        email,
+        "CorrectHorse123",
+        name,
+        True,
+        invite,
+        referral_claim=claim,
+        referral_claim_fingerprint=fingerprint,
+    )
+    assert user
+    return user
+
+
+def _full_reversal_payload(service: OrderService, order_no: str) -> dict[str, int]:
+    order = service.get_order(order_no)
+    return {"verified_refund_amount_minor": int(order["final_amount_minor"] or order["amount_minor"])}
 
 
 def test_telegram_order_idempotency_and_owner_boundary(db):
@@ -514,7 +537,12 @@ def test_terminal_callbacks_and_provider_reversal_restore_entitlement(db):
     assert service.get_order(second["order_no"])["previous_plan_type"] == "高级版"
     assert service.get_order(second["order_no"])["previous_subscription_expire"] == first_expiry
 
-    service.process_reversal("provider-reversal-2", second["order_no"], {}, "provider_refund")
+    service.process_reversal(
+        "provider-reversal-2",
+        second["order_no"],
+        _full_reversal_payload(service, second["order_no"]),
+        "provider_refund",
+    )
     restored = db.fetch_one("SELECT plan_type,subscription_expire FROM users WHERE id=?", (user["id"],))
     assert restored == {"plan_type": "高级版", "subscription_expire": first_expiry}
     assert service.process_callback("late-paid", second["order_no"], "paid", {}) is False
@@ -534,13 +562,7 @@ def test_paid_referral_cash_commission_replaces_legacy_days_reward(db):
     _enable_referral_cash(db, "cash-release-one")
     auth = AuthService(db)
     referrer = _user(db, "referrer")
-    referee = auth.register(
-        "referee@example.com",
-        "CorrectHorse123",
-        "Referee",
-        True,
-        referral_code(referrer["id"]),
-    )
+    referee = _verified_referral_user(db, auth, referrer, "referee@example.com", "Referee")
     service = OrderService(db)
 
     first = service.create_order(
@@ -552,7 +574,7 @@ def test_paid_referral_cash_commission_replaces_legacy_days_reward(db):
         "SELECT rate_bps,order_kind,source_order_no FROM referral_commissions WHERE referrer_user_id=?",
         (referrer["id"],),
     )
-    assert commission == {"rate_bps": 2000, "order_kind": "initial_purchase", "source_order_no": first["order_no"]}
+    assert commission == {"rate_bps": 1000, "order_kind": "initial_purchase", "source_order_no": first["order_no"]}
     assert db.fetch_one("SELECT COUNT(*) count FROM rewards WHERE user_id=?", (referrer["id"],))["count"] == 0
 
     second = service.create_order(
@@ -561,19 +583,15 @@ def test_paid_referral_cash_commission_replaces_legacy_days_reward(db):
     assert service.process_callback("referral-paid-2", second["order_no"], "paid", {})
 
     rows = db.fetch_all("SELECT rate_bps,order_kind FROM referral_commissions WHERE referrer_user_id=? ORDER BY id", (referrer["id"],))
-    assert rows == [{"rate_bps": 2000, "order_kind": "initial_purchase"}, {"rate_bps": 1000, "order_kind": "upgrade"}]
+    assert rows == [{"rate_bps": 1000, "order_kind": "initial_purchase"}]
 
 
 def test_refund_claws_back_cash_commission_without_requalifying_first_rate(db):
     _enable_referral_cash(db, "cash-release-two")
     auth = AuthService(db)
     referrer = _user(db, "refund-referrer")
-    referee = auth.register(
-        "refund-referee@example.com",
-        "CorrectHorse123",
-        "Refund Referee",
-        True,
-        referral_code(referrer["id"]),
+    referee = _verified_referral_user(
+        db, auth, referrer, "refund-referee@example.com", "Refund Referee"
     )
     service = OrderService(db)
     order = service.create_order(
@@ -582,7 +600,12 @@ def test_refund_claws_back_cash_commission_without_requalifying_first_rate(db):
     assert service.process_callback("refund-referral-paid", order["order_no"], "paid", {})
     assert db.fetch_one("SELECT COUNT(*) count FROM referral_commissions")["count"] == 1
 
-    service.process_reversal("referral-provider-reversal", order["order_no"], {}, "provider_refund")
+    service.process_reversal(
+        "referral-provider-reversal",
+        order["order_no"],
+        _full_reversal_payload(service, order["order_no"]),
+        "provider_refund",
+    )
 
     assert db.fetch_one("SELECT clawed_back_minor=commission_amount_minor full_claw FROM referral_commissions")["full_claw"] == 1
 
@@ -590,7 +613,10 @@ def test_refund_claws_back_cash_commission_without_requalifying_first_rate(db):
         referee["id"], "标准版", "monthly", "paypal", terms_accepted=True, source="legacy"
     )
     assert service.process_callback("refund-referral-repaid", replacement["order_no"], "paid", {})
-    assert db.fetch_one("SELECT rate_bps FROM referral_commissions WHERE source_order_no=?", (replacement["order_no"],))["rate_bps"] == 1000
+    assert db.fetch_one(
+        "SELECT COUNT(*) count FROM referral_commissions WHERE source_order_no=?",
+        (replacement["order_no"],),
+    )["count"] == 0
 
 
 def test_refund_preserves_rewards_granted_after_payment(db):
@@ -609,7 +635,12 @@ def test_refund_preserves_rewards_granted_after_payment(db):
         )
         grant_subscription_days(conn, user["id"], 7, "标准版")
 
-    service.process_reversal("later-reward-provider-reversal", order["order_no"], {}, "provider_refund")
+    service.process_reversal(
+        "later-reward-provider-reversal",
+        order["order_no"],
+        _full_reversal_payload(service, order["order_no"]),
+        "provider_refund",
+    )
 
     restored = db.fetch_one("SELECT plan_type,subscription_expire FROM users WHERE id=?", (user["id"],))
     assert restored["plan_type"] == "标准版"
@@ -635,18 +666,26 @@ def test_verified_provider_reversal_bypasses_voluntary_window_and_is_idempotent(
     )
     assert service.refund_eligibility(order["order_no"])[0] is False
 
+    reversal_payload = _full_reversal_payload(service, order["order_no"])
     assert service.process_reversal(
         "provider-refunded",
         order["order_no"],
-        {"provider": "paypal", "capture_id": "CAPTURE-REVERSAL"},
+        reversal_payload,
         "paypal:payment.capture.refunded",
     )
     assert not service.process_reversal(
         "provider-refunded",
         order["order_no"],
-        {},
+        reversal_payload,
         "paypal:payment.capture.refunded",
     )
+    with pytest.raises(ValueError, match="编号已用于不同请求"):
+        service.process_reversal(
+            "provider-refunded",
+            order["order_no"],
+            {"verified_refund_amount_minor": 1},
+            "paypal:payment.capture.refunded",
+        )
     assert service.get_order(order["order_no"])["status"] == "refunded"
     assert db.fetch_one(
         "SELECT plan_type,subscription_expire FROM users WHERE id=?", (user["id"],)
@@ -671,7 +710,7 @@ def test_reversing_older_order_preserves_later_subscription(db):
     assert service.process_reversal(
         "older-first-reversed",
         first["order_no"],
-        {"provider": "paypal"},
+        _full_reversal_payload(service, first["order_no"]),
         "paypal:payment.capture.refunded",
     )
 
@@ -709,7 +748,10 @@ def test_reversing_older_order_only_removes_unused_overlap_and_keeps_manual_exte
     )
 
     service.process_reversal(
-        "overlap-first-reversed", first["order_no"], {"provider": "paypal"}, "paypal:refund"
+        "overlap-first-reversed",
+        first["order_no"],
+        _full_reversal_payload(service, first["order_no"]),
+        "paypal:refund",
     )
 
     current = db.fetch_one(
@@ -743,7 +785,10 @@ def test_reversing_expired_older_order_does_not_touch_later_purchase(db):
     before = db.fetch_one("SELECT subscription_expire FROM users WHERE id=?", (user["id"],))["subscription_expire"]
 
     service.process_reversal(
-        "expired-old-first-reversed", first["order_no"], {"provider": "paypal"}, "paypal:refund"
+        "expired-old-first-reversed",
+        first["order_no"],
+        _full_reversal_payload(service, first["order_no"]),
+        "paypal:refund",
     )
 
     current = db.fetch_one(
@@ -765,7 +810,10 @@ def test_reversal_preserves_later_manual_subscription_adjustment(db):
     )
 
     service.process_reversal(
-        "manual-base-reversed", order["order_no"], {"provider": "paypal"}, "paypal:refund"
+        "manual-base-reversed",
+        order["order_no"],
+        _full_reversal_payload(service, order["order_no"]),
+        "paypal:refund",
     )
 
     current = db.fetch_one(
@@ -787,7 +835,10 @@ def test_reversal_does_not_reactivate_a_manually_downgraded_account(db):
     )
 
     service.process_reversal(
-        "manual-free-reversed", order["order_no"], {"provider": "paypal"}, "paypal:refund"
+        "manual-free-reversed",
+        order["order_no"],
+        _full_reversal_payload(service, order["order_no"]),
+        "paypal:refund",
     )
 
     assert db.fetch_one(
@@ -799,12 +850,8 @@ def test_reversing_cash_commission_does_not_move_or_rewrite_history(db):
     _enable_referral_cash(db, "cash-release-three")
     auth = AuthService(db)
     referrer = _user(db, "replacement-referrer")
-    referee = auth.register(
-        "replacement-referee@example.com",
-        "CorrectHorse123",
-        "Replacement Referee",
-        True,
-        referral_code(referrer["id"]),
+    referee = _verified_referral_user(
+        db, auth, referrer, "replacement-referee@example.com", "Replacement Referee"
     )
     service = OrderService(db)
     first = service.create_order(
@@ -821,16 +868,16 @@ def test_reversing_cash_commission_does_not_move_or_rewrite_history(db):
     service.process_reversal(
         "ref-source-reversed",
         first["order_no"],
-        {"provider": "paypal"},
+        _full_reversal_payload(service, first["order_no"]),
         "paypal:payment.capture.refunded",
     )
 
     rows = db.fetch_all("SELECT source_order_no,rate_bps,clawed_back_minor,commission_amount_minor FROM referral_commissions ORDER BY id")
     assert rows[0]["source_order_no"] == first["order_no"] and rows[0]["clawed_back_minor"] == rows[0]["commission_amount_minor"]
-    assert rows[1]["source_order_no"] == second["order_no"] and rows[1]["rate_bps"] == 1000 and rows[1]["clawed_back_minor"] == 0
+    assert len(rows) == 1
 
 
-def test_expired_referrer_plan_does_not_receive_legacy_days_and_yearly_cash_is_twenty_percent(db):
+def test_expired_referrer_plan_does_not_receive_legacy_days_and_yearly_cash_is_ten_percent(db):
     _enable_referral_cash(db, "cash-release-four")
     referrer = _user(db, "expired-reward")
     expired = (datetime.now(UTC) - timedelta(days=1)).isoformat(timespec="seconds")
@@ -843,12 +890,8 @@ def test_expired_referrer_plan_does_not_receive_legacy_days_and_yearly_cash_is_t
     assert db.fetch_one("SELECT plan_type FROM users WHERE id=?", (referrer["id"],))["plan_type"] == "标准版"
 
     auth = AuthService(db)
-    referee = auth.register(
-        "yearly-referee@example.com",
-        "CorrectHorse123",
-        "Yearly Referee",
-        True,
-        referral_code(referrer["id"]),
+    referee = _verified_referral_user(
+        db, auth, referrer, "yearly-referee@example.com", "Yearly Referee"
     )
     service = OrderService(db)
     order = service.create_order(
@@ -861,8 +904,8 @@ def test_expired_referrer_plan_does_not_receive_legacy_days_and_yearly_cash_is_t
     )
     assert timedelta(days=454) < buyer_expiry - before < timedelta(days=456)
     cash = db.fetch_one("SELECT rate_bps,commission_amount_minor,gross_amount_minor FROM referral_commissions WHERE source_order_no=?", (order["order_no"],))
-    assert cash["rate_bps"] == 2000
-    assert cash["commission_amount_minor"] == cash["gross_amount_minor"] * 20 // 100
+    assert cash["rate_bps"] == 1000
+    assert cash["commission_amount_minor"] == min(cash["gross_amount_minor"] * 10 // 100, 50_000)
     assert db.fetch_one("SELECT COUNT(*) count FROM rewards WHERE source_order_no=?", (order["order_no"],))["count"] == 0
 
 
@@ -907,7 +950,12 @@ def test_payment_and_refund_roll_back_when_atomic_audit_fails(db):
                BEGIN SELECT RAISE(ABORT, 'audit failed'); END;"""
         )
     with pytest.raises(sqlite3.IntegrityError):
-        service.process_reversal("atomic-provider-reversal", order["order_no"], {}, "provider_refund")
+        service.process_reversal(
+            "atomic-provider-reversal",
+            order["order_no"],
+            _full_reversal_payload(service, order["order_no"]),
+            "provider_refund",
+        )
     assert service.get_order(order["order_no"])["status"] == "paid"
     assert db.fetch_one("SELECT plan_type,subscription_expire FROM users WHERE id=?", (user["id"],)) == paid_user
 
