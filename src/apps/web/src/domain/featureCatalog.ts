@@ -226,6 +226,8 @@ const COPY: Record<string, { hans: string; hant: string }> = {
   'feature.option_lab.description': { hans: '查看期权链、Greeks、IV 与有限风险结构。', hant: '查看期權鏈、Greeks、IV 與有限風險結構。' },
   'feature.earnings_forecast.title': { hans: '业绩预测', hant: '業績預測' },
   'feature.earnings_forecast.description': { hans: '追踪七日观点变化、区间预测与事后复盘。', hant: '追蹤七日觀點變化、區間預測與事後復盤。' },
+  'feature.strategy_research.title': { hans: '策略研究覆盖', hant: '策略研究覆蓋' },
+  'feature.strategy_research.description': { hans: '查看 13 股稳定链与 97 标的扩容链的研究证据和覆盖状态。', hant: '查看 13 股穩定鏈與 97 標的擴容鏈的研究證據和覆蓋狀態。' },
   'feature.risk_calculator.title': { hans: '风险与仓位计算器', hant: '風險與倉位計算器' },
   'feature.risk_calculator.description': { hans: '在行动前计算仓位、最大亏损与购买力影响。', hant: '在行動前計算倉位、最大虧損與購買力影響。' },
   'feature.personal_paper.title': { hans: '个人模拟交易', hant: '個人模擬交易' },

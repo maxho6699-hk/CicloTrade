@@ -143,7 +143,7 @@ test('system cycle research decoders fail closed on unexpected fields, missing a
 test('research tab mounts the request-owning panel only when active and preserves the non-executable copy', async () => {
   const reports = await readFile(new URL('../src/pages/ReportsPage.tsx', import.meta.url), 'utf8')
   const panel = await readFile(new URL('../src/components/SystemCycleResearchPanel.tsx', import.meta.url), 'utf8')
-  assert.match(reports, /researchView && <SystemCycleResearchPanel/)
+  assert.match(reports, /researchScope === 'expanded' \? <StrategyResearch97Panel \/> : <SystemCycleResearchPanel \/>/)
   assert.match(panel, /useEffect\(\(\) =>/)
   assert.match(panel, /cycle\.stocks\.map/)
   assert.match(panel, /历史规则回放与状态扫描，不是严格样本外验证；研究结果不可执行，不会发送Telegram或订单。/)

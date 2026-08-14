@@ -93,6 +93,9 @@ test('simplified and traditional copy share searchable terms', () => {
   assert.match(featureSearchText(screener), /筛选器/)
   assert.match(featureSearchText(screener), /篩選器/)
   assert.equal(filterFeatureCatalog(decoded.items, '篩選', 'zh-Hant').filter((item) => item.key === 'stock-screener').length, 1)
+  const strategyResearch = { ...screener, titleKey: 'feature.strategy_research.title', descriptionKey: 'feature.strategy_research.description' }
+  assert.equal(localizeFeature(strategyResearch, 'zh-Hant').title, '策略研究覆蓋')
+  assert.match(localizeFeature(strategyResearch, 'zh-Hans').description, /97 标的扩容链/)
 })
 
 test('fixed server reasons are localized while unknown operational detail remains untouched', () => {

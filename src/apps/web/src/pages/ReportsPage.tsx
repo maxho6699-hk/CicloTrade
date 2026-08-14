@@ -3,6 +3,7 @@ import { type CSSProperties } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useWorkspace } from '../api/workspace-context'
 import { PageHeader } from '../components/PageHeader'
+import { StrategyResearch97Panel } from '../components/StrategyResearch97Panel'
 import { WorkspaceState } from '../components/WorkspaceState'
 import { SystemCycleResearchPanel } from '../components/SystemCycleResearchPanel'
 import { modelReports, reportReturns } from '../data/workspace'
@@ -12,6 +13,7 @@ import { displayDataSource } from '../domain/dataSourcePresentation'
 
 const reportViews = ['CicloTrade模拟验证结果', '系统模型验证', '模型版本', '影子策略研究'] as const
 type ReportView = typeof reportViews[number]
+type ResearchScope = 'stable' | 'expanded'
 
 export function ReportsPage() {
   const workspace = useWorkspace()
@@ -19,10 +21,19 @@ export function ReportsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const requestedView = searchParams.get('view') as ReportView | null
   const view: ReportView = requestedView && reportViews.includes(requestedView) ? requestedView : reportViews[0]
+  const researchScope: ResearchScope = searchParams.get('research_scope') === 'expanded' ? 'expanded' : 'stable'
   const setView = (next: ReportView) => {
     const params = new URLSearchParams(searchParams)
     if (next === reportViews[0]) params.delete('view')
     else params.set('view', next)
+    if (next !== '影子策略研究') params.delete('research_scope')
+    setSearchParams(params, { replace: true })
+  }
+  const setResearchScope = (next: ResearchScope) => {
+    const params = new URLSearchParams(searchParams)
+    params.set('view', '影子策略研究')
+    if (next === 'stable') params.delete('research_scope')
+    else params.set('research_scope', next)
     setSearchParams(params, { replace: true })
   }
   const snapshots = workspace.data?.performance.items ?? []
@@ -102,7 +113,15 @@ export function ReportsPage() {
         {demoMode ? <div className="compact-list">{modelReports.map((model) => <article key={model.version}><span className={`model-state ${model.state}`}>{model.state === 'active' ? '正式运行' : model.state === 'shadow' ? '影子验证' : '已阻止'}</span><div><strong>{model.name}</strong><small>{model.version} · 样本 {model.sampleSize}</small></div><div className="list-value"><strong>{model.stability}%</strong><small>稳定性</small></div></article>)}</div> : <div className="inline-empty">真实模型版本注册表尚未开放到报告接口。</div>}
       </section>}
 
-      {researchView && <SystemCycleResearchPanel />}
+      {researchView && <>
+        <div className="toolbar-row strategy-research-scope-toolbar">
+          <div className="segmented-control" role="group" aria-label={locale === 'zh-Hant' ? '策略研究範圍' : '策略研究范围'}>
+            <button type="button" className={researchScope === 'stable' ? 'active' : ''} aria-pressed={researchScope === 'stable'} onClick={() => setResearchScope('stable')}>{locale === 'zh-Hant' ? '13 股穩定研究' : '13 股稳定研究'}</button>
+            <button type="button" className={researchScope === 'expanded' ? 'active' : ''} aria-pressed={researchScope === 'expanded'} onClick={() => setResearchScope('expanded')}>{locale === 'zh-Hant' ? '97 標的擴容研究' : '97 标的扩容研究'}</button>
+          </div>
+        </div>
+        {researchScope === 'expanded' ? <StrategyResearch97Panel /> : <SystemCycleResearchPanel />}
+      </>}
     </div>
   )
 }

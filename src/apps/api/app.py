@@ -85,6 +85,14 @@ from src.apps.api.system_cycle_research_read_model import (
     MIN_STALE_SECONDS,
     SystemCycleResearchReadModel,
 )
+from src.apps.api.expanded_research_receiver import (
+    ExpandedResearchReceiver,
+    ExpandedResearchReceiverError,
+    build_expanded_research_receiver,
+    expanded_research_receiver_error,
+    expanded_research_result,
+)
+from src.apps.api.expanded_research_read_model import ExpandedResearchReadModel
 from src.apps.api.compute_evidence_http import (
     ADMIN_HISTORY_PATH as COMPUTE_EVIDENCE_ADMIN_HISTORY_PATH,
     ADMIN_LATEST_PATH as COMPUTE_EVIDENCE_ADMIN_LATEST_PATH,
@@ -530,6 +538,54 @@ async def system_cycle_research_history(request: Request) -> JSONResponse:
         else SystemCycleResearchReadModel.unavailable_history(limit)
     )
     return JSONResponse(payload, headers=_system_cycle_research_headers())
+
+
+def _expanded_research_read_model(request: Request) -> ExpandedResearchReadModel | None:
+    receiver = getattr(request.app.state, "expanded_research_receiver", None)
+    if not isinstance(receiver, ExpandedResearchReceiver) or not receiver.enabled:
+        return None
+    return ExpandedResearchReadModel(
+        receiver.store,
+        authorize=lambda identity: isinstance(identity, BrowserIdentity),
+    )
+
+
+def _expanded_research_headers() -> dict[str, str]:
+    return {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+
+
+async def expanded_research_status(request: Request) -> JSONResponse:
+    identity = _identity(request)
+    model = _expanded_research_read_model(request)
+    payload = (
+        await run_in_threadpool(model.status, identity)
+        if model is not None
+        else ExpandedResearchReadModel.unavailable_status()
+    )
+    return JSONResponse(payload, headers=_expanded_research_headers())
+
+
+async def expanded_research_latest(request: Request) -> JSONResponse:
+    identity = _identity(request)
+    model = _expanded_research_read_model(request)
+    payload = (
+        await run_in_threadpool(model.latest, identity)
+        if model is not None
+        else ExpandedResearchReadModel.unavailable_latest()
+    )
+    return JSONResponse(payload, headers=_expanded_research_headers())
+
+
+async def expanded_research_history(request: Request) -> JSONResponse:
+    identity = _identity(request)
+    limit = _bounded_int(request, "limit", 20, 20)
+    model = _expanded_research_read_model(request)
+    payload = (
+        await run_in_threadpool(model.history, identity, limit)
+        if model is not None
+        else ExpandedResearchReadModel.unavailable_history(limit)
+    )
+    return JSONResponse(payload, headers=_expanded_research_headers())
 
 
 async def health(request: Request | None) -> JSONResponse:
@@ -1633,12 +1689,36 @@ def _feature_catalog_response(payload: dict[str, Any]) -> JSONResponse:
     )
 
 
+async def _feature_catalog_runtime(request: Request, identity: BrowserIdentity) -> dict[str, object]:
+    model = _expanded_research_read_model(request)
+    status = (
+        await run_in_threadpool(model.status, identity)
+        if model is not None
+        else ExpandedResearchReadModel.unavailable_status()
+    )
+    available = bool(status.get("available"))
+    if available:
+        data_state, health, reason = "ready", "healthy", None
+    else:
+        data_state, health, reason = "missing", "unavailable", "尚未取得可核验的数据新鲜度或服务健康证明。"
+    return {
+        "strategy-research": {
+            "data_state": data_state,
+            "health": health,
+            "verified_at": datetime.now(UTC).isoformat(),
+            "reason": reason,
+        },
+    }
+
+
 async def feature_catalog(request: Request) -> JSONResponse:
     identity = _identity(request)
+    runtime = await _feature_catalog_runtime(request, identity)
     try:
         payload = await run_in_threadpool(
             _feature_catalog_adapter(request).read,
             user_id=identity.id,
+            runtime=runtime,
         )
     except (FeatureCatalogValidationError, ValueError) as exc:
         raise ApiError(str(exc)) from exc
@@ -1650,11 +1730,13 @@ async def feature_catalog(request: Request) -> JSONResponse:
 async def feature_catalog_preferences(request: Request) -> JSONResponse:
     identity = _identity(request)
     payload = await _json_body(request)
+    runtime = await _feature_catalog_runtime(request, identity)
     try:
         result = await run_in_threadpool(
             _feature_catalog_adapter(request).update_preferences,
             user_id=identity.id,
             payload=payload,
+            runtime=runtime,
         )
     except FeatureCatalogConflict as exc:
         raise ApiError(str(exc), 409) from exc
@@ -1668,6 +1750,7 @@ async def feature_catalog_preferences(request: Request) -> JSONResponse:
 async def feature_catalog_recent(request: Request) -> JSONResponse:
     identity = _identity(request)
     payload = await _json_body(request)
+    runtime = await _feature_catalog_runtime(request, identity)
     if set(payload) != {"key", "expected_version"}:
         raise ApiError("最近使用功能字段无效。")
     try:
@@ -1676,6 +1759,7 @@ async def feature_catalog_recent(request: Request) -> JSONResponse:
             user_id=identity.id,
             key=payload["key"],
             expected_version=payload["expected_version"],
+            runtime=runtime,
         )
     except FeatureCatalogConflict as exc:
         raise ApiError(str(exc), 409) from exc
@@ -3379,9 +3463,13 @@ routes = [
     Route("/api/rewrite/v1/system-cycle-research/status", system_cycle_research_status, methods=["GET"]),
     Route("/api/rewrite/v1/system-cycle-research/latest", system_cycle_research_latest, methods=["GET"]),
     Route("/api/rewrite/v1/system-cycle-research/history", system_cycle_research_history, methods=["GET"]),
+    Route("/api/rewrite/v1/strategy-research/expanded/status", expanded_research_status, methods=["GET"]),
+    Route("/api/rewrite/v1/strategy-research/expanded/latest", expanded_research_latest, methods=["GET"]),
+    Route("/api/rewrite/v1/strategy-research/expanded/history", expanded_research_history, methods=["GET"]),
     Route("/api/rewrite/internal/v1/official-option-simulation/receipts", official_option_sim_receipt, methods=["POST"]),
     Route("/api/rewrite/internal/v1/system-cycle-research/results", system_cycle_research_result, methods=["POST"]),
     Route("/api/rewrite/internal/v1/system-cycle-research/heartbeat", system_cycle_research_heartbeat, methods=["POST"]),
+    Route("/api/rewrite/internal/v1/expanded-research/results", expanded_research_result, methods=["POST"]),
     Route(COMPUTE_EVIDENCE_INTERNAL_PATH, compute_evidence_accept, methods=["POST"]),
     Route("/api/rewrite/v1/membership", membership, methods=["GET"]),
     Route("/api/rewrite/v1/membership/quote", membership_quote, methods=["POST"]),
@@ -3423,6 +3511,7 @@ app = Starlette(
         OfficialOptionSimulationUnavailable: official_option_sim_unavailable_handler,
         OfficialOptionSimulationReceiverError: official_option_sim_receiver_error,
         SystemCycleResearchReceiverError: system_cycle_research_receiver_error,
+        ExpandedResearchReceiverError: expanded_research_receiver_error,
         ComputeEvidenceHttpError: compute_evidence_error_handler,
         ComputeEvidenceReceiverError: compute_evidence_error_handler,
         Exception: unexpected_error_handler,
@@ -3435,4 +3524,5 @@ app.state.earnings_forecast_api = _build_earnings_forecast_api()
 app.state.official_option_sim_api = _build_official_option_sim_api()
 app.state.official_option_sim_receiver = _build_official_option_sim_receiver()
 app.state.system_cycle_research_receiver = build_system_cycle_research_receiver()
+app.state.expanded_research_receiver = build_expanded_research_receiver()
 app.state.compute_evidence_receiver = build_compute_evidence_receiver()

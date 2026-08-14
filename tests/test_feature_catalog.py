@@ -106,6 +106,28 @@ def test_catalog_actions_are_drafts_only() -> None:
     assert not {"quote_id", "account_version", "idempotency_key", "auto_submit"} & set(actions["paper_prefill"])
 
 
+def test_strategy_research_is_pinable_and_non_executable() -> None:
+    now = datetime(2026, 8, 13, 0, 1, tzinfo=UTC)
+    payload = resolve_feature_catalog("免费版", runtime={
+        "strategy-research": {
+            "data_state": "ready",
+            "health": "healthy",
+            "verified_at": now.isoformat(),
+        },
+    }, now=now)
+    item = next(item for item in payload["items"] if item["key"] == "strategy-research")
+
+    assert item["route"] == "/reports?view=影子策略研究&research_scope=expanded"
+    assert item["availability"] == "available"
+    assert item["pin_allowed"] is True
+    assert item["actions"] == {"research_url": item["route"]}
+    assert not {"submit", "execute", "order"} & set(item["actions"])
+
+    unavailable = next(item for item in resolve_feature_catalog("免费版")["items"] if item["key"] == "strategy-research")
+    assert unavailable["availability"] == "unavailable"
+    assert unavailable["pin_allowed"] is False
+
+
 def test_secondary_pins_are_desktop_only_and_cannot_repeat_primary_navigation(tmp_path) -> None:
     store = FeaturePreferenceStore(_database(tmp_path))
     preferences = store.replace(
