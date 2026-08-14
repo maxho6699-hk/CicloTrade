@@ -644,6 +644,37 @@ def test_timeline_has_dedicated_minute_and_daily_rate_limits(db):
     )
 
 
+def test_timeline_and_pnl_fail_closed_without_current_policy_review(db):
+    member = _bound_user(db, "timeline-policy-missing", "810025")
+    db.execute("DELETE FROM membership_entitlement_readiness_reviews")
+
+    timeline = telegram_desk_response(db, "810025", "/timeline")
+    pnl = telegram_desk_response(db, "810025", "desk:pnl", callback=True)
+
+    assert "无法完成操作" in timeline.message
+    assert "会员策略无法核验" in timeline.message
+    assert "无法完成操作" in pnl.message
+    assert "会员策略无法核验" in pnl.message
+    assert db.fetch_one("SELECT plan_type FROM users WHERE id=?", (member["id"],))["plan_type"] == "免费版"
+
+
+def test_timeline_and_pnl_fail_closed_after_readiness_receipt_expiry(db):
+    member = _bound_user(db, "timeline-policy-expired", "810026")
+    with db.transaction() as connection:
+        connection.execute("DROP TRIGGER trg_membership_entitlement_readiness_receipts_no_update")
+        connection.execute(
+            "UPDATE membership_entitlement_readiness_receipts SET valid_until=?",
+            ("2000-01-01T00:00:00+00:00",),
+        )
+
+    timeline = telegram_desk_response(db, "810026", "timeline:show:stock:10:0", callback=True)
+    pnl = telegram_desk_response(db, "810026", "timeline:pnl:today:0", callback=True)
+
+    assert "会员策略无法核验" in timeline.message
+    assert "会员策略无法核验" in pnl.message
+    assert db.fetch_one("SELECT plan_type FROM users WHERE id=?", (member["id"],))["plan_type"] == "免费版"
+
+
 def test_old_admin_button_cannot_review_a_resubmitted_claim(db):
     customer = _bound_user(db, "stale-customer", "810011")
     admin = _bound_user(db, "stale-admin", "810012")

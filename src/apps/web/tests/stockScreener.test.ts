@@ -10,6 +10,7 @@ import {
   decodeStockScreenerRequest,
   paperPrefillUrl,
   screenerViewState,
+  stockScreenerRequestError,
 } from '../src/domain/stockScreener.ts'
 
 function item(overrides: Record<string, unknown> = {}) {
@@ -74,6 +75,16 @@ test('server query requests reject unknown filters and out-of-bounds pagination'
   assert.equal(decodeStockScreenerRequest({ ...request, page_size: 101 }), null)
 })
 
+test('filter validation returns a stable reason instead of silently dropping invalid input', () => {
+  const request = { schema_version: 1 as const, preset: 'all' as const, filters: {}, sort: { field: 'score' as const, direction: 'desc' as const }, page: 1, page_size: 20 }
+  assert.equal(stockScreenerRequestError(request), null)
+  assert.equal(stockScreenerRequestError({ ...request, filters: { symbols: ['A/PL'] } }), 'invalid_symbol')
+  assert.equal(stockScreenerRequestError({ ...request, filters: { min_price: 25, max_price: 10 } }), 'invalid_price_range')
+  assert.equal(stockScreenerRequestError({ ...request, filters: { min_price: 0 } }), 'invalid_price_range')
+  assert.equal(stockScreenerRequestError({ ...request, filters: { min_score: 101 } }), 'invalid_score_range')
+  assert.equal(stockScreenerRequestError({ ...request, filters: { min_score: 80, max_score: 40 } }), 'invalid_score_range')
+})
+
 test('only server-supplied actions produce research, alert, and personal-paper navigation', () => {
   const decoded = decodeStockScreenerPayload(payload())!
   const row = decoded.items[0]
@@ -97,6 +108,7 @@ test('screener keeps its Opportunities query slot and wires only through the typ
   assert.match(route, /fetchStockScreener/)
   assert.match(route, /fetchStockScreenerPreset/)
   assert.match(route, /saveStockScreenerPreset/)
+  assert.match(route, /savedPreset \? \{ \.\.\.INITIAL_REQUEST, filters: savedPreset\.filters, sort: savedPreset\.sort \}/)
   assert.match(client, /\/api\/rewrite\/v1\/stock-screener\/query/)
   assert.match(client, /decodeStockScreenerPayload/)
   assert.doesNotMatch(panel, /SAMPLE_ROWS|示例筛选结果|marketCap|trendCol|riskCol/)
@@ -104,6 +116,18 @@ test('screener keeps its Opportunities query slot and wires only through the typ
   assert.doesNotMatch(domain, /side: 'BUY' \}\)}/)
   assert.match(panel, /row\.paper_prefill && row\.actionable/)
   assert.match(panel, /onSavePreset/)
+  assert.match(panel, /copy\.actions\[row\.action\]/)
+  assert.match(panel, /copy\.dataStates\[row\.data_state\]/)
+  assert.match(panel, /filters: \{\}, sort: DEFAULT_SORT, page: 1/)
+  assert.match(panel, /currentPreset = \{ \.\.\.draft, filters: request\.filters, sort: request\.sort \}/)
+  assert.match(panel, /name="preset_name"[\s\S]*?disabled=\{saving\}/)
+  assert.match(panel, /stockScreenerRequestError\(query\)/)
+  assert.match(panel, /const value = optionalNumber\(event\.currentTarget\); editQuery/)
+  assert.match(panel, /role="alert"/)
+  assert.doesNotMatch(panel, /state === 'empty' \? <section className="data-panel stock-screener-empty"/)
   assert.match(css, /font-size: 12px/)
+  assert.match(css, /min-height: max\(44px, var\(--control-hit-size\)\)/)
+  assert.match(css, /@media \(max-width: 440px\)[\s\S]*\.stock-screener-query \{[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/)
+  assert.match(css, /\.stock-screener-query > :not\(\.stock-screener-preset\)[\s\S]*grid-column: 1 \/ -1/)
   assert.doesNotMatch(css, /(?:font-size:|font:)\s*1[01]px/)
 })

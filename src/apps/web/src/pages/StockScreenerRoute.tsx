@@ -40,10 +40,20 @@ export function StockScreenerRoute() {
     }
   }, [])
 
-  useEffect(() => { void load(INITIAL_REQUEST) }, [load])
   useEffect(() => {
-    void fetchStockScreenerPreset().then(setPreset).catch(() => setPreset(null))
-  }, [])
+    let active = true
+    const initialize = async () => {
+      let savedPreset: StockScreenerPreset | null = null
+      try { savedPreset = await fetchStockScreenerPreset() } catch { /* A broken preset must not block screening. */ }
+      if (!active) return
+      setPreset(savedPreset)
+      const initial = savedPreset ? { ...INITIAL_REQUEST, filters: savedPreset.filters, sort: savedPreset.sort } : INITIAL_REQUEST
+      setQuery(initial)
+      void load(initial)
+    }
+    void initialize()
+    return () => { active = false }
+  }, [load])
 
   const changeQuery = (next: StockScreenerRequest) => {
     setQuery(next)

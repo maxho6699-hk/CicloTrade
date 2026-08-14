@@ -28,6 +28,7 @@ export interface StockScreenerPayload {
 export interface StockScreenerPreset { schema_version: 1; version: number; name: string; filters: ScreenerFilters; sort: ScreenerSort }
 export interface StockScreenerRequest { schema_version: 1; preset: StockScreenerPayload['preset']; filters: ScreenerFilters; sort: ScreenerSort; page: number; page_size: number }
 export type ScreenerViewState = 'pending' | 'success' | 'empty' | 'stale' | 'offline' | 'unknown'
+export type ScreenerRequestError = 'invalid_symbol' | 'invalid_price_range' | 'invalid_score_range' | 'invalid_request'
 
 export const SCREENER_DRAFT_KEY = 'ciclotrade.stock-screener.draft.v1'
 const actions = new Set<ScreenerAction>(['buy', 'short', 'wait', 'hold', 'reduce', 'exit'])
@@ -109,6 +110,24 @@ export function decodeStockScreenerRequest(value: unknown): StockScreenerRequest
   if (!request || !exact(request, ['schema_version', 'preset', 'filters', 'sort', 'page', 'page_size']) || request.schema_version !== 1 || !presets.has(request.preset as StockScreenerPayload['preset']) || !finite(request.page, 1, 1_000) || !Number.isInteger(request.page) || !finite(request.page_size, 1, 100) || !Number.isInteger(request.page_size)) return null
   const filters = decodeFilters(request.filters), sort = decodeSort(request.sort)
   return filters && sort ? { schema_version: 1, preset: request.preset as StockScreenerPayload['preset'], filters, sort, page: request.page, page_size: request.page_size } : null
+}
+
+/** Give the filter form a stable, localizable reason instead of failing silently. */
+export function stockScreenerRequestError(value: StockScreenerRequest): ScreenerRequestError | null {
+  const symbols = value.filters.symbols ?? []
+  if (symbols.some((symbol) => !symbolPattern.test(symbol))) return 'invalid_symbol'
+  const { min_price: minPrice, max_price: maxPrice, min_score: minScore, max_score: maxScore } = value.filters
+  if (
+    (minPrice !== undefined && !finite(minPrice, Number.MIN_VALUE, 10_000_000))
+    || (maxPrice !== undefined && !finite(maxPrice, Number.MIN_VALUE, 10_000_000))
+    || (minPrice !== undefined && maxPrice !== undefined && minPrice > maxPrice)
+  ) return 'invalid_price_range'
+  if (
+    (minScore !== undefined && !finite(minScore, 0, 100))
+    || (maxScore !== undefined && !finite(maxScore, 0, 100))
+    || (minScore !== undefined && maxScore !== undefined && minScore > maxScore)
+  ) return 'invalid_score_range'
+  return decodeStockScreenerRequest(value) ? null : 'invalid_request'
 }
 
 export function decodeStockScreenerDraft(value: string | null): StockScreenerPreset | null { try { return value ? decodeStockScreenerPreset(JSON.parse(value)) : null } catch { return null } }

@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 from core.plans import effective_plan, plan_display_name, telegram_suggestion_name, telegram_timeline_limits
 from core.official_paper_consumers import active_events as official_consumer_events
 from core.trade_timeline import project_trade_cycles, summarize_trade_cycles
+from core.entitlement_consumer import verified_capabilities
 from notification.telegram_models import TelegramDeskResponse
 from notification.telegram_security import consume_telegram_timeline_quota
 
@@ -27,6 +28,16 @@ _RENDER_SEMAPHORE = threading.BoundedSemaphore(
     max(1, min(int(os.getenv("TELEGRAM_TIMELINE_CONCURRENCY", "2")), 4))
 )
 _PAGE_SIZE = 5
+
+
+def _require_published_policy(database, account: dict[str, Any] | None) -> None:
+    """Require a reviewed, unexpired policy before serving any timeline data."""
+    if not account:
+        raise PermissionError("当前会员策略无法核验，暂时不能查看交易记录。")
+    plan = effective_plan(account)
+    with database.transaction() as connection:
+        if not verified_capabilities(connection, plan):
+            raise PermissionError("当前会员策略无法核验，暂时不能查看交易记录。")
 
 
 def _home_row() -> list[dict[str, str]]:
@@ -235,12 +246,13 @@ def _query_center() -> TelegramDeskResponse:
     )
 
 
-def _timeline_home(account: dict[str, Any] | None) -> TelegramDeskResponse:
+def _timeline_home(database, account: dict[str, Any] | None) -> TelegramDeskResponse:
     if not account:
         return TelegramDeskResponse(
             "🔒 <b>交易時間線需要綁定帳戶</b>\n\n綁定後才可按會員權限查詢。",
             [[{"text": "🔗 綁定帳戶", "callback_data": "desk:account"}], _home_row()],
         )
+    _require_published_policy(database, account)
     plan = effective_plan(account)
     limits = telegram_timeline_limits(plan)
     option_label = "期權建議時間線" if limits["option"] else "🔒 期權建議 · 專業會員"
@@ -260,7 +272,8 @@ def _timeline_home(account: dict[str, Any] | None) -> TelegramDeskResponse:
     )
 
 
-def _count_picker(account: dict[str, Any], kind: str) -> TelegramDeskResponse:
+def _count_picker(database, account: dict[str, Any], kind: str) -> TelegramDeskResponse:
+    _require_published_policy(database, account)
     plan = effective_plan(account)
     maximum = telegram_timeline_limits(plan)[kind]
     label = telegram_suggestion_name(kind)
@@ -283,7 +296,8 @@ def _count_picker(account: dict[str, Any], kind: str) -> TelegramDeskResponse:
     )
 
 
-def _custom_prompt(account: dict[str, Any], kind: str) -> TelegramDeskResponse:
+def _custom_prompt(database, account: dict[str, Any], kind: str) -> TelegramDeskResponse:
+    _require_published_policy(database, account)
     plan = effective_plan(account)
     maximum = telegram_timeline_limits(plan)[kind]
     label = "stock" if kind == "stock" else "option"
@@ -298,6 +312,7 @@ def _custom_prompt(account: dict[str, Any], kind: str) -> TelegramDeskResponse:
 
 
 def _render_timeline(database, chat_id: str, account: dict[str, Any], kind: str, count: int, page: int) -> TelegramDeskResponse:
+    _require_published_policy(database, account)
     plan = effective_plan(account)
     limits = telegram_timeline_limits(plan)
     maximum = limits[kind]
@@ -377,25 +392,25 @@ def handle_timeline_action(
 
         return handle_closed_pnl_action(database, chat_id, account, value)
     if value == "desk:timeline" or lower == "/timeline":
-        return _timeline_home(account)
+        return _timeline_home(database, account)
     if lower.startswith("/timeline "):
         parts = lower.split()
         if len(parts) != 3 or parts[1] not in {"stock", "option"} or not parts[2].isdigit():
             raise ValueError("格式：/timeline stock 50 或 /timeline option 30")
         if not account:
-            return _timeline_home(None)
+            return _timeline_home(database, None)
         return _render_timeline(database, chat_id, account, parts[1], int(parts[2]), 0)
     if value.startswith("timeline:choose:"):
         if not account:
-            return _timeline_home(None)
-        return _count_picker(account, value.rsplit(":", 1)[1])
+            return _timeline_home(database, None)
+        return _count_picker(database, account, value.rsplit(":", 1)[1])
     if value.startswith("timeline:custom:"):
         if not account:
-            return _timeline_home(None)
-        return _custom_prompt(account, value.rsplit(":", 1)[1])
+            return _timeline_home(database, None)
+        return _custom_prompt(database, account, value.rsplit(":", 1)[1])
     if value.startswith("timeline:show:"):
         if not account:
-            return _timeline_home(None)
+            return _timeline_home(database, None)
         _, _, kind, count, page = value.split(":")
         return _render_timeline(database, chat_id, account, kind, int(count), int(page))
     return None

@@ -39,12 +39,13 @@ def _period_rows() -> list[list[dict[str, str]]]:
     ]
 
 
-def _pnl_picker(account: dict[str, Any] | None) -> TelegramDeskResponse:
+def _pnl_picker(database, account: dict[str, Any] | None) -> TelegramDeskResponse:
     if not account:
         return TelegramDeskResponse(
             "🔒 <b>已平倉盈虧需要綁定帳戶</b>\n\n綁定後才可按會員權限查詢。",
             [[{"text": "🔗 綁定帳戶", "callback_data": "desk:account"}], _home_row()],
         )
+    _timeline._require_published_policy(database, account)
     plan = effective_plan(account)
     limits = telegram_timeline_limits(plan)
     coverage = "正股與期權" if limits["pnl_option"] else "正股"
@@ -191,6 +192,7 @@ def _render_closed_pnl(
 ) -> TelegramDeskResponse:
     if period not in _PERIOD_LABELS or page < 0 or page > 999:
         raise ValueError("盈虧查詢條件無效。")
+    _timeline._require_published_policy(database, account)
     plan = effective_plan(account)
     limits = telegram_timeline_limits(plan)
     if not consume_telegram_timeline_quota(
@@ -274,11 +276,11 @@ def handle_closed_pnl_action(
 ) -> TelegramDeskResponse:
     value = str(command or "").strip()
     if value == "desk:pnl":
-        return _pnl_picker(account)
+        return _pnl_picker(database, account)
     if not value.startswith("timeline:pnl:"):
         raise ValueError("盈虧查詢指令無效。")
     if not account:
-        return _pnl_picker(None)
+        return _pnl_picker(database, None)
     parts = value.split(":")
     if len(parts) != 4:
         raise ValueError("盈虧查詢指令無效。")

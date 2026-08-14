@@ -6,6 +6,7 @@ import json
 from urllib.parse import urlencode
 
 from core.compat import UTC
+from core.entitlement_policy import seed_canonical_policy
 from src.apps.api.app import app, routes
 
 
@@ -41,14 +42,16 @@ def _eligible(browser_api, user):
     database = browser_api["database"]
     now = datetime.now(UTC)
     expires = now + timedelta(days=30)
+    with database.transaction() as connection:
+        seed_canonical_policy(connection, now=now)
     database.execute(
-        "UPDATE users SET plan_type='专业版',subscription_expire=? WHERE id=?",
+        "UPDATE users SET plan_type='高级版',subscription_expire=? WHERE id=?",
         (expires.isoformat(), user["id"]),
     )
     database.execute(
         """INSERT INTO membership_entitlements
            (user_id,plan_type,starts_at,expires_at,duration_days,source_kind,source_ref,status,created_at)
-           VALUES (?,'专业版',?,?,30,'test','broker-http','active',?)""",
+           VALUES (?,'高级版',?,?,30,'test','broker-http','active',?)""",
         (user["id"], now.isoformat(), expires.isoformat(), now.isoformat()),
     )
     database.execute(
