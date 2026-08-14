@@ -686,10 +686,34 @@ def test_verified_provider_reversal_bypasses_voluntary_window_and_is_idempotent(
             {"verified_refund_amount_minor": 1},
             "paypal:payment.capture.refunded",
         )
+    with pytest.raises(ValueError, match="编号已用于不同请求"):
+        service.process_reversal(
+            "provider-refunded",
+            order["order_no"],
+            reversal_payload,
+            "paypal:chargeback",
+        )
     assert service.get_order(order["order_no"])["status"] == "refunded"
     assert db.fetch_one(
         "SELECT plan_type,subscription_expire FROM users WHERE id=?", (user["id"],)
     ) == {"plan_type": "免费版", "subscription_expire": None}
+
+
+def test_payment_callback_event_rejects_status_collision(db):
+    user = _user(db, "callback-status-collision")
+    service = OrderService(db)
+    order = service.create_order(
+        user["id"], "标准版", "monthly", "paypal",
+        terms_accepted=True, source="legacy",
+    )
+    assert service.process_callback("callback-status-event", order["order_no"], "paid", {})
+    with pytest.raises(ValueError, match="编号已用于不同请求"):
+        service.process_callback("callback-status-event", order["order_no"], "failed", {})
+    assert service.get_order(order["order_no"])["status"] == "paid"
+    assert db.fetch_one(
+        "SELECT COUNT(*) count FROM payment_callbacks WHERE event_id=?",
+        ("callback-status-event",),
+    )["count"] == 1
 
 
 def test_reversing_older_order_preserves_later_subscription(db):

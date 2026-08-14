@@ -75,7 +75,7 @@ def _canonical_event_payload(value: dict[str, Any]) -> str:
 
 
 def _existing_event_matches(
-    conn: Any, event_id: str, order_no: str, raw_data: dict[str, Any]
+    conn: Any, event_id: str, order_no: str, event_payload: dict[str, Any]
 ) -> bool:
     existing = conn.execute(
         "SELECT order_no,raw_data FROM payment_callbacks WHERE event_id=?",
@@ -87,7 +87,10 @@ def _existing_event_matches(
         stored = _canonical_event_payload(json.loads(str(existing["raw_data"])))
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError("支付事件历史记录无法核验。") from exc
-    if str(existing["order_no"] or "") != str(order_no) or stored != _canonical_event_payload(raw_data):
+    if (
+        str(existing["order_no"] or "") != str(order_no)
+        or stored != _canonical_event_payload(event_payload)
+    ):
         raise ValueError("支付事件编号已用于不同请求。")
     return True
 
@@ -661,13 +664,14 @@ class OrderService:
         if (audit_user_id is None) != (audit_action is None):
             raise ValueError("审计用户与动作必须同时提供。")
         now = datetime.now(UTC)
+        event_payload = {"kind": "payment_callback", "status": status, "data": raw_data}
         with self.db.transaction() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            if _existing_event_matches(conn, event_id, order_no, raw_data):
+            if _existing_event_matches(conn, event_id, order_no, event_payload):
                 return False
             inserted = conn.execute(
                 "INSERT OR IGNORE INTO payment_callbacks (event_id,order_no,raw_data,processed,created_at) VALUES (?,?,?,?,?)",
-                (event_id, order_no, _canonical_event_payload(raw_data), 0, _iso(now)),
+                (event_id, order_no, _canonical_event_payload(event_payload), 0, _iso(now)),
             )
             if not inserted.rowcount:
                 return False
@@ -1039,14 +1043,15 @@ class OrderService:
         if not event_id or len(event_id) > 128 or not reason or len(reason) > 80:
             raise ValueError("支付逆转事件资料无效。")
         now = datetime.now(UTC)
+        event_payload = {"kind": "payment_reversal", "reason": reason, "data": raw_data}
         with self.db.transaction() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            if _existing_event_matches(conn, event_id, order_no, raw_data):
+            if _existing_event_matches(conn, event_id, order_no, event_payload):
                 return False
             inserted = conn.execute(
                 """INSERT OR IGNORE INTO payment_callbacks
                    (event_id,order_no,raw_data,processed,created_at) VALUES (?,?,?,?,?)""",
-                (event_id, order_no, _canonical_event_payload(raw_data), 0, _iso(now)),
+                (event_id, order_no, _canonical_event_payload(event_payload), 0, _iso(now)),
             )
             if not inserted.rowcount:
                 return False
