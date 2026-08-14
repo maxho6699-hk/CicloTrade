@@ -2,6 +2,7 @@
 Description=CicloTrade expanded 97-symbol research publisher (disabled-first)
 After=network-online.target
 Wants=network-online.target
+ConditionPathExists=/etc/ciclotrade-worker/enable-expanded-research-publisher.after-integration
 
 [Service]
 Type=oneshot
@@ -20,6 +21,8 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictSUIDSGID=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
+MemoryMax=192M
+CPUQuota=25%
 
 [Install]
 WantedBy=multi-user.target

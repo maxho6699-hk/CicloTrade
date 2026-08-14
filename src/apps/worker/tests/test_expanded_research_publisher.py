@@ -183,8 +183,11 @@ def test_disabled_first_unit_uses_isolated_production_paths():
     env = (root / "config/expanded-research-publisher.env.example").read_text(encoding="utf-8")
     assert "WorkingDirectory=/opt/ciclotrade-worker/current" in service
     assert "ExecStart=/opt/ciclotrade-worker/current/.venv/bin/python" in service
+    assert "ConditionPathExists=/etc/ciclotrade-worker/enable-expanded-research-publisher.after-integration" in service
     assert "ReadOnlyPaths=/var/lib/ciclotrade-worker/expanded-research/spool" in service
     assert "ReadWritePaths=/var/lib/ciclotrade-worker/expanded-research/publisher" in service
+    assert "MemoryMax=192M" in service
+    assert "CPUQuota=25%" in service
     assert "OnCalendar=*-*-* *:*:00" in timer
     assert "TRADEAI_EXPANDED_RESEARCH_PUBLISH_ENABLED=false" in env
     assert "expanded-research/spool/results.db" in env
