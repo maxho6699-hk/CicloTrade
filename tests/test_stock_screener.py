@@ -39,7 +39,7 @@ def candidate(symbol: str, **changes):
 def test_screen_filters_sorts_paginates_and_exposes_safe_actions():
     result = screen_candidates(
         [candidate("MSFT", score=80), candidate("AAPL", score=60), candidate("NVDA", score=90)],
-        {"preset": "momentum", "page": 1, "page_size": 2},
+        {"preset": "momentum", "page": 1, "page_size": 2, "sort": {"field": "score", "direction": "desc"}},
         now=NOW,
     )
 
@@ -109,8 +109,52 @@ def test_preset_is_versioned_and_optimistic_without_persistence():
 def test_plan_in_progress_or_free_fails_closed():
     with pytest.raises(StockScreenerAccessError):
         StockScreenerAdapter("免费版").screen([candidate("AAPL")], now=NOW)
-    assert StockScreenerAdapter("专业版").screen([candidate("AAPL")], now=NOW)["total"] == 1
-    assert StockScreenerAdapter("标准版").screen([candidate("AAPL")], now=NOW)["total"] == 1
+    assert StockScreenerAdapter("专业版", has_capability=lambda capability: capability == "strategy_all").screen([candidate("AAPL")], now=NOW)["total"] == 1
+    assert StockScreenerAdapter("标准版", authorized=True).screen([candidate("AAPL")], now=NOW)["total"] == 1
+
+
+def test_retired_plan_does_not_inherit_legacy_capabilities():
+    with pytest.raises(StockScreenerAccessError):
+        StockScreenerAdapter("专业版").screen([candidate("AAPL")], now=NOW)
+
+
+@pytest.mark.parametrize(
+    ("action", "data_state", "health", "side"),
+    [("buy", "fresh", "healthy", "BUY"), ("short", "fresh", "healthy", "SHORT"),
+     ("hold", "fresh", "healthy", None), ("wait", "stale", "healthy", None),
+     ("reduce", "fresh", "degraded", None), ("exit", "fresh", "healthy", None)],
+)
+def test_paper_prefill_is_only_for_fresh_healthy_entries(action, data_state, health, side):
+    item = screen_candidates([candidate("AAPL", action=action, data_state=data_state, health=health)], now=NOW)["items"][0]
+    assert item["paper_prefill"] is None if side is None else item["paper_prefill"]["side"] == side
+    assert item["actionable"] is (side is not None)
+    if side is None:
+        assert item["blocked_reason"]
+
+
+def test_score_is_optional_and_default_sort_uses_updated_at_then_symbol():
+    result = screen_candidates(
+        [candidate("MSFT", score=None, updated_at="2026-08-14T00:00:02+00:00"),
+         candidate("AAPL", score=None, updated_at="2026-08-14T00:00:01+00:00")],
+        {"sort": {"field": "updated_at", "direction": "asc"}}, now=NOW,
+    )
+    assert [item["symbol"] for item in result["items"]] == ["AAPL", "MSFT"]
+    assert all(item["score"] is None for item in result["items"])
+
+
+def test_limits_duplicates_symbols_and_keeps_symbol_tie_break_ascending():
+    result = screen_candidates([candidate("MSFT", score=80), candidate("AAPL", score=80)], {
+        "sort": {"field": "score", "direction": "desc"},
+    }, now=NOW)
+    assert [item["symbol"] for item in result["items"]] == ["AAPL", "MSFT"]
+    with pytest.raises(StockScreenerError):
+        screen_candidates([candidate("AAPL"), candidate("AAPL")], now=NOW)
+    with pytest.raises(StockScreenerError):
+        screen_candidates([candidate("AAPL", score=101)], now=NOW)
+    with pytest.raises(StockScreenerError):
+        bad = candidate("AAPL")
+        bad["symbol"] = "bad symbol"
+        screen_candidates([bad], now=NOW)
 
 
 def test_data_health_states_are_preserved_and_not_promoted():
