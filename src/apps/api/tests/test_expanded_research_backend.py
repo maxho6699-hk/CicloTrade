@@ -105,6 +105,26 @@ def test_read_model_emits_exact_97_symbol_dto_and_requires_authentication(tmp_pa
     assert cycle["summary"]["no_data_count"] == 96
     assert {item["data_state"] for item in cycle["symbols"] if item["symbol"] != "AAPL"} == {"missing"}
     assert all(item["signal"] == "wait" for item in cycle["symbols"])
+    assert sum(item["tier"] == "A" for item in cycle["symbols"]) == 13
+    assert sum(item["tier"] == "C" for item in cycle["symbols"]) == 84
+    assert next(item for item in cycle["symbols"] if item["symbol"] == "AAPL")["tier"] == "A"
+    assert next(item for item in cycle["symbols"] if item["symbol"] == TIER_C[0])["tier"] == "C"
+
+
+def test_read_model_unavailable_projections_are_exact_and_safe():
+    status = ExpandedResearchReadModel.unavailable_status()
+    latest = ExpandedResearchReadModel.unavailable_latest()
+    history = ExpandedResearchReadModel.unavailable_history(20)
+    assert set(status) == {"available", "state", "authority", "universe", "last_heartbeat_at", "last_result_at", "expires_at", "coverage_count", "no_data_count", "spool"}
+    assert status["available"] is False and status["state"] == "waiting"
+    assert status["coverage_count"] == 0 and status["no_data_count"] == 97
+    assert status["universe"]["count"] == 97 and status["authority"]["actionable"] is False
+    assert set(latest) == {"available", "authority", "validation_label", "cycle"}
+    assert latest["available"] is False and latest["cycle"] is None
+    assert history == {"available": False, "authority": status["authority"], "limit": 20, "items": []}
+    for invalid in (True, 0, 21):
+        with pytest.raises(ValueError):
+            ExpandedResearchReadModel.unavailable_history(invalid)
 
 
 def test_full_coverage_with_one_stale_symbol_is_not_healthy(monkeypatch):

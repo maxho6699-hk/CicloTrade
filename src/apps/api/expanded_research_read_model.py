@@ -42,6 +42,21 @@ class ExpandedResearchReadModel:
             "spool": None,
         }
 
+    @staticmethod
+    def unavailable_status() -> dict[str, Any]:
+        return {
+            "available": False,
+            "state": "waiting",
+            "authority": _authority(),
+            "universe": _universe(),
+            "last_heartbeat_at": None,
+            "last_result_at": None,
+            "expires_at": None,
+            "coverage_count": 0,
+            "no_data_count": 97,
+            "spool": None,
+        }
+
     def latest(self, identity: Any) -> dict[str, Any]:
         self._require(identity)
         rows = self.store.latest_by_symbol()
@@ -50,6 +65,15 @@ class ExpandedResearchReadModel:
             "available": bool(value), "authority": _authority(),
             "validation_label": "97标的扩容研究，仅供影子研究参考，不构成交易信号。",
             "cycle": _cycle_payload(value),
+        }
+
+    @staticmethod
+    def unavailable_latest() -> dict[str, Any]:
+        return {
+            "available": False,
+            "authority": _authority(),
+            "validation_label": "97标的扩容研究尚未启用，当前没有可展示的影子研究结果。",
+            "cycle": None,
         }
 
     def history(self, identity: Any, limit: int = 20) -> dict[str, Any]:
@@ -64,6 +88,12 @@ class ExpandedResearchReadModel:
         return {
             "available": bool(items), "authority": _authority(), "limit": 20, "items": items,
         }
+
+    @staticmethod
+    def unavailable_history(limit: int = 20) -> dict[str, Any]:
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
+            raise ValueError("expanded research history limit must be between 1 and 20")
+        return {"available": False, "authority": _authority(), "limit": 20, "items": []}
 
     def _require(self, identity: Any) -> None:
         if identity is None or not self.authorize(identity):
@@ -133,9 +163,9 @@ def _symbols(rows: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     updated = {symbol: row["received_at"] for symbol, row in rows.items()}
     for symbol in (*TIER_A, *TIER_C):
         if symbol in rows:
-            result.append({"market": "US", "symbol": symbol, "data_state": "stale" if _stale(updated[symbol]) else "fresh", "signal": "wait", "rationale": None, "updated_at": updated[symbol]})
+            result.append({"market": "US", "symbol": symbol, "tier": "A" if symbol in TIER_A else "C", "data_state": "stale" if _stale(updated[symbol]) else "fresh", "signal": "wait", "rationale": None, "updated_at": updated[symbol]})
         else:
-            result.append({"market": "US", "symbol": symbol, "data_state": "missing", "signal": "wait", "rationale": None, "updated_at": None})
+            result.append({"market": "US", "symbol": symbol, "tier": "A" if symbol in TIER_A else "C", "data_state": "missing", "signal": "wait", "rationale": None, "updated_at": None})
     return result
 
 

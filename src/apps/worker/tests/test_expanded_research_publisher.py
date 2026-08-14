@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
@@ -8,18 +9,18 @@ from datetime import datetime
 import pytest
 
 from core.compat import UTC
-from core.expanded_research_contracts import AUTHORITY, TIER_A, UNIVERSE_SHA256, canonical_json, sha256_bytes
+from core.expanded_research_contracts import AUTHORITY, UNIVERSE_SHA256, canonical_json, sha256_bytes
 from src.apps.worker.expanded_research_publisher import ExpandedResearchPublisher, ExpandedResearchPublisherError
 
 
 NOW = datetime(2026, 8, 14, 12, 0, tzinfo=UTC)
 
 
-def _payload(symbol: str = "AAPL") -> dict:
+def _payload(symbol: str = "AAPL", *, result_suffix: str = "a" * 24) -> dict:
     digest = "a" * 64
     evidence = {"runner": "equity-research-v1", "code_bundle_sha256": "b" * 64}
     return {
-        "schema_version": 1, "kind": "tradeai.expanded-local-research.v1", "result_id": f"expanded-{symbol}-aaaaaaaaaaaaaaaaaaaaaaaa",
+        "schema_version": 1, "kind": "tradeai.expanded-local-research.v1", "result_id": f"expanded-{symbol}-{result_suffix}",
         "symbol": symbol, "tier": "A", "source_sha256": digest, "universe_sha256": UNIVERSE_SHA256,
         "dataset_end": "2026-08-13", "equity": {key: evidence for key in ("equity.trend.long_flat.v1", "equity.mean_reversion.long_flat.v1", "equity.breakout.long_flat.v1")},
         "option_proxy": {"decision": "WAIT", "actionable": False}, "authority": AUTHORITY,
@@ -27,7 +28,7 @@ def _payload(symbol: str = "AAPL") -> dict:
 
 
 def _source(path, payloads, *, corrupt_hash: bool = False):
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("CREATE TABLE expanded_research_results(result_id TEXT PRIMARY KEY,payload_json TEXT NOT NULL,payload_sha256 TEXT NOT NULL,source_sha256 TEXT NOT NULL,universe_sha256 TEXT NOT NULL,created_at TEXT NOT NULL)")
         for payload in payloads:
             body = canonical_json(payload)
@@ -68,9 +69,10 @@ def test_publisher_is_idempotent_and_uses_independent_state(tmp_path):
     assert calls[0][2]["X-Ciclotrade-Research-Fencing-Epoch"] == "1"
 
 
-def test_publisher_scans_past_eight_sent_rows(tmp_path):
-    payloads = [_payload(symbol) for symbol in TIER_A[:9]]
+def test_publisher_scans_past_ninety_eight_sent_rows(tmp_path):
+    payloads = [_payload(result_suffix=f"{index:024x}") for index in range(99)]
     source = tmp_path / "source.db"
+    state = tmp_path / "state.db"
     _source(source, payloads)
     calls = []
 
@@ -79,10 +81,20 @@ def test_publisher_scans_past_eight_sent_rows(tmp_path):
         calls.append(result_id)
         return _receipt(body, headers, result_id=result_id)
 
-    publisher = ExpandedResearchPublisher(source_spool=source, state_database=tmp_path / "state.db", base_url="https://ciclotrade.com", shared_secret="s" * 32, enabled=True, clock=lambda: NOW, transport=transport)
-    for _ in range(9):
-        assert publisher.publish_once()["published"] == 1
-    assert len(calls) == 9 and set(calls) == {payload["result_id"] for payload in payloads}
+    publisher = ExpandedResearchPublisher(source_spool=source, state_database=state, base_url="https://ciclotrade.com", shared_secret="s" * 32, enabled=True, clock=lambda: NOW, transport=transport)
+    with closing(sqlite3.connect(state)) as connection, connection:
+        connection.executemany(
+            """INSERT INTO expanded_research_publish_state(
+                   result_id,idempotency_key,status,attempts,fencing_epoch,response_json,last_error,updated_at
+               ) VALUES(?,?, 'sent',1,1,'{}',NULL,?)""",
+            [
+                (payload["result_id"], f"expanded97-{payload['result_id']}", "2026-08-14T12:00:00Z")
+                for payload in payloads[:98]
+            ],
+        )
+    result = publisher.publish_once()
+    assert result["published"] == 1
+    assert calls == [payloads[98]["result_id"]]
 
 
 def test_publisher_rejects_rewritten_source_hash(tmp_path):
@@ -91,6 +103,43 @@ def test_publisher_rejects_rewritten_source_hash(tmp_path):
     publisher = ExpandedResearchPublisher(source_spool=source, state_database=tmp_path / "state.db", base_url="https://ciclotrade.com", shared_secret="s" * 32, enabled=True, clock=lambda: NOW, transport=lambda *_: {})
     with pytest.raises(ExpandedResearchPublisherError, match="sealed evidence"):
         publisher.publish_once()
+
+
+@pytest.mark.parametrize("column", ["source_sha256", "universe_sha256"])
+def test_publisher_rejects_source_row_hash_drift(tmp_path, column):
+    source = tmp_path / "source.db"
+    state = tmp_path / "state.db"
+    _source(source, [_payload()])
+    with closing(sqlite3.connect(source)) as connection, connection:
+        connection.execute(f"UPDATE expanded_research_results SET {column}=?", ("c" * 64,))
+    publisher = ExpandedResearchPublisher(source_spool=source, state_database=state, base_url="https://ciclotrade.com", shared_secret="s" * 32, enabled=True, clock=lambda: NOW, transport=lambda *_: {})
+    with pytest.raises(ExpandedResearchPublisherError, match="row hashes"):
+        publisher.publish_once()
+    with closing(sqlite3.connect(state)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM expanded_research_publish_lease").fetchone()[0] == 0
+
+
+def test_delivery_failure_releases_lease_and_allows_safe_retry(tmp_path):
+    payload = _payload()
+    source = tmp_path / "source.db"
+    state = tmp_path / "state.db"
+    _source(source, [payload])
+    fail = True
+
+    def transport(_url, body, headers):
+        nonlocal fail
+        if fail:
+            fail = False
+            raise TimeoutError("delivery timeout")
+        return _receipt(body, headers, result_id=payload["result_id"])
+
+    publisher = ExpandedResearchPublisher(source_spool=source, state_database=state, base_url="https://ciclotrade.com", shared_secret="s" * 32, enabled=True, clock=lambda: NOW, transport=transport)
+    assert publisher.publish_once()["state"] == "error"
+    with closing(sqlite3.connect(state)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM expanded_research_publish_lease").fetchone()[0] == 0
+    assert publisher.publish_once()["published"] == 1
+    source.unlink()
+    state.unlink()
 
 
 def test_malicious_success_response_remains_unknown(tmp_path):
@@ -107,7 +156,7 @@ def test_malicious_success_response_remains_unknown(tmp_path):
     publisher = ExpandedResearchPublisher(source_spool=source, state_database=state, base_url="https://ciclotrade.com", shared_secret="s" * 32, enabled=True, clock=lambda: NOW, transport=transport)
     result = publisher.publish_once()
     assert result["state"] == "error" and result["published"] == 0
-    with sqlite3.connect(state) as connection:
+    with closing(sqlite3.connect(state)) as connection:
         assert connection.execute("SELECT status FROM expanded_research_publish_state").fetchone()[0] == "unknown"
 
 

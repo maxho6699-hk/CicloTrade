@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 from datetime import datetime, timedelta
 import json
 import os
@@ -16,6 +17,7 @@ from urllib.request import Request, urlopen
 from core.compat import UTC
 from core.expanded_research_contracts import (
     ExpandedResearchError,
+    UNIVERSE_SHA256,
     canonical_json,
     receiver_signature,
     sha256_bytes,
@@ -25,7 +27,6 @@ from core.expanded_research_contracts import (
 
 
 MAX_BATCH = 1
-MAX_SOURCE_SCAN = 97
 SOURCE_PAGE_SIZE = 16
 LEASE_SECONDS = 120
 
@@ -89,7 +90,12 @@ class ExpandedResearchPublisher:
             for row in self._pending_rows(limit):
                 result_id = str(row["result_id"])
                 key = f"expanded97-{result_id}"
-                body = self._canonical_source_body(row["payload_json"], row["payload_sha256"])
+                body = self._canonical_source_body(
+                    row["payload_json"],
+                    row["payload_sha256"],
+                    row["source_sha256"],
+                    row["universe_sha256"],
+                )
                 sent_at = stamp(self._now())
                 body_sha = sha256_bytes(body)
                 headers = {
@@ -126,23 +132,22 @@ class ExpandedResearchPublisher:
         if not self.source_spool.exists() or self.source_spool.is_symlink():
             raise ExpandedResearchPublisherError("expanded publisher source spool is unavailable")
         uri = f"file:{self.source_spool.as_posix()}?mode=ro"
-        with sqlite3.connect(uri, uri=True, timeout=5) as source:
+        with closing(sqlite3.connect(uri, uri=True, timeout=5)) as source:
             source.row_factory = sqlite3.Row
             try:
                 cursor = source.execute(
-                    """SELECT result_id,payload_json,payload_sha256 FROM expanded_research_results
-                       ORDER BY created_at ASC,result_id ASC LIMIT ?""", (MAX_SOURCE_SCAN,)
+                    """SELECT result_id,payload_json,payload_sha256,source_sha256,universe_sha256
+                       FROM expanded_research_results
+                       ORDER BY created_at ASC,result_id ASC"""
                 )
             except sqlite3.Error as exc:
                 raise ExpandedResearchPublisherError("expanded publisher source spool schema is invalid") from exc
             pending: list[dict[str, Any]] = []
-            scanned = 0
-            with self._connect() as state:
-                while scanned < MAX_SOURCE_SCAN:
-                    page = cursor.fetchmany(min(SOURCE_PAGE_SIZE, MAX_SOURCE_SCAN - scanned))
+            with closing(self._connect()) as state:
+                while True:
+                    page = cursor.fetchmany(SOURCE_PAGE_SIZE)
                     if not page:
                         break
-                    scanned += len(page)
                     for row in page:
                         existing = state.execute(
                             "SELECT status FROM expanded_research_publish_state WHERE result_id=?", (row["result_id"],)
@@ -154,14 +159,25 @@ class ExpandedResearchPublisher:
             return pending
 
     @staticmethod
-    def _canonical_source_body(raw: str, expected_sha256: str) -> bytes:
+    def _canonical_source_body(
+        raw: str,
+        expected_payload_sha256: str,
+        expected_source_sha256: str,
+        expected_universe_sha256: str,
+    ) -> bytes:
         try:
             value = validate_result(json.loads(raw))
         except (TypeError, ValueError, json.JSONDecodeError, ExpandedResearchError) as exc:
             raise ExpandedResearchPublisherError("expanded publisher found invalid source evidence") from exc
         body = canonical_json(value)
-        if sha256_bytes(body) != expected_sha256:
+        if sha256_bytes(body) != expected_payload_sha256:
             raise ExpandedResearchPublisherError("expanded publisher source payload hash does not match sealed evidence")
+        if (
+            value["source_sha256"] != expected_source_sha256
+            or value["universe_sha256"] != expected_universe_sha256
+            or expected_universe_sha256 != UNIVERSE_SHA256
+        ):
+            raise ExpandedResearchPublisherError("expanded publisher source row hashes do not match sealed evidence")
         return body
 
     @staticmethod
@@ -187,7 +203,7 @@ class ExpandedResearchPublisher:
             raise ExpandedResearchPublisherError("expanded publisher receipt did not prove sealed shadow acceptance")
 
     def _init_state(self) -> None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.executescript(
                 """CREATE TABLE IF NOT EXISTS expanded_research_publish_state(
                        result_id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE,
@@ -205,7 +221,7 @@ class ExpandedResearchPublisher:
         now = self._now()
         expiry = now + timedelta(seconds=LEASE_SECONDS)
         now_text, expiry_text = stamp(now), stamp(expiry)
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             current = connection.execute("SELECT * FROM expanded_research_publish_lease WHERE lease_name='expanded97'").fetchone()
             if current is not None and current["expires_at"] > now_text and current["owner_id"] != self.worker_id:
@@ -223,23 +239,23 @@ class ExpandedResearchPublisher:
         return {"epoch": epoch}
 
     def _release_lease(self, epoch: int) -> None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute("DELETE FROM expanded_research_publish_lease WHERE lease_name='expanded97' AND owner_id=? AND fencing_epoch=?", (self.worker_id, epoch))
 
     def _mark_attempt(self, result_id: str, key: str, epoch: int) -> None:
         now = stamp(self._now())
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute(
                 "INSERT INTO expanded_research_publish_state(result_id,idempotency_key,status,attempts,fencing_epoch,updated_at) VALUES(?,?, 'sending',1,?,?) ON CONFLICT(result_id) DO UPDATE SET status='sending',attempts=attempts+1,fencing_epoch=excluded.fencing_epoch,updated_at=excluded.updated_at",
                 (result_id, key, epoch, now),
             )
 
     def _mark_sent(self, result_id: str, key: str, response: Mapping[str, Any]) -> None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute("UPDATE expanded_research_publish_state SET status='sent',response_json=?,last_error=NULL,updated_at=? WHERE result_id=? AND idempotency_key=?", (json.dumps(dict(response), sort_keys=True), stamp(self._now()), result_id, key))
 
     def _mark_error(self, result_id: str, key: str, error: str) -> None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute("UPDATE expanded_research_publish_state SET status='unknown',last_error=?,updated_at=? WHERE result_id=? AND idempotency_key=?", (error[:500], stamp(self._now()), result_id, key))
 
     def _connect(self) -> sqlite3.Connection:
