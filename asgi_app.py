@@ -660,18 +660,17 @@ async def paddle_webhook(request):
             raise ApiError("Paddle 逆转无法绑定对应订单。")
         if not _paddle_full_reversal_matches(data, order):
             raise ApiError("Paddle 仅支持币种和金额匹配的全额逆转。", 409)
-        audit = {
-            "provider": "paddle",
-            "event_id": event_id,
-            "event_type": event_type,
-            "adjustment_id": data.get("id"),
-            "transaction_id": transaction_id,
-            "order_no": order["order_no"],
+        reversal = {
+            "verified_refund_amount_minor": int(
+                order.get("final_amount_minor")
+                or order.get("amount_minor")
+                or round(float(order["amount"]) * 100)
+            )
         }
         processed = OrderService().process_reversal(
             event_id,
             order["order_no"],
-            audit,
+            reversal,
             f"paddle:{action}",
         )
         return JSONResponse({"status": "processed" if processed else "duplicate"})
@@ -752,16 +751,17 @@ async def paypal_webhook(request):
             raise ApiError("PayPal 逆转无法绑定对应订单。")
         if not _paypal_full_reversal_matches(resource, order):
             raise ApiError("PayPal 仅支持币种和金额匹配的全额逆转。", 409)
-        audit = {
-            "provider": "paypal",
-            "event_id": event_id,
-            "event_type": event_type,
-            "order_no": order["order_no"],
+        reversal = {
+            "verified_refund_amount_minor": int(
+                order.get("final_amount_minor")
+                or order.get("amount_minor")
+                or round(float(order["amount"]) * 100)
+            )
         }
         processed = OrderService().process_reversal(
             event_id,
             order["order_no"],
-            audit,
+            reversal,
             f"paypal:{event_type.lower()}",
         )
         return JSONResponse({"status": "processed" if processed else "duplicate"})

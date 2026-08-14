@@ -18,12 +18,6 @@ from core.referral_affiliate import (
 from payment.order_service import OrderService
 from payment.promotion_adapter import PromotionOrderAdapter
 
-ORDER_SERVICE_V2_ACTIVATION = (
-    "等待 payment.order_service.OrderService 在创建、支付和逆转回调中接入 "
-    "PromotionOrderAdapter 后启用。"
-)
-
-
 @pytest.fixture
 def db(tmp_path):
     database = DatabaseManager(str(tmp_path / "referral-affiliate.db"))
@@ -114,7 +108,6 @@ def _settle(service: OrderService, user_id: int, plan: str, cycle: str, key: str
     return service.get_order(order["order_no"])
 
 
-@pytest.mark.skip(reason=ORDER_SERVICE_V2_ACTIVATION)
 def test_order_service_settles_only_verified_link_first_paid_order(db):
     auth = AuthService(db)
     referrer, referred = _eligible_pair(db, auth, "referrer", "referred")
@@ -287,7 +280,6 @@ def test_append_only_ledger_and_strict_minimum(db):
             )
 
 
-@pytest.mark.skip(reason=ORDER_SERVICE_V2_ACTIVATION)
 def test_order_service_cutover_does_not_backpay_legacy_history(db):
     auth = AuthService(db)
     referrer = _user(auth, "cutover-referrer")

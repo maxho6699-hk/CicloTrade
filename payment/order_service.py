@@ -27,6 +27,7 @@ from core.membership import (
 )
 from core.plans import PLAN_ORDER, PLANS
 from core.referral_affiliate import ReferralCommissionService
+from payment.promotion_adapter import PromotionOrderAdapter
 
 
 CYCLE_DAYS = {"monthly": 30, "quarterly": 90, "yearly": 365}
@@ -36,6 +37,59 @@ LEGACY_REFERRAL_REWARD_PERCENT = 30
 TERMS_VERSION = "2026-08-07-no-refund-v1"
 ORDER_EXPIRY_HOURS = {"telegram": 1, "web": 24, "legacy": 24}
 MAX_PENDING_MANUAL_ORDERS = 3
+
+
+class _EntitlementCommercePolicy:
+    """Expose the published membership policy to promotion pricing."""
+
+    @staticmethod
+    def purchasable_plans(conn: Any, *, at: datetime) -> tuple[str, ...]:
+        allowed: list[str] = []
+        for plan in PLANS:
+            if plan == "免费版":
+                continue
+            _, decision = current_plan_commerce_decision(
+                conn, plan, "purchase", as_of=at,
+            )
+            if decision["allowed"]:
+                allowed.append(plan)
+        return tuple(allowed)
+
+    @staticmethod
+    def assert_purchasable(
+        conn: Any, *, plan: str, cycle: str, at: datetime
+    ) -> None:
+        if plan not in PLANS or cycle not in PLANS[plan]["prices"]:
+            raise ValueError("优惠码不适用于此订单。")
+        _, decision = current_plan_commerce_decision(
+            conn, plan, "purchase", as_of=at,
+        )
+        if not decision["allowed"]:
+            raise PermissionError("优惠码不能用于当前停售或不可购买的方案。")
+
+
+def _canonical_event_payload(value: dict[str, Any]) -> str:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    )
+
+
+def _existing_event_matches(
+    conn: Any, event_id: str, order_no: str, raw_data: dict[str, Any]
+) -> bool:
+    existing = conn.execute(
+        "SELECT order_no,raw_data FROM payment_callbacks WHERE event_id=?",
+        (event_id,),
+    ).fetchone()
+    if not existing:
+        return False
+    try:
+        stored = _canonical_event_payload(json.loads(str(existing["raw_data"])))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("支付事件历史记录无法核验。") from exc
+    if str(existing["order_no"] or "") != str(order_no) or stored != _canonical_event_payload(raw_data):
+        raise ValueError("支付事件编号已用于不同请求。")
+    return True
 
 
 def _purchase_action(current_plan: str, target_plan: str) -> str:
@@ -141,6 +195,7 @@ class OrderService:
         terms_accepted: bool = False,
         idempotency_key: str | None = None,
         source: str = "web",
+        coupon_code: str | None = None,
     ) -> dict[str, Any]:
         if terms_accepted is not True:
             raise ValueError("建立訂單前必須同意用戶協議、風險披露與不退款政策。")
@@ -165,7 +220,8 @@ class OrderService:
         if cycle == "yearly" and self.annual_bonus_enabled():
             entitlement_days += YEARLY_PROMO_DAYS
         amount = float(prices[cycle])
-        amount_minor = int(round(amount * 100))
+        list_price_minor = int(round(amount * 100))
+        canonical_coupon = str(coupon_code or "").strip().upper() or None
         now = datetime.now(UTC)
         with self.db.transaction() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -190,7 +246,8 @@ class OrderService:
                         "plan": plan,
                         "cycle": cycle,
                         "method": method,
-                        "amount_minor": amount_minor,
+                        "coupon_code": canonical_coupon,
+                        "list_price_minor": list_price_minor,
                         "entitlement_days": entitlement_days,
                         "terms_version": TERMS_VERSION,
                         "entitlement_policy_key": entitlement_policy.policy_key,
@@ -253,21 +310,68 @@ class OrderService:
                     raise ValueError("待付款订单过多，请先完成现有订单或等待订单到期。")
             order_no = f"TA{now:%Y%m%d%H%M%S}{secrets.token_hex(3).upper()}"
             expires_at = _iso(now + timedelta(hours=ORDER_EXPIRY_HOURS[source]))
+            promotion_adapter = PromotionOrderAdapter(_EntitlementCommercePolicy())
+            quote = promotion_adapter.quote(
+                conn,
+                user_id=user_id,
+                plan=plan,
+                cycle=cycle,
+                list_price_minor=list_price_minor,
+                coupon_code=canonical_coupon,
+                now=now,
+            )
+            snapshot = promotion_adapter.bind_order_snapshot(
+                conn,
+                quote=quote,
+                order_no=order_no,
+                user_id=user_id,
+                plan_type=plan,
+                billing_cycle=cycle,
+                currency="HKD",
+            )
+            final_amount_minor = int(snapshot["final_amount_minor"])
+            amount = final_amount_minor / 100
             conn.execute(
                 """INSERT INTO subscription_orders
                    (order_no,user_id,plan_type,billing_cycle,amount,currency,pay_method,status,
                     entitlement_days,created_at,terms_version,terms_accepted_at,source,idempotency_key,
                     request_fingerprint,amount_minor,expires_at,
                     entitlement_policy_key_snapshot,entitlement_policy_version_snapshot,
-                    entitlement_policy_sha256_snapshot,entitlement_purchase_action_snapshot)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    entitlement_policy_sha256_snapshot,entitlement_purchase_action_snapshot,
+                    list_price_minor,coupon_discount_minor,referral_discount_minor,final_amount_minor,
+                    coupon_code_snapshot,coupon_version_snapshot,referral_policy_version,
+                    referral_eligible_snapshot,referral_commission_rate_bps_snapshot,
+                    referral_commission_cap_minor_snapshot,referral_hold_days_snapshot,
+                    referral_bonus_policy_snapshot,promotion_snapshot_sha256,
+                    referral_attribution_id_snapshot,referral_referrer_user_id_snapshot,
+                    referral_referred_user_id_snapshot)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     order_no, user_id, plan, cycle, amount, "HKD", method, "pending",
                     entitlement_days, _iso(now), TERMS_VERSION, _iso(now), source, idempotency_key,
-                    fingerprint, amount_minor, expires_at,
+                    fingerprint, final_amount_minor, expires_at,
                     entitlement_policy.policy_key, entitlement_policy.version,
                     entitlement_policy.policy_sha256, action,
+                    int(snapshot["list_price_minor"]),
+                    int(snapshot["coupon_discount_minor"]),
+                    int(snapshot["referral_discount_minor"]),
+                    final_amount_minor,
+                    snapshot.get("coupon_code_snapshot"),
+                    snapshot.get("coupon_version_snapshot"),
+                    snapshot["referral_policy_version"],
+                    int(snapshot["referral_eligible_snapshot"]),
+                    int(snapshot.get("commission_rate_bps") or 0),
+                    int(snapshot.get("commission_cap_minor") or 0),
+                    int(snapshot.get("hold_days") or 0),
+                    snapshot.get("bonus_policy_snapshot"),
+                    snapshot["promotion_snapshot_sha256"],
+                    snapshot.get("referral_attribution_id_snapshot"),
+                    snapshot.get("referral_referrer_user_id_snapshot"),
+                    snapshot.get("referral_referred_user_id_snapshot"),
                 ),
+            )
+            promotion_adapter.reserve_coupon(
+                conn, quote=snapshot, user_id=user_id, order_no=order_no, now=now,
             )
             if method in MANUAL_PAYMENT_METHODS:
                 from payment.receiving_profile import ReceivingProfileService
@@ -486,6 +590,7 @@ class OrderService:
         conn: Any, order: dict[str, Any], now: datetime, capture_id: str | None = None
     ) -> bool:
         """Mark one pending order paid and apply its entitlement in this transaction."""
+        PromotionOrderAdapter.assert_snapshot_binding(conn, order)
         current = resolve_membership(
             conn, int(order["user_id"]), now, sync_cache=True
         )
@@ -500,6 +605,9 @@ class OrderService:
         if not decision["allowed"]:
             raise ValueError("订单创建时的会员策略不允许该商业动作。")
         assert_plan_not_lower(str(current["plan_type"]), str(order["plan_type"]))
+        PromotionOrderAdapter.activate_paid(
+            conn, order=order, pre_membership=current, now=now,
+        )
         changed = conn.execute(
             """UPDATE subscription_orders
                SET status='paid',paid_at=?,previous_plan_type=?,previous_subscription_expire=?,
@@ -519,7 +627,6 @@ class OrderService:
             source_ref=str(order["order_no"]),
             now=now,
         )
-        ReferralCommissionService.record_settlement(conn, order, current, now)
         current_rank = PLAN_ORDER.index(str(state["plan_type"]))
         lower_plans = PLAN_ORDER[:current_rank]
         if lower_plans:
@@ -555,9 +662,12 @@ class OrderService:
             raise ValueError("审计用户与动作必须同时提供。")
         now = datetime.now(UTC)
         with self.db.transaction() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if _existing_event_matches(conn, event_id, order_no, raw_data):
+                return False
             inserted = conn.execute(
                 "INSERT OR IGNORE INTO payment_callbacks (event_id,order_no,raw_data,processed,created_at) VALUES (?,?,?,?,?)",
-                (event_id, order_no, json.dumps(raw_data, ensure_ascii=False), 0, _iso(now)),
+                (event_id, order_no, _canonical_event_payload(raw_data), 0, _iso(now)),
             )
             if not inserted.rowcount:
                 return False
@@ -931,10 +1041,12 @@ class OrderService:
         now = datetime.now(UTC)
         with self.db.transaction() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if _existing_event_matches(conn, event_id, order_no, raw_data):
+                return False
             inserted = conn.execute(
                 """INSERT OR IGNORE INTO payment_callbacks
                    (event_id,order_no,raw_data,processed,created_at) VALUES (?,?,?,?,?)""",
-                (event_id, order_no, json.dumps(raw_data, ensure_ascii=False), 0, _iso(now)),
+                (event_id, order_no, _canonical_event_payload(raw_data), 0, _iso(now)),
             )
             if not inserted.rowcount:
                 return False
@@ -951,28 +1063,66 @@ class OrderService:
                 raise ValueError("只有已支付订单可执行支付平台逆转。")
             if order.get("previous_plan_type") is None:
                 raise ValueError("订单缺少付款前订阅快照，需人工核对支付逆转。")
+            is_v2 = bool(order.get("referral_policy_version"))
+            total_minor = int(
+                order.get("final_amount_minor")
+                or order.get("amount_minor")
+                or round(float(order["amount"]) * 100)
+            )
+            reversal_minor = (
+                PromotionOrderAdapter.verified_reversal_minor(order, raw_data)
+                if is_v2 else total_minor
+            )
+            previous_refunded = int(order.get("refunded_minor") or 0)
+            refunded_minor = previous_refunded + reversal_minor
+            fully_refunded = refunded_minor == total_minor
             changed = conn.execute(
-                """UPDATE subscription_orders SET status='refunded',refunded_at=?
-                   WHERE order_no=? AND status='paid'""",
-                (_iso(now), order_no),
+                """UPDATE subscription_orders
+                   SET refunded_minor=?,status=CASE WHEN ? THEN 'refunded' ELSE status END,
+                       refunded_at=CASE WHEN ? THEN ? ELSE refunded_at END
+                   WHERE order_no=? AND status='paid' AND refunded_minor=?""",
+                (
+                    refunded_minor, int(fully_refunded), int(fully_refunded),
+                    _iso(now), order_no, previous_refunded,
+                ),
             )
             if changed.rowcount != 1:
                 raise ValueError("订单状态已变更，请重试支付逆转事件。")
-            ReferralCommissionService.record_reversal(
-                conn,
-                event_key=event_id,
-                order=order,
-                amount_minor=int(order.get("amount_minor") or round(float(order["amount"]) * 100)),
-                reason=reason,
-                now=now,
-            )
-            self._reverse_entitlements(conn, order, now)
+            if is_v2:
+                PromotionOrderAdapter.record_reversal(
+                    conn,
+                    event_key=event_id,
+                    order=order,
+                    amount_minor=reversal_minor,
+                    reason=reason,
+                    now=now,
+                )
+            else:
+                ReferralCommissionService.record_reversal(
+                    conn,
+                    event_key=event_id,
+                    order=order,
+                    amount_minor=reversal_minor,
+                    reason=reason,
+                    now=now,
+                )
+            if fully_refunded:
+                self._reverse_entitlements(conn, order, now)
             conn.execute(
                 "INSERT INTO user_action_logs (user_id,action_type,details,created_at) VALUES (?,?,?,?)",
                 (
                     order["user_id"],
                     "PAYMENT_EXTERNAL_REVERSAL",
-                    json.dumps({"order_no": order_no, "reason": reason}, ensure_ascii=False),
+                    json.dumps(
+                        {
+                            "order_no": order_no,
+                            "reason": reason,
+                            "reversal_minor": reversal_minor,
+                            "refunded_minor": refunded_minor,
+                            "fully_refunded": fully_refunded,
+                        },
+                        ensure_ascii=False,
+                    ),
                     _iso(now),
                 ),
             )
