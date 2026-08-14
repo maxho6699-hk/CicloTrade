@@ -45,6 +45,7 @@ test('screener decoder fails closed for duplicate symbols, unbounded pages, inva
   assert.equal(decodeStockScreenerPayload(payload({ items: [item({ health: 'unknown' })] })), null)
   assert.equal(decodeStockScreenerPayload(payload({ items: [item({ paper_prefill: { market: 'US', symbol: 'NVDA', side: 'BUY' }, actionable: false, blocked_reason: 'candidate_action_not_tradeable' })] })), null)
   assert.equal(decodeStockScreenerPayload(payload({ items: [item({ paper_prefill: { market: 'US', symbol: 'NVDA', side: 'SHORT' } })] })), null)
+  for (const overrides of [{ action: 'hold' }, { data_state: 'stale' }, { health: 'degraded' }]) assert.equal(decodeStockScreenerPayload(payload({ items: [item(overrides)] })), null)
   assert.equal(decodeStockScreenerPayload(payload({ items: [item({ research_url: '/paper?symbol=NVDA' })] })), null)
 })
 
@@ -79,7 +80,7 @@ test('only server-supplied actions produce research, alert, and personal-paper n
   assert.equal(row.research_url, '/discover?tool=screener&symbol=NVDA')
   assert.equal(alertPrefillUrl(row.alert_prefill), '/notifications?market=US&symbol=NVDA&draft=alert')
   assert.ok(row.paper_prefill)
-  assert.equal(paperPrefillUrl(row.paper_prefill!), '/paper?market=US&symbol=NVDA&side=BUY')
+  assert.equal(paperPrefillUrl(row.paper_prefill!), '/paper?market=US&symbol=NVDA&side=BUY&source=screener')
   assert.equal(decodeStockScreenerPayload(payload({ items: [item({ action: 'hold', paper_prefill: null, actionable: false, blocked_reason: 'candidate_action_not_tradeable' })] }))?.items[0].paper_prefill, null)
 })
 
