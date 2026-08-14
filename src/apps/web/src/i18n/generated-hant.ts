@@ -5230,10 +5230,6 @@ export const HANT_PHRASES = [
     "A股帳戶總持倉"
   ],
   [
-    "Flat 观察",
-    "Flat 觀察"
-  ],
-  [
     "K线研究工作台",
     "K線研究工作臺"
   ],
