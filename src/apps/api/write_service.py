@@ -11,7 +11,7 @@ from core.alerts import AlertService
 from core.compat import UTC
 from core.database import DatabaseManager, get_database
 from core.membership import assert_plan_not_lower
-from core.plans import can
+from core.entitlement_consumer import verified_can
 from core.user_settings import load_user_settings, merge_user_settings
 from payment.order_service import (
     MANUAL_PAYMENT_METHODS,
@@ -70,6 +70,10 @@ class BrowserWriteService:
             "watchlist_pins": normalize_watchlist_pins(stored, watchlists),
             "ui_locale": stored.get("ui_locale") if stored.get("ui_locale") in {"zh-Hant", "zh-Hans"} else None,
         }
+
+    def _policy_can(self, plan: str, capability: str) -> bool:
+        with self.db.transaction() as connection:
+            return verified_can(connection, plan, capability)
 
     def update_locale(self, identity: BrowserIdentity, payload: dict[str, Any]) -> str:
         if set(payload) != {"locale"} or payload.get("locale") not in {"zh-Hant", "zh-Hans"}:
@@ -214,9 +218,9 @@ class BrowserWriteService:
         if any(not isinstance(value, bool) for value in payload.values()):
             raise ValueError("通知事件开关必须是布尔值。")
         plan = identity.effective_plan
-        if payload.get("stock_signal") and not can(plan, "tg_stock_signal"):
+        if payload.get("stock_signal") and not self._policy_can(plan, "tg_stock_signal"):
             raise PermissionError("当前会员等级不能开启正股即时建议。")
-        if payload.get("option_signal") and not can(plan, "tg_option_signal"):
+        if payload.get("option_signal") and not self._policy_can(plan, "tg_option_signal"):
             raise PermissionError("当前会员等级不能开启期权即时建议。")
         existing = self.settings(identity)["telegram_events"]
         merged = {**existing, **payload}

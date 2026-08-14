@@ -12,6 +12,7 @@ from core.broker_access_applications import (
 )
 from core.compat import UTC
 from core.database import DatabaseManager
+from core.entitlement_policy import seed_canonical_policy
 
 
 @pytest.fixture
@@ -20,11 +21,13 @@ def context(tmp_path):
     auth = AuthService(database)
     user = auth.register("professional@example.com", "StrongPass123", "Professional", True)
     admin = auth.register("admin@example.com", "StrongPass123", "Admin", True)
+    with database.transaction() as connection:
+        seed_canonical_policy(connection)
     service = BrokerAccessApplicationService(database)
     return database, service, user, admin
 
 
-def _eligible(database, user, plan="专业版", chat="700001"):
+def _eligible(database, user, plan="高级版", chat="700001"):
     now = datetime.now(UTC)
     database.execute(
         "UPDATE users SET plan_type=?,subscription_expire=? WHERE id=?",
@@ -53,7 +56,7 @@ def _super_admin(database, admin):
 def test_only_canonical_five_us_providers_and_eligible_membership_with_telegram(context):
     database, service, user, _ = context
     assert CANONICAL_PROVIDERS == {"futu_moomoo", "tiger", "ibkr", "webull", "longbridge"}
-    with pytest.raises(BrokerAccessApplicationError, match="专业会员"):
+    with pytest.raises(BrokerAccessApplicationError, match="会员策略"):
         service.create(user["id"], {"provider": "ibkr"}, "broker-key-01")
     _eligible(database, user)
     for provider in ("alpaca", "qmt", "ptrade", "a_stock"):

@@ -18,11 +18,12 @@ from core.admin_service import AdminService
 from core.broker_catalog import US_LAUNCH_BROKER_CATALOG
 from core.compat import UTC
 from core.database import DatabaseManager, get_database
+from core.entitlement_consumer import verified_can
 from core.membership import authoritative_membership_row
 
 
 CANONICAL_PROVIDERS = frozenset(entry.key for entry in US_LAUNCH_BROKER_CATALOG)
-ELIGIBLE_PLANS = frozenset({"专业版", "定制版"})
+ELIGIBLE_PLANS = frozenset({"高级版"})
 _IDEMPOTENCY_RE = re.compile(r"[A-Za-z0-9._:-]{8,128}")
 _PUBLIC_ID_RE = re.compile(r"bra_[A-Za-z0-9_-]{16,48}")
 _LIST_STATUSES = frozenset({"submitted", "approved", "rejected", "withdrawn", "revoked", "expired"})
@@ -110,8 +111,8 @@ class BrokerAccessApplicationService:
         if not row or not bool(row["is_active"]):
             raise BrokerAccessApplicationError("账户不可用。", 403)
         membership = authoritative_membership_row(conn, row)
-        if membership.get("plan_type") not in ELIGIBLE_PLANS:
-            raise BrokerAccessApplicationError("仅专业会员或定制会员可申请实盘券商资格。", 403)
+        if not verified_can(conn, str(membership.get("plan_type") or "免费版"), "broker_access_apply"):
+            raise BrokerAccessApplicationError("当前会员策略不允许申请实盘券商资格。", 403)
         telegram = conn.execute(
             """SELECT 1 FROM telegram_accounts
                WHERE user_id=? AND is_active=1 AND revoked_at IS NULL""",

@@ -16,11 +16,13 @@ from core.auth import AuthError, _decode_token
 from core.broker_catalog import public_us_launch_broker_catalog
 from core.compat import UTC
 from core.broker_authorization import broker_execution_authorized
-from core.plans import (
-    CAPABILITIES, PLAN_ORDER, effective_plan, plan_display_name,
-    trading_limits, web_recommendation_visibility,
+from core.plans import effective_plan, plan_display_name, trading_limits, web_recommendation_visibility
+from core.entitlement_consumer import (
+    membership_purchase_state_from_policy,
+    policy_account_limit,
+    verified_capabilities,
 )
-from core.membership import membership_purchase_state, resolve_membership_snapshot
+from core.membership import resolve_membership_snapshot
 from core.entitlement_policy import current_policy
 from core.official_paper_consumers import (
     OFFICIAL_PAPER_V2,
@@ -339,6 +341,8 @@ class ReadOnlyLegacyRepository:
             "user_settings", "orders", "trades", "risk_log", "broker_accounts", "price_alerts",
             "price_alert_metadata", "user_controls", "platform_controls",
             "membership_entitlements",
+            "membership_entitlement_policy_versions",
+            "membership_entitlement_readiness_reviews",
         }
         if table not in allowed:
             raise ReadModelError("table is not part of the compatibility allowlist")
@@ -349,8 +353,6 @@ class ReadOnlyLegacyRepository:
     def _execution_snapshot(
         self, connection: sqlite3.Connection, identity: BrowserIdentity
     ) -> dict[str, Any]:
-        limits = trading_limits(identity.effective_plan)
-        account_limit = int(limits["auto_control_accounts"])
         global_opening_paused = True
         auto_trading_service_enabled = False
         if self._table_exists(connection, "platform_controls"):
@@ -398,6 +400,7 @@ class ReadOnlyLegacyRepository:
                 })
 
         accounts_used = sum(1 for account in accounts if account["active"])
+        account_limit = policy_account_limit(connection, identity.effective_plan)
         has_authorized_broker_account = any(account["authorized"] for account in accounts)
         effective_opening_paused = global_opening_paused or user_opening_paused
         can_register_broker_account = (
@@ -555,13 +558,12 @@ class ReadOnlyLegacyRepository:
 
     def membership(self, identity: BrowserIdentity) -> dict[str, Any]:
         plan = identity.effective_plan
-        capabilities = sorted({
-            capability
-            for level in PLAN_ORDER[: PLAN_ORDER.index(plan) + 1]
-            for capability in CAPABILITIES[level]
-        })
-        limits = trading_limits(plan)
         with self.connection() as connection:
+            capabilities = sorted(verified_capabilities(connection, plan))
+            limits = trading_limits(plan)
+            limits["auto_control_accounts"] = policy_account_limit(connection, plan)
+            limits["broker_accounts"] = limits["auto_control_accounts"]
+            limits["brokers"] = limits["auto_control_accounts"]
             annual_bonus_enabled = True
             if self._table_exists(connection, "platform_controls"):
                 annual_bonus = connection.execute(
@@ -592,7 +594,9 @@ class ReadOnlyLegacyRepository:
             orders = []
             for row in rows:
                 item = dict(row)
-                purchase_state = membership_purchase_state(plan, str(item["plan_type"]))
+                purchase_state = membership_purchase_state_from_policy(
+                    connection, plan, str(item["plan_type"]), as_of=datetime.now(UTC),
+                )
                 item.update(
                     {
                         "can_purchase": purchase_state["can_purchase"],
@@ -645,7 +649,20 @@ class ReadOnlyLegacyRepository:
             item = plans_by_key.get(str(key))
             if not item or item.get("lifecycle") != "active_public":
                 continue
-            purchase = membership_purchase_state(plan, str(key))
+            # The state was derived from the verified policy while reading the
+            # canonical connection; no legacy matrix is consulted here.
+            purchase = {
+                "can_purchase": False,
+                "purchase_action": "unavailable",
+                "blocked_reason": "当前会员策略无法核验。",
+            }
+            try:
+                with self.connection() as connection:
+                    purchase = membership_purchase_state_from_policy(
+                        connection, plan, str(key), as_of=datetime.now(UTC),
+                    )
+            except (ReadModelError, OSError, sqlite3.Error):
+                pass
             commerce = item.get("commerce") if isinstance(item.get("commerce"), dict) else {}
             can_purchase = bool(purchase["can_purchase"] and commerce.get(
                 "renewable" if purchase["purchase_action"] == "renew" else "upgrade_target"

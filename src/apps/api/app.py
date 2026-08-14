@@ -114,7 +114,8 @@ from core.referral_coupon import ReferralCouponService
 from core.official_option_sim_journal import OfficialOptionSimulationJournal
 from core.auth import AuthError, AuthService, email_verification_required
 from core.compat import UTC
-from core.plans import can, effective_plan, plan_display_name, web_market_data_visibility
+from core.entitlement_consumer import verified_can
+from core.plans import effective_plan, plan_display_name, web_market_data_visibility
 from notification.email_sender import send_email, smtp_configured
 from notification.telegram_billing import queue_manual_payment_review_notice
 from notification.telegram_referrals import (
@@ -209,9 +210,7 @@ def _build_earnings_forecast_api() -> EarningsForecastApi | None:
     return EarningsForecastApi(
         EarningsForecastReadModel(legacy_database_path(), OpaqueIdCodec(codec_key)),
         authenticate=_identity,
-        has_capability=lambda identity, capability: can(
-            identity.effective_plan, capability
-        ),
+        has_capability=_identity_has_capability,
         clock=lambda: datetime.now().astimezone(),
     )
 
@@ -239,9 +238,7 @@ def _build_official_option_sim_api() -> OfficialOptionSimulationApi | None:
     return OfficialOptionSimulationApi(
         OfficialOptionSimulationReadModel(legacy_database_path(), codec),
         authenticate=_identity,
-        has_capability=lambda identity, capability: can(
-            identity.effective_plan, capability
-        ),
+        has_capability=_identity_has_capability,
     )
 
 
@@ -435,6 +432,15 @@ def _identity(request: Request) -> BrowserIdentity:
         return _repository(request).authenticate(token)
     except ReadModelAuthError as exc:
         raise ApiError(str(exc), 401) from exc
+
+
+def _identity_has_capability(identity: BrowserIdentity, capability: str) -> bool:
+    """Resolve capability from the published policy and fail closed."""
+    try:
+        with app.state.repository.connection() as connection:
+            return verified_can(connection, identity.effective_plan, capability)
+    except Exception:
+        return False
 
 
 def _bounded_int(request: Request, name: str, default: int, maximum: int) -> int:
@@ -2208,7 +2214,7 @@ def _market_symbol(request: Request) -> str:
 def _professional_identity(request: Request) -> BrowserIdentity:
     """Authorize before constructing or calling the private OpenD adapter."""
     identity = _identity(request)
-    if not can(identity.effective_plan, "option_chain"):
+    if not _identity_has_capability(identity, "option_chain"):
         raise ApiError("期权研究仅对专业会员开放。", 403)
     return identity
 

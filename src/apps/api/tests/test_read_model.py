@@ -446,7 +446,7 @@ def test_membership_plan_contract_projects_the_canonical_plan_matrix(compatibili
         "UPDATE users SET plan_type='高级版',subscription_expire=? WHERE id=?", (expiry, user["id"])
     )
     advanced = repository.membership(repository.authenticate(login.access_token))
-    assert advanced["brokerage"]["auto_control_account_limit"] == 1
+    assert advanced["brokerage"]["auto_control_account_limit"] == 0
     advanced_by_key = {item["key"]: item for item in advanced["plans"]}
     assert advanced_by_key["标准版"]["purchase_action"] == "covered"
     assert advanced_by_key["标准版"]["can_purchase"] is False
@@ -457,7 +457,7 @@ def test_membership_plan_contract_projects_the_canonical_plan_matrix(compatibili
         "UPDATE users SET plan_type='专业版',subscription_expire=? WHERE id=?", (expiry, user["id"])
     )
     professional = repository.membership(repository.authenticate(login.access_token))
-    assert professional["brokerage"]["auto_control_account_limit"] == 5
+    assert professional["brokerage"]["auto_control_account_limit"] == 0
 
 
 def test_membership_annual_bonus_uses_the_platform_control(compatibility):
