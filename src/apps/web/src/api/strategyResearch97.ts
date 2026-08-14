@@ -129,6 +129,10 @@ export interface StrategyResearch97AggregateLoad {
   forbidden: boolean
 }
 
+export function displayableStrategyResearch97Cycle(load: StrategyResearch97AggregateLoad): StrategyResearch97Cycle | null {
+  return load.phase === 'ready' ? load.data?.latest.cycle ?? null : null
+}
+
 const BASE_PATH = '/api/rewrite/v1/strategy-research/expanded'
 
 export async function fetchStrategyResearch97Status(): Promise<StrategyResearch97Status> {

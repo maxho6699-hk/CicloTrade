@@ -6,6 +6,7 @@ import {
   fetchStrategyResearch97Latest,
   fetchStrategyResearch97Status,
   fetchStrategyResearch97Aggregate,
+  displayableStrategyResearch97Cycle,
   validStrategyResearch97Aggregate,
   validStrategyResearch97History,
   validStrategyResearch97Latest,
@@ -122,6 +123,7 @@ test('aggregate loader preserves partial resources instead of converting unavail
     assert.equal(result.reason, 'resource_unavailable')
     assert.equal(result.status.state, 'unavailable')
     assert.equal(result.history.state, 'unavailable')
+    assert.equal(displayableStrategyResearch97Cycle(result), null)
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -142,9 +144,18 @@ test('aggregate loader preserves status and latest when history fails independen
     assert.equal(result.status.state, 'ready')
     assert.equal(result.latest.state, 'ready')
     assert.equal(result.history.state, 'error')
+    assert.equal(displayableStrategyResearch97Cycle(result), null)
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test('exposes a cycle only for a fully ready aggregate', () => {
+  const result = {
+    phase: 'ready', status: { state: 'ready', data: status }, latest: { state: 'ready', data: latest }, history: { state: 'ready', data: history },
+    data: { status, latest, history }, forbidden: false,
+  } as const
+  assert.equal(displayableStrategyResearch97Cycle(result), latest.cycle)
 })
 
 test('aggregate loader rejects cross-source hash drift and preserves forbidden as an explicit state', async () => {

@@ -2,7 +2,7 @@ import { AlertTriangle, ChevronLeft, ChevronRight, Clock3, Database, LockKeyhole
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { BrowserApiError } from '../api/client'
-import { fetchStrategyResearch97Aggregate, type StrategyResearch97AggregateLoad, type StrategyResearch97DataState, type StrategyResearch97Signal, type StrategyResearch97State } from '../api/strategyResearch97'
+import { displayableStrategyResearch97Cycle, fetchStrategyResearch97Aggregate, type StrategyResearch97AggregateLoad, type StrategyResearch97DataState, type StrategyResearch97Signal, type StrategyResearch97State } from '../api/strategyResearch97'
 import { useLocale } from '../i18n/useLocale'
 import '../styles/strategy-research-97.css'
 
@@ -46,9 +46,8 @@ function signalClass(signal: StrategyResearch97Signal): string { return `strateg
 function dataStateLabel(state: StrategyResearch97DataState, text: ResearchCopy): string { return state === 'fresh' ? text.fresh : state === 'stale' ? text.stale : text.dataMissing }
 
 function pageCountForLoad(loadState: LoadState, query: string, tier: TierFilter, signal: SignalFilter, pageSize: number): number {
-  if (loadState.phase !== 'ready' && loadState.phase !== 'partial') return 1
-  const latest = loadState.load.latest.state === 'error' ? null : loadState.load.latest.data
-  const cycle = latest?.cycle ?? loadState.load.data?.latest.cycle ?? null
+  if (loadState.phase !== 'ready') return 1
+  const cycle = displayableStrategyResearch97Cycle(loadState.load)
   if (!cycle) return 1
   const normalizedQuery = query.trim().toUpperCase()
   const filteredCount = cycle.symbols.filter((item) => {
@@ -121,10 +120,9 @@ export function StrategyResearch97Panel() {
 
   const load = loadState.load
   const statusData = load.status.state === 'error' ? null : load.status.data
-  const latest = load.latest.state === 'error' ? null : load.latest.data
   const history = load.history.state === 'error' ? null : load.history.data
   const historyError = load.history.state === 'error'
-  const cycle = latest?.cycle ?? load.data?.latest.cycle ?? null
+  const cycle = displayableStrategyResearch97Cycle(load)
   const partial = load.phase === 'partial'
   const stateLabel = statusData ? text.status[statusData.state] : text.unavailable
   const pageSize = isNarrowViewport ? NARROW_PAGE_SIZE : PAGE_SIZE
