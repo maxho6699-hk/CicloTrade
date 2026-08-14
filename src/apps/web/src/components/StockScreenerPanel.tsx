@@ -1,5 +1,5 @@
 import { AlertTriangle, Bookmark, ChevronLeft, ChevronRight, Clock3, CloudOff, ListFilter, LoaderCircle, LockKeyhole, Search } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLocale } from '../i18n/useLocale'
 import {
@@ -8,8 +8,10 @@ import {
   decodeStockScreenerDraft,
   decodeStockScreenerPayload,
   decodeStockScreenerPreset,
+  decodeStockScreenerRequest,
   paperPrefillUrl,
   screenerViewState,
+  type StockScreenerRequest,
   type StockScreenerPreset,
 } from '../domain/stockScreener'
 import '../styles/screener.css'
@@ -21,6 +23,7 @@ export interface StockScreenerPanelProps {
   loading?: boolean
   onSavePreset?: (preset: StockScreenerPreset) => Promise<unknown>
   onPageChange?: (page: number) => void
+  onQueryChange?: (request: StockScreenerRequest) => void
 }
 
 const COPY = {
@@ -54,7 +57,7 @@ function saveStatus(error: unknown) {
   return typeof error === 'object' && error !== null && ('status' in error && (error as { status?: unknown }).status === 409 || 'code' in error && (error as { code?: unknown }).code === 'conflict') ? 'conflict' : 'failed'
 }
 
-export function StockScreenerPanel({ locale: requestedLocale, payload: rawPayload, preset: rawPreset, loading = false, onSavePreset, onPageChange }: StockScreenerPanelProps) {
+export function StockScreenerPanel({ locale: requestedLocale, payload: rawPayload, preset: rawPreset, loading = false, onSavePreset, onPageChange, onQueryChange }: StockScreenerPanelProps) {
   const { locale: activeLocale } = useLocale()
   const locale = requestedLocale ?? activeLocale
   const copy = COPY[locale]
@@ -64,6 +67,7 @@ export function StockScreenerPanel({ locale: requestedLocale, payload: rawPayloa
   const [draft, setDraft] = useState<StockScreenerPreset | null>(storageDraft)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState<'draft' | 'saved' | 'conflict' | 'failed' | ''>('')
+  const [query, setQuery] = useState<StockScreenerRequest | null>(null)
   const state = screenerViewState(payload, loading)
   const pageCount = payload ? Math.max(1, Math.ceil(payload.total / payload.page_size)) : 1
 
@@ -71,6 +75,10 @@ export function StockScreenerPanel({ locale: requestedLocale, payload: rawPayloa
   useEffect(() => {
     if (payload && !draft) setDraft({ schema_version: 1, version: serverPreset?.version ?? 0, name: '我的筛选', filters: payload.filters, sort: payload.sort })
   }, [draft, payload, serverPreset?.version])
+  useEffect(() => { if (payload) setQuery({ schema_version: 1, preset: payload.preset, filters: payload.filters, sort: payload.sort, page: payload.page, page_size: payload.page_size }) }, [payload])
+
+  const applyQuery = (event: FormEvent) => { event.preventDefault(); const request = decodeStockScreenerRequest(query); if (request) onQueryChange?.(request) }
+  const resetQuery = () => { if (!payload) return; const request = { schema_version: 1 as const, preset: 'all' as const, filters: {}, sort: { field: 'updated_at' as const, direction: 'desc' as const }, page: 1, page_size: payload.page_size }; setQuery(request); onQueryChange?.(request) }
 
   const persistPreset = async () => {
     if (!draft) return
@@ -96,7 +104,7 @@ export function StockScreenerPanel({ locale: requestedLocale, payload: rawPayloa
     <section className="stock-screener-state" data-state={state} role="status"><StateIcon size={18} className={state === 'pending' ? 'spin' : undefined} /><span><strong>{stateCopy[0]}</strong><small>{stateCopy[1]}</small></span></section>
     {state === 'empty' ? <section className="data-panel stock-screener-empty"><Search size={20} /><span>{stateCopy[1]}</span></section> : <>
       <section className="data-panel stock-screener-controls" aria-label={copy.serverPreset}>
-        <div className="stock-screener-control-row"><div><span>{copy.serverPreset}</span><strong>{payload.preset}</strong></div><div className="stock-screener-draft"><label><span>{copy.presetName}</span><input value={draft?.name ?? ''} onChange={(event) => setDraft((current) => current ? { ...current, name: event.target.value } : current)} maxLength={80} /></label><button className="button tertiary" type="button" disabled={saving || !draft?.name.trim()} onClick={persistPreset}><Bookmark size={15} />{saving ? copy.saving : copy.save}</button>{saved && <small data-save-state={saved}>{copy[saved]}</small>}</div></div>
+        <form className="stock-screener-control-row" onSubmit={applyQuery}><div><span>{copy.serverPreset}</span><strong>{payload.preset}</strong><div className="stock-screener-query"><button type="button" onClick={() => setQuery((q) => q ? { ...q, preset: 'all', page: 1 } : q)}>全部</button><button type="button" onClick={() => setQuery((q) => q ? { ...q, preset: 'momentum', page: 1 } : q)}>动量</button><button type="button" onClick={() => setQuery((q) => q ? { ...q, preset: 'pullback', page: 1 } : q)}>回调</button><button type="button" onClick={() => setQuery((q) => q ? { ...q, preset: 'risk_first', page: 1 } : q)}>风险优先</button><input aria-label="标的代码" value={query?.filters.symbols?.[0] ?? ''} onChange={(e) => setQuery((q) => q ? { ...q, filters: { ...q.filters, symbols: e.target.value.trim() ? [e.target.value.trim().toUpperCase()] : undefined }, page: 1 } : q)} /><select aria-label="行动" value={query?.filters.actions?.[0] ?? ''} onChange={(e) => setQuery((q) => q ? { ...q, filters: { ...q.filters, actions: e.target.value ? [e.target.value as never] : undefined }, page: 1 } : q)}><option value="">行动</option><option value="buy">buy</option><option value="hold">hold</option><option value="wait">wait</option></select><select aria-label="数据状态" value={query?.filters.data_states?.[0] ?? ''} onChange={(e) => setQuery((q) => q ? { ...q, filters: { ...q.filters, data_states: e.target.value ? [e.target.value as never] : undefined }, page: 1 } : q)}><option value="">数据状态</option><option value="fresh">fresh</option><option value="delayed">delayed</option><option value="stale">stale</option></select><input aria-label="最低价格" type="number" value={query?.filters.min_price ?? ''} onChange={(e) => setQuery((q) => q ? { ...q, filters: { ...q.filters, min_price: e.target.value ? Number(e.target.value) : undefined } } : q)} /><input aria-label="最高价格" type="number" value={query?.filters.max_price ?? ''} onChange={(e) => setQuery((q) => q ? { ...q, filters: { ...q.filters, max_price: e.target.value ? Number(e.target.value) : undefined } } : q)} /><input aria-label="最低评分" type="number" value={query?.filters.min_score ?? ''} onChange={(e) => setQuery((q) => q ? { ...q, filters: { ...q.filters, min_score: e.target.value ? Number(e.target.value) : undefined } } : q)} /><select aria-label="排序" value={query?.sort.field ?? 'updated_at'} onChange={(e) => setQuery((q) => q ? { ...q, sort: { ...q.sort, field: e.target.value as never } } : q)}><option value="updated_at">最新</option><option value="score">评分</option><option value="price">价格</option></select><button className="button tertiary" type="submit">套用</button><button className="button tertiary" type="button" onClick={resetQuery}>重置</button></div></div><div className="stock-screener-draft"><label><span>{copy.presetName}</span><input value={draft?.name ?? ''} onChange={(event) => setDraft((current) => current ? { ...current, name: event.target.value } : current)} maxLength={80} /></label><button className="button tertiary" type="button" disabled={saving || !draft?.name.trim()} onClick={persistPreset}><Bookmark size={15} />{saving ? copy.saving : copy.save}</button>{saved && <small data-save-state={saved}>{copy[saved]}</small>}</div></form>
       </section>
       <section className="data-panel stock-screener-results">
         <header className="panel-heading"><div><span>SERVER-VERIFIED RESEARCH</span><h2><ListFilter size={18} />{payload.total} {copy.results}</h2></div><small>{copy.page} {payload.page} {copy.of} {pageCount}</small></header>

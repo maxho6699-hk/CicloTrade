@@ -7,6 +7,7 @@ import {
   decodeStockScreenerDraft,
   decodeStockScreenerPayload,
   decodeStockScreenerPreset,
+  decodeStockScreenerRequest,
   paperPrefillUrl,
   screenerViewState,
 } from '../src/domain/stockScreener.ts'
@@ -62,6 +63,14 @@ test('versioned server presets and local drafts require the same schema', () => 
   assert.equal(decodeStockScreenerDraft('{bad json'), null)
   assert.equal(decodeStockScreenerPreset({ ...preset, schema_version: 2 }), null)
   assert.equal(decodeStockScreenerPreset({ ...preset, version: -1 }), null)
+})
+
+test('server query requests reject unknown filters and out-of-bounds pagination', () => {
+  const request = { schema_version: 1, preset: 'all', filters: { actions: ['buy'], symbols: ['NVDA'] }, sort: { field: 'score', direction: 'desc' }, page: 1, page_size: 20 }
+  assert.deepEqual(decodeStockScreenerRequest(request), request)
+  assert.equal(decodeStockScreenerRequest({ ...request, filters: { unknown: true } }), null)
+  assert.equal(decodeStockScreenerRequest({ ...request, page: 0 }), null)
+  assert.equal(decodeStockScreenerRequest({ ...request, page_size: 101 }), null)
 })
 
 test('only server-supplied actions produce research, alert, and personal-paper navigation', () => {

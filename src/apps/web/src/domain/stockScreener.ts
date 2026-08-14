@@ -26,6 +26,7 @@ export interface StockScreenerPayload {
 }
 
 export interface StockScreenerPreset { schema_version: 1; version: number; name: string; filters: ScreenerFilters; sort: ScreenerSort }
+export interface StockScreenerRequest { schema_version: 1; preset: StockScreenerPayload['preset']; filters: ScreenerFilters; sort: ScreenerSort; page: number; page_size: number }
 export type ScreenerViewState = 'pending' | 'success' | 'empty' | 'stale' | 'offline' | 'unknown'
 
 export const SCREENER_DRAFT_KEY = 'ciclotrade.stock-screener.draft.v1'
@@ -99,6 +100,14 @@ export function decodeStockScreenerPreset(value: unknown): StockScreenerPreset |
   if (!preset || !exact(preset, ['schema_version', 'version', 'name', 'filters', 'sort']) || preset.schema_version !== 1 || !finite(preset.version, 0, Number.MAX_SAFE_INTEGER) || !Number.isInteger(preset.version) || !text(preset.name, 80)) return null
   const filters = decodeFilters(preset.filters), sort = decodeSort(preset.sort)
   return filters && sort ? { schema_version: 1, version: preset.version, name: preset.name, filters, sort } : null
+}
+
+/** Boundary DTO for an injected server query callback; it never fetches itself. */
+export function decodeStockScreenerRequest(value: unknown): StockScreenerRequest | null {
+  const request = object(value)
+  if (!request || !exact(request, ['schema_version', 'preset', 'filters', 'sort', 'page', 'page_size']) || request.schema_version !== 1 || !presets.has(request.preset as StockScreenerPayload['preset']) || !finite(request.page, 1, 1_000) || !Number.isInteger(request.page) || !finite(request.page_size, 1, 100) || !Number.isInteger(request.page_size)) return null
+  const filters = decodeFilters(request.filters), sort = decodeSort(request.sort)
+  return filters && sort ? { schema_version: 1, preset: request.preset as StockScreenerPayload['preset'], filters, sort, page: request.page, page_size: request.page_size } : null
 }
 
 export function decodeStockScreenerDraft(value: string | null): StockScreenerPreset | null { try { return value ? decodeStockScreenerPreset(JSON.parse(value)) : null } catch { return null } }
