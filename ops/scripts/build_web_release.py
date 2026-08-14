@@ -33,7 +33,7 @@ EXPECTED_EXISTING_MIGRATIONS = ("0034_personal_paper.sql",)
 LIFECYCLE = {"allowed_actions": ["restart"], "service": "ciclotrade-rewrite-api.service"}
 EXACT_FILES = frozenset({"app.py", "asgi_app.py", "config.yaml", "requirements.txt"})
 ALLOWED_PREFIXES = (
-    "config/", "backtest/", "core/", "notification/", "payment/", "sandbox_runner/",
+    "config/", "backtest/", "core/", "data/", "notification/", "payment/", "sandbox_runner/",
     "scheduler/", "strategies/", "strategy_client/", "trading/", "ui/", "src/apps/api/",
     "src/packages/contracts/", "src/apps/web/dist/",
 )
@@ -105,7 +105,7 @@ def _is_forbidden(path: str) -> bool:
     normalized = unicodedata.normalize("NFKC", path).replace("\\", "/")
     lower = normalized.casefold()
     parts = lower.split("/")
-    if any(part in {"tests", "cache", "node_modules", "worker", "logs"} for part in parts):
+    if any(part in {"tests", "cache", "node_modules", "worker", "logs", "payment-proofs", "payment_proofs"} for part in parts):
         return True
     if lower.startswith("ops/opend/") or (
         lower.startswith("migrations/backtest/")

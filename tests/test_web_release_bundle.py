@@ -46,6 +46,18 @@ def _source_repo(tmp_path: Path) -> Path:
         "config/settings.py": b"SETTING = 'test'\n",
         "requirements.txt": b"fastapi==0.1\n",
         "backtest/engine.py": b"pass\n",
+        "data/__init__.py": b"\n",
+        "data/datasource.py": b"class DataSource: pass\n",
+        "data/akshare_adapter.py": b"class AkshareAdapter: pass\n",
+        "data/polygon_adapter.py": b"class PolygonAdapter: pass\n",
+        "data/wrdata_adapter.py": b"class WrdataAdapter: pass\n",
+        "data/yfinance_adapter.py": b"class YfinanceAdapter: pass\n",
+        "data/opend_adapter.py": b"class OpenDAdapter: pass\n",
+        "data/opend_control.py": b"class OpenDControl: pass\n",
+        "data/opend_probe.py": b"class OpenDProbe: pass\n",
+        "data/cache/fixture.py": b"pass\n",
+        "data/fixture.db": b"SQLite format 3\x00",
+        "data/payment-proofs/receipt.json": b"{}\n",
         "core/domain.py": b"pass\n",
         "notification/service.py": b"pass\n",
         "payment/proof_storage.py": b"pass\n",
@@ -144,6 +156,29 @@ def test_builder_excludes_markdown_runtime_instructions(tmp_path: Path) -> None:
     assert "sandbox_runner/README.md" not in {item["path"] for item in data["files"]}
     with tarfile.open(artifact, "r:gz") as archive:
         assert "sandbox_runner/README.md" not in archive.getnames()
+    assert verifier.verify_release(root, artifact, manifest) == []
+
+
+def test_release_includes_data_runtime_modules_but_excludes_opend_and_sensitive_data(tmp_path: Path) -> None:
+    root = _source_repo(tmp_path)
+    artifact, manifest, data = _bundle(root, tmp_path)
+    paths = {item["path"] for item in data["files"]}
+    expected = {
+        "data/__init__.py",
+        "data/datasource.py",
+        "data/akshare_adapter.py",
+        "data/polygon_adapter.py",
+        "data/wrdata_adapter.py",
+        "data/yfinance_adapter.py",
+    }
+    assert expected <= paths
+    assert not {path for path in paths if path.startswith("data/opend_")}
+    assert not {path for path in paths if "/cache/" in path or path.endswith(".db") or "payment-proofs" in path}
+    with tarfile.open(artifact, "r:gz") as archive:
+        archive_paths = set(archive.getnames())
+    assert expected <= archive_paths
+    assert not {path for path in archive_paths if path.startswith("data/opend_")}
+    assert not {path for path in archive_paths if "/cache/" in path or path.endswith(".db") or "payment-proofs" in path}
     assert verifier.verify_release(root, artifact, manifest) == []
 
 

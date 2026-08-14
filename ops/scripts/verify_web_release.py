@@ -29,7 +29,7 @@ REQUIRED_BACKTEST_MIGRATION_PATHS = {
 EXPECTED_EXISTING_MIGRATIONS = ["0034_personal_paper.sql"]
 LIFECYCLE = {"allowed_actions": ["restart"], "service": "ciclotrade-rewrite-api.service"}
 EXACT_FILES = {"app.py", "asgi_app.py", "config.yaml", "requirements.txt"}
-ALLOWED_PREFIXES = ("config/", "backtest/", "core/", "notification/", "payment/", "sandbox_runner/", "scheduler/", "strategies/", "strategy_client/", "trading/", "ui/", "src/apps/api/", "src/packages/contracts/", "src/apps/web/dist/")
+ALLOWED_PREFIXES = ("config/", "backtest/", "core/", "data/", "notification/", "payment/", "sandbox_runner/", "scheduler/", "strategies/", "strategy_client/", "trading/", "ui/", "src/apps/api/", "src/packages/contracts/", "src/apps/web/dist/")
 HASH = re.compile(r"^[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40,64}$")
 BLOB = re.compile(r"^[0-9a-f]{40,64}$")
@@ -128,7 +128,7 @@ def _forbidden_path(name: str) -> bool:
     basename = parts[-1]
     if basename.endswith((".md", ".markdown")):
         return True
-    if any(part in {"tests", "cache", "node_modules", "worker", "logs"} for part in parts):
+    if any(part in {"tests", "cache", "node_modules", "worker", "logs", "payment-proofs", "payment_proofs"} for part in parts):
         return True
     if lower.startswith("ops/opend/") or (
         lower.startswith("migrations/backtest/")
