@@ -23,6 +23,7 @@ from core.referral_affiliate_common import (
     _public_id,
 )
 from core.referral_commission import ReferralCommissionService
+from core.referral_bonus import ReferralBonusService
 from core.referral_coupon import ReferralCouponService
 
 
@@ -220,14 +221,22 @@ class ReferralService:
 
     def portal(self, user_id: int, *, base_url: str = "") -> dict[str, Any]:
         profile = self.ensure_profile(int(user_id))
+        moment = datetime.now(UTC)
         with self.db.transaction() as conn:
             enabled = _enabled(conn)
             cutover_at = _control(conn, "referral_cash_cutover_at", "").strip() or None
             if enabled:
-                ReferralCommissionService.release_due_in_transaction(conn, int(user_id), datetime.now(UTC))
+                ReferralCommissionService.release_due_in_transaction(conn, int(user_id), moment)
             buckets = _balance_rows(conn, int(user_id))
             from core.referral_coupon import POLICY_VERSION as PROMOTION_POLICY_VERSION
             policy_version, policy = ReferralCouponService._policy(conn)
+            bonus_tiers, bonus_progress = ReferralBonusService.portal_progress(conn, int(user_id), moment)
+            if not bonus_tiers:
+                bonus_tiers = [
+                    {"qualified_count": int(tier["qualified_count"]),
+                     "cumulative_amount_minor": int(tier["cumulative_amount_minor"])}
+                    for tier in policy.get("bonus_tiers", [])
+                ]
             minimum = int(policy.get("withdrawal_min_minor", 20_000))
             hold_days = int(policy.get("hold_days", 30))
             raw_commissions = [dict(row) for row in conn.execute(
@@ -315,9 +324,17 @@ class ReferralService:
                 "SELECT COALESCE(SUM(clawed_back_minor),0) FROM referral_commissions WHERE referrer_user_id=?",
                 (int(user_id),),
             ).fetchone()[0])
+            bonus_totals = conn.execute(
+                """SELECT COALESCE(SUM(award_delta_minor),0) earned,
+                          COALESCE(SUM(reversed_amount_minor),0) clawed
+                   FROM referral_bonus_award_events WHERE referrer_user_id=?""",
+                (int(user_id),),
+            ).fetchone()
+            earned_total += int(bonus_totals["earned"])
+            clawed_total += int(bonus_totals["clawed"])
             windows = []
             for days in (7, 30, 90):
-                since = _iso(datetime.now(UTC) - timedelta(days=days))
+                since = _iso(moment - timedelta(days=days))
                 stats = conn.execute(
                     """SELECT COUNT(*) settled_orders,COUNT(DISTINCT referred_user_id) settled_referrals,
                               COALESCE(SUM(gross_amount_minor),0) gross,
@@ -345,7 +362,7 @@ class ReferralService:
             settled_referrals_30d = int(conn.execute(
                 """SELECT COUNT(DISTINCT referred_user_id) FROM referral_commissions
                    WHERE referrer_user_id=? AND datetime(settled_at)>=datetime(?)""",
-                (int(user_id), _iso(datetime.now(UTC) - timedelta(days=30))),
+                (int(user_id), _iso(moment - timedelta(days=30))),
             ).fetchone()[0])
             timeline = [{
                 "event_id": row["event_id"],
@@ -353,7 +370,8 @@ class ReferralService:
                     "REFERRAL_ATTRIBUTED": "registration", "COMMISSION_RECORDED": "commission_pending",
                     "COMMISSION_CLAWBACK": "clawback", "WITHDRAWAL_SUBMITTED": "withdrawal_submitted",
                     "WITHDRAWAL_APPROVED": "withdrawal_approved", "WITHDRAWAL_REJECTED": "withdrawal_rejected",
-                    "WITHDRAWAL_PAID": "withdrawal_paid",
+                    "WITHDRAWAL_PAID": "withdrawal_paid", "BONUS_AWARDED": "bonus_pending",
+                    "BONUS_CLAWBACK": "bonus_clawback",
                 }.get(row["action"], "withdrawal_cancelled"),
                 "public_reference": row["entity_public_id"], "amount_minor": None,
                 "occurred_at": _hkt(row["created_at"]),
@@ -377,10 +395,8 @@ class ReferralService:
                         "referral_discount_bps": int(policy.get("referral_discount_bps", 500)),
                         "referrer_commission_bps": int(policy.get("commission_rate_bps", 1000)),
                         "subsequent_order_commission_bps": 0,
-                        # The public portal currently understands percentage tiers only.
-                        # Fixed-amount milestone details remain on the authoritative admin policy
-                        # until the shared Web DTO is upgraded; never mislabel amounts as basis points.
-                        "bonus_tiers": []},
+                        "bonus_enabled": bool(policy.get("bonus_enabled", False)),
+                        "bonus_tiers": bonus_tiers, "bonus_progress": bonus_progress},
             "invite": {"invite_code": profile["invite_code"], "invite_link": link, "qr_payload": link},
             "balances": {"earned_total_minor": earned_total, "pending_minor": buckets["pending"],
                          "withdrawable_minor": max(0, buckets["available"]),

@@ -8,6 +8,7 @@ import pytest
 from core.auth import AuthService
 from core.compat import UTC
 from core.database import DatabaseManager
+from core.referral_affiliate_common import HONG_KONG
 from core.referral_affiliate import (
     ReferralBonusService,
     ReferralCommissionService,
@@ -80,6 +81,58 @@ def test_period_uses_first_frozen_policy_and_incremental_award(db):
     award = db.fetch_one("SELECT policy_version,award_delta_minor,status FROM referral_bonus_award_events")
     assert period == {"policy_version": "1", "hold_days": 30, "current_target_minor": 15_000}
     assert award == {"policy_version": "1", "award_delta_minor": 15_000, "status": "pending"}
+
+
+def test_crossing_a_bonus_tier_awards_only_the_fixed_target_difference_and_audits(db):
+    auth = AuthService(db)
+    referrer = _user(auth, "tier-difference")
+    now = datetime(2026, 8, 10, 12, tzinfo=UTC)
+    snapshot = {
+        "enabled": True, "hold_days": 30, "version": 1,
+        "tiers": [
+            {"qualified_count": 1, "cumulative_amount_minor": 10_000},
+            {"qualified_count": 2, "cumulative_amount_minor": 40_000},
+        ],
+    }
+    _qualify(db, auth, referrer, snapshot, "tier-difference-one", now)
+    _qualify(db, auth, referrer, snapshot, "tier-difference-two", now + timedelta(minutes=1))
+
+    assert [row["award_delta_minor"] for row in db.fetch_all(
+        "SELECT award_delta_minor FROM referral_bonus_award_events ORDER BY id"
+    )] == [10_000, 30_000]
+    assert db.fetch_one(
+        "SELECT COUNT(*) count FROM referral_audit_events WHERE action='BONUS_AWARDED'"
+    ) == {"count": 2}
+
+
+def test_portal_projects_the_frozen_tiers_and_actual_bonus_balances(db):
+    auth = AuthService(db)
+    referrer = _user(auth, "bonus-portal")
+    now = datetime.now(UTC)
+    snapshot = {
+        "enabled": True, "hold_days": 0, "version": 9,
+        "tiers": [{"qualified_count": 1, "cumulative_amount_minor": 10_000}],
+    }
+    order = _qualify(db, auth, referrer, snapshot, "bonus-portal-order", now)
+    with db.transaction() as conn:
+        ReferralBonusService.release_due_in_transaction(conn, referrer["id"], now + timedelta(seconds=1))
+        ReferralBonusService.record_reversal(
+            conn, source_order_no=order["order_no"], now=now + timedelta(minutes=1)
+        )
+
+    portal = ReferralService(db).portal(referrer["id"])
+    assert portal["program"]["bonus_tiers"] == snapshot["tiers"]
+    assert portal["program"]["bonus_progress"] == {
+        "period_key": now.astimezone(HONG_KONG).strftime("%Y-%m"), "qualified_count": 0,
+        "current_target_minor": 0, "earned_amount_minor": 10_000,
+        "clawed_back_minor": 10_000, "net_amount_minor": 0,
+        "status": "clawed_back",
+    }
+    assert portal["balances"]["earned_total_minor"] == 10_000
+    assert portal["balances"]["clawed_back_total_minor"] == 10_000
+    assert db.fetch_one(
+        "SELECT COUNT(*) count FROM referral_audit_events WHERE action='BONUS_CLAWBACK'"
+    ) == {"count": 1}
 
 
 def test_matured_bonus_clawback_cancels_open_withdrawal_and_paid_debt_blocks_new_request(db):

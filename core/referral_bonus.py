@@ -14,7 +14,7 @@ class ReferralBonusService:
 
     @staticmethod
     def record_qualification(conn: Any, *, order: dict[str, Any], attribution: dict[str, Any], now: datetime) -> None:
-        from core.referral_affiliate_common import HONG_KONG, _iso, _ledger_batch, _public_id
+        from core.referral_affiliate_common import HONG_KONG, _audit, _iso, _ledger_batch, _public_id
 
         try:
             snapshot = json.loads(str(order.get("referral_bonus_policy_snapshot") or "{}"))
@@ -88,6 +88,12 @@ class ReferralBonusService:
         _ledger_batch(conn, user_id=int(attribution["referrer_user_id"]), legs=[("pending", delta)],
                       entry_type="bonus_award", group_key=f"bonus:{public_id}", reference_type="bonus",
                       reference_id=public_id, batch_key=f"bonus:{public_id}:award", now=now)
+        _audit(
+            conn, actor_user_id=None, actor_kind="system", action="BONUS_AWARDED",
+            entity_type="bonus", entity_public_id=public_id,
+            details={"source_order_no": str(order["order_no"]), "qualified_count": count,
+                     "target_minor": target, "award_delta_minor": delta}, now=now,
+        )
 
     @staticmethod
     def release_due_in_transaction(conn: Any, user_id: int | None, now: datetime) -> int:
@@ -112,7 +118,7 @@ class ReferralBonusService:
 
     @staticmethod
     def record_reversal(conn: Any, *, source_order_no: str, now: datetime) -> None:
-        from core.referral_affiliate_common import _iso, _ledger_batch
+        from core.referral_affiliate_common import _audit, _iso, _ledger_batch
         from core.referral_wallet import ReferralWalletService
 
         contributor = conn.execute("SELECT * FROM referral_bonus_contributors WHERE source_order_no=? AND status<>'reversed'", (source_order_no,)).fetchone()
@@ -155,3 +161,71 @@ class ReferralBonusService:
             _ledger_batch(conn, user_id=int(award["referrer_user_id"]), legs=[(bucket, -amount)], entry_type="bonus_clawback", group_key=f"bonus:{award['public_id']}:reversal", reference_type="bonus", reference_id=award["public_id"], batch_key=f"bonus:{award['public_id']}:reversal:{new_reversed}", now=now)
             claw -= amount
         conn.execute("UPDATE referral_bonus_periods SET current_target_minor=? WHERE id=?", (target, contributor["period_id"]))
+        clawback_minor = max(0, awarded - target)
+        if clawback_minor:
+            _audit(
+                conn, actor_user_id=None, actor_kind="system", action="BONUS_CLAWBACK",
+                entity_type="bonus_contributor", entity_public_id=str(contributor["public_id"]),
+                details={"source_order_no": str(source_order_no), "clawback_minor": clawback_minor}, now=now,
+            )
+
+    @staticmethod
+    def portal_progress(conn: Any, user_id: int, now: datetime) -> tuple[list[dict[str, int]], dict[str, Any]]:
+        """Return only persisted bonus facts for the referrer's current HKT period."""
+        from core.referral_affiliate_common import HONG_KONG
+
+        period_key = now.astimezone(HONG_KONG).strftime("%Y-%m")
+        period = conn.execute(
+            "SELECT * FROM referral_bonus_periods WHERE referrer_user_id=? AND period_key=?",
+            (int(user_id), period_key),
+        ).fetchone()
+        if not period:
+            return [], {
+                "period_key": period_key, "qualified_count": 0, "current_target_minor": 0,
+                "earned_amount_minor": 0, "clawed_back_minor": 0, "net_amount_minor": 0,
+                "status": "not_qualified",
+            }
+        try:
+            snapshot = json.loads(str(period["policy_snapshot_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("奖金期间政策无效。") from exc
+        canonical = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        if not hmac.compare_digest(hashlib.sha256(canonical.encode()).hexdigest(), str(period["policy_sha256"])):
+            raise ValueError("奖金期间政策审计摘要不一致。")
+        try:
+            tiers = [
+                {"qualified_count": int(tier["qualified_count"]),
+                 "cumulative_amount_minor": int(tier["cumulative_amount_minor"])}
+                for tier in snapshot.get("tiers", [])
+            ]
+        except (TypeError, ValueError, KeyError) as exc:
+            raise ValueError("奖金期间档位无效。") from exc
+        totals = conn.execute(
+            """SELECT COALESCE(SUM(award_delta_minor),0) earned,
+                      COALESCE(SUM(reversed_amount_minor),0) clawed,
+                      SUM(status='pending') pending
+                 FROM referral_bonus_award_events WHERE period_id=?""",
+            (int(period["id"]),),
+        ).fetchone()
+        earned, clawed = int(totals["earned"]), int(totals["clawed"])
+        net = earned - clawed
+        if not net and clawed:
+            status = "clawed_back"
+        elif clawed:
+            status = "partially_clawed_back"
+        elif int(totals["pending"] or 0):
+            status = "pending"
+        elif earned:
+            status = "earned"
+        else:
+            status = "not_qualified"
+        qualified_count = int(conn.execute(
+            "SELECT COUNT(*) FROM referral_bonus_contributors WHERE period_id=? AND status<>'reversed'",
+            (int(period["id"]),),
+        ).fetchone()[0])
+        return tiers, {
+            "period_key": period_key, "qualified_count": qualified_count,
+            "current_target_minor": int(period["current_target_minor"]),
+            "earned_amount_minor": earned, "clawed_back_minor": clawed,
+            "net_amount_minor": net, "status": status,
+        }
