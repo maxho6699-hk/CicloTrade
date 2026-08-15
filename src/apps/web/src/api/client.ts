@@ -439,12 +439,24 @@ export interface PersonalPaperAccount {
   quote_state: PersonalPaperQuoteState
   account_version: number
   positions: PersonalPaperPosition[]
+  open_orders: PersonalPaperOrder[]
+  recent_orders: PersonalPaperOrder[]
 }
 
 export interface PersonalPaperQuoteProof {
   quote_id: string
   market: 'US'
   symbol: string
+  bid_minor: number
+  ask_minor: number
+  last_minor: number
+  quote_at: string
+  observed_at: string
+  available_at: string
+  expires_at: string
+  session: string | null
+  freshness: 'fresh'
+  source: string
 }
 
 export interface PersonalPaperRiskCheck {
@@ -506,6 +518,9 @@ export interface PersonalPaperOrder {
   status: 'PENDING' | 'FILLED' | 'CANCELLED'
   created_at: string
   quote_id: string
+  account_version: number
+  cancel_eligible: boolean
+  cancel_account_version: number | null
 }
 
 export interface PersonalPaperOrderRequest {
@@ -1629,26 +1644,52 @@ export function validPersonalPaperAccount(value: unknown): value is PersonalPape
   if (!exactKeys(value, [
     'season', 'cash', 'reserved_cash', 'buying_power', 'market_value', 'realized_pnl',
     'unrealized_pnl', 'total_equity', 'as_of', 'quote_state', 'account_version', 'positions',
+    'open_orders', 'recent_orders',
   ]) || !validPersonalPaperSeason(value.season)
     || !['fresh', 'delayed', 'stale', 'missing'].includes(value.quote_state as string)
     || !validIsoTimestamp(value.as_of)
     || !finiteNonNegativeInteger(value.account_version)
-    || !Array.isArray(value.positions)) return false
+    || !Array.isArray(value.positions)
+    || !Array.isArray(value.open_orders)
+    || !Array.isArray(value.recent_orders)
+    || value.recent_orders.length > 50) return false
   if (![value.cash, value.reserved_cash, value.buying_power, value.market_value, value.realized_pnl, value.unrealized_pnl, value.total_equity].every(validFiniteNumber)) return false
-  return value.positions.every((position) => exactKeys(position, ['market', 'symbol', 'quantity'])
+  const validPosition = (position: unknown) => exactKeys(position, ['market', 'symbol', 'quantity'])
     && position.market === 'US'
     && typeof position.symbol === 'string'
     && /^[A-Z][A-Z0-9.-]{0,15}$/.test(position.symbol)
     && Number.isInteger(position.quantity)
-    && position.quantity !== 0)
+    && position.quantity !== 0
+  return value.positions.every(validPosition)
+    && value.open_orders.every((order) => validPersonalPaperOrder(order)
+      && order.season_id === value.season.id && order.status === 'PENDING' && order.cancel_eligible
+      && order.cancel_account_version === value.account_version)
+    && value.recent_orders.every((order) => validPersonalPaperOrder(order) && order.season_id === value.season.id)
 }
 
 export function validPersonalPaperQuoteProof(value: unknown): value is PersonalPaperQuoteProof {
-  return exactKeys(value, ['quote_id', 'market', 'symbol'])
+  return exactKeys(value, [
+    'quote_id', 'market', 'symbol', 'bid_minor', 'ask_minor', 'last_minor', 'quote_at',
+    'observed_at', 'available_at', 'expires_at', 'session', 'freshness', 'source',
+  ])
     && validOpaqueId(value.quote_id)
     && value.market === 'US'
     && typeof value.symbol === 'string'
     && /^[A-Z][A-Z0-9.-]{0,15}$/.test(value.symbol)
+    && [value.bid_minor, value.ask_minor, value.last_minor].every((price) => finiteNonNegativeInteger(price) && price > 0)
+    && value.ask_minor >= value.bid_minor
+    && validIsoTimestamp(value.quote_at)
+    && validIsoTimestamp(value.observed_at)
+    && validIsoTimestamp(value.available_at)
+    && validIsoTimestamp(value.expires_at)
+    && Date.parse(value.observed_at) <= Date.parse(value.available_at)
+    && Date.parse(value.quote_at) <= Date.parse(value.expires_at)
+    && Date.parse(value.available_at) <= Date.parse(value.expires_at)
+    && (value.session === null || (typeof value.session === 'string' && value.session.length > 0 && value.session.length <= 64))
+    && value.freshness === 'fresh'
+    && typeof value.source === 'string'
+    && value.source.length > 0
+    && value.source.length <= 128
 }
 
 const PERSONAL_PAPER_RISK_CHECK_CODES: readonly PersonalPaperRiskCheckCode[] = [
@@ -1850,7 +1891,10 @@ export function validPersonalPaperRiskProof(value: unknown): value is PersonalPa
 }
 
 export function validPersonalPaperOrder(value: unknown): value is PersonalPaperOrder {
-  return exactKeys(value, ['id', 'season_id', 'market', 'symbol', 'side', 'order_type', 'quantity', 'status', 'created_at', 'quote_id'])
+  return exactKeys(value, [
+    'id', 'season_id', 'market', 'symbol', 'side', 'order_type', 'quantity', 'status', 'created_at', 'quote_id',
+    'account_version', 'cancel_eligible', 'cancel_account_version',
+  ])
     && validOpaqueId(value.id)
     && validOpaqueId(value.season_id)
     && value.market === 'US'
@@ -1863,6 +1907,11 @@ export function validPersonalPaperOrder(value: unknown): value is PersonalPaperO
     && ['PENDING', 'FILLED', 'CANCELLED'].includes(value.status as string)
     && validIsoTimestamp(value.created_at)
     && validOpaqueId(value.quote_id)
+    && finiteNonNegativeInteger(value.account_version)
+    && typeof value.cancel_eligible === 'boolean'
+    && (value.cancel_account_version === null || finiteNonNegativeInteger(value.cancel_account_version))
+    && value.cancel_eligible === (value.status === 'PENDING')
+    && (value.status === 'PENDING' ? value.cancel_account_version !== null : value.cancel_account_version === null)
 }
 
 export function validPersonalPaperOrderResult(value: unknown): value is PersonalPaperOrderResult {

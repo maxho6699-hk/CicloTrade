@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   formatPersonalPaperRiskCheck,
+  validPersonalPaperOrder,
+  validPersonalPaperQuoteProof,
   validPersonalPaperRiskProof,
 } from '../src/api/client.ts'
 
@@ -88,4 +90,25 @@ test('personal paper preserves legal missing sector data and truthful preview wo
   assert.match(paperPrimitives, /预计资金占用（含费用）/)
   assert.match(paperPrimitives, /费用未单列/)
   for (const label of ['买入', '卖出', '做空', '回补', '市价', '限价', '止损触发', '止损限价']) assert.match(paperPrimitives, new RegExp(label))
+  for (const field of ['bid_minor', 'ask_minor', 'last_minor', 'quote_at', 'expires_at', 'freshness', 'source', 'session']) assert.match(paperPrimitives, new RegExp(field))
+})
+
+test('personal paper quote and order metadata remain fail-closed at the browser boundary', () => {
+  const quote = {
+    quote_id: 'ppq_1234567890', market: 'US', symbol: 'AAPL', bid_minor: 19999, ask_minor: 20001,
+    last_minor: 20000, quote_at: '2026-08-14T00:00:00+00:00', observed_at: '2026-08-14T00:00:00+00:00',
+    available_at: '2026-08-14T00:00:00+00:00', expires_at: '2026-08-14T00:00:15+00:00',
+    session: null, freshness: 'fresh', source: 'Futu OpenD',
+  }
+  assert.equal(validPersonalPaperQuoteProof(quote), true)
+  assert.equal(validPersonalPaperQuoteProof({ ...quote, freshness: 'missing' }), false)
+  assert.equal(validPersonalPaperQuoteProof({ ...quote, source: null }), false)
+  assert.equal(validPersonalPaperQuoteProof({ ...quote, expires_at: null }), false)
+  const order = {
+    id: 'ppo_1234567890', season_id: 'pps_1234567890', market: 'US', symbol: 'AAPL', side: 'BUY',
+    order_type: 'MARKET', quantity: 10, status: 'PENDING', created_at: '2026-08-14T00:00:00+00:00',
+    quote_id: quote.quote_id, account_version: 2, cancel_eligible: true, cancel_account_version: 3,
+  }
+  assert.equal(validPersonalPaperOrder(order), true)
+  assert.equal(validPersonalPaperOrder({ ...order, cancel_eligible: false }), false)
 })

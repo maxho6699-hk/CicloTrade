@@ -24,11 +24,13 @@ const account = {
   realized_pnl: 0, unrealized_pnl: 0, total_equity: 10000,
   as_of: '2026-08-14T00:00:00+00:00', quote_state: 'fresh', account_version: 2,
   positions: [{ market: 'US', symbol: 'AAPL', quantity: 10 }],
+  open_orders: [], recent_orders: [],
 }
 const order = {
   id: 'ppo_1234567890', season_id: 'pps_1234567890', market: 'US', symbol: 'AAPL',
   side: 'BUY', order_type: 'MARKET', quantity: 10, status: 'FILLED',
   created_at: '2026-08-14T00:00:00+00:00', quote_id: 'ppq_1234567890',
+  account_version: 2, cancel_eligible: false, cancel_account_version: null,
 }
 const riskRequest = {
   season_id: 'pps_1234567890', market: 'US', symbol: 'AAPL', side: 'BUY', order_type: 'MARKET',
@@ -61,8 +63,18 @@ test('personal paper decoders fail closed on mixed account domains and unknown D
   assert.equal(validPersonalPaperAccount({ ...account, season: { ...account.season, initial_cash: 100000 } }), false)
   assert.equal(validPersonalPaperAccount({ ...account, positions: [{ market: 'HK', symbol: '0700', quantity: 1 }] }), false)
   assert.equal(validPersonalPaperAccount({ ...account, positions: [{ market: 'US', symbol: 'AAPL', quantity: 0.5 }] }), false)
-  assert.equal(validPersonalPaperQuoteProof({ quote_id: 'ppq_1234567890', market: 'US', symbol: 'AAPL' }), true)
-  assert.equal(validPersonalPaperQuoteProof({ quote_id: 'ppq_1234567890', market: 'US', symbol: 'AAPL', last: 200 }), false)
+  const pending = { ...order, status: 'PENDING', cancel_eligible: true, cancel_account_version: 2 }
+  assert.equal(validPersonalPaperAccount({ ...account, open_orders: [pending], recent_orders: [pending] }), true)
+  assert.equal(validPersonalPaperAccount({ ...account, open_orders: [{ ...pending, cancel_account_version: 1 }] }), false)
+  const quote = {
+    quote_id: 'ppq_1234567890', market: 'US', symbol: 'AAPL', bid_minor: 19999, ask_minor: 20001,
+    last_minor: 20000, quote_at: '2026-08-14T00:00:00+00:00', observed_at: '2026-08-14T00:00:00+00:00',
+    available_at: '2026-08-14T00:00:00+00:00', expires_at: '2026-08-14T00:00:15+00:00',
+    session: null, freshness: 'fresh', source: 'Futu OpenD',
+  }
+  assert.equal(validPersonalPaperQuoteProof(quote), true)
+  assert.equal(validPersonalPaperQuoteProof({ ...quote, source: 7 }), false)
+  assert.equal(validPersonalPaperQuoteProof({ ...quote, last_minor: null }), false)
   assert.equal(validPersonalPaperOrderResult({ order, account, replayed: false }), true)
   assert.equal(validPersonalPaperOrderResult({ order: { ...order, season_id: 'pps_other' }, account, replayed: false }), false)
 })

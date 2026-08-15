@@ -143,7 +143,7 @@ from payment.order_service import MembershipPlanConflict, _EntitlementCommercePo
 from payment.proof_storage import read_payment_proof
 from data.datasource import DataSourceError, get_resilient_data_source, public_market_status
 from data.yfinance_adapter import YahooOptionExpiryUnavailableError
-from core.personal_paper.quote_proof import ActionableStockQuote, QuoteProofError
+from core.personal_paper.quote_proof import ActionableStockQuote, DEFAULT_TTL_SECONDS, QuoteProofError
 
 
 load_dotenv(Path(__file__).resolve().parents[3] / ".env")
@@ -2015,6 +2015,8 @@ def _personal_actionable_quote(
     last = _positive_quote_minor(quote.get("last"))
     if ask < bid:
         raise QuoteProofError("实时美股报价不可用。")
+    raw_session = quote.get("session")
+    session = raw_session.strip() if isinstance(raw_session, str) and raw_session.strip() else None
     return ActionableStockQuote(
         market="US",
         symbol=symbol,
@@ -2024,6 +2026,13 @@ def _personal_actionable_quote(
         as_of=as_of,
         is_realtime=True,
         actionable=True,
+        quote_at=as_of,
+        observed_at=as_of,
+        available_at=current,
+        expires_at=current + timedelta(seconds=DEFAULT_TTL_SECONDS),
+        session=session,
+        freshness="fresh",
+        source=quote.get("source") if isinstance(quote.get("source"), str) else None,
     )
 
 

@@ -12,7 +12,7 @@ import pytest
 from core.auth import AuthService
 from core.database import DatabaseManager
 from core.membership import add_membership_entitlement
-from core.personal_paper.quote_proof import ActionableStockQuote, QuoteProofError
+from core.personal_paper.quote_proof import ActionableStockQuote, DEFAULT_TTL_SECONDS, QuoteProofError
 from src.apps.api.app import app
 from src.apps.api.feature_catalog_adapter import FeatureCatalogAdapter
 from src.apps.api.personal_paper import build_personal_paper_api
@@ -29,6 +29,9 @@ def _quote(**changes):
         "market": "US", "symbol": "AAPL", "bid_minor": 9_999,
         "ask_minor": 10_001, "last_minor": 10_000, "as_of": NOW,
         "is_realtime": True, "actionable": True,
+        "quote_at": NOW, "observed_at": NOW, "available_at": NOW,
+        "expires_at": NOW + timedelta(seconds=DEFAULT_TTL_SECONDS),
+        "session": None, "freshness": "fresh", "source": "Futu OpenD",
     }
     values.update(changes)
     return ActionableStockQuote(**values)
@@ -140,6 +143,13 @@ def test_personal_routes_isolate_users_and_legacy_ledgers(routed_api):
         payload={"market": "US", "symbol": "AAPL"},
     ))
     assert quote_status == 201
+    assert quote["quote_at"] == NOW.isoformat(timespec="microseconds").replace("+00:00", "Z")
+    assert quote["observed_at"] == quote["quote_at"]
+    assert quote["available_at"] == quote["quote_at"]
+    assert quote["expires_at"] == (NOW + timedelta(seconds=DEFAULT_TTL_SECONDS)).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    assert quote["session"] is None
+    assert quote["freshness"] == "fresh"
+    assert quote["source"] == "Futu OpenD"
     order_payload = {
         "idempotency_key": "route-limit-order", "season_id": season_id,
         "market": "US", "symbol": "AAPL", "side": "BUY", "order_type": "LIMIT",
@@ -332,6 +342,8 @@ def test_personal_opend_quote_gate_never_falls_back_and_accepts_subpenny(monkeyp
                 "symbol": symbol, "bid": 99.994, "ask": 100.006, "last": 100.005,
                 "quote_at": NOW.isoformat(), "us_realtime_entitlement": True,
                 "actionable_snapshot": True,
+                "source": "Futu OpenD",
+                "session": " ",
             }
 
     monkeypatch.setattr(api_module, "OpenDAdapter", Adapter)
@@ -342,3 +354,10 @@ def test_personal_opend_quote_gate_never_falls_back_and_accepts_subpenny(monkeyp
     result = api_module._personal_actionable_quote(user_id=1, market="US", symbol="AAPL", now=NOW)
     assert calls == ["AAPL"]
     assert (result.bid_minor, result.ask_minor, result.last_minor) == (9999, 10001, 10001)
+    assert result.quote_at == NOW
+    assert result.observed_at == NOW
+    assert result.available_at == NOW
+    assert result.expires_at == NOW + timedelta(seconds=DEFAULT_TTL_SECONDS)
+    assert result.session is None
+    assert result.freshness == "fresh"
+    assert result.source == "Futu OpenD"

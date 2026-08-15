@@ -172,6 +172,10 @@ function money(value: number): string {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(value)
 }
 
+function quoteMoneyMinor(value: number): string {
+  return money(value / 100)
+}
+
 export function RiskCheckList({ locale, proof }: { locale: PaperLocale; proof: PersonalPaperRiskProof | null }) {
   const title = locale === 'zh-Hant' ? '風險核對清單' : '风险核对清单'
   const empty = locale === 'zh-Hant' ? '取得報價後產生服務端風險證明。' : '取得报价后生成服务端风险证明。'
@@ -212,6 +216,9 @@ export function OrderPreview({ locale, request, quote, proof }: OrderPreviewProp
         : `${hant ? '停損觸發' : '止损触发'} ${request.stopPrice || unavailable} · ${hant ? '限價' : '限价'} ${request.limitPrice || unavailable}`
   const markTime = proof ? new Date(proof.marks_as_of).toLocaleString(hant ? 'zh-TW' : 'zh-CN') : unavailable
   const expiresAt = proof ? new Date(proof.expires_at).toLocaleString(hant ? 'zh-TW' : 'zh-CN') : unavailable
+  const quoteTime = quote ? new Date(quote.quote_at).toLocaleString(hant ? 'zh-TW' : 'zh-CN') : unavailable
+  const quoteExpiresAt = quote ? new Date(quote.expires_at).toLocaleString(hant ? 'zh-TW' : 'zh-CN') : unavailable
+  const quoteSession = quote?.session ?? '未提供'
   const title = hant ? '訂單預覽' : '订单预览'
   return <section className="paper-order-preview" aria-labelledby="paper-order-preview-title">
     <header><span>ORDER PREVIEW</span><h2 id="paper-order-preview-title">{title}</h2></header>
@@ -220,6 +227,9 @@ export function OrderPreview({ locale, request, quote, proof }: OrderPreviewProp
       <div><dt>{hant ? '方向 / 數量' : '方向 / 数量'}</dt><dd>{sideLabel} · {request.quantity || unavailable}</dd></div>
       <div><dt>{hant ? '訂單類型 / 價格條件' : '订单类型 / 价格条件'}</dt><dd>{orderTypeLabel} · {priceCondition}</dd></div>
       <div><dt>{hant ? '帳本標記時間 / 風險證明到期' : '账本标记时间 / 风险证明到期'}</dt><dd>{markTime} · {expiresAt}</dd></div>
+      <div><dt>{hant ? '買 / 賣 / 最新報價' : '买 / 卖 / 最新报价'}</dt><dd>{quote ? `${quoteMoneyMinor(quote.bid_minor)} · ${quoteMoneyMinor(quote.ask_minor)} · ${quoteMoneyMinor(quote.last_minor)}` : unavailable}</dd></div>
+      <div><dt>{hant ? '報價時間 / 報價到期' : '报价时间 / 报价到期'}</dt><dd>{quoteTime} · {quoteExpiresAt}</dd></div>
+      <div><dt>{hant ? '新鮮度 / 來源 / 時段' : '新鲜度 / 来源 / 时段'}</dt><dd>{quote ? `${quote.freshness} · ${quote.source} · ${quoteSession}` : unavailable}</dd></div>
       <div><dt>{hant ? '預計資金佔用（含費用）' : '预计资金占用（含费用）'}</dt><dd>{estimatedFunds}</dd></div>
       <div><dt>{hant ? '費用 / 購買力影響' : '费用 / 购买力影响'}</dt><dd>{hant ? '費用未單列' : '费用未单列'} · {buyingImpact}</dd></div>
       <div><dt>{hant ? '報價證明' : '报价证明'}</dt><dd>{quote ? `${quote.market} · ${quote.symbol} · ${quote.quote_id}` : unavailable}</dd></div>
