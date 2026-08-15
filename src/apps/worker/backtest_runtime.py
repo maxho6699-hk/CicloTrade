@@ -474,9 +474,24 @@ def _completion_evidence(job_type: str, manifest: Mapping[str, Any], receipt: Ma
             "validation": receipt["validation"],
             "risk": receipt["risk"],
         }
+    metrics = receipt["metrics"]
+    validation = receipt["validation"]
+    public_metrics = {
+        "total_return_pct": _percentage_points(metrics["costs"]["1x"]["return_pct"]),
+        "cost_adjusted_return_pct": _percentage_points(metrics["costs"]["2x"]["return_pct"]),
+        "max_drawdown_pct": _percentage_points(metrics["costs"]["1x"]["max_drawdown"]),
+        "oos_return_pct": _percentage_points(metrics["oos"]["metrics"]["return_pct"]),
+        "stress_tail_loss_pct": _percentage_points(
+            metrics["stress"]["volatility"]["tail_stress_loss_pct"]
+        ),
+        "trade_count": validation["trade_count"],
+        "coverage_days": validation["coverage_days"],
+        "walk_forward_passed": validation["walk_forward_passed"],
+        "stress_passed": validation["stress_passed"],
+    }
     return {
         "kind": "research",
-        "metrics": receipt["metrics"],
+        "metrics": public_metrics,
         "limitations": receipt["limitations"],
         "local_receipt": {
             "runner": receipt["runner"],
@@ -484,6 +499,12 @@ def _completion_evidence(job_type: str, manifest: Mapping[str, Any], receipt: Ma
             "input_hashes": receipt["input_hashes"],
         },
     }
+
+
+def _percentage_points(value: Any) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+        raise WorkerExecutionError("child receipt percentage metric is invalid")
+    return round(float(value) * 100.0, 8)
 
 
 if __name__ == "__main__":

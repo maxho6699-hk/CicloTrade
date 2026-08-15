@@ -29,6 +29,18 @@ def _manifest():
     }
 
 
+def _browser_request():
+    return {
+        "schema_version": 1,
+        "type": "backtest.run.v1",
+        "template_key": "equity.trend.long_flat.v1",
+        "symbol": "AAPL",
+        "timeframe": "1d",
+        "sample_years": 1,
+        "lookback": 20,
+    }
+
+
 def _add_headers(request, *pairs):
     request.scope["headers"].extend((name.encode(), value.encode()) for name, value in pairs)
     return request
@@ -77,8 +89,25 @@ def test_routes_are_present():
 
 def test_worker_bearer_fail_closed_and_stream_upload_limit(browser_api, monkeypatch, tmp_path):
     previous = getattr(app.state, "backtest_queue", None)
+    previous_preparation = getattr(app.state, "backtest_preparation", None)
     queue = BacktestQueue(BacktestQueueDatabase(tmp_path / "queue.db"), ArtifactStore(tmp_path / "artifacts", max_bytes=1024))
+
+    class Preparation:
+        def prepare(self, owner_id, plan, payload, key):
+            assert payload == _browser_request()
+            job, created = queue.enqueue(
+                owner_id,
+                {"type": "backtest.run.v1", "manifest": _manifest()},
+                idempotency_scope=f"user:{owner_id}",
+                idempotency_key=key,
+                plan=plan,
+            )
+            if created:
+                queue.register_input(job["id"], "prices.csv", DATA, DIGEST)
+            return queue.get(job["id"], owner_id), created
+
     app.state.backtest_queue = queue
+    app.state.backtest_preparation = Preparation()
     try:
         monkeypatch.setenv("TRADEAI_BACKTEST_QUEUE_ENABLED", "false")
         status, headers, _ = asyncio.run(_asgi_call(
@@ -104,10 +133,9 @@ def test_worker_bearer_fail_closed_and_stream_upload_limit(browser_api, monkeypa
         with pytest.raises(BacktestQueueError):
             asyncio.run(worker_claim(wrong))
         token = _login_token()
-        public = _add_headers(_request("/api/rewrite/v1/backtests", method="POST", authorization=f"Bearer {token}", payload={"type": "backtest.run.v1", "manifest": _manifest()}), ("idempotency-key", "abcdefgh"))
+        public = _add_headers(_request("/api/rewrite/v1/backtests", method="POST", authorization=f"Bearer {token}", payload=_browser_request()), ("idempotency-key", "abcdefgh"))
         assert asyncio.run(backtests(public)).status_code == 202
         job = queue.list(1)[0]
-        queue.register_input(job["id"], "prices.csv", DATA, DIGEST)
         claim = _add_headers(_request("/api/rewrite/internal/v1/backtest-worker/claims", method="POST", payload={"lease_seconds": 120}), ("authorization", "Bearer " + "x" * 32), ("x-ciclotrade-worker-id", "worker"))
         leased = asyncio.run(worker_claim(claim))
         assert leased.status_code == 200
@@ -154,6 +182,26 @@ def test_worker_bearer_fail_closed_and_stream_upload_limit(browser_api, monkeypa
         download = asyncio.run(backtest_artifact(browser_output))
         assert download.media_type == "application/octet-stream"
         assert download.headers["content-disposition"] == 'attachment; filename="report.html"'
+        assert download.headers["content-length"] == str(len(html))
+        browser_list = asyncio.run(backtests(_request(
+            "/api/rewrite/v1/backtests", authorization=f"Bearer {token}"
+        )))
+        projected = json.loads(browser_list.body)["items"][0]
+        assert projected["failure"] is None
+        assert projected["artifacts"] == [
+            {
+                "artifact_key": "report.html",
+                "sha256": html_hash,
+                "bytes": len(html),
+                "verified": True,
+            },
+            {
+                "artifact_key": "small.json",
+                "sha256": hashlib.sha256(small_body).hexdigest(),
+                "bytes": len(small_body),
+                "verified": True,
+            },
+        ]
         asgi_status, asgi_headers, asgi_body = asyncio.run(_asgi_call(
             f"/api/rewrite/v1/backtests/{job['id']}/artifacts/report.html",
             headers=(("authorization", f"Bearer {token}"),),
@@ -170,3 +218,7 @@ def test_worker_bearer_fail_closed_and_stream_upload_limit(browser_api, monkeypa
             del app.state.backtest_queue
         else:
             app.state.backtest_queue = previous
+        if previous_preparation is None:
+            del app.state.backtest_preparation
+        else:
+            app.state.backtest_preparation = previous_preparation

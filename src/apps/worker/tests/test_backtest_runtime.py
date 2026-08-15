@@ -22,6 +22,7 @@ from src.apps.worker.backtest_runtime import (
     WorkerExecutionError,
     WorkerTimedOut,
     _executor_payload,
+    _completion_evidence,
     build_local_queue,
 )
 from src.apps.worker.research_canary import _request
@@ -158,6 +159,41 @@ def test_once_processes_only_one_global_claim(tmp_path):
     assert result["evidence"]["authority"]["publication_ceiling"] == "shadow"
     assert result["evidence"]["data_contract"] == {"research_proxy": False, "actionable": False}
     assert result["input_hashes"] == CANARY_MANIFEST["evidence_hashes"]
+
+
+def test_public_completion_evidence_flattens_metrics_into_percentage_points():
+    receipt = execute_research(CANARY_MANIFEST, CANARY_INPUTS)
+
+    evidence = _completion_evidence(
+        "backtest.run.v1",
+        CANARY_MANIFEST,
+        receipt,
+        "research-evidence.json",
+        "a" * 64,
+    )
+
+    assert set(evidence["metrics"]) == {
+        "total_return_pct",
+        "cost_adjusted_return_pct",
+        "max_drawdown_pct",
+        "oos_return_pct",
+        "stress_tail_loss_pct",
+        "trade_count",
+        "coverage_days",
+        "walk_forward_passed",
+        "stress_passed",
+    }
+    assert evidence["metrics"]["total_return_pct"] == pytest.approx(
+        receipt["metrics"]["costs"]["1x"]["return_pct"] * 100
+    )
+    assert evidence["metrics"]["max_drawdown_pct"] == pytest.approx(
+        receipt["metrics"]["costs"]["1x"]["max_drawdown"] * 100
+    )
+    assert evidence["metrics"]["oos_return_pct"] == pytest.approx(
+        receipt["metrics"]["oos"]["metrics"]["return_pct"] * 100
+    )
+    assert evidence["metrics"]["trade_count"] == receipt["validation"]["trade_count"]
+    assert evidence["local_receipt"]["input_hashes"] == receipt["input_hashes"]
 
 
 def test_child_must_attest_the_same_source_and_runtime_bundle(tmp_path):

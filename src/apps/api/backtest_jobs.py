@@ -13,6 +13,7 @@ from starlette.responses import JSONResponse, Response
 
 from core.backtest_artifacts import ArtifactError
 from core.backtest_queue import BacktestQueue, BacktestQueueError
+from src.apps.api.backtest_preparation import BacktestPreparationService
 
 
 _WORKER_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
@@ -76,6 +77,29 @@ def _job_view(job: dict[str, Any]) -> dict[str, Any]:
     return {key: job.get(key) for key in allowed if key in job}
 
 
+def _browser_job_view(
+    queue: BacktestQueue, job: dict[str, Any], owner_id: int
+) -> dict[str, Any]:
+    # Re-read once before projection. A running job may have completed after a
+    # list query; returning the older running snapshot without terminal fields
+    # is safe, while mixing it with newly completed artifacts is not.
+    current = queue.get(job["id"], owner_id)
+    return {
+        **_job_view(current),
+        "artifacts": queue.owner_output_metadata(current["id"], owner_id)
+        if current["status"] == "completed"
+        else [],
+        "failure": queue.owner_failure(current["id"], owner_id)
+        if current["status"] == "failed"
+        else None,
+    }
+
+
+def _preparation(request: Request, queue: BacktestQueue) -> BacktestPreparationService:
+    service = getattr(request.app.state, "backtest_preparation", None)
+    return service if service is not None else BacktestPreparationService(queue)
+
+
 def _worker_job_view(job: dict[str, Any] | None) -> dict[str, Any] | None:
     if job is None:
         return None
@@ -97,25 +121,37 @@ async def backtests(request: Request) -> Response:
     queue = _queue(request)
     if request.method == "GET":
         items = await run_in_threadpool(queue.list, identity.id)
-        return JSONResponse({"items": [_job_view(item) for item in items]})
+        views = await run_in_threadpool(
+            lambda: [_browser_job_view(queue, item, identity.id) for item in items]
+        )
+        return JSONResponse({"items": views})
     payload = await _body(request)
     key = request.headers.get("idempotency-key", "")
-    job, created = await run_in_threadpool(queue.enqueue, identity.id, payload, idempotency_scope=f"user:{identity.id}", idempotency_key=key, plan=identity.effective_plan)
-    return JSONResponse({"created": created, "job": _job_view(job)}, status_code=202)
+    job, created = await run_in_threadpool(
+        _preparation(request, queue).prepare,
+        identity.id,
+        identity.effective_plan,
+        payload,
+        key,
+    )
+    view = await run_in_threadpool(_browser_job_view, queue, job, identity.id)
+    return JSONResponse({"created": created, "job": view}, status_code=202)
 
 
 async def backtest_item(request: Request) -> Response:
     _gate("TRADEAI_BACKTEST_QUEUE_ENABLED")
     identity = _identity(request)
-    job = await run_in_threadpool(_queue(request).get, str(request.path_params["job_id"]), identity.id)
-    return JSONResponse(_job_view(job))
+    queue = _queue(request)
+    job = await run_in_threadpool(queue.get, str(request.path_params["job_id"]), identity.id)
+    return JSONResponse(await run_in_threadpool(_browser_job_view, queue, job, identity.id))
 
 
 async def backtest_cancel(request: Request) -> Response:
     _gate("TRADEAI_BACKTEST_QUEUE_ENABLED")
     identity = _identity(request)
-    job = await run_in_threadpool(_queue(request).cancel, str(request.path_params["job_id"]), identity.id)
-    return JSONResponse(_job_view(job))
+    queue = _queue(request)
+    job = await run_in_threadpool(queue.cancel, str(request.path_params["job_id"]), identity.id)
+    return JSONResponse(await run_in_threadpool(_browser_job_view, queue, job, identity.id))
 
 
 async def backtest_artifact(request: Request) -> Response:
@@ -129,6 +165,7 @@ async def backtest_artifact(request: Request) -> Response:
         headers={
             "Cache-Control": "private, no-store",
             "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(body)),
             "ETag": metadata["sha256"],
             "X-Content-Type-Options": "nosniff",
         },

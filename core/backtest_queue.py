@@ -97,6 +97,7 @@ class BacktestQueue(BacktestQueueArtifactMixin):
         idempotency_key: str,
         plan: str | None = None,
         internal: bool = False,
+        preparing: bool = False,
         system_daily_limit: int | None = None,
         system_daily_runs_limit: int | None = None,
         system_pending_limit: int | None = None,
@@ -105,6 +106,8 @@ class BacktestQueue(BacktestQueueArtifactMixin):
     ) -> tuple[dict[str, Any], bool]:
         if not isinstance(request, dict) or set(request) - ({"type", "manifest", "available_at", "deadline_at", "priority", "max_attempts"} if internal else {"type", "manifest"}):
             raise BacktestQueueError("回测任务请求字段无效。")
+        if not isinstance(preparing, bool) or internal and preparing:
+            raise BacktestQueueError("任务准备状态无效。")
         if not re.fullmatch(r"[A-Za-z0-9._:-]{8,128}", idempotency_key):
             raise BacktestQueueError("Idempotency-Key 必须为 8 至 128 个安全字符。")
         if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", idempotency_scope):
@@ -214,7 +217,7 @@ class BacktestQueue(BacktestQueueArtifactMixin):
                     raise BacktestQueueError("回测队列已达到个人上限。", 429)
             job_id = uuid.uuid4().hex
             conn.execute("""INSERT INTO backtest_jobs(id,owner_id,owner_scope,job_type,status,idempotency_scope,idempotency_key,request_sha256,manifest_json,manifest_sha256,max_attempts,available_at,deadline_at,priority,created_at,updated_at,system_daily_attempt_limit,system_budget_timezone)
-                            VALUES(?,?,?,?, 'queued',?,?,?,?,?,?,?,?,?,?,?,?,?)""", (job_id, owner_id, "system" if owner_id is None else "user", job_type, idempotency_scope, idempotency_key, request_hash, _json(manifest), manifest_hash, max_attempts, available_at, deadline_at, priority, now, now, system_daily_runs_limit, system_budget_timezone))
+                            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (job_id, owner_id, "system" if owner_id is None else "user", job_type, "preparing" if preparing else "queued", idempotency_scope, idempotency_key, request_hash, _json(manifest), manifest_hash, max_attempts, available_at, deadline_at, priority, now, now, system_daily_runs_limit, system_budget_timezone))
             return self._row(dict(conn.execute("SELECT * FROM backtest_jobs WHERE id=?", (job_id,)).fetchone())), True
 
     @staticmethod
@@ -247,9 +250,77 @@ class BacktestQueue(BacktestQueueArtifactMixin):
             raise BacktestQueueError("找不到回测任务。", 404)
         return self._row(row) or {}
 
+    def find_idempotent(self, owner_id: int, idempotency_key: str) -> dict[str, Any] | None:
+        row = self.db.fetch_one(
+            """SELECT * FROM backtest_jobs
+               WHERE owner_id=? AND owner_scope='user' AND idempotency_scope=?
+                 AND idempotency_key=?""",
+            (owner_id, f"user:{owner_id}", idempotency_key),
+        )
+        return self._row(row)
+
+    def inputs_ready(self, job_id: str, owner_id: int) -> bool:
+        with self.db.transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM backtest_jobs WHERE id=? AND owner_id=? AND owner_scope='user'",
+                (job_id, owner_id),
+            ).fetchone()
+            if not row:
+                raise BacktestQueueError("找不到回测任务。", 404)
+            return self._inputs_ready(conn, row)
+
+    def release_prepared(self, job_id: str, owner_id: int) -> dict[str, Any]:
+        with self.db.transaction() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM backtest_jobs WHERE id=? AND owner_id=? AND owner_scope='user'",
+                (job_id, owner_id),
+            ).fetchone()
+            if not row:
+                raise BacktestQueueError("找不到回测任务。", 404)
+            if row["status"] == "queued":
+                if not self._inputs_ready(conn, row):
+                    raise BacktestQueueError("冻结输入完整性验证失败。", 409)
+                return self._row(dict(row)) or {}
+            if row["status"] != "preparing" or row["cancel_requested"]:
+                raise BacktestQueueError("任务不在可完成准备的状态。", 409)
+            if not self._inputs_ready(conn, row):
+                raise BacktestQueueError("冻结输入完整性验证失败。", 409)
+            now = _stamp()
+            conn.execute(
+                "UPDATE backtest_jobs SET status='queued',updated_at=? WHERE id=? AND status='preparing'",
+                (now, job_id),
+            )
+            return self._row(
+                dict(conn.execute("SELECT * FROM backtest_jobs WHERE id=?", (job_id,)).fetchone())
+            ) or {}
+
     def list(self, owner_id: int, limit: int = 50) -> list[dict[str, Any]]:
         rows = self.db.fetch_all("SELECT * FROM backtest_jobs WHERE owner_id=? AND owner_scope='user' ORDER BY created_at DESC LIMIT ?", (owner_id, min(max(limit, 1), 100)))
         return [self._row(row) or {} for row in rows]
+
+    def owner_failure(self, job_id: str, owner_id: int) -> dict[str, Any] | None:
+        job = self.get(job_id, owner_id)
+        if job["status"] != "failed":
+            return None
+        row = self.db.fetch_one(
+            """SELECT error_json FROM backtest_job_attempts
+               WHERE job_id=? AND error_json IS NOT NULL
+               ORDER BY attempt_no DESC LIMIT 1""",
+            (job_id,),
+        )
+        if not row:
+            return {
+                "error_code": "UNKNOWN",
+                "summary": "任务执行失败。",
+                "retryable": False,
+            }
+        error = json.loads(row["error_json"])
+        return {
+            "error_code": str(error.get("error_code") or "UNKNOWN"),
+            "summary": "任务执行失败。",
+            "retryable": False,
+        }
 
     def cancel(self, job_id: str, owner_id: int) -> dict[str, Any]:
         with self.db.transaction() as conn:
@@ -303,7 +374,7 @@ class BacktestQueue(BacktestQueueArtifactMixin):
                 WHERE status IN ('queued','preparing') AND deadline_at IS NOT NULL AND deadline_at <= ?""", (now, now, now))
             if conn.execute("SELECT 1 FROM backtest_jobs WHERE status='running' AND lease_expires_at > ?", (now,)).fetchone():
                 return None
-            candidates = conn.execute("""SELECT * FROM backtest_jobs WHERE status IN ('queued','preparing') AND cancel_requested=0
+            candidates = conn.execute("""SELECT * FROM backtest_jobs WHERE status='queued' AND cancel_requested=0
                 AND available_at <= ? AND (deadline_at IS NULL OR deadline_at > ?) AND attempt_count < max_attempts
                 ORDER BY priority DESC,available_at,created_at,id""", (now, now)).fetchall()
             row = next(

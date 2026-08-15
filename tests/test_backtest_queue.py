@@ -613,3 +613,83 @@ def test_retryable_failure_requeues_and_cancelled_failure_stays_cancelled(tmp_pa
         queue.upload_output(second["id"], "cancelled.json", b"{}", hashlib.sha256(b"{}").hexdigest(), "worker-2", second["lease_token"], second["fencing_epoch"])
     cancelled = queue.fail(second["id"], "worker-2", second["lease_token"], second["fencing_epoch"], {"error_code": "CANCELLED", "message": "operator cancellation", "retryable": False})
     assert cancelled["status"] == "cancelled"
+
+
+def test_browser_failure_projection_is_owner_scoped_and_sanitized(tmp_path):
+    queue, _ = _queue(tmp_path)
+    job = _job(queue, "safe-failure")
+    _ready(queue, job)
+    lease = queue.claim("worker", 60)
+    failed = queue.fail(
+        job["id"],
+        "worker",
+        lease["lease_token"],
+        lease["fencing_epoch"],
+        {
+            "error_code": "LOCAL_RUN_FAILED",
+            "message": "Bearer secret C:\\private\\traceback.py",
+            "retryable": False,
+        },
+    )
+
+    assert failed["status"] == "failed"
+    assert queue.owner_failure(job["id"], 1) == {
+        "error_code": "LOCAL_RUN_FAILED",
+        "summary": "任务执行失败。",
+        "retryable": False,
+    }
+    with pytest.raises(BacktestQueueError):
+        queue.owner_failure(job["id"], 2)
+
+
+def test_terminal_failure_never_claims_that_an_exhausted_attempt_will_retry(tmp_path):
+    queue, db = _queue(tmp_path)
+    job = _job(queue, "terminal-retry")
+    _ready(queue, job)
+    db.execute("UPDATE backtest_jobs SET max_attempts=1 WHERE id=?", (job["id"],))
+    lease = queue.claim("worker", 60)
+    failed = queue.fail(
+        job["id"],
+        "worker",
+        lease["lease_token"],
+        lease["fencing_epoch"],
+        {"error_code": "TIMEOUT", "message": "timeout", "retryable": True},
+    )
+
+    assert failed["status"] == "failed"
+    assert queue.owner_failure(job["id"], 1) == {
+        "error_code": "TIMEOUT",
+        "summary": "任务执行失败。",
+        "retryable": False,
+    }
+
+
+def test_browser_output_metadata_exposes_only_verified_completed_outputs(tmp_path):
+    queue, db = _queue(tmp_path)
+    job = _job(queue, "safe-outputs")
+    _ready(queue, job)
+    lease = queue.claim("worker", 60)
+    body = b'{"safe":true}'
+    digest = hashlib.sha256(body).hexdigest()
+    queue.upload_output(
+        job["id"], "research-evidence.json", body, digest, "worker",
+        lease["lease_token"], lease["fencing_epoch"], media_type="application/json",
+    )
+    queue.complete(
+        job["id"], "worker", lease["lease_token"], lease["fencing_epoch"],
+        _result(lease, output_hashes={"research-evidence.json": digest}),
+    )
+
+    assert queue.owner_output_metadata(job["id"], 1) == [{
+        "artifact_key": "research-evidence.json",
+        "sha256": digest,
+        "bytes": len(body),
+        "verified": True,
+    }]
+    with pytest.raises(BacktestQueueError):
+        queue.owner_output_metadata(job["id"], 2)
+    db.execute(
+        "UPDATE backtest_job_artifacts SET state='pending' WHERE job_id=? AND direction='output'",
+        (job["id"],),
+    )
+    assert queue.owner_output_metadata(job["id"], 1) == []

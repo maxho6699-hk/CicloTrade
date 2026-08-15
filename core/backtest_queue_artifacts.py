@@ -327,3 +327,25 @@ class BacktestQueueArtifactMixin:
             return self.artifacts.read(row["storage_key"], row["sha256"]), row
         except ArtifactError as exc:
             raise BacktestQueueError("输出 artifact 完整性失败。", 409) from exc
+
+    def owner_output_metadata(
+        self, job_id: str, owner_id: int
+    ) -> list[dict[str, Any]]:
+        job = self.get(job_id, owner_id)
+        if job["status"] != "completed":
+            return []
+        rows = self.db.fetch_all(
+            """SELECT artifact_key,sha256,bytes FROM backtest_job_artifacts
+               WHERE job_id=? AND attempt_no=? AND direction='output'
+                 AND state='verified' ORDER BY artifact_key""",
+            (job_id, job["attempt_count"]),
+        )
+        return [
+            {
+                "artifact_key": row["artifact_key"],
+                "sha256": row["sha256"],
+                "bytes": row["bytes"],
+                "verified": True,
+            }
+            for row in rows
+        ]
