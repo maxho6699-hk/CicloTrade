@@ -19,7 +19,7 @@ test('stock deep links carry explicit market context', () => {
 })
 
 test('research event resolution fails closed on missing or mismatched market context', () => {
-  assert.match(research, /const hasExplicitMarket =/) 
+  assert.match(research, /const hasExplicitMarket =/)
   assert.match(research, /if \(!hasExplicitMarket \|\| !candidateSymbol \|\| !candidateMarket \|\| !selected\.symbol \|\| !selected\.market\)/)
   assert.match(research, /candidateSymbol !== selected\.symbol\.toUpperCase\(\) \|\| candidateMarket !== selected\.market/)
   assert.match(research, /!hasEvent \|\| candidate\.event_id === eventId/)
@@ -35,7 +35,7 @@ test('offline and demo research paths never supply fixture candles or AAPL', () 
 })
 
 test('personal paper is explicitly US-only and does not invent a stock', () => {
-  assert.match(paper, /requestedMarket =/) 
+  assert.match(paper, /requestedMarket =/)
   assert.match(paper, /marketSupported = requestedMarket === 'US'/)
   assert.match(paper, /symbol: .*initialSymbol.*: ''/)
   assert.match(paper, /个人模拟需要明确的 market 参数/)
@@ -47,10 +47,10 @@ test('portfolio preserves nullable settlement fields and validates deep-link con
   assert.match(portfolio, /pnl: number \| null/)
   assert.doesNotMatch(portfolio, /average_exit_price \?\? 0|realized_pnl \?\? 0/)
   assert.match(portfolio, /未记录\/尚未结算/)
-  assert.match(portfolio, /requestedMarket =/) 
-  assert.match(portfolio, /requestedSymbol =/) 
-  assert.match(portfolio, /requestedEvent =/) 
-  assert.match(portfolio, /contextValid =/) 
+  assert.match(portfolio, /requestedMarket =/)
+  assert.match(portfolio, /requestedSymbol =/)
+  assert.match(portfolio, /requestedEvent =/)
+  assert.match(portfolio, /contextValid =/)
 })
 
 test('up and down chart colors remain semantic tokens rather than arbitrary controls', () => {
