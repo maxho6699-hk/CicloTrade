@@ -1,22 +1,22 @@
 .app-shell .personal-paper-page {
-  --paper-workspace: #07101d;
-  --paper-surface: #0d1726;
-  --paper-raised: #131e31;
-  --paper-border-subtle: #1b2739;
-  --paper-border: #2b384c;
-  --paper-border-strong: #3c4a61;
-  --paper-control-border: #586980;
-  --paper-text: #f5f6fa;
-  --paper-muted: #a8afc0;
-  --paper-muted-2: #7d879b;
-  --paper-ai-blue: #4860f8;
-  --paper-ai-text: #7083ff;
-  --paper-ai-violet: #6440dc;
-  --paper-ai-magenta: #f05898;
-  --paper-positive: #20bd78;
-  --paper-negative: #eb4668;
-  --paper-warning: #d9a52b;
-  --paper-gradient: linear-gradient(100deg, var(--paper-ai-magenta), var(--paper-ai-violet) 48%, var(--paper-ai-blue));
+  --paper-workspace: var(--workspace);
+  --paper-surface: var(--surface);
+  --paper-raised: var(--surface-raised);
+  --paper-border-subtle: var(--divider);
+  --paper-border: var(--divider);
+  --paper-border-strong: var(--border-strong);
+  --paper-control-border: var(--border-strong);
+  --paper-text: var(--text-primary);
+  --paper-muted: var(--text-secondary);
+  --paper-muted-2: var(--text-muted);
+  --paper-ai-blue: var(--brand-blue);
+  --paper-ai-text: var(--brand-blue);
+  --paper-ai-violet: var(--brand-violet);
+  --paper-ai-magenta: var(--brand-violet);
+  --paper-positive: var(--positive);
+  --paper-negative: var(--negative);
+  --paper-warning: var(--warning);
+  --paper-gradient: linear-gradient(90deg, var(--brand-blue) 0%, var(--brand-violet) 100%);
   position: relative;
   display: grid;
   max-width: 1760px;
@@ -54,7 +54,7 @@
 
 .app-shell .paper-console { display: grid; grid-template-columns: minmax(230px, 300px) minmax(520px, 1fr) minmax(270px, 340px); align-items: start; gap: 12px; }
 .app-shell .paper-account-rail, .app-shell .paper-flow, .app-shell .paper-risk-rail { display: grid; min-width: 0; gap: 12px; }
-.app-shell .paper-tasks, .app-shell .paper-metrics, .app-shell .paper-list, .app-shell .paper-draft-card, .app-shell .paper-decision-summary, .app-shell .paper-risk-checks, .app-shell .paper-core-panel, .app-shell .paper-position-risk, .app-shell .paper-data-health { border: 1px solid var(--paper-border); border-radius: 8px; background: color-mix(in srgb, var(--paper-workspace) 94%, transparent); overflow: hidden; }
+.app-shell .paper-tasks, .app-shell .paper-metrics, .app-shell .paper-list, .app-shell .paper-draft-card, .app-shell .paper-decision-summary, .app-shell .paper-risk-checks, .app-shell .paper-core-panel, .app-shell .paper-position-risk, .app-shell .paper-data-health { border: 0; border-radius: 8px; background: color-mix(in srgb, var(--paper-workspace) 94%, transparent); box-shadow: var(--shadow-panel); overflow: hidden; }
 .app-shell .paper-tasks > header, .app-shell .paper-list > header, .app-shell .paper-risk-checks > header, .app-shell .paper-position-risk > header, .app-shell .paper-data-health > header { display: flex; min-height: 48px; align-items: center; gap: 8px; padding: 0 13px; border-bottom: 1px solid var(--paper-border); }
 .app-shell .paper-tasks h2, .app-shell .paper-list h2, .app-shell .paper-risk-checks h2, .app-shell .paper-position-risk h2, .app-shell .paper-data-health h2 { margin: 0; color: var(--paper-text); font-size: 15px; }
 .app-shell .paper-tasks > header { justify-content: space-between; }
@@ -158,8 +158,8 @@
 .app-shell .paper-risk-check-list article[data-status='fail'] > svg { color: var(--paper-negative); }
 .app-shell .paper-risk-check-list article[data-status='unknown'] > svg { color: var(--paper-muted-2); }
 
-.app-shell .paper-submit { width: 100%; min-height: 48px; border: 0; border-radius: 7px; background: var(--paper-gradient); background-size: 112% 100%; background-position: left center; color: #fff; font-weight: 700; box-shadow: inset 0 1px rgb(255 255 255 / .16), 0 10px 24px color-mix(in srgb, var(--paper-ai-violet) 18%, transparent); transition: background-position 150ms ease-out, box-shadow 150ms ease-out, transform 100ms ease-out; }
-.app-shell .paper-submit:hover:not(:disabled) { background-position: right center; box-shadow: inset 0 1px rgb(255 255 255 / .2), 0 12px 26px color-mix(in srgb, var(--paper-ai-violet) 20%, transparent); transform: translateY(-1px); }
+.app-shell .paper-submit { width: 100%; min-height: 48px; border: 0; border-radius: 7px; background: var(--paper-gradient); background-size: 112% 100%; background-position: left center; color: #fff; font-weight: 700; box-shadow: inset 0 1px rgb(255 255 255 / .16), var(--shadow-cta); transition: background-position 150ms ease-out, box-shadow 150ms ease-out, transform 100ms ease-out; }
+.app-shell .paper-submit:hover:not(:disabled) { background-position: right center; box-shadow: inset 0 1px rgb(255 255 255 / .2), var(--shadow-cta); transform: translateY(-1px); }
 .app-shell .paper-submit:active:not(:disabled) { transform: translateY(0) scale(.995); }
 .app-shell .paper-submit:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 .app-shell .paper-submit:disabled { background: var(--paper-raised); color: var(--paper-muted-2); box-shadow: none; }
@@ -214,23 +214,23 @@
 @keyframes paper-core-pulse { 50% { filter: drop-shadow(0 0 13px color-mix(in srgb, var(--paper-ai-blue) 70%, transparent)); transform: scale(1.035); } }
 
 :root[data-theme='light'] .app-shell .personal-paper-page {
-  --paper-workspace: #f5f7fb;
-  --paper-surface: #ffffff;
-  --paper-raised: #e5eaf4;
-  --paper-border-subtle: #dde3ee;
-  --paper-border: #c8d1e1;
-  --paper-border-strong: #9eacc1;
-  --paper-control-border: #7b899f;
-  --paper-text: #172033;
-  --paper-muted: #4f5d73;
-  --paper-muted-2: #637084;
-  --paper-ai-blue: #344fd7;
-  --paper-ai-text: #2f49ca;
-  --paper-ai-violet: #5937b9;
-  --paper-ai-magenta: #c43f78;
-  --paper-positive: #12805a;
-  --paper-negative: #c43855;
-  --paper-warning: #946515;
+  --paper-workspace: var(--workspace);
+  --paper-surface: var(--surface);
+  --paper-raised: var(--surface-raised);
+  --paper-border-subtle: var(--divider);
+  --paper-border: var(--divider);
+  --paper-border-strong: var(--border-strong);
+  --paper-control-border: var(--border-strong);
+  --paper-text: var(--text-primary);
+  --paper-muted: var(--text-secondary);
+  --paper-muted-2: var(--text-muted);
+  --paper-ai-blue: var(--brand-blue);
+  --paper-ai-text: var(--brand-blue);
+  --paper-ai-violet: var(--brand-violet);
+  --paper-ai-magenta: var(--brand-violet);
+  --paper-positive: var(--positive);
+  --paper-negative: var(--negative);
+  --paper-warning: var(--warning);
 }
 :root[data-theme='light'] .app-shell .personal-paper-page::before { opacity: .42; }
 :root[data-theme='light'] .app-shell .paper-core-panel { background: radial-gradient(circle at 50% 68%, color-mix(in srgb, var(--paper-ai-blue) 9%, transparent), transparent 48%), var(--paper-workspace); }

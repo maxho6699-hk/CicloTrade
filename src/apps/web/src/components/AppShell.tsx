@@ -8,6 +8,7 @@ import {
   ChartCandlestick,
   ChevronRight,
   ClipboardCheck,
+  LockKeyhole,
   MessageSquareText,
   FlaskConical,
   Gauge,
@@ -76,6 +77,22 @@ const NAV_COPY = {
   'zh-Hans': { today: '今日', discover: '发现', research: '行情与研究', market: '行情', paper: '模拟', portfolio: '组合与复盘', more: '更多功能', moreShort: '更多', pinned: '固定工具' },
   'zh-Hant': { today: '今日', discover: '發現', research: '行情與研究', market: '行情', paper: '模擬', portfolio: '組合與複盤', more: '更多功能', moreShort: '更多', pinned: '固定工具' },
 } as const
+const AI_COPY = {
+  'zh-Hans': {
+    label: 'Ciclo AI',
+    status: '当前未启用',
+    title: 'AI 工作台正在安全接入',
+    detail: '真实 AI 会话与任务服务尚未启用。当前入口不会生成假回答，也不能提交模拟或实盘订单。',
+    action: '先进入行情与研究',
+  },
+  'zh-Hant': {
+    label: 'Ciclo AI',
+    status: '目前未啟用',
+    title: 'AI 工作台正在安全接入',
+    detail: '真實 AI 會話與任務服務尚未啟用。目前入口不會生成假回答，也不能提交模擬或實盤訂單。',
+    action: '先進入行情與研究',
+  },
+} as const
 const FEATURE_ICONS: Record<string, LucideIcon> = {
   BellRing, BookOpenCheck, CalendarClock, ChartCandlestick, ClipboardCheck, Gauge, Grid2X2,
   LifeBuoy, ListFilter, RadioTower, ShieldCheck, Sparkles, Target, WalletCards,
@@ -117,6 +134,7 @@ export function AppShell({ children }: AppShellProps) {
   const [commandStatus, setCommandStatus] = useState('')
   const [commandWatchBusy, setCommandWatchBusy] = useState('')
   const [theme, setTheme] = useState<Theme>(readStoredTheme)
+  const [aiPanelOpen, setAiPanelOpen] = useState(false)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const [recentSearches, setRecentSearches] = useState<CommandHistoryItem[]>(storedSearchHistory)
   const [featureCatalog, setFeatureCatalog] = useState<FeatureCatalogPayload | null>(null)
@@ -134,6 +152,7 @@ export function AppShell({ children }: AppShellProps) {
   const hasModelSnapshots = Boolean(workspace.data?.performance.items.length)
   const isSuperAdmin = workspace.user?.admin_role === 'super_admin'
   const navCopy = NAV_COPY[locale]
+  const aiCopy = AI_COPY[locale]
   const secondaryTools = useMemo(() => {
     if (!featureCatalog) return []
     const byKey = new Map(featureCatalog.items.map((item) => [item.key, item]))
@@ -187,6 +206,15 @@ export function AppShell({ children }: AppShellProps) {
     document.addEventListener('keydown', closeOnEscape)
     return () => document.removeEventListener('keydown', closeOnEscape)
   }, [commandOpen])
+
+  useEffect(() => {
+    if (!aiPanelOpen) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setAiPanelOpen(false)
+    }
+    document.addEventListener('keydown', closeOnEscape)
+    return () => document.removeEventListener('keydown', closeOnEscape)
+  }, [aiPanelOpen])
 
   useEffect(() => {
     let active = true
@@ -316,6 +344,29 @@ export function AppShell({ children }: AppShellProps) {
             <kbd>Ctrl K</kbd>
           </button>
           <div className="global-status" aria-label="系统状态">
+            <div className="ai-launcher">
+              <button
+                className="ai-pill"
+                type="button"
+                aria-haspopup="dialog"
+                aria-expanded={aiPanelOpen}
+                onClick={() => {
+                  setUserMenuOpen(false)
+                  setAiPanelOpen((current) => !current)
+                }}
+              >
+                <Bot aria-hidden="true" />
+                <span>{aiCopy.label}</span>
+              </button>
+              {aiPanelOpen && <section className="ai-unavailable-popover" role="dialog" aria-modal="false" aria-labelledby="ciclo-ai-title">
+                <header>
+                  <span className="ai-unavailable-icon"><LockKeyhole aria-hidden="true" /></span>
+                  <span><strong id="ciclo-ai-title">{aiCopy.title}</strong><small>{aiCopy.status}</small></span>
+                </header>
+                <p>{aiCopy.detail}</p>
+                <NavLink to="/research" onClick={() => setAiPanelOpen(false)}>{aiCopy.action}<ChevronRight aria-hidden="true" /></NavLink>
+              </section>}
+            </div>
             <span className="live-status"><i /> {realData ? marketDisconnected ? '行情未连接' : marketStatusLabel : '界面演示'}</span>
             <span>行情 · {marketStatusLabel}</span>
             <NavLink to="/notifications"><Bot size={16} /> TG {telegramReady ? '已验证' : realData ? '未连接' : '演示'}</NavLink>
@@ -324,7 +375,7 @@ export function AppShell({ children }: AppShellProps) {
               {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
             </button>
             <span className="sr-only" role="status" aria-live="polite">{syncState === 'saving' ? '正在同步语言偏好' : syncState === 'saved' ? '语言偏好已保存' : syncState === 'error' ? '账户同步失败，语言偏好已保存在本机' : ''}</span>
-            <button className="user-menu" type="button" aria-label="打开账户菜单" aria-expanded={userMenuOpen} onClick={() => setUserMenuOpen((current) => !current)}><UserRound size={17} /></button>
+            <button className="user-menu" type="button" aria-label="打开账户菜单" aria-expanded={userMenuOpen} onClick={() => { setAiPanelOpen(false); setUserMenuOpen((current) => !current) }}><UserRound size={17} /></button>
             {userMenuOpen && <div className="account-popover">
               <header><strong>{workspace.user?.display_name ?? 'CicloTrade 用户'}</strong><small>{workspace.user?.plan_display_name ?? '账户'}</small></header>
               <a href="/" onClick={() => setUserMenuOpen(false)}><House size={16} /> 返回欢迎页</a>

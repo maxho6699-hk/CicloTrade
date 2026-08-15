@@ -60,6 +60,12 @@
   color: var(--on-accent);
 }
 
+.app-shell .button.primary {
+  border-color: transparent;
+  background: linear-gradient(90deg, var(--brand-blue) 0%, var(--brand-violet) 100%);
+  box-shadow: var(--shadow-cta);
+}
+
 .button.secondary {
   border-color: var(--border-strong);
   background: var(--surface);
@@ -76,7 +82,9 @@
 .icon-button:focus-visible,
 .watchlist-toggle:focus-visible,
 .ui-segmented button:focus-visible {
-  box-shadow: 0 0 0 3px var(--focus-ring-soft);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow: none;
 }
 
 .button:active:not(:disabled),
@@ -99,6 +107,60 @@
 
 .button.wide {
   width: 100%;
+}
+
+/* Shared V2 AI launcher primitive. Pages may opt in without creating a second geometry. */
+.ai-pill {
+  display: inline-flex;
+  height: 36px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 1px solid var(--ai-pill-border);
+  border-radius: 8px;
+  background: var(--ai-pill-bg);
+  color: var(--ai-pill-fg);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.ai-pill svg { width: 16px; height: 16px; }
+
+.ai-launcher { position: relative; }
+
+.ai-unavailable-popover {
+  position: absolute;
+  z-index: 74;
+  top: calc(100% + 8px);
+  right: 0;
+  display: grid;
+  width: min(330px, calc(100vw - 24px));
+  gap: 12px;
+  padding: 14px;
+  border: 0;
+  border-radius: var(--radius-overlay);
+  background: var(--surface);
+  box-shadow: var(--shadow-overlay);
+  color: var(--text);
+}
+
+.ai-unavailable-popover header { display: flex; align-items: center; gap: 10px; }
+.ai-unavailable-popover header > span:last-child { display: grid; gap: 3px; }
+.ai-unavailable-popover strong { font-size: 13px; }
+.ai-unavailable-popover small { color: var(--muted-2); font: 10px var(--mono); }
+.ai-unavailable-popover p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.ai-unavailable-popover > a { display: inline-flex; min-height: 36px; align-items: center; justify-content: space-between; gap: 8px; border-radius: var(--radius-control); background: var(--surface-subtle); color: var(--info); font-size: 12px; font-weight: 600; padding: 0 10px; }
+.ai-unavailable-popover > a:hover { background: var(--surface-hover); }
+.ai-unavailable-popover > a svg { width: 15px; height: 15px; }
+.ai-unavailable-icon { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border-radius: 9px; background: var(--ai-pill-bg); color: var(--ai-pill-fg); }
+.ai-unavailable-icon svg { width: 17px; height: 17px; }
+
+@media (max-width: 760px) {
+  .ai-pill { width: 44px; min-width: 44px; height: 44px; justify-content: center; padding: 0; }
+  .ai-pill span { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+  .ai-unavailable-popover { position: fixed; top: 58px; right: 10px; left: 10px; width: auto; }
+  .ai-unavailable-popover > a { min-height: 44px; }
 }
 
 .icon-button {
@@ -228,9 +290,16 @@
 .select-field-error { color: var(--negative); }
 
 @media (hover: hover) and (pointer: fine) {
-  .button.primary:hover:not(:disabled) {
+.button.primary:hover:not(:disabled) {
     border-color: var(--accent-hover-border);
     background: var(--accent-hover);
+  }
+
+  .app-shell .button.primary:hover:not(:disabled) {
+    border-color: transparent;
+    filter: brightness(1.05);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-cta);
   }
 
   .button.secondary:hover:not(:disabled),
@@ -288,7 +357,7 @@
   gap: 12px;
   margin-bottom: 12px;
   padding: 10px;
-  border: 1px solid var(--border);
+  border: 0;
   background: var(--surface-subtle);
 }
 
@@ -299,8 +368,8 @@
   gap: 10px;
   margin-bottom: 12px;
   padding: 10px 12px;
-  border: 1px solid rgba(227, 170, 72, 0.4);
-  background: rgba(227, 170, 72, 0.08);
+  border: 0;
+  background: var(--warning-soft);
   color: var(--warning);
 }
 .opportunity-demo-notice > span,
@@ -332,15 +401,18 @@
   position: relative;
   min-width: 0;
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-top: 2px solid var(--warning);
+  border: 0;
+  border-top: 0;
   border-radius: 5px;
   background: var(--workspace);
+  box-shadow: var(--shadow-panel), inset 0 2px 0 var(--warning);
   transition: border-color 150ms ease-out, background-color 150ms ease-out, transform 150ms ease-out;
 }
-.opportunity-card.positive { border-top-color: var(--positive); }
-.opportunity-card.negative { border-top-color: var(--negative); }
-.opportunity-card:hover { transform: translateY(-2px); border-color: var(--border-strong); background: var(--surface-hover); }
+.opportunity-card.positive { box-shadow: var(--shadow-panel), inset 0 2px 0 var(--positive); }
+.opportunity-card.negative { box-shadow: var(--shadow-panel), inset 0 2px 0 var(--negative); }
+.opportunity-card:hover { transform: translateY(-2px); border-color: transparent; background: var(--surface-hover); box-shadow: var(--shadow-float), inset 0 2px 0 var(--warning); }
+.opportunity-card.positive:hover { box-shadow: var(--shadow-float), inset 0 2px 0 var(--positive); }
+.opportunity-card.negative:hover { box-shadow: var(--shadow-float), inset 0 2px 0 var(--negative); }
 .opportunity-card-main { display: grid; width: 100%; min-height: 276px; padding: 14px; border: 0; background: transparent; color: var(--text); cursor: pointer; text-align: left; }
 .opportunity-card-main > header,
 .opportunity-card-main > footer,
@@ -411,11 +483,11 @@
   align-items: center;
   gap: 5px;
   padding: 0 7px;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: 3px;
   font-family: var(--font-ui);
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .status-chip[data-code='true'],
@@ -428,20 +500,24 @@ code {
 }
 
 .status-chip.official {
-  border-color: rgba(39, 180, 135, 0.34);
-  background: rgba(39, 180, 135, 0.1);
+  background: var(--positive-soft);
   color: var(--positive);
 }
 
+.ciclo-status-container {
+  border: 0;
+  border-radius: var(--radius-panel);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-panel);
+}
+
 .status-chip.research {
-  border-color: rgba(76, 141, 255, 0.35);
-  background: rgba(76, 141, 255, 0.1);
-  color: var(--info-strong);
+  background: var(--info-soft);
+  color: var(--info);
 }
 
 .status-chip.mystic {
-  border-color: rgba(227, 170, 72, 0.4);
-  background: rgba(227, 170, 72, 0.1);
+  background: var(--warning-soft);
   color: var(--warning);
 }
 
@@ -459,8 +535,9 @@ code {
   justify-content: center;
   gap: 12px;
   padding: 24px;
-  border: 1px solid var(--border);
+  border: 0;
   background: var(--workspace);
+  box-shadow: var(--shadow-panel);
   color: var(--muted);
 }
 .today-empty-primary h2 { margin: 0 0 6px; color: var(--text); font-size: 20px; }
@@ -468,9 +545,10 @@ code {
 
 .decision-card {
   min-width: 0;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius);
   background: var(--workspace);
+  box-shadow: var(--shadow-panel);
 }
 
 .decision-card-header {
@@ -656,9 +734,10 @@ code {
 .side-rail {
   display: grid;
   grid-template-rows: auto auto 1fr;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius);
   background: var(--workspace);
+  box-shadow: var(--shadow-panel);
 }
 
 .rail-section {
@@ -792,9 +871,10 @@ code {
   gap: 16px;
   min-height: 130px;
   padding: 20px;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius);
   background: var(--workspace);
+  box-shadow: var(--shadow-panel);
 }
 
 .preview-band > svg { color: var(--accent); }
@@ -803,8 +883,8 @@ code {
 .preview-band p { margin: 0; color: var(--muted); font-size: 13px; }
 
 .plan-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-.plan-card { position: relative; padding: 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--workspace); }
-.plan-card.recommended { border-color: rgba(214, 163, 106, 0.7); }
+.plan-card { position: relative; padding: 18px; border: 0; border-radius: var(--radius); background: var(--workspace); box-shadow: var(--shadow-panel); }
+.plan-card.recommended { box-shadow: var(--shadow-panel), inset 0 3px 0 var(--brand-violet); }
 .recommended-label { position: absolute; top: -10px; right: 12px; padding: 3px 7px; border: 1px solid var(--accent); background: var(--canvas); }
 .plan-card header { display: grid; gap: 8px; }
 .plan-card header > span { font-size: 12px; font-weight: 600; }

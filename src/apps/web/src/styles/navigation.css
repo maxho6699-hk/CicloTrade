@@ -1,4 +1,9 @@
 .app-shell .secondary-tools { display: grid; gap: 3px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--sidebar-border); }
 .app-shell .secondary-tools h2 { margin: 0 10px 4px; color: var(--sidebar-text); font: 10px var(--mono); letter-spacing: .08em; }
 .app-shell .nav-item.secondary { min-height: 36px; font-size: 12px; }
+.app-shell .nav-item.active::before { display: none; }
+.app-shell .nav-item.active,
+.app-shell .nav-item.secondary.active { background: var(--nav-active-bg); color: var(--nav-active-fg); }
+.app-shell .nav-item.active svg,
+.app-shell .nav-item.secondary.active svg { color: var(--nav-active-fg); }
 @media (max-width: 1024px) { .app-shell .secondary-tools { display: none; } }
