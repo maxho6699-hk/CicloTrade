@@ -185,8 +185,10 @@ export function OrderPreview({ locale, request, quote, proof }: OrderPreviewProp
   const buyingPowerCheck = proof?.checks.find((check) => check.code === 'buying_power')
   const buyingPower = buyingPowerCheck ? parsePersonalPaperRiskCheck(buyingPowerCheck) : null
   const buyingValue = buyingPower?.code === 'buying_power' ? buyingPower.value : null
-  const estimatedAmount = buyingValue && buyingValue.required > 0 ? money(buyingValue.required) : unavailable
-  const buyingImpact = buyingValue ? `需要 ${money(buyingValue.required)} · 可用 ${money(buyingValue.available)}` : unavailable
+  const estimatedFunds = buyingValue ? money(buyingValue.required) : unavailable
+  const buyingImpact = buyingValue ? `需要 ${money(buyingValue.required)} · 当前可用 ${money(buyingValue.available)}` : unavailable
+  const sideLabel = ({ BUY: hant ? '買入' : '买入', SELL: hant ? '賣出' : '卖出', SHORT: hant ? '放空' : '做空', COVER: hant ? '回補' : '回补' })[request.side]
+  const orderTypeLabel = ({ MARKET: hant ? '市價' : '市价', LIMIT: hant ? '限價' : '限价', STOP: hant ? '停損觸發' : '止损触发', STOP_LIMIT: hant ? '停損限價' : '止损限价' })[request.orderType]
   const priceCondition = request.orderType === 'MARKET'
     ? (hant ? '市價' : '市价')
     : request.orderType === 'LIMIT'
@@ -201,11 +203,11 @@ export function OrderPreview({ locale, request, quote, proof }: OrderPreviewProp
     <header><span>ORDER PREVIEW</span><h2 id="paper-order-preview-title">{title}</h2></header>
     <dl>
       <div><dt>股票</dt><dd>{request.symbol || unavailable}</dd></div>
-      <div><dt>{hant ? '方向 / 數量' : '方向 / 数量'}</dt><dd>{request.side} · {request.quantity || unavailable}</dd></div>
-      <div><dt>{hant ? '訂單類型 / 價格條件' : '订单类型 / 价格条件'}</dt><dd>{request.orderType} · {priceCondition}</dd></div>
-      <div><dt>{hant ? '報價時間 / 到期' : '报价时间 / 到期'}</dt><dd>{markTime} · {expiresAt}</dd></div>
-      <div><dt>{hant ? '估算金額' : '估算金额'}</dt><dd>{estimatedAmount}</dd></div>
-      <div><dt>{hant ? '費用 / 購買力影響' : '费用 / 购买力影响'}</dt><dd>{hant ? '費用未提供（需重新取得）' : '费用未提供（需重新获取）'} · {buyingImpact}</dd></div>
+      <div><dt>{hant ? '方向 / 數量' : '方向 / 数量'}</dt><dd>{sideLabel} · {request.quantity || unavailable}</dd></div>
+      <div><dt>{hant ? '訂單類型 / 價格條件' : '订单类型 / 价格条件'}</dt><dd>{orderTypeLabel} · {priceCondition}</dd></div>
+      <div><dt>{hant ? '帳本標記時間 / 風險證明到期' : '账本标记时间 / 风险证明到期'}</dt><dd>{markTime} · {expiresAt}</dd></div>
+      <div><dt>{hant ? '預計資金佔用（含費用）' : '预计资金占用（含费用）'}</dt><dd>{estimatedFunds}</dd></div>
+      <div><dt>{hant ? '費用 / 購買力影響' : '费用 / 购买力影响'}</dt><dd>{hant ? '費用未單列' : '费用未单列'} · {buyingImpact}</dd></div>
       <div><dt>{hant ? '報價證明' : '报价证明'}</dt><dd>{quote ? `${quote.market} · ${quote.symbol} · ${quote.quote_id}` : unavailable}</dd></div>
     </dl>
   </section>

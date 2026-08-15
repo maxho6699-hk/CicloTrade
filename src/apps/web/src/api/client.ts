@@ -1663,7 +1663,7 @@ type ParsedRiskCheck =
   | { code: 'position_concentration'; value: { usd: RiskNumber; pct: RiskNumber }; limit: { pct: RiskNumber } }
   | { code: 'sector_concentration'; value: { industry: string; usd: RiskNumber; pct: RiskNumber }; limit: { pct: RiskNumber } }
   | { code: 'drawdown'; value: { pct: RiskNumber; peak_usd: RiskNumber; current_usd: RiskNumber }; limit: { pct: RiskNumber } }
-  | { code: 'event_gap'; value: { scheduled_at: string; revision_id: string; payload_sha256: string }; limit: { scheduled_at: 'must_be_known' } | null }
+  | { code: 'event_gap'; value: { scheduled_at: string; revision_id: number; payload_sha256: string }; limit: { scheduled_at: 'must_be_known' } | null }
   | { code: 'liquidity'; value: { spread_pct: RiskNumber }; limit: { spread_pct: RiskNumber } }
 
 const RISK_FORMAT_ERROR = '数据格式异常/需重新获取'
@@ -1697,6 +1697,10 @@ function riskSha256(value: unknown): value is string {
   return typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value)
 }
 
+function riskPositiveInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) > 0
+}
+
 export function parsePersonalPaperRiskCheck(check: PersonalPaperRiskCheck): ParsedRiskCheck | null {
   const value = check.value === null ? null : strictRiskObject(check.value, check.code === 'buying_power' ? ['required', 'available'] : check.code === 'max_loss' ? ['usd', 'pct', 'unbounded'] : check.code === 'position_concentration' ? ['usd', 'pct'] : check.code === 'sector_concentration' ? ['industry', 'usd', 'pct'] : check.code === 'drawdown' ? ['pct', 'peak_usd', 'current_usd'] : check.code === 'event_gap' ? ['scheduled_at', 'revision_id', 'payload_sha256'] : ['spread_pct'])
   const limit = check.limit === null ? null : strictRiskObject(check.limit, check.code === 'buying_power' ? ['required_max'] : check.code === 'max_loss' ? ['usd', 'pct'] : check.code === 'position_concentration' || check.code === 'sector_concentration' || check.code === 'drawdown' ? ['pct'] : check.code === 'event_gap' ? ['scheduled_at'] : ['spread_pct'])
@@ -1706,7 +1710,7 @@ export function parsePersonalPaperRiskCheck(check: PersonalPaperRiskCheck): Pars
   if (check.code === 'position_concentration' && riskFiniteNumber(value.usd) && riskFiniteNumber(value.pct) && riskFiniteNumber(limit.pct)) return { code: check.code, value: { usd: value.usd, pct: value.pct }, limit: { pct: limit.pct } }
   if (check.code === 'sector_concentration' && riskNonEmptyString(value.industry) && riskFiniteNumber(value.usd) && riskFiniteNumber(value.pct) && riskFiniteNumber(limit.pct)) return { code: check.code, value: { industry: value.industry, usd: value.usd, pct: value.pct }, limit: { pct: limit.pct } }
   if (check.code === 'drawdown' && riskFiniteNumber(value.pct) && riskFiniteNumber(value.peak_usd) && riskFiniteNumber(value.current_usd) && riskFiniteNumber(limit.pct)) return { code: check.code, value: { pct: value.pct, peak_usd: value.peak_usd, current_usd: value.current_usd }, limit: { pct: limit.pct } }
-  if (check.code === 'event_gap' && riskIsoTimestamp(value.scheduled_at) && riskNonEmptyString(value.revision_id) && riskSha256(value.payload_sha256) && (limit === null || limit.scheduled_at === 'must_be_known')) return { code: check.code, value: { scheduled_at: value.scheduled_at, revision_id: value.revision_id, payload_sha256: value.payload_sha256 }, limit: limit as { scheduled_at: 'must_be_known' } | null }
+  if (check.code === 'event_gap' && riskIsoTimestamp(value.scheduled_at) && riskPositiveInteger(value.revision_id) && riskSha256(value.payload_sha256) && (limit === null || limit.scheduled_at === 'must_be_known')) return { code: check.code, value: { scheduled_at: value.scheduled_at, revision_id: value.revision_id, payload_sha256: value.payload_sha256 }, limit: limit as { scheduled_at: 'must_be_known' } | null }
   if (check.code === 'liquidity' && riskFiniteNumber(value.spread_pct) && riskFiniteNumber(limit.spread_pct)) return { code: check.code, value: { spread_pct: value.spread_pct }, limit: { spread_pct: limit.spread_pct } }
   return null
 }
@@ -1722,6 +1726,10 @@ function formatRiskPercent(value: number | null): string {
 
 export function formatPersonalPaperRiskCheck(check: PersonalPaperRiskCheck, locale: 'zh-Hans' | 'zh-Hant' = 'zh-Hans'): { value: string; limit: string | null } {
   if (check.value === null && check.limit === null) return { value: RISK_DATA_MISSING, limit: null }
+  if (check.code === 'sector_concentration' && check.value === null) {
+    const limit = strictRiskObject(check.limit, ['pct'])
+    if (check.data_state === 'missing' && limit && riskFiniteNumber(limit.pct)) return { value: RISK_DATA_MISSING, limit: `≤ ${formatRiskPercent(limit.pct)}` }
+  }
   const parsed = parsePersonalPaperRiskCheck(check)
   if (!parsed) return { value: RISK_FORMAT_ERROR, limit: RISK_FORMAT_ERROR }
   const dateLocale = locale === 'zh-Hant' ? 'zh-TW' : 'zh-CN'
@@ -1770,7 +1778,7 @@ export function validPersonalPaperRiskProofRequest(value: unknown): value is Per
 }
 
 function validPersonalPaperRiskCheck(value: unknown): value is PersonalPaperRiskCheck {
-  return exactKeys(value, ['code', 'status', 'title', 'detail', 'value', 'limit', 'data_state'])
+  if (!(exactKeys(value, ['code', 'status', 'title', 'detail', 'value', 'limit', 'data_state'])
     && PERSONAL_PAPER_RISK_CHECK_CODES.includes(value.code as PersonalPaperRiskCheckCode)
     && ['pass', 'warn', 'fail', 'unknown'].includes(value.status as string)
     && typeof value.title === 'string'
@@ -1779,7 +1787,15 @@ function validPersonalPaperRiskCheck(value: unknown): value is PersonalPaperRisk
     && value.detail.trim().length > 0
     && (value.value === null || typeof value.value === 'string')
     && (value.limit === null || typeof value.limit === 'string')
-    && ['fresh', 'partial', 'stale', 'missing'].includes(value.data_state as string)
+    && ['fresh', 'partial', 'stale', 'missing'].includes(value.data_state as string))) return false
+  if (value.value === null) {
+    if (value.data_state !== 'missing') return false
+    if (value.code === 'event_gap') return value.limit === null
+    if (value.code !== 'sector_concentration') return false
+    const limit = strictRiskObject(value.limit, ['pct'])
+    return Boolean(limit && riskFiniteNumber(limit.pct))
+  }
+  return parsePersonalPaperRiskCheck(value as unknown as PersonalPaperRiskCheck) !== null
 }
 
 export function validPersonalPaperRiskProof(value: unknown): value is PersonalPaperRiskProof {
@@ -1810,13 +1826,23 @@ export function validPersonalPaperRiskProof(value: unknown): value is PersonalPa
     || !value.blocking_reasons.every((reason) => typeof reason === 'string' && reason.trim().length > 0)
     || !Array.isArray(value.warnings)
     || !value.warnings.every((warning) => typeof warning === 'string' && warning.trim().length > 0)) return false
-  const codes = value.checks.map((check) => check.code)
-  const hasFailedCheck = value.checks.some((check) => check.status === 'fail')
-  const decisionIsConsistent = value.decision === 'reject'
-    ? (hasFailedCheck || value.blocking_reasons.length > 0) && value.risk_level === 'blocked'
-    : value.decision === 'review'
-      ? !hasFailedCheck && value.blocking_reasons.length === 0 && value.risk_level === 'moderate'
-      : !hasFailedCheck && value.blocking_reasons.length === 0 && value.risk_level === 'low'
+  const proof = value as unknown as PersonalPaperRiskProof
+  const codes = proof.checks.map((check) => check.code)
+  const failedDetails = proof.checks.filter((check) => check.status === 'fail').map((check) => check.detail)
+  const warningDetails = proof.checks.filter((check) => check.status === 'warn' || check.status === 'unknown').map((check) => check.detail)
+  const expectedDataState = proof.checks.some((check) => check.data_state === 'missing')
+    ? 'missing'
+    : proof.checks.some((check) => check.data_state === 'partial')
+      ? 'partial'
+      : 'fresh'
+  const expectedDecision = proof.blocking_reasons.length > 0 ? 'reject' : warningDetails.length > 0 ? 'review' : 'allow'
+  const expectedLevel = expectedDecision === 'reject' ? 'blocked' : expectedDecision === 'review' ? 'moderate' : 'low'
+  const decisionIsConsistent = proof.decision === expectedDecision
+    && proof.risk_level === expectedLevel
+    && proof.data_state === expectedDataState
+    && JSON.stringify(proof.warnings) === JSON.stringify(warningDetails)
+    && failedDetails.every((detail) => proof.blocking_reasons.includes(detail))
+    && (proof.decision !== 'reject' || proof.blocking_reasons.length > 0)
   return decisionIsConsistent
     && new Set(codes).size === PERSONAL_PAPER_RISK_CHECK_CODES.length
     && PERSONAL_PAPER_RISK_CHECK_CODES.every((code) => codes.includes(code))
