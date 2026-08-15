@@ -43,10 +43,9 @@ test('V2 navigation active state is pure paired color without a rail', () => {
   assert.doesNotMatch(navigation, /linear-gradient/)
 })
 
-test('Ciclo AI launcher uses the shared theme primitive and exposes an honest locked state', () => {
+test('Ciclo AI launcher uses the shared theme primitive and opens the bounded-context page', () => {
   assert.match(appShell, /className="ai-pill"/)
-  assert.match(appShell, /AI 工作台正在安全接入/)
-  assert.match(appShell, /role="dialog"/)
-  assert.match(components, /\.ai-unavailable-popover\s*\{[\s\S]*?box-shadow: var\(--shadow-overlay\)/)
+  assert.match(appShell, /to="\/ai"/)
+  assert.doesNotMatch(appShell, /ai-unavailable-popover|aiPanelOpen/)
   assert.doesNotMatch(appShell, /AI.{0,20}(?:自动下单|一键下单)/)
 })

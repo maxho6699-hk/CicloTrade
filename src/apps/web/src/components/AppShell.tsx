@@ -8,7 +8,6 @@ import {
   ChartCandlestick,
   ChevronRight,
   ClipboardCheck,
-  LockKeyhole,
   MessageSquareText,
   FlaskConical,
   Gauge,
@@ -80,17 +79,9 @@ const NAV_COPY = {
 const AI_COPY = {
   'zh-Hans': {
     label: 'Ciclo AI',
-    status: '当前未启用',
-    title: 'AI 工作台正在安全接入',
-    detail: '真实 AI 会话与任务服务尚未启用。当前入口不会生成假回答，也不能提交模拟或实盘订单。',
-    action: '先进入行情与研究',
   },
   'zh-Hant': {
     label: 'Ciclo AI',
-    status: '目前未啟用',
-    title: 'AI 工作台正在安全接入',
-    detail: '真實 AI 會話與任務服務尚未啟用。目前入口不會生成假回答，也不能提交模擬或實盤訂單。',
-    action: '先進入行情與研究',
   },
 } as const
 const FEATURE_ICONS: Record<string, LucideIcon> = {
@@ -134,7 +125,6 @@ export function AppShell({ children }: AppShellProps) {
   const [commandStatus, setCommandStatus] = useState('')
   const [commandWatchBusy, setCommandWatchBusy] = useState('')
   const [theme, setTheme] = useState<Theme>(readStoredTheme)
-  const [aiPanelOpen, setAiPanelOpen] = useState(false)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const [recentSearches, setRecentSearches] = useState<CommandHistoryItem[]>(storedSearchHistory)
   const [featureCatalog, setFeatureCatalog] = useState<FeatureCatalogPayload | null>(null)
@@ -208,15 +198,6 @@ export function AppShell({ children }: AppShellProps) {
   }, [commandOpen])
 
   useEffect(() => {
-    if (!aiPanelOpen) return
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setAiPanelOpen(false)
-    }
-    document.addEventListener('keydown', closeOnEscape)
-    return () => document.removeEventListener('keydown', closeOnEscape)
-  }, [aiPanelOpen])
-
-  useEffect(() => {
     let active = true
     const query = commandQuery.trim()
     if (!commandOpen || query.length < 2 || !realData) {
@@ -229,7 +210,7 @@ export function AppShell({ children }: AppShellProps) {
       void searchMarket(query, '全部').then((payload) => {
         if (!active) return
         setMarketMatches(payload.items)
-        setCommandStatus(payload.items.length ? `找到 ${payload.items.length} 个市场标的` : '市场目录没有匹配结果')
+        setCommandStatus(payload.items.length ? `找到 ${payload.items.length} 只股票` : '股票目录没有匹配结果')
       }).catch((caught) => {
         if (!active) return
         setMarketMatches([])
@@ -244,18 +225,11 @@ export function AppShell({ children }: AppShellProps) {
     const needle = query.toLowerCase()
     const saved = workspace.data?.settings.watchlists ?? { us: [], a_share: [] }
     const savedItems: CommandItem[] = [
-      ...saved.us.map((symbol): CommandItem => ({ to: `/markets?market=US&symbol=${symbol}`, label: `${symbol} 行情`, icon: CandlestickChart, keywords: `${symbol} ${localeSearchText('自选')} ${localeSearchText('美股')}`, meta: '我的自选', market: 'US', symbol })),
-      ...saved.a_share.map((symbol): CommandItem => ({ to: `/markets?market=CN&symbol=${symbol}`, label: `${symbol} 行情`, icon: CandlestickChart, keywords: `${symbol} ${localeSearchText('自选')} ${localeSearchText('A股')}`, meta: '我的自选', market: 'CN', symbol })),
+      ...saved.us.map((symbol): CommandItem => ({ to: `/research?market=US&symbol=${symbol}`, label: `${symbol} 行情`, icon: CandlestickChart, keywords: `${symbol} ${localeSearchText('自选')} ${localeSearchText('美股')}`, meta: '我的自选', market: 'US', symbol })),
+      ...saved.a_share.map((symbol): CommandItem => ({ to: `/research?market=CN&symbol=${symbol}`, label: `${symbol} 行情`, icon: CandlestickChart, keywords: `${symbol} ${localeSearchText('自选')} ${localeSearchText('A股')}`, meta: '我的自选', market: 'CN', symbol })),
     ].filter((item) => !needle || `${localeSearchText(item.label)} ${localeSearchText(item.keywords)}`.toLowerCase().includes(needle))
-    const demoItems: CommandItem[] = workspace.mode !== 'authenticated' ? [
-      { to: '/markets?market=US&symbol=AAPL', label: 'AAPL · Apple', icon: CandlestickChart, keywords: 'AAPL Apple 美股', meta: '界面演示标的', market: 'US' as const, symbol: 'AAPL' },
-      { to: '/markets?market=US&symbol=NVDA', label: 'NVDA · NVIDIA', icon: CandlestickChart, keywords: 'NVDA NVIDIA 美股', meta: '界面演示标的', market: 'US' as const, symbol: 'NVDA' },
-      { to: '/markets?market=US&symbol=TSLA', label: 'TSLA · Tesla', icon: CandlestickChart, keywords: 'TSLA Tesla 美股', meta: '界面演示标的', market: 'US' as const, symbol: 'TSLA' },
-      { to: '/markets?market=US&symbol=MSFT', label: 'MSFT · Microsoft', icon: CandlestickChart, keywords: 'MSFT Microsoft 美股', meta: '界面演示标的', market: 'US' as const, symbol: 'MSFT' },
-      { to: '/markets?market=CN&symbol=600519', label: '600519 · 贵州茅台', icon: CandlestickChart, keywords: '600519 贵州茅台 A股', meta: '界面演示标的', market: 'CN' as const, symbol: '600519' },
-    ].filter((item) => !needle || `${item.label} ${item.keywords}`.toLowerCase().includes(needle)) : []
     const marketItems: CommandItem[] = marketMatches.map((item) => ({
-      to: `/markets?market=${item.market}&symbol=${item.symbol.replace(/\.(SS|SZ)$/, '')}`,
+      to: `/research?market=${item.market}&symbol=${item.symbol.replace(/\.(SS|SZ)$/, '')}`,
       label: `${item.symbol.replace(/\.(SS|SZ)$/, '')} · ${item.name}`,
       icon: CandlestickChart,
       keywords: `${item.symbol} ${item.name}`,
@@ -265,12 +239,12 @@ export function AppShell({ children }: AppShellProps) {
     }))
     const directMarket = /^\d{6}$/.test(query) ? 'CN' : 'US'
     const direct: CommandItem[] = /^(?:[A-Za-z][A-Za-z0-9.=-]{0,14}|\d{6})$/.test(query)
-      ? [{ to: `/markets?market=${directMarket}&symbol=${query.toUpperCase()}`, label: `${locale === 'zh-Hant' ? '開啟' : '打开'} ${query.toUpperCase()} 行情`, icon: CandlestickChart, keywords: query, meta: '直接打开代码', market: directMarket, symbol: query.toUpperCase() }]
+      ? [{ to: `/research?market=${directMarket}&symbol=${query.toUpperCase()}`, label: `${locale === 'zh-Hant' ? '開啟' : '打开'} ${query.toUpperCase()} 行情`, icon: CandlestickChart, keywords: query, meta: '直接打开代码', market: directMarket, symbol: query.toUpperCase() }]
       : []
     const unique = new Map<string, CommandItem>()
-    for (const item of [...savedItems, ...demoItems, ...marketItems, ...direct]) unique.set(`${item.to}|${item.label}`, item)
+    for (const item of [...savedItems, ...marketItems, ...direct]) unique.set(`${item.to}|${item.label}`, item)
     return [...unique.values()]
-  }, [commandQuery, locale, marketMatches, workspace.data?.settings.watchlists, workspace.mode])
+  }, [commandQuery, locale, marketMatches, workspace.data?.settings.watchlists])
 
   const runCommand = (item: CommandHistoryItem) => {
     const nextHistory = [item, ...recentSearches.filter((entry) => entry.to !== item.to || entry.label !== item.label)].slice(0, MAX_RECENT_SEARCHES)
@@ -345,27 +319,10 @@ export function AppShell({ children }: AppShellProps) {
           </button>
           <div className="global-status" aria-label="系统状态">
             <div className="ai-launcher">
-              <button
-                className="ai-pill"
-                type="button"
-                aria-haspopup="dialog"
-                aria-expanded={aiPanelOpen}
-                onClick={() => {
-                  setUserMenuOpen(false)
-                  setAiPanelOpen((current) => !current)
-                }}
-              >
+              <NavLink className="ai-pill" to="/ai" onClick={() => setUserMenuOpen(false)}>
                 <Bot aria-hidden="true" />
                 <span>{aiCopy.label}</span>
-              </button>
-              {aiPanelOpen && <section className="ai-unavailable-popover" role="dialog" aria-modal="false" aria-labelledby="ciclo-ai-title">
-                <header>
-                  <span className="ai-unavailable-icon"><LockKeyhole aria-hidden="true" /></span>
-                  <span><strong id="ciclo-ai-title">{aiCopy.title}</strong><small>{aiCopy.status}</small></span>
-                </header>
-                <p>{aiCopy.detail}</p>
-                <NavLink to="/research" onClick={() => setAiPanelOpen(false)}>{aiCopy.action}<ChevronRight aria-hidden="true" /></NavLink>
-              </section>}
+              </NavLink>
             </div>
             <span className="live-status"><i /> {realData ? marketDisconnected ? '行情未连接' : marketStatusLabel : '界面演示'}</span>
             <span>行情 · {marketStatusLabel}</span>
@@ -375,7 +332,7 @@ export function AppShell({ children }: AppShellProps) {
               {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
             </button>
             <span className="sr-only" role="status" aria-live="polite">{syncState === 'saving' ? '正在同步语言偏好' : syncState === 'saved' ? '语言偏好已保存' : syncState === 'error' ? '账户同步失败，语言偏好已保存在本机' : ''}</span>
-            <button className="user-menu" type="button" aria-label="打开账户菜单" aria-expanded={userMenuOpen} onClick={() => { setAiPanelOpen(false); setUserMenuOpen((current) => !current) }}><UserRound size={17} /></button>
+            <button className="user-menu" type="button" aria-label="打开账户菜单" aria-expanded={userMenuOpen} onClick={() => setUserMenuOpen((current) => !current)}><UserRound size={17} /></button>
             {userMenuOpen && <div className="account-popover">
               <header><strong>{workspace.user?.display_name ?? 'CicloTrade 用户'}</strong><small>{workspace.user?.plan_display_name ?? '账户'}</small></header>
               <a href="/" onClick={() => setUserMenuOpen(false)}><House size={16} /> 返回欢迎页</a>

@@ -24,6 +24,10 @@ import { MoreRoute } from './pages/MoreRoute'
 import { PersonalPaperPage } from './pages/PersonalPaperPage'
 import { TodayV2Page } from './pages/TodayV2Page'
 import { DiscoverV2Page } from './pages/DiscoverV2Page'
+import { AIWorkspacePage } from './pages/AIWorkspacePage'
+import { WorkflowTaskPage } from './pages/WorkflowTaskPage'
+import { DeliberationPage } from './pages/DeliberationPage'
+import { LegalPage } from './pages/LegalPage'
 import { useLocale } from './i18n/useLocale'
 import { applyTheme, readStoredTheme } from './theme'
 
@@ -63,12 +67,13 @@ export default function App() {
   useEffect(() => {
     applyTheme(readStoredTheme())
   }, [])
-  const isPublic = location.pathname === '/' || location.pathname === '/login'
+  const isPublic = location.pathname === '/' || location.pathname === '/login' || location.pathname === '/legal'
   if (isPublic) {
     return (
       <Routes>
         <Route path="/" element={<WelcomePage />} />
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/legal" element={<LegalPage />} />
       </Routes>
     )
   }
@@ -93,6 +98,9 @@ export default function App() {
     <Route path="/membership" element={<MembershipPage />} />
     <Route path="/promotion" element={<PromotionCenterPage />} />
     <Route path="/mystic" element={<MysticPage />} />
+    <Route path="/ai" element={<AIWorkspacePage />} />
+    <Route path="/workflow/:taskId" element={<WorkflowTaskPage />} />
+    <Route path="/deliberation" element={<DeliberationPage />} />
     <Route path="/opportunities/*" element={<LegacyRedirect to="/discover" />} />
     <Route path="/markets/*" element={<LegacyRedirect to="/research" />} />
     <Route path="*" element={<Navigate to="/today" replace />} />

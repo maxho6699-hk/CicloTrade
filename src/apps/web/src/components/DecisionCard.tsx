@@ -68,10 +68,10 @@ export function DecisionCard({ decision, compact = false, demo = false }: Decisi
           <span>{decision.eventId}</span>
         </div>
         <div className="decision-actions">
-          <button className="icon-button" type="button" title="打开 K 线" aria-label="打开 K 线" onClick={() => navigate(`/markets?market=${decision.instrument.market}&symbol=${encodeURIComponent(decision.instrument.symbol)}&event_id=${decision.officialEventId ?? ''}`)}>
+          <button className="icon-button" type="button" title="打开 K 线" aria-label="打开 K 线" onClick={() => navigate(`/research?market=${decision.instrument.market}&symbol=${encodeURIComponent(decision.instrument.symbol)}&event_id=${decision.officialEventId ?? ''}`)}>
             <CandlestickChart size={17} />
           </button>
-          <button className="button secondary" type="button" onClick={() => navigate(`/markets?market=${decision.instrument.market}&symbol=${encodeURIComponent(decision.instrument.symbol)}&event_id=${decision.officialEventId ?? ''}&tab=信号时间线`)}>查看证据</button>
+          <button className="button secondary" type="button" onClick={() => navigate(`/research?market=${decision.instrument.market}&symbol=${encodeURIComponent(decision.instrument.symbol)}&event_id=${decision.officialEventId ?? ''}&tab=信号时间线`)}>查看证据</button>
           <button className="button primary" type="button" disabled={!decision.officialEventId} onClick={() => navigate(`/portfolio?symbol=${decision.instrument.symbol}&event_id=${decision.officialEventId ?? ''}`)}>
             查看模拟验证结果 <ArrowRight size={16} />
           </button>

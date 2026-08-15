@@ -26,7 +26,12 @@ import { PublicPageHeader } from '../components/PublicPageHeader'
 import { useLocale } from '../i18n/useLocale'
 import { applyTheme, readStoredTheme } from '../theme'
 
-const consoleRoutes = ['/today', '/opportunities', '/markets', '/portfolio', '/trade', '/reports', '/lab', '/notifications', '/account', '/help', '/feedback', '/admin', '/membership', '/mystic']
+const consoleRoutes = [
+  '/today', '/discover', '/research', '/paper', '/portfolio', '/more', '/trade', '/reports',
+  '/earnings', '/lab', '/notifications', '/account', '/help', '/feedback', '/admin',
+  '/membership', '/promotion', '/mystic', '/ai', '/workflow', '/deliberation', '/legal',
+  '/opportunities', '/markets',
+]
 const authModes = ['login', 'register', 'forgot'] as const
 
 type AuthMode = (typeof authModes)[number]
