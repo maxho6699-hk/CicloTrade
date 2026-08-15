@@ -1656,6 +1656,86 @@ const PERSONAL_PAPER_RISK_CHECK_CODES: readonly PersonalPaperRiskCheckCode[] = [
   'drawdown', 'event_gap', 'liquidity',
 ]
 
+type RiskNumber = number
+type ParsedRiskCheck =
+  | { code: 'buying_power'; value: { required: RiskNumber; available: RiskNumber }; limit: { required_max: RiskNumber } }
+  | { code: 'max_loss'; value: { usd: RiskNumber | null; pct: RiskNumber | null; unbounded: boolean }; limit: { usd: RiskNumber | null; pct: RiskNumber | null } }
+  | { code: 'position_concentration'; value: { usd: RiskNumber; pct: RiskNumber }; limit: { pct: RiskNumber } }
+  | { code: 'sector_concentration'; value: { industry: string; usd: RiskNumber; pct: RiskNumber }; limit: { pct: RiskNumber } }
+  | { code: 'drawdown'; value: { pct: RiskNumber; peak_usd: RiskNumber; current_usd: RiskNumber }; limit: { pct: RiskNumber } }
+  | { code: 'event_gap'; value: { scheduled_at: string; revision_id: string; payload_sha256: string }; limit: { scheduled_at: 'must_be_known' } | null }
+  | { code: 'liquidity'; value: { spread_pct: RiskNumber }; limit: { spread_pct: RiskNumber } }
+
+const RISK_FORMAT_ERROR = '数据格式异常/需重新获取'
+const RISK_DATA_MISSING = '暂无数据（需重新获取）'
+
+function strictRiskObject(raw: string | null, keys: readonly string[]): Record<string, unknown> | null {
+  if (typeof raw !== 'string' || raw.trim() === '') return null
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    const object = parsed as Record<string, unknown>
+    return Object.keys(object).length === keys.length && keys.every((key) => Object.prototype.hasOwnProperty.call(object, key)) ? object : null
+  } catch {
+    return null
+  }
+}
+
+function riskFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function riskNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function riskIsoTimestamp(value: unknown): value is string {
+  return validIsoTimestamp(value)
+}
+
+function riskSha256(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value)
+}
+
+export function parsePersonalPaperRiskCheck(check: PersonalPaperRiskCheck): ParsedRiskCheck | null {
+  const value = check.value === null ? null : strictRiskObject(check.value, check.code === 'buying_power' ? ['required', 'available'] : check.code === 'max_loss' ? ['usd', 'pct', 'unbounded'] : check.code === 'position_concentration' ? ['usd', 'pct'] : check.code === 'sector_concentration' ? ['industry', 'usd', 'pct'] : check.code === 'drawdown' ? ['pct', 'peak_usd', 'current_usd'] : check.code === 'event_gap' ? ['scheduled_at', 'revision_id', 'payload_sha256'] : ['spread_pct'])
+  const limit = check.limit === null ? null : strictRiskObject(check.limit, check.code === 'buying_power' ? ['required_max'] : check.code === 'max_loss' ? ['usd', 'pct'] : check.code === 'position_concentration' || check.code === 'sector_concentration' || check.code === 'drawdown' ? ['pct'] : check.code === 'event_gap' ? ['scheduled_at'] : ['spread_pct'])
+  if (!value || !limit) return null
+  if (check.code === 'buying_power' && riskFiniteNumber(value.required) && riskFiniteNumber(value.available) && riskFiniteNumber(limit.required_max)) return { code: check.code, value: { required: value.required, available: value.available }, limit: { required_max: limit.required_max } }
+  if (check.code === 'max_loss' && (value.usd === null || riskFiniteNumber(value.usd)) && (value.pct === null || riskFiniteNumber(value.pct)) && typeof value.unbounded === 'boolean' && (limit.usd === null || riskFiniteNumber(limit.usd)) && (limit.pct === null || riskFiniteNumber(limit.pct))) return { code: check.code, value: { usd: value.usd, pct: value.pct, unbounded: value.unbounded }, limit: { usd: limit.usd, pct: limit.pct }, }
+  if (check.code === 'position_concentration' && riskFiniteNumber(value.usd) && riskFiniteNumber(value.pct) && riskFiniteNumber(limit.pct)) return { code: check.code, value: { usd: value.usd, pct: value.pct }, limit: { pct: limit.pct } }
+  if (check.code === 'sector_concentration' && riskNonEmptyString(value.industry) && riskFiniteNumber(value.usd) && riskFiniteNumber(value.pct) && riskFiniteNumber(limit.pct)) return { code: check.code, value: { industry: value.industry, usd: value.usd, pct: value.pct }, limit: { pct: limit.pct } }
+  if (check.code === 'drawdown' && riskFiniteNumber(value.pct) && riskFiniteNumber(value.peak_usd) && riskFiniteNumber(value.current_usd) && riskFiniteNumber(limit.pct)) return { code: check.code, value: { pct: value.pct, peak_usd: value.peak_usd, current_usd: value.current_usd }, limit: { pct: limit.pct } }
+  if (check.code === 'event_gap' && riskIsoTimestamp(value.scheduled_at) && riskNonEmptyString(value.revision_id) && riskSha256(value.payload_sha256) && (limit === null || limit.scheduled_at === 'must_be_known')) return { code: check.code, value: { scheduled_at: value.scheduled_at, revision_id: value.revision_id, payload_sha256: value.payload_sha256 }, limit: limit as { scheduled_at: 'must_be_known' } | null }
+  if (check.code === 'liquidity' && riskFiniteNumber(value.spread_pct) && riskFiniteNumber(limit.spread_pct)) return { code: check.code, value: { spread_pct: value.spread_pct }, limit: { spread_pct: limit.spread_pct } }
+  return null
+}
+
+function formatRiskMoney(value: number | null, locale: 'zh-Hans' | 'zh-Hant'): string {
+  if (value === null) return locale === 'zh-Hant' ? '未提供' : '未提供'
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(value)
+}
+
+function formatRiskPercent(value: number | null): string {
+  return value === null ? '未提供' : `${value.toFixed(2)}%`
+}
+
+export function formatPersonalPaperRiskCheck(check: PersonalPaperRiskCheck, locale: 'zh-Hans' | 'zh-Hant' = 'zh-Hans'): { value: string; limit: string | null } {
+  if (check.value === null && check.limit === null) return { value: RISK_DATA_MISSING, limit: null }
+  const parsed = parsePersonalPaperRiskCheck(check)
+  if (!parsed) return { value: RISK_FORMAT_ERROR, limit: RISK_FORMAT_ERROR }
+  const dateLocale = locale === 'zh-Hant' ? 'zh-TW' : 'zh-CN'
+  switch (parsed.code) {
+    case 'buying_power': return { value: `需要 ${formatRiskMoney(parsed.value.required, locale)} · 可用 ${formatRiskMoney(parsed.value.available, locale)}`, limit: `上限 ${formatRiskMoney(parsed.limit.required_max, locale)}` }
+    case 'max_loss': return { value: parsed.value.unbounded ? (locale === 'zh-Hant' ? '理論無上限' : '理论无上限') : `${formatRiskMoney(parsed.value.usd, locale)} · ${formatRiskPercent(parsed.value.pct)}`, limit: `${formatRiskMoney(parsed.limit.usd, locale)} · ${formatRiskPercent(parsed.limit.pct)}` }
+    case 'position_concentration': return { value: `${formatRiskMoney(parsed.value.usd, locale)} · ${formatRiskPercent(parsed.value.pct)}`, limit: `≤ ${formatRiskPercent(parsed.limit.pct)}` }
+    case 'sector_concentration': return { value: `${parsed.value.industry} · ${formatRiskMoney(parsed.value.usd, locale)} · ${formatRiskPercent(parsed.value.pct)}`, limit: `≤ ${formatRiskPercent(parsed.limit.pct)}` }
+    case 'drawdown': return { value: `${formatRiskPercent(parsed.value.pct)} · 峰值 ${formatRiskMoney(parsed.value.peak_usd, locale)} · 当前 ${formatRiskMoney(parsed.value.current_usd, locale)}`, limit: `≤ ${formatRiskPercent(parsed.limit.pct)}` }
+    case 'event_gap': return { value: `事件时间 ${new Date(parsed.value.scheduled_at).toLocaleString(dateLocale)} · 修订 ${parsed.value.revision_id}`, limit: parsed.limit ? '必须有已知时间' : null }
+    case 'liquidity': return { value: `价差 ${formatRiskPercent(parsed.value.spread_pct)}`, limit: `≤ ${formatRiskPercent(parsed.limit.spread_pct)}` }
+  }
+}
+
 function validPersonalPaperSourceContext(value: unknown): value is PersonalPaperRiskProofRequest['source_context'] {
   return exactKeys(value, ['kind', 'reference_id'])
     && ['manual', 'recommendation', 'chart', 'screener'].includes(value.kind as string)
@@ -1733,10 +1813,10 @@ export function validPersonalPaperRiskProof(value: unknown): value is PersonalPa
   const codes = value.checks.map((check) => check.code)
   const hasFailedCheck = value.checks.some((check) => check.status === 'fail')
   const decisionIsConsistent = value.decision === 'reject'
-    ? hasFailedCheck && value.blocking_reasons.length > 0
-    : value.decision === 'allow'
-      ? !hasFailedCheck && value.blocking_reasons.length === 0
-      : true
+    ? (hasFailedCheck || value.blocking_reasons.length > 0) && value.risk_level === 'blocked'
+    : value.decision === 'review'
+      ? !hasFailedCheck && value.blocking_reasons.length === 0 && value.risk_level === 'moderate'
+      : !hasFailedCheck && value.blocking_reasons.length === 0 && value.risk_level === 'low'
   return decisionIsConsistent
     && new Set(codes).size === PERSONAL_PAPER_RISK_CHECK_CODES.length
     && PERSONAL_PAPER_RISK_CHECK_CODES.every((code) => codes.includes(code))

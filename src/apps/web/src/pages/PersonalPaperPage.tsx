@@ -35,6 +35,7 @@ import { CicloCore, type CicloCoreState } from '../components/paper/CicloCore'
 import {
   DataHealth,
   DecisionSummary,
+  OrderPreview,
   PaperDraftCard,
   PaperRefreshButton,
   RiskCheckList,
@@ -302,6 +303,7 @@ export function PersonalPaperPage() {
       <section className="paper-flow" aria-labelledby="paper-draft-title">
         <PaperDraftCard locale={locale} draft={draft} disabled={workflowLocked} valid={draftValid} quote={quote} riskProof={riskProof} busy={busy} onChange={updateDraft} onQuote={() => void requestQuote()} onRisk={() => void requestRisk()} />
         {draft.side === 'SHORT' && <div className="paper-short-risk" role="note"><AlertTriangle size={17} />{copy.shortRisk}</div>}
+        <OrderPreview locale={locale} request={draft} quote={quote} proof={riskProof} />
         <DecisionSummary locale={locale} proof={riskProof} side={draft.side} expired={proofExpired} />
         <RiskCheckList locale={locale} proof={riskProof} />
         <button className="button primary paper-submit" type="button" disabled={!proofPermitsSubmit || !draftValid || workflowLocked} onClick={() => void submit()}>{confirmLabel}</button>

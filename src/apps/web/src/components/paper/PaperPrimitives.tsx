@@ -20,6 +20,7 @@ import type {
   PersonalPaperRiskProofRequest,
   PersonalPaperSide,
 } from '../../api/client'
+import { formatPersonalPaperRiskCheck, parsePersonalPaperRiskCheck } from '../../api/client'
 
 export type PaperLocale = 'zh-Hans' | 'zh-Hant'
 
@@ -153,14 +154,60 @@ function checkIcon(check: PersonalPaperRiskCheck) {
   return <CircleDashed size={17} />
 }
 
+function money(value: number): string {
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(value)
+}
+
 export function RiskCheckList({ locale, proof }: { locale: PaperLocale; proof: PersonalPaperRiskProof | null }) {
   const title = locale === 'zh-Hant' ? '風險核對清單' : '风险核对清单'
   const empty = locale === 'zh-Hant' ? '取得報價後產生服務端風險證明。' : '取得报价后生成服务端风险证明。'
   return <section className="paper-risk-checks" aria-labelledby="paper-risk-checks-title">
     <header><ShieldCheck size={17} /><h2 id="paper-risk-checks-title">{title}</h2><span>{proof?.checks.length ?? 0}/7</span></header>
-    {!proof ? <p>{empty}</p> : <div className="paper-risk-check-list">{proof.checks.map((check) => <article key={check.code} data-status={check.status}>
-      {checkIcon(check)}<div><strong>{check.title}</strong><small>{check.detail}</small></div><span>{check.value ?? '—'}{check.limit ? <small>{check.limit}</small> : null}</span>
-    </article>)}</div>}
+    {!proof ? <p>{empty}</p> : <div className="paper-risk-check-list">{proof.checks.map((check) => {
+      const formatted = formatPersonalPaperRiskCheck(check, locale)
+      return <article key={check.code} data-status={check.status}>
+        {checkIcon(check)}<div><strong>{check.title}</strong><small>{check.detail}</small></div><span>{formatted.value}{formatted.limit ? <small>{formatted.limit}</small> : null}</span>
+      </article>
+    })}</div>}
+  </section>
+}
+
+interface OrderPreviewProps {
+  locale: PaperLocale
+  request: PaperDraftValues
+  quote: PersonalPaperQuoteProof | null
+  proof: PersonalPaperRiskProof | null
+}
+
+export function OrderPreview({ locale, request, quote, proof }: OrderPreviewProps) {
+  const hant = locale === 'zh-Hant'
+  const unavailable = hant ? '不可用（需重新取得）' : '不可用（需重新获取）'
+  const buyingPowerCheck = proof?.checks.find((check) => check.code === 'buying_power')
+  const buyingPower = buyingPowerCheck ? parsePersonalPaperRiskCheck(buyingPowerCheck) : null
+  const buyingValue = buyingPower?.code === 'buying_power' ? buyingPower.value : null
+  const estimatedAmount = buyingValue && buyingValue.required > 0 ? money(buyingValue.required) : unavailable
+  const buyingImpact = buyingValue ? `需要 ${money(buyingValue.required)} · 可用 ${money(buyingValue.available)}` : unavailable
+  const priceCondition = request.orderType === 'MARKET'
+    ? (hant ? '市價' : '市价')
+    : request.orderType === 'LIMIT'
+      ? `${hant ? '限價' : '限价'} ${request.limitPrice || unavailable}`
+      : request.orderType === 'STOP'
+        ? `${hant ? '停損觸發' : '止损触发'} ${request.stopPrice || unavailable}`
+        : `${hant ? '停損觸發' : '止损触发'} ${request.stopPrice || unavailable} · ${hant ? '限價' : '限价'} ${request.limitPrice || unavailable}`
+  const markTime = proof ? new Date(proof.marks_as_of).toLocaleString(hant ? 'zh-TW' : 'zh-CN') : unavailable
+  const expiresAt = proof ? new Date(proof.expires_at).toLocaleString(hant ? 'zh-TW' : 'zh-CN') : unavailable
+  const title = hant ? '訂單預覽' : '订单预览'
+  return <section className="paper-order-preview" aria-labelledby="paper-order-preview-title">
+    <header><span>ORDER PREVIEW</span><h2 id="paper-order-preview-title">{title}</h2></header>
+    <dl>
+      <div><dt>股票</dt><dd>{request.symbol || unavailable}</dd></div>
+      <div><dt>{hant ? '方向 / 數量' : '方向 / 数量'}</dt><dd>{request.side} · {request.quantity || unavailable}</dd></div>
+      <div><dt>{hant ? '訂單類型 / 價格條件' : '订单类型 / 价格条件'}</dt><dd>{request.orderType} · {priceCondition}</dd></div>
+      <div><dt>{hant ? '報價時間 / 到期' : '报价时间 / 到期'}</dt><dd>{markTime} · {expiresAt}</dd></div>
+      <div><dt>{hant ? '估算金額' : '估算金额'}</dt><dd>{estimatedAmount}</dd></div>
+      <div><dt>{hant ? '費用 / 購買力影響' : '费用 / 购买力影响'}</dt><dd>{hant ? '費用未提供（需重新取得）' : '费用未提供（需重新获取）'} · {buyingImpact}</dd></div>
+      <div><dt>{hant ? '報價證明' : '报价证明'}</dt><dd>{quote ? `${quote.market} · ${quote.symbol} · ${quote.quote_id}` : unavailable}</dd></div>
+    </dl>
   </section>
 }
 
@@ -182,7 +229,10 @@ export function DecisionSummary({ locale, proof, side, expired }: DecisionSummar
     : { allow: '允许确认', review: '复核后可确认', reject: '拒绝提交', expired: '证明已过期', unknown: '等待证明' }
   const maxLoss = side === 'SHORT'
     ? (isHant ? '理論最大虧損：無限' : '理论最大亏损：无限')
-    : proof?.checks.find((check) => check.code === 'max_loss')?.value ?? '—'
+    : (() => {
+      const check = proof?.checks.find((item) => item.code === 'max_loss')
+      return check ? formatPersonalPaperRiskCheck(check, locale).value : '—'
+    })()
 
   return <section className="paper-decision-summary" data-decision={decision} aria-labelledby="paper-decision-title">
     <header><FileCheck2 size={18} /><div><small>DECISION SUMMARY</small><h2 id="paper-decision-title">{title}</h2></div><strong>{decisionText[decision]}</strong></header>
