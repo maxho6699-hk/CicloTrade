@@ -67,6 +67,11 @@ class PersonalPaperService:
         self.database = database
         self.quote_verifier = quote_verifier
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        from core.personal_paper.risk import PersonalPaperRiskProofService
+        self.risk_proofs = PersonalPaperRiskProofService(self)
+
+    def issue_risk_proof(self, user_id: int, raw: Any) -> dict[str, Any]:
+        return self.risk_proofs.issue(user_id, raw)
 
     def create_first_season(self, user_id: int) -> dict[str, Any]:
         if isinstance(user_id, bool) or not isinstance(user_id, int) or user_id < 1:
@@ -203,6 +208,8 @@ class PersonalPaperService:
 
     def submit_stock_order(self, user_id: int, raw: Any) -> dict[str, Any]:
         request = normalize_stock_order(raw)
+        if not request.get("risk_proof_id"):
+            raise PersonalPaperRiskRejected("必须先生成并确认有效的风险证明。")
         request_hash = sha256_json(request)
         now_value = self.clock()
         if now_value.tzinfo is None or now_value.utcoffset() is None:
@@ -226,6 +233,9 @@ class PersonalPaperService:
                     return response
                 if request["account_version"] != season["version"]:
                     raise PersonalPaperConflict("账户已变化，请刷新后确认订单。")
+                self.risk_proofs.verify_and_consume(
+                    user_id, request, connection=connection, now=now_value,
+                )
                 try:
                     quote = self.quote_verifier.verify_and_consume(
                         request["quote_id"], user_id=user_id, season_id=season["id"],
@@ -290,6 +300,18 @@ class PersonalPaperService:
                         _stamp(quote.as_of), request["account_version"], request["source_context"]["kind"],
                         request["source_context"]["reference_id"], status, canonical_json(response), now,
                     ),
+                )
+                risk_event = {
+                    "risk_proof_id": request["risk_proof_id"],
+                    "decision": "review_or_allow",
+                    "draft_sha256": request_hash,
+                }
+                connection.execute(
+                    """INSERT INTO personal_paper_risk_events
+                       (public_id,season_id,order_id,code,allowed,details_json,occurred_at)
+                       VALUES(?,?,?,?,?,?,?)""",
+                    (f"pper_{uuid.uuid4().hex}", season["id"], order_id, "risk_proof", 1,
+                     canonical_json(risk_event), now),
                 )
                 event = {"status": status, "request_sha256": request_hash}
                 connection.execute(

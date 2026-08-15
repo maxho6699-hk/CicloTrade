@@ -117,6 +117,10 @@ def test_real_order_transaction_consumes_proof_only_when_order_commits(tmp_path)
         "account_version": 0,
         "source_context": {"kind": "manual", "reference_id": None},
     }
+    risk_proof = service.issue_risk_proof(
+        int(user["id"]), {key: value for key, value in request.items() if key != "idempotency_key"}
+    )
+    request["risk_proof_id"] = risk_proof["id"]
 
     result = service.submit_stock_order(int(user["id"]), request)
     assert result["order"]["status"] == "FILLED"

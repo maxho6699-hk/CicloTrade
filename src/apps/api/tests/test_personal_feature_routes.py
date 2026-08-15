@@ -99,6 +99,7 @@ def test_personal_feature_and_screener_routes_require_bearer(routed_api):
         ("/api/rewrite/v1/personal-paper/seasons", "POST"),
         ("/api/rewrite/v1/personal-paper/seasons/{season_id:str}", "GET"),
         ("/api/rewrite/v1/personal-paper/quotes", "POST"),
+        ("/api/rewrite/v1/personal-paper/risk-proofs", "POST"),
         ("/api/rewrite/v1/personal-paper/orders", "POST"),
         ("/api/rewrite/v1/personal-paper/orders/cancel", "POST"),
         ("/api/rewrite/v1/features/catalog", "GET"),
@@ -139,15 +140,22 @@ def test_personal_routes_isolate_users_and_legacy_ledgers(routed_api):
         payload={"market": "US", "symbol": "AAPL"},
     ))
     assert quote_status == 201
+    order_payload = {
+        "idempotency_key": "route-limit-order", "season_id": season_id,
+        "market": "US", "symbol": "AAPL", "side": "BUY", "order_type": "LIMIT",
+        "quantity": 1, "limit_price": 90, "stop_price": None, "time_in_force": "DAY",
+        "quote_id": quote["quote_id"], "account_version": 0,
+        "source_context": {"kind": "manual", "reference_id": None},
+    }
+    risk_status, risk_body = asyncio.run(_asgi(
+        "/api/rewrite/v1/personal-paper/risk-proofs", method="POST", token=token_b,
+        payload={key: value for key, value in order_payload.items() if key != "idempotency_key"},
+    ))
+    assert risk_status == 201
+    order_payload["risk_proof_id"] = risk_body["risk_proof"]["id"]
     order_status, order = asyncio.run(_asgi(
         "/api/rewrite/v1/personal-paper/orders", method="POST", token=token_b,
-        payload={
-            "idempotency_key": "route-limit-order", "season_id": season_id,
-            "market": "US", "symbol": "AAPL", "side": "BUY", "order_type": "LIMIT",
-            "quantity": 1, "limit_price": 90, "stop_price": None, "time_in_force": "DAY",
-            "quote_id": quote["quote_id"], "account_version": 0,
-            "source_context": {"kind": "manual", "reference_id": None},
-        },
+        payload=order_payload,
     ))
     assert order_status == 201
     cancel_status, _ = asyncio.run(_asgi(

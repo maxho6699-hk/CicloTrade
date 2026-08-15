@@ -1683,6 +1683,11 @@ async def personal_paper_quote(request: Request) -> Response:
     return await _personal_paper_api(request).issue_quote(request)
 
 
+async def personal_paper_risk_proof(request: Request) -> Response:
+    _identity(request)
+    return await _personal_paper_api(request).risk_proof(request)
+
+
 async def personal_paper_order(request: Request) -> Response:
     _identity(request)
     return await _personal_paper_api(request).submit_stock_order(request)
@@ -3477,6 +3482,7 @@ routes = [
     Route("/api/rewrite/v1/personal-paper/seasons", personal_paper_create_season, methods=["POST"]),
     Route("/api/rewrite/v1/personal-paper/seasons/{season_id:str}", personal_paper_account, methods=["GET"]),
     Route("/api/rewrite/v1/personal-paper/quotes", personal_paper_quote, methods=["POST"]),
+    Route("/api/rewrite/v1/personal-paper/risk-proofs", personal_paper_risk_proof, methods=["POST"]),
     Route("/api/rewrite/v1/personal-paper/orders", personal_paper_order, methods=["POST"]),
     Route("/api/rewrite/v1/personal-paper/orders/cancel", personal_paper_cancel, methods=["POST"]),
     Route("/api/rewrite/v1/features/catalog", feature_catalog, methods=["GET"]),

@@ -84,7 +84,8 @@ def normalize_stock_order(raw: Any) -> dict[str, Any]:
         "quantity", "limit_price", "stop_price", "time_in_force", "quote_id",
         "account_version", "source_context",
     }
-    if set(raw) != required:
+    allowed = required | {"risk_proof_id"}
+    if set(raw) - allowed or not required.issubset(raw):
         raise PersonalPaperValidationError("订单字段不完整或包含未知字段。")
     value = dict(raw)
     value["idempotency_key"] = _id(value["idempotency_key"], "idempotency_key")
@@ -114,7 +115,18 @@ def normalize_stock_order(raw: Any) -> dict[str, Any]:
         source = dict(source)
         source["reference_id"] = _id(source["reference_id"], "source_context.reference_id")
     value["source_context"] = source
+    if "risk_proof_id" in value:
+        value["risk_proof_id"] = _id(value["risk_proof_id"], "risk_proof_id")
     return value
+
+
+def risk_draft_payload(order: dict[str, Any]) -> dict[str, Any]:
+    """Return the canonical, normalized order fields covered by a risk proof."""
+    return {key: value for key, value in order.items() if key not in {"risk_proof_id", "idempotency_key"}}
+
+
+def risk_draft_sha256(order: dict[str, Any]) -> str:
+    return sha256_json(risk_draft_payload(order))
 
 
 def enforce_defined_risk_option_limit(
@@ -141,4 +153,5 @@ def minor_times_quantity(price_minor: int, quantity_micros: int) -> int:
 __all__ = [
     "PersonalPaperValidationError", "canonical_json", "enforce_defined_risk_option_limit",
     "minor_times_quantity", "normalize_stock_order", "sha256_json",
+    "risk_draft_payload", "risk_draft_sha256",
 ]

@@ -132,6 +132,21 @@ class PersonalPaperApi:
         except PersonalPaperConflict as exc:
             return self._response({"error": str(exc)}, 404)
 
+    async def risk_proof(self, request: Request) -> Response:
+        try:
+            result = await run_in_threadpool(
+                self.service.issue_risk_proof, await self._identity(request), await request.json()
+            )
+            return self._response({"risk_proof": result}, 201)
+        except PersonalPaperValidationError as exc:
+            return self._response({"error": str(exc)}, 400)
+        except PersonalPaperConflict as exc:
+            return self._response({"error": str(exc)}, 409)
+        except PersonalPaperRiskRejected as exc:
+            return self._response({"error": str(exc)}, 422)
+        except Exception:
+            return self._response({"error": "风险数据暂时不可用。"}, 503)
+
     async def submit_stock_order(self, request: Request) -> Response:
         try:
             payload = await request.json()

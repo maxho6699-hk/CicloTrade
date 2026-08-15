@@ -91,6 +91,10 @@ def test_personal_paper_http_adapter_creates_season_and_maps_idempotency_conflic
         "quote_id": quote_id, "account_version": 0,
         "source_context": {"kind": "manual", "reference_id": None},
     }
+    risk_payload = {key: value for key, value in payload.items() if key != "idempotency_key"}
+    risk = asyncio.run(api.risk_proof(_request("POST", risk_payload)))
+    assert risk.status_code == 201
+    payload["risk_proof_id"] = json.loads(risk.body)["risk_proof"]["id"]
     accepted = asyncio.run(api.submit_stock_order(_request("POST", payload)))
     assert accepted.status_code == 201
     payload["quantity"] = 2

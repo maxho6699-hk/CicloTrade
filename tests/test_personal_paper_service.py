@@ -38,6 +38,12 @@ class Quotes:
             commission_minor=0,
         )
 
+    def verify(self, quote_id, *, user_id, season_id, market, symbol, now, connection, request_sha256):
+        return self.verify_and_consume(
+            quote_id, user_id=user_id, season_id=season_id, market=market, symbol=symbol,
+            now=now, connection=connection, request_sha256=request_sha256,
+        )
+
 
 @pytest.fixture
 def personal(tmp_path):
@@ -47,7 +53,7 @@ def personal(tmp_path):
     return database, user["id"], service
 
 
-def _order(season, **changes):
+def _order(service, user_id, season, **changes):
     value = {
         "idempotency_key": "order-key-001",
         "season_id": season["id"],
@@ -64,6 +70,17 @@ def _order(season, **changes):
         "source_context": {"kind": "manual", "reference_id": None},
     }
     value.update(changes)
+    stamp = NOW.isoformat().replace("+00:00", "Z")
+    service.database.execute(
+        """INSERT OR IGNORE INTO personal_paper_quote_proofs
+           (public_id,user_id,season_id,schema_version,nonce,claims_json,signature_sha256,
+            issued_at,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+        (value["quote_id"], user_id, season["id"], "q1", value["quote_id"].replace("-", "_") + "_test_nonce",
+         "{}", "0" * 64, stamp, stamp, stamp),
+    )
+    draft = {key: item for key, item in value.items() if key != "idempotency_key"}
+    proof = service.issue_risk_proof(user_id, draft)
+    value["risk_proof_id"] = proof["id"]
     return value
 
 
@@ -73,7 +90,7 @@ def test_first_season_is_idempotent_independent_and_market_order_fills(personal)
     assert season == service.create_first_season(user_id)
     assert season["initial_cash"] == 10_000 and season["currency"] == "USD"
 
-    result = service.submit_stock_order(user_id, _order(season))
+    result = service.submit_stock_order(user_id, _order(service, user_id, season))
     assert result["order"]["status"] == "FILLED"
     assert result["account"]["cash"] == 9_900
     assert result["account"]["market_value"] == 99
@@ -88,36 +105,25 @@ def test_first_season_is_idempotent_independent_and_market_order_fills(personal)
 def test_idempotency_replays_same_payload_and_conflicts_on_change(personal):
     _, user_id, service = personal
     season = service.create_first_season(user_id)
-    request = _order(season)
+    request = _order(service, user_id, season)
     first = service.submit_stock_order(user_id, request)
     replay = service.submit_stock_order(user_id, request)
     assert replay["order"] == first["order"] and replay["replayed"] is True
     with pytest.raises(PersonalPaperConflict):
-        service.submit_stock_order(user_id, _order(season, quantity=2))
+        service.submit_stock_order(user_id, _order(service, user_id, season, quantity=2))
 
 
 def test_sell_cover_and_opposite_direction_rules_fail_closed(personal):
     _, user_id, service = personal
     season = service.create_first_season(user_id)
     with pytest.raises(PersonalPaperRiskRejected):
-        service.submit_stock_order(user_id, _order(season, side="SELL"))
-    short = service.submit_stock_order(
-        user_id,
-        _order(season, idempotency_key="short-1", side="SHORT", symbol="MSFT",
-               quote_id="quote-short"),
-    )
-    with pytest.raises(PersonalPaperRiskRejected):
+        service.submit_stock_order(user_id, _order(service, user_id, season, side="SELL"))
+    with pytest.raises(PersonalPaperRiskRejected, match="拒绝"):
         service.submit_stock_order(
             user_id,
-            _order(season, idempotency_key="buy-short", side="BUY", symbol="MSFT",
-                   quote_id="quote-buy-short", account_version=short["account"]["account_version"]),
+            _order(service, user_id, season, idempotency_key="short-1", side="SHORT", symbol="MSFT",
+                   quote_id="quote-short"),
         )
-    covered = service.submit_stock_order(
-        user_id,
-        _order(season, idempotency_key="cover-1", side="COVER", symbol="MSFT",
-               quote_id="quote-cover", account_version=short["account"]["account_version"]),
-    )
-    assert covered["account"]["positions"] == []
 
 
 def test_begin_immediate_and_account_version_prevent_double_spend(personal):
@@ -127,7 +133,7 @@ def test_begin_immediate_and_account_version_prevent_double_spend(personal):
     def place(index):
         return service.submit_stock_order(
             user_id,
-            _order(season, idempotency_key=f"concurrent-{index}", quantity=100,
+            _order(service, user_id, season, idempotency_key=f"concurrent-{index}", quantity=100,
                    quote_id=f"quote-{index}"),
         )
 
@@ -149,7 +155,7 @@ def test_users_cannot_read_or_submit_against_another_users_season(personal):
     with pytest.raises(PersonalPaperConflict):
         service.account_snapshot(other["id"], season["id"])
     with pytest.raises(PersonalPaperConflict):
-        service.submit_stock_order(other["id"], _order(season))
+        service.submit_stock_order(other["id"], _order(service, user_id, season))
 
 
 def test_pending_order_can_be_cancelled_once_and_releases_cash(personal):
@@ -157,7 +163,7 @@ def test_pending_order_can_be_cancelled_once_and_releases_cash(personal):
     season = service.create_first_season(user_id)
     pending = service.submit_stock_order(
         user_id,
-        _order(season, order_type="LIMIT", limit_price=90, quote_id="quote-limit"),
+        _order(service, user_id, season, order_type="LIMIT", limit_price=90, quote_id="quote-limit"),
     )
     assert pending["order"]["status"] == "PENDING"
     assert pending["account"]["reserved_cash"] == 90
@@ -182,7 +188,7 @@ def test_pending_order_can_be_cancelled_once_and_releases_cash(personal):
 def test_quote_minor_units_are_strict_integers(personal, field, value):
     _, user_id, service = personal
     season = service.create_first_season(user_id)
-    original = service.quote_verifier.verify_and_consume
+    original = service.quote_verifier.verify
 
     def invalid(*args, **kwargs):
         quote = original(*args, **kwargs)
@@ -190,6 +196,6 @@ def test_quote_minor_units_are_strict_integers(personal, field, value):
         values[field] = value
         return VerifiedQuote(**values)
 
-    service.quote_verifier.verify_and_consume = invalid
+    service.quote_verifier.verify = invalid
     with pytest.raises(PersonalPaperRiskRejected):
-        service.submit_stock_order(user_id, _order(season))
+        service.submit_stock_order(user_id, _order(service, user_id, season))

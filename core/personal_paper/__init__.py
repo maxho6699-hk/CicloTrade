@@ -5,8 +5,10 @@ from core.personal_paper.service import (
     PersonalPaperService,
     VerifiedQuote,
 )
+from core.personal_paper.risk import PersonalPaperRiskProofService, RiskProofError
 
 __all__ = [
     "PersonalPaperConflict", "PersonalPaperRiskRejected", "PersonalPaperService",
     "PersonalPaperValidationError", "VerifiedQuote",
+    "PersonalPaperRiskProofService", "RiskProofError",
 ]

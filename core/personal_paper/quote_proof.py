@@ -197,6 +197,7 @@ class QuoteProofSignerVerifier:
         now: datetime,
         connection: Any,
         request_sha256: str,
+        consume: bool = True,
     ) -> VerifiedQuote:
         try:
             owner = _user_id(user_id)
@@ -274,12 +275,13 @@ class QuoteProofSignerVerifier:
                 or now - as_of > MAX_QUOTE_AGE
             ):
                 raise QuoteProofError("报价证明无效。")
-            connection.execute(
-                """INSERT INTO personal_paper_quote_consumptions
-                   (proof_id,user_id,season_id,request_sha256,consumed_at)
-                   VALUES(?,?,?,?,?)""",
-                (quote_id, owner, season_id, request_sha256, _stamp(now)),
-            )
+            if consume:
+                connection.execute(
+                    """INSERT INTO personal_paper_quote_consumptions
+                       (proof_id,user_id,season_id,request_sha256,consumed_at)
+                       VALUES(?,?,?,?,?)""",
+                    (quote_id, owner, season_id, request_sha256, _stamp(now)),
+                )
             return VerifiedQuote(
                 proof_id=quote_id,
                 market="US",
@@ -295,6 +297,15 @@ class QuoteProofSignerVerifier:
             raise
         except (json.JSONDecodeError, sqlite3.DatabaseError, TypeError, ValueError) as exc:
             raise QuoteProofError("报价证明无效。") from exc
+
+    def verify(
+        self, quote_id: str, *, user_id: int, season_id: str, market: str, symbol: str,
+        now: datetime, connection: Any, request_sha256: str,
+    ) -> VerifiedQuote:
+        return self.verify_and_consume(
+            quote_id, user_id=user_id, season_id=season_id, market=market, symbol=symbol,
+            now=now, connection=connection, request_sha256=request_sha256, consume=False,
+        )
 
     def _signature(self, canonical_claims: str) -> str:
         message = f"{SCHEMA}\0{canonical_claims}".encode("utf-8")
