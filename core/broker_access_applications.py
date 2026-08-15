@@ -114,12 +114,18 @@ class BrokerAccessApplicationService:
         if not verified_can(conn, str(membership.get("plan_type") or "免费版"), "broker_access_apply"):
             raise BrokerAccessApplicationError("当前会员策略不允许申请实盘券商资格。", 403)
         telegram = conn.execute(
-            """SELECT 1 FROM telegram_accounts
-               WHERE user_id=? AND is_active=1 AND revoked_at IS NULL""",
+            """SELECT 1
+               FROM telegram_accounts t
+               JOIN user_settings s ON s.user_id=t.user_id
+               WHERE t.user_id=?
+                 AND t.is_active=1
+                 AND t.revoked_at IS NULL
+                 AND json_extract(s.settings_json,'$.telegram.verified')=1
+                 AND json_extract(s.settings_json,'$.telegram.consent')=1""",
             (int(user_id),),
         ).fetchone()
         if not telegram:
-            raise BrokerAccessApplicationError("申请前必须绑定并保持有效的 Telegram 账户。", 403)
+            raise BrokerAccessApplicationError("申请前必须绑定、验证并同意通知的 Telegram 账户。", 403)
         return membership
 
     def create(self, user_id: int, payload: Any, idempotency_key: Any) -> tuple[dict[str, Any], bool]:

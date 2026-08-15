@@ -13,7 +13,9 @@ import {
   WalletCards,
 } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import type { BrokerCatalogEntry } from '../api/client'
+import { brokerAccessApi, type BrokerAccessApplication, type BrokerProvider, isBrokerAccessRejection } from '../api/brokerAccess'
 import { useWorkspace } from '../api/workspace-context'
 import { PageHeader } from '../components/PageHeader'
 
@@ -41,7 +43,45 @@ export function TradePage() {
   const symbol = searchParams.get('symbol')?.toUpperCase()
   const eventId = searchParams.get('event_id')
   const authenticated = workspace.mode === 'authenticated'
-  const brokerCatalog = workspace.data?.membership.brokerage.capability_catalog ?? []
+  const brokerCatalog = useMemo(() => workspace.data?.membership.brokerage.capability_catalog ?? [], [workspace.data?.membership.brokerage.capability_catalog])
+  const [applications, setApplications] = useState<BrokerAccessApplication[]>([])
+  const [selectedProvider, setSelectedProvider] = useState<BrokerProvider | ''>('')
+  const [requestReason, setRequestReason] = useState('')
+  const [requestState, setRequestState] = useState<string | null>(null)
+  const [loadingApplications, setLoadingApplications] = useState(false)
+  const availableProviders = useMemo(() => brokerCatalog.filter((broker) => broker.connection_available), [brokerCatalog])
+
+  useEffect(() => {
+    if (!authenticated) return
+    setLoadingApplications(true)
+    void brokerAccessApi.list().then(setApplications).catch(() => setApplications([])).finally(() => setLoadingApplications(false))
+  }, [authenticated])
+
+  async function submitAccessRequest(event: FormEvent) {
+    event.preventDefault()
+    if (!selectedProvider) return
+    setRequestState(null)
+    try {
+      const result = await brokerAccessApi.create(selectedProvider, requestReason.trim() || null, `broker-${crypto.randomUUID()}`)
+      setApplications((current) => [result.application, ...current.filter((item) => item.id !== result.application.id)])
+      setRequestReason('')
+      setRequestState(result.replayed ? '已恢复上次相同申请。' : '申请已提交，等待人工审核。')
+    } catch (error) {
+      setRequestState(isBrokerAccessRejection(error) ? (error as Error).message : '网络响应未确认，请保留申请编号后重试读取。')
+    }
+  }
+
+  async function withdrawAccessRequest(item: BrokerAccessApplication) {
+    if (item.status !== 'submitted') return
+    setRequestState(null)
+    try {
+      const updated = await brokerAccessApi.withdraw(item.id)
+      setApplications((current) => current.map((candidate) => candidate.id === updated.id ? updated : candidate))
+      setRequestState('资格申请已撤回。')
+    } catch (error) {
+      setRequestState(isBrokerAccessRejection(error) ? (error as Error).message : '撤回结果未确认，请刷新资格历史。')
+    }
+  }
 
   return (
     <div className="page operations-page brokerage-page">
@@ -53,6 +93,14 @@ export function TradePage() {
         <span className="status-chip research"><ShieldCheck size={14} /> 首期 5 家 · 全部尚未开放</span>
         <button className="button primary" type="button" disabled><LockKeyhole size={16} /> 暂未开放绑定</button>
       </section>
+
+      {authenticated && <section className="data-panel brokerage-access-panel" aria-labelledby="broker-access-title">
+        <header className="panel-heading"><div><span>ELIGIBILITY / HUMAN REVIEW</span><h2 id="broker-access-title">券商资格申请</h2></div><FileCheck2 size={20} /></header>
+        <p className="admin-panel-note">申请只记录资格审核，不创建券商账户、不启用执行，也不会发送 Telegram。连接可用前不会显示“已连接”或“运行中”。</p>
+        {availableProviders.length ? <form className="brokerage-access-form" onSubmit={submitAccessRequest}><label>券商<select value={selectedProvider} onChange={(event) => setSelectedProvider(event.target.value as BrokerProvider)}><option value="">选择券商</option>{availableProviders.map((broker) => <option value={broker.key} key={broker.key}>{broker.display_name}</option>)}</select></label><label>申请原因（可选）<textarea value={requestReason} maxLength={500} onChange={(event) => setRequestReason(event.target.value)} rows={2} /></label><button className="button primary" type="submit" disabled={!selectedProvider}>提交资格申请</button></form> : <p className="admin-panel-note">当前五家券商 connection_available 均为 false，资格申请入口保持锁定。</p>}
+        {requestState && <p role="status" className="admin-panel-note">{requestState}</p>}
+        {loadingApplications ? <p className="admin-panel-note">正在读取资格历史…</p> : applications.length ? <ul className="brokerage-access-history">{applications.map((item) => <li key={item.id}><span><strong>{item.provider}</strong><small>{item.id} · {item.created_at}</small></span><span className={`admin-state ${item.status === 'approved' ? 'healthy' : item.status === 'rejected' ? 'risk' : 'pending'}`}>{item.status}</span>{item.status === 'submitted' && <button className="button tertiary" type="button" onClick={() => void withdrawAccessRequest(item)}>撤回申请</button>}</li>)}</ul> : <p className="admin-panel-note">暂无资格申请历史。</p>}
+      </section>}
 
       {(symbol || eventId) && <section className="brokerage-context-note"><FileCheck2 size={17} /><span><strong>你从一条研究或验证记录来到这里</strong><small>{symbol ? `${symbol} · ` : ''}{eventId ? `事件 QE-${eventId} · ` : ''}本页不会把它转换成模拟订单或自动发送到券商。</small></span><button className="button tertiary" type="button" onClick={() => navigate('/portfolio')}>查看模拟验证结果</button></section>}
 

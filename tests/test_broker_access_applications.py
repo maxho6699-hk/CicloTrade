@@ -43,6 +43,12 @@ def _eligible(database, user, plan="高级版", chat="700001"):
         "INSERT INTO telegram_accounts(user_id,chat_id,is_active,created_at,updated_at) VALUES (?,?,1,?,?)",
         (user["id"], chat, now.isoformat(), now.isoformat()),
     )
+    database.execute(
+        """INSERT INTO user_settings(user_id,settings_json,updated_at)
+           VALUES (?,?,?)
+           ON CONFLICT(user_id) DO UPDATE SET settings_json=excluded.settings_json,updated_at=excluded.updated_at""",
+        (user["id"], '{"telegram":{"verified":true,"consent":true}}', now.isoformat()),
+    )
 
 
 def _super_admin(database, admin):
@@ -139,6 +145,21 @@ def test_approval_rechecks_membership_and_telegram_inside_write_lock(context):
         admin["id"], item["id"], {"decision": "rejected", "reason": "Telegram 已解绑"}
     )
     assert rejected["status"] == "rejected"
+
+
+@pytest.mark.parametrize(
+    ("verified", "consent"),
+    [(False, True), (True, False), (False, False)],
+)
+def test_application_requires_verified_and_consented_telegram(context, verified, consent):
+    database, service, user, _ = context
+    _eligible(database, user)
+    database.execute(
+        "UPDATE user_settings SET settings_json=? WHERE user_id=?",
+        (f'{{"telegram":{{"verified":{str(verified).lower()},"consent":{str(consent).lower()}}}}}', user["id"]),
+    )
+    with pytest.raises(BrokerAccessApplicationError, match="验证并同意"):
+        service.create(user["id"], {"provider": "ibkr"}, "broker-key-verified")
 
 
 def test_non_super_admin_cannot_list_or_review(context):

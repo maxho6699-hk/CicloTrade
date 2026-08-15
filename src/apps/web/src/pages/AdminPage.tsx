@@ -37,6 +37,7 @@ import {
   type AdminUser,
 } from '../api/client'
 import { PageHeader } from '../components/PageHeader'
+import { brokerAccessApi, type AdminBrokerAccessApplication } from '../api/brokerAccess'
 
 type AdminData = {
   overview: AdminOverview
@@ -144,6 +145,8 @@ export function AdminPage() {
   const [autoTradingEnabled, setAutoTradingEnabled] = useState(true)
   const [autoTradingPassword, setAutoTradingPassword] = useState('')
   const [autoTradingBusy, setAutoTradingBusy] = useState(false)
+  const [brokerApplications, setBrokerApplications] = useState<AdminBrokerAccessApplication[]>([])
+  const [brokerReviewBusy, setBrokerReviewBusy] = useState<string | null>(null)
   const modalRef = useRef<HTMLFormElement | null>(null)
   const modalTriggerRef = useRef<HTMLButtonElement | null>(null)
   const modalBusyRef = useRef(false)
@@ -169,16 +172,30 @@ export function AdminPage() {
   const load = useCallback(async (filter: AdminReferralAnalyticsFilter = { promotion_type: 'all' }) => {
     setLoading(true); setError('')
     try {
-      const [overview, users, claims, withdrawals, policy, coupons, analytics, brokers, audit] = await Promise.all([
-        fetchAdminOverview(), fetchAdminUsers(), fetchAdminManualClaims(), fetchAdminReferralWithdrawals('all'), fetchAdminReferralPolicy(), fetchAdminReferralCoupons(), fetchAdminReferralAnalytics(filter), fetchAdminBrokers(), fetchAdminAudit(),
+      const [overview, users, claims, withdrawals, policy, coupons, analytics, brokers, audit, brokerAccess] = await Promise.all([
+        fetchAdminOverview(), fetchAdminUsers(), fetchAdminManualClaims(), fetchAdminReferralWithdrawals('all'), fetchAdminReferralPolicy(), fetchAdminReferralCoupons(), fetchAdminReferralAnalytics(filter), fetchAdminBrokers(), fetchAdminAudit(), brokerAccessApi.adminList('submitted'),
       ])
       setData((current) => ({ ...current, overview, users, claims, withdrawals, policy, coupons, analytics, brokers, audit }))
+      setBrokerApplications(brokerAccess)
       setPolicyDraft(policy.policy)
     } catch (caught) {
       setError(errorMessage(caught, '管理数据暂时不可用。未显示任何推断数据。'))
       setData((current) => ({ ...current, overview: {}, users: [], claims: [], withdrawals: [], policy: null, coupons: [], analytics: null, brokers: [], audit: [] }))
+      setBrokerApplications([])
     } finally { setLoading(false) }
   }, [])
+
+  async function reviewBrokerApplication(item: AdminBrokerAccessApplication, decision: 'approved' | 'rejected') {
+    const reason = window.prompt(decision === 'approved' ? '请输入资格核验说明' : '请输入拒绝原因', '')?.trim()
+    if (!reason) return
+    setBrokerReviewBusy(item.id)
+    try {
+      await brokerAccessApi.review(item.id, decision, reason)
+      setBrokerApplications((current) => current.filter((candidate) => candidate.id !== item.id))
+      setNotice('券商资格审核已写入服务端；未创建券商账户，也未启用执行。')
+    } catch (caught) { setError(errorMessage(caught, '券商资格审核未确认，请刷新队列。')) }
+    finally { setBrokerReviewBusy(null) }
+  }
 
   const refreshEvidence = useCallback(async () => {
     setEvidenceLoading(true); setEvidenceError('')
@@ -481,6 +498,7 @@ export function AdminPage() {
     <div className="admin-grid">
       <section className="data-panel admin-panel admin-claims"><header className="panel-heading"><div><span>PAYMENT REVIEW</span><h2>人工付款凭证</h2></div><CreditCard size={20} /></header><p className="admin-panel-note">只有“待人工审核”的凭证可提交决定；批准与拒绝均写入审计记录。</p>{loading ? <AdminState label="正在读取付款凭证…" /> : data.claims.length ? <div className="responsive-table"><table><thead><tr><th>凭证</th><th>账户</th><th>金额</th><th>状态</th><th>操作</th></tr></thead><tbody>{data.claims.map((claim) => <tr key={claim.id}><td><strong>#{claim.id}</strong><small>{claim.order_no}</small></td><td>{claim.user_email ?? '未提供'}</td><td>{typeof claim.amount === 'number' ? `${claim.currency ?? ''} ${claim.amount.toLocaleString('zh-HK')}` : '未提供'}</td><td><span className={`admin-state ${claim.status === 'submitted' ? 'pending' : claim.status}`}>{claim.status === 'submitted' ? '待人工审核' : claim.status}</span></td><td>{claim.status === 'submitted' ? <span className="admin-row-actions"><button type="button" onClick={(event) => { modalTriggerRef.current = event.currentTarget; setReviewMode({ id: claim.id, decision: 'approve' }) }}>批准</button><button type="button" onClick={(event) => { modalTriggerRef.current = event.currentTarget; setReviewMode({ id: claim.id, decision: 'reject' }) }}>拒绝</button></span> : '已处理'}</td></tr>)}</tbody></table></div> : <AdminState label="没有待处理的人工付款凭证。" />}</section>
       <section className="data-panel admin-panel"><header className="panel-heading"><div><span>BROKER BOUNDARY</span><h2>券商连接</h2></div><ShieldAlert size={20} /></header><p className="admin-panel-note">账户标识始终掩码；本页不提供连接、交易或生产激活控制。</p>{loading ? <AdminState label="正在读取券商状态…" /> : data.brokers.length ? <ul className="admin-broker-list">{data.brokers.map((broker, index) => <li key={String(broker.id ?? index)}><span><strong>{broker.broker ?? '券商'}</strong><small>{maskBrokerAccount(broker.account_masked)}</small></span><span className="admin-state neutral">{broker.status ?? '状态未提供'}</span></li>)}</ul> : <AdminState label="没有可显示的券商连接记录。" />}</section>
+      <section className="data-panel admin-panel admin-broker-access"><header className="panel-heading"><div><span>BROKER ELIGIBILITY / HUMAN REVIEW</span><h2>券商资格审核</h2></div><ShieldAlert size={20} /></header><p className="admin-panel-note">仅审核服务端资格申请；批准不会创建券商账户、启用执行、发送 Telegram，也不是全局 kill-switch。</p>{loading ? <AdminState label="正在读取资格申请…" /> : brokerApplications.length ? <ul className="admin-broker-list">{brokerApplications.map((item) => <li key={item.id}><span><strong>{item.provider}</strong><small>{item.user_display_name} · {item.id}</small></span><span className="admin-row-actions"><button type="button" disabled={brokerReviewBusy === item.id} onClick={() => void reviewBrokerApplication(item, 'approved')}>批准资格</button><button type="button" className="danger" disabled={brokerReviewBusy === item.id} onClick={() => void reviewBrokerApplication(item, 'rejected')}>拒绝</button></span></li>)}</ul> : <AdminState label="暂无待审核券商资格申请。" />}</section>
       <section className="data-panel admin-panel"><header className="panel-heading"><div><span>ACCOUNT SCOPE</span><h2>账户概况</h2></div><UsersRound size={20} /></header>{loading ? <AdminState label="正在读取账户概况…" /> : data.users.length ? <ul className="admin-user-list">{data.users.slice(0, 6).map((user) => <li key={user.id}><span><strong>{user.display_name}</strong><small>{user.email}</small></span><span className={`admin-state ${user.is_active ? 'healthy' : 'risk'}`}>{user.is_active ? '活跃' : '已停用'}</span></li>)}</ul> : <AdminState label="没有可显示的账户记录。" />}</section>
       <section className="data-panel admin-panel"><header className="panel-heading"><div><span>AUDIT TRAIL</span><h2>最近审计记录</h2></div><ShieldAlert size={20} /></header>{loading ? <AdminState label="正在读取审计记录…" /> : data.audit.length ? <ol className="admin-audit-list">{data.audit.slice(0, 6).map((item, index) => <li key={String(item.id ?? index)}><strong>{item.action_type ?? '管理操作'}</strong><span>{item.actor_display ?? '管理员'} · {displayDate(item.created_at)}</span></li>)}</ol> : <AdminState label="没有可显示的审计记录。" />}</section>
     </div>

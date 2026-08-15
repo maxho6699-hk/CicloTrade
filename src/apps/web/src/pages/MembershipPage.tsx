@@ -3,6 +3,7 @@ import {
   Clock3,
   Crown,
   FileCheck2,
+  LockKeyhole,
   ShieldCheck,
   Upload,
 } from "lucide-react";
@@ -546,6 +547,10 @@ export function MembershipPage() {
             </button>
           ))}
         </div>
+        <section className="membership-skin-preview" aria-label="Ciclo 外观预览">
+          <LockKeyhole size={18} />
+          <div><strong>Ciclo 机器人外观</strong><p>外观 entitlement 由服务端返回并与生效版本绑定；当前会员响应未提供可验证的 skin_id 与 asset_version，因此这里只显示锁定预览，不按方案名称猜测外观。</p></div>
+        </section>
         <p>
           会员付款只开通研究、提醒、数据、历史样本范围与回测参数权限。当前环境尚未接入回测计算引擎，不会生成收益、胜率或回撤成绩。订阅
           {subscriptionAutoConnectsBroker ? "会" : "不会"}

@@ -58,6 +58,12 @@ def _eligible(browser_api, user):
         "INSERT INTO telegram_accounts(user_id,chat_id,is_active,created_at,updated_at) VALUES (?,'812345678',1,?,?)",
         (user["id"], now.isoformat(), now.isoformat()),
     )
+    database.execute(
+        """INSERT INTO user_settings(user_id,settings_json,updated_at)
+           VALUES (?,?,?)
+           ON CONFLICT(user_id) DO UPDATE SET settings_json=excluded.settings_json,updated_at=excluded.updated_at""",
+        (user["id"], '{"telegram":{"verified":true,"consent":true}}', now.isoformat()),
+    )
 
 
 def test_routes_registered_and_unauthenticated_requests_fail(browser_api):
@@ -137,6 +143,24 @@ def test_http_rejects_noncanonical_provider_and_non_super_admin(browser_api):
         _asgi(ADMIN_PATH, headers=(("authorization", authorization),))
     )
     assert status == 403 and "后台权限" in payload["error"]
+
+
+def test_http_requires_verified_and_consented_telegram(browser_api):
+    user, authorization = _authorize(browser_api)
+    _eligible(browser_api, user)
+    browser_api["database"].execute(
+        "UPDATE user_settings SET settings_json=? WHERE user_id=?",
+        ('{"telegram":{"verified":true,"consent":false}}', user["id"]),
+    )
+    status, _, payload = asyncio.run(
+        _asgi(
+            USER_PATH,
+            method="POST",
+            body={"provider": "ibkr"},
+            headers=(("authorization", authorization), ("idempotency-key", "broker-http-key-consent")),
+        )
+    )
+    assert status == 403 and "验证并同意" in payload["error"]
 
 
 async def _asgi(path, *, method="GET", body=None, headers=(), query=None):
