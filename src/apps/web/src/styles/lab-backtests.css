@@ -1,0 +1,171 @@
+.lab-backtest-workbench {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) clamp(340px, 31vw, 440px);
+}
+
+.lab-result-zone {
+  min-width: 0;
+  border-left: 1px solid var(--border);
+  background: var(--surface-subtle);
+}
+
+.lab-submit-gate {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  gap: 8px 12px;
+  align-items: center;
+  margin: 0 14px 14px;
+  padding: 13px;
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--warning) 8%, var(--surface-raised));
+  box-shadow: var(--shadow-panel);
+}
+
+.lab-submit-gate > svg { color: var(--warning); }
+.lab-submit-gate > span { display: grid; gap: 4px; }
+.lab-submit-gate > span small,
+.lab-submit-gate > p { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.lab-submit-gate > p { grid-column: 2 / -1; margin: 0; }
+.lab-submit-gate .button { min-height: 44px; }
+
+.lab-queue-heading,
+.lab-job-detail > header,
+.lab-artifacts > header {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.lab-queue-heading { padding: 10px 13px; border-bottom: 1px solid var(--border); }
+.lab-queue-heading > span { display: grid; gap: 2px; }
+.lab-queue-heading small { color: var(--muted); font-size: 11px; }
+.lab-queue-heading > svg { color: var(--positive); }
+
+.lab-queue-state {
+  display: grid;
+  min-height: 108px;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  margin: 12px;
+  padding: 14px;
+  border-radius: var(--radius-control);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-panel);
+}
+
+.lab-queue-state > svg { color: var(--accent); }
+.lab-queue-state.is-error > svg,
+.lab-queue-state.is-conflict > svg,
+.lab-queue-state.is-missing > svg { color: var(--negative); }
+.lab-queue-state > span { display: grid; gap: 5px; }
+.lab-queue-state small { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.lab-queue-state .button { grid-column: 2; justify-self: start; min-height: 44px; }
+
+.lab-job-list {
+  display: grid;
+  max-height: 232px;
+  overflow-y: auto;
+  padding: 8px;
+  gap: 4px;
+  scrollbar-width: thin;
+}
+
+.lab-job-list > button {
+  display: grid;
+  min-height: 68px;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 9px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.lab-job-list > button:hover,
+.lab-job-list > button.is-selected { background: var(--surface-raised); box-shadow: var(--shadow-panel); }
+.lab-job-list > button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.lab-job-list > button > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lab-job-list > button > small { grid-column: 1 / -1; color: var(--muted); font-size: 11px; }
+
+.lab-job-status { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; font-weight: 700; }
+.lab-job-status i { width: 7px; height: 7px; border-radius: 999px; background: currentcolor; }
+.lab-job-status.is-running { color: var(--accent); }
+.lab-job-status.is-succeeded { color: var(--positive); }
+.lab-job-status.is-failed,
+.lab-job-status.is-cancelled { color: var(--negative); }
+.lab-job-status.is-blocked { color: var(--warning); }
+
+.lab-job-detail { border-top: 1px solid var(--border); }
+.lab-job-detail > header { padding: 10px 13px; }
+.lab-job-detail > header > span { display: grid; gap: 2px; }
+.lab-job-detail > header small { color: var(--accent); font: 600 10px var(--mono); letter-spacing: .05em; }
+.lab-job-detail > header .button { min-height: 44px; }
+.lab-job-detail > p { margin: 0; padding: 0 13px 11px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+
+.lab-job-facts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin: 0;
+  border-top: 1px solid var(--border);
+}
+
+.lab-job-facts div { display: grid; min-width: 0; gap: 3px; padding: 10px 13px; border-bottom: 1px solid var(--border); }
+.lab-job-facts div:nth-child(odd) { border-right: 1px solid var(--border); }
+.lab-job-facts dt { color: var(--muted); font-size: 11px; }
+.lab-job-facts dd { overflow-wrap: anywhere; margin: 0; font: 500 11px/1.45 var(--mono); }
+
+.lab-real-progress { display: grid; gap: 7px; padding: 12px 13px; }
+.lab-real-progress > span { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; }
+.lab-real-progress > span b { color: var(--accent); font-family: var(--mono); }
+.lab-real-progress > i { display: block; height: 5px; overflow: hidden; border-radius: 999px; background: var(--surface-raised); }
+.lab-real-progress > i em { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--brand-blue), var(--brand-violet)); }
+
+.lab-result-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--border); }
+.lab-result-metrics > div { display: grid; gap: 4px; padding: 11px 13px; border-bottom: 1px solid var(--border); }
+.lab-result-metrics > div:nth-child(odd) { border-right: 1px solid var(--border); }
+.lab-result-metrics span { color: var(--muted); font-size: 11px; }
+.lab-result-metrics strong { font: 600 16px var(--mono); }
+
+.lab-result-limitations { display: grid; gap: 7px; margin: 0; padding: 11px 13px; list-style: none; }
+.lab-result-limitations li { display: flex; align-items: flex-start; gap: 7px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.lab-result-limitations svg { flex: 0 0 auto; margin-top: 2px; color: var(--warning); }
+
+.lab-artifacts { border-top: 1px solid var(--border); }
+.lab-artifacts > header { justify-content: flex-start; padding: 8px 13px; }
+.lab-artifacts > header svg { color: var(--positive); }
+.lab-artifacts article { display: grid; min-width: 0; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 10px 13px; border-top: 1px solid var(--border); }
+.lab-artifacts article > svg { color: var(--positive); }
+.lab-artifacts article > span { display: grid; min-width: 0; gap: 3px; }
+.lab-artifacts article small { overflow-wrap: anywhere; color: var(--muted); font: 10px/1.45 var(--mono); }
+.lab-artifacts .button { min-height: 44px; }
+
+.lab-queue-notice { margin: 0; padding: 10px 13px; border-top: 1px solid var(--border); color: var(--text); font-size: 12px; line-height: 1.5; }
+.lab-result-zone .lab-disclaimer { border-top: 1px solid var(--border); }
+
+@media (max-width: 1024px) {
+  .lab-backtest-workbench { grid-template-columns: 1fr; }
+  .lab-result-zone { border-top: 1px solid var(--border); border-left: 0; }
+}
+
+@media (max-width: 640px) {
+  .lab-submit-gate { grid-template-columns: 24px minmax(0, 1fr); }
+  .lab-submit-gate .button { grid-column: 1 / -1; width: 100%; }
+  .lab-submit-gate > p { grid-column: 1 / -1; }
+  .lab-job-facts,
+  .lab-result-metrics { grid-template-columns: 1fr; }
+  .lab-job-facts div:nth-child(odd),
+  .lab-result-metrics > div:nth-child(odd) { border-right: 0; }
+  .lab-artifacts article { grid-template-columns: 20px minmax(0, 1fr); }
+  .lab-artifacts .button { grid-column: 1 / -1; width: 100%; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .lab-real-progress > i em { transition: width 180ms ease-out; }
+}

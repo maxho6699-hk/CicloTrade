@@ -8,6 +8,7 @@ const moreRoute = readFileSync(new URL('pages/MoreRoute.tsx', root), 'utf8')
 const reports = readFileSync(new URL('pages/ReportsPage.tsx', root), 'utf8')
 const earnings = readFileSync(new URL('pages/EarningsForecastPage.tsx', root), 'utf8')
 const lab = readFileSync(new URL('pages/ProfessionalLabPage.tsx', root), 'utf8')
+const labBacktests = readFileSync(new URL('components/lab/BacktestWorkspace.tsx', root), 'utf8')
 const overview = readFileSync(new URL('components/StrategyResearchOverviewCard.tsx', root), 'utf8')
 const expanded = readFileSync(new URL('components/StrategyResearch97Panel.tsx', root), 'utf8')
 const options = readFileSync(new URL('components/OptionResearchWorkspace.tsx', root), 'utf8')
@@ -41,13 +42,18 @@ test('earnings preserves PIT snapshot, permission, and no-data boundaries', () =
   assert.match(earnings, /只读结果/)
 })
 
-test('professional lab never fabricates backtest or stress results', () => {
-  assert.match(lab, /回测引擎尚未接入/)
-  assert.match(lab, /尚未生成成绩/)
+test('professional lab reads the real queue without fabricating runnable inputs or results', () => {
+  assert.match(lab, /BacktestWorkspace/)
+  assert.match(lab, /真实队列已接线/)
+  assert.match(labBacktests, /backtestApi\.listJobs/)
+  assert.match(labBacktests, /backtestApi\.getJob/)
+  assert.match(labBacktests, /backtestApi\.cancelJob/)
+  assert.match(labBacktests, /backtestApi\.downloadArtifact/)
+  assert.match(labBacktests, /新任务等待服务端冻结数据入口/)
+  assert.match(labBacktests, /不会伪造 SHA-256/)
+  assert.match(labBacktests, /没有服务端结果时不生成收益、回撤、OOS\/WF/)
   assert.match(lab, /尚未生成压力测试结论/)
-  assert.match(lab, /disabled=\{!maxBacktestYears/)
-  assert.match(lab, /不会生成虚假成绩/)
-  assert.match(lab, /不会生成成绩/)
+  assert.doesNotMatch(labBacktests, /lease_token|heartbeat_at|fencing_epoch|storage_key/)
 })
 
 test('option workspace labels stocks and keeps research-only quote boundaries', () => {

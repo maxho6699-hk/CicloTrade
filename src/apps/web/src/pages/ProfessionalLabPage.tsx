@@ -1,5 +1,4 @@
 import {
-  BarChart3,
   CheckCircle2,
   Code2,
   FlaskConical,
@@ -13,6 +12,7 @@ import {
 import { useRef, useState, type KeyboardEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
+import { BacktestWorkspace } from "../components/lab/BacktestWorkspace";
 import { OptionResearchWorkspace } from "../components/OptionResearchWorkspace";
 import { MetricRing } from "../components/ui/MetricRing";
 import { SelectField } from "../components/ui/SelectField";
@@ -76,12 +76,6 @@ when rsi(14) < 30 and close > sma(50)
     "option_strategy",
     "option_strategy_multi_leg",
   ].every((capability) => capabilities.includes(capability));
-  const lookbackYears = Number.parseInt(lookback, 10);
-  const runBacktest = () => {
-    setStatus(
-      "回测引擎尚未接入；参数只保留在当前页面，离开后不会保存，也不会生成虚假成绩。",
-    );
-  };
   const generateStrategy = () => {
     const prompt = naturalLanguage.trim();
     if (!prompt) return;
@@ -116,7 +110,7 @@ when rsi(14) < 30 and close > sma(50)
       <PageHeader
         kicker="PROFESSIONAL / RESEARCH LAB"
         title="专业研究工作台"
-        description="写策略并配置回测、参数与压力场景。真实结果必须由已接入的数据和计算引擎返回，模型不得自行发布或开启实盘。"
+        description="写策略并配置回测、参数与压力场景。任务、取消状态与制品来自真实队列；模型不得自行发布或开启实盘。"
       />
       <section className="lab-context-band" aria-label="研究工作台状态">
         <span>
@@ -139,7 +133,7 @@ when rsi(14) < 30 and close > sma(50)
         <span>
           <FlaskConical size={16} />
           <strong>计算状态</strong>
-          <small>参数配置中 · 引擎未接入</small>
+          <small>真实队列已接线 · 新任务等待冻结输入入口</small>
         </span>
         <span className="is-blocked">
           <LockKeyhole size={16} />
@@ -251,7 +245,7 @@ when rsi(14) < 30 and close > sma(50)
               onClick={() => {
                 setTab("backtest");
                 setStatus(
-                  "策略已载入当前页面的参数区；引擎未接入，不会生成成绩。",
+                  "策略已载入回测参数区；新任务需等待服务端冻结数据快照入口。",
                 );
               }}
             >
@@ -312,91 +306,25 @@ when rsi(14) < 30 and close > sma(50)
             <h2>回测与参数测试</h2>
           </div>
           <span className="status-chip research">
-            <BarChart3 size={14} /> 引擎未接入
+            <ShieldCheck size={14} /> 真实队列
           </span>
         </header>
-        <div className="lab-backtest-workbench">
-          <div className="lab-config-zone">
-            <div className="backtest-form">
-              <label>
-                股票
-                <input
-                  value={symbol}
-                  onChange={(event) =>
-                    setSymbol(event.target.value.toUpperCase())
-                  }
-                />
-              </label>
-              <SelectField label="样本期" value={lookback} onValueChange={setLookback} options={[1, 3, 5, 10].map((years) => ({ value: `${years} 年`, label: `${years} 年`, disabled: maxBacktestYears < years }))} />
-              <label>
-                手续费（%）
-                <input
-                  inputMode="decimal"
-                  value={commission}
-                  onChange={(event) => setCommission(event.target.value)}
-                />
-              </label>
-              <label>
-                滑点（%）
-                <input
-                  inputMode="decimal"
-                  value={slippage}
-                  onChange={(event) => setSlippage(event.target.value)}
-                />
-              </label>
-            </div>
-            <div className="parameter-grid">
-              <label>
-                RSI 周期
-                <input type="number" defaultValue="14" min="2" max="100" />
-              </label>
-              <label>
-                均线周期
-                <input type="number" defaultValue="50" min="5" max="300" />
-              </label>
-              <label>
-                单笔风险（%）
-                <input
-                  type="number"
-                  defaultValue="1"
-                  min="0.1"
-                  max="5"
-                  step="0.1"
-                />
-              </label>
-              <SelectField label="分批止盈" value={profitTarget} onValueChange={setProfitTarget} options={["1.5R", "2R", "3R"].map((value) => ({ value, label: value }))} />
-            </div>
-            <div className="lab-run-row">
-              <button
-                className="button primary"
-                type="button"
-                onClick={runBacktest}
-                disabled={!maxBacktestYears || lookbackYears > maxBacktestYears}
-              >
-                <Play size={15} /> 保留本页参数
-              </button>
-              <span>
-                {status ||
-                  (maxBacktestYears
-                    ? `当前页面参数：${lookback} ${timeframe}，手续费 ${commission}%、滑点 ${slippage}%；离开后不会保存。`
-                    : "升级会员后可配置回测参数。")}
-              </span>
-            </div>
-          </div>
-          <aside className="lab-result-zone" aria-label="回测结果状态">
-            <div className="backtest-unavailable">
-              <BarChart3 size={24} />
-              <strong>尚未生成成绩</strong>
-              <span>
-                当前环境没有连接回测引擎。接入后才会显示交易数、收益、回撤、稳定性、运行
-                ID 和数据来源。
-              </span>
-            </div>
-            <p className="lab-disclaimer">
-              没有真实引擎返回的数据时，不展示任何看起来像历史成绩的数字。
-            </p>
-          </aside>
-        </div>
+        <BacktestWorkspace
+          authenticated={workspace.mode === "authenticated"}
+          maxBacktestYears={maxBacktestYears}
+          symbol={symbol}
+          timeframe={timeframe}
+          lookback={lookback}
+          commission={commission}
+          slippage={slippage}
+          profitTarget={profitTarget}
+          draftNotice={status}
+          onSymbolChange={setSymbol}
+          onLookbackChange={setLookback}
+          onCommissionChange={setCommission}
+          onSlippageChange={setSlippage}
+          onProfitTargetChange={setProfitTarget}
+        />
       </section>
 
       <section
