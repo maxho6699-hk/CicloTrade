@@ -73,6 +73,24 @@ def _request(method="GET", body=None):
     )
 
 
+def _raw_request(method="POST", body=b"{"):
+    delivered = False
+
+    async def receive():
+        nonlocal delivered
+        if delivered:
+            return {"type": "http.disconnect"}
+        delivered = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request(
+        {"type": "http", "method": method, "path": "/", "headers": [],
+         "query_string": b"", "server": ("test", 443), "client": ("127.0.0.1", 1),
+         "scheme": "https", "http_version": "1.1"},
+        receive,
+    )
+
+
 def test_personal_paper_http_adapter_creates_season_and_maps_idempotency_conflict(tmp_path):
     database = DatabaseManager(str(tmp_path / "http.db"))
     user = AuthService(database).register("http@example.com", "StrongPass123", "HTTP", True)
@@ -100,6 +118,17 @@ def test_personal_paper_http_adapter_creates_season_and_maps_idempotency_conflic
     payload["quantity"] = 2
     conflict = asyncio.run(api.submit_stock_order(_request("POST", payload)))
     assert conflict.status_code == 409
+
+
+@pytest.mark.parametrize("body", (b"{", b"\xff"))
+def test_risk_proof_rejects_malformed_json_with_http_400(tmp_path, body):
+    database = DatabaseManager(str(tmp_path / "malformed-risk.db"))
+    user = AuthService(database).register("malformed-risk@example.com", "StrongPass123", "HTTP", True)
+    api, _ = _api(database, user["id"])
+
+    response = asyncio.run(api.risk_proof(_raw_request(body=body)))
+
+    assert response.status_code == 400
 
 
 @pytest.mark.parametrize(

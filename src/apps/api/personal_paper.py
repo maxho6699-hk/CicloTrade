@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 from datetime import datetime, timezone
+from json import JSONDecodeError
 from typing import Any, Callable
 
 from starlette.concurrency import run_in_threadpool
@@ -138,7 +139,7 @@ class PersonalPaperApi:
                 self.service.issue_risk_proof, await self._identity(request), await request.json()
             )
             return self._response({"risk_proof": result}, 201)
-        except PersonalPaperValidationError as exc:
+        except (JSONDecodeError, UnicodeDecodeError, PersonalPaperValidationError) as exc:
             return self._response({"error": str(exc)}, 400)
         except PersonalPaperConflict as exc:
             return self._response({"error": str(exc)}, 409)

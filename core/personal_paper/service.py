@@ -145,7 +145,9 @@ class PersonalPaperService:
                     (order_id,),
                 ).fetchone()
                 if latest and latest["event_type"] == "CANCELLED":
-                    account = self._public_account(self._account_state(connection, season))
+                    account = self._public_account(
+                        self._account_state(connection, season, now=now_value)
+                    )
                     connection.commit()
                     return {"order": self._public_order(order, "CANCELLED"), "account": account, "replayed": True}
                 if order["status"] != "PENDING" or not latest or latest["event_type"] != "ACCEPTED":
@@ -197,7 +199,7 @@ class PersonalPaperService:
                 season = connection.execute(
                     "SELECT * FROM personal_paper_seasons WHERE id=?", (season["id"],)
                 ).fetchone()
-                state = self._account_state(connection, season)
+                state = self._account_state(connection, season, now=now_value)
                 account = self._public_account(state)
                 self._record_equity(connection, season, state, now)
                 connection.commit()
@@ -245,7 +247,7 @@ class PersonalPaperService:
                 except Exception as exc:
                     raise PersonalPaperRiskRejected("报价证明不可用，订单未被接受。") from exc
                 self._validate_quote(quote, request, now_value)
-                before = self._account_state(connection, season)
+                before = self._account_state(connection, season, now=now_value)
                 status, effect = self._evaluate(request, quote, before)
                 order_id = f"ppo_{uuid.uuid4().hex}"
                 next_version = int(season["version"]) + 1
@@ -276,7 +278,7 @@ class PersonalPaperService:
                 season = connection.execute(
                     "SELECT * FROM personal_paper_seasons WHERE id=?", (season["id"],)
                 ).fetchone()
-                state = self._account_state(connection, season)
+                state = self._account_state(connection, season, now=now_value)
                 account = self._public_account(state)
                 order = {
                     "id": order_id, "season_id": season["id"], "market": request["market"],
@@ -304,7 +306,7 @@ class PersonalPaperService:
                 risk_event = {
                     "risk_proof_id": request["risk_proof_id"],
                     "decision": "review_or_allow",
-                    "draft_sha256": request_hash,
+                    "submission_sha256": request_hash,
                 }
                 connection.execute(
                     """INSERT INTO personal_paper_risk_events
@@ -424,7 +426,10 @@ class PersonalPaperService:
             "created_at": row["created_at"], "quote_id": row["quote_proof_id"],
         }
 
-    def _account_state(self, connection, season) -> dict[str, Any]:
+    def _account_state(
+        self, connection, season, *, now: datetime | None = None
+    ) -> dict[str, Any]:
+        now_value = now or self.clock()
         events = connection.execute(
             "SELECT * FROM personal_paper_account_events WHERE season_id=? ORDER BY sequence,public_id",
             (season["id"],),
@@ -478,8 +483,13 @@ class PersonalPaperService:
                 continue
             mark = marks[symbol]
             marked_at = datetime.fromisoformat(str(mark["quote_as_of"]).replace("Z", "+00:00"))
+            state["mark_bid_minor"] = int(mark["mark_bid_minor"])
+            state["mark_ask_minor"] = int(mark["mark_ask_minor"])
+            state["mark_last_minor"] = int(mark["mark_last_minor"])
+            state["quote_as_of"] = str(mark["quote_as_of"])
+            state["quote_state"] = str(mark["quote_state"])
             quote_times.append(marked_at)
-            if self.clock() - marked_at > MAX_QUOTE_AGE:
+            if now_value - marked_at > MAX_QUOTE_AGE:
                 quote_state = "stale"
             price = int(mark["mark_bid_minor"] if quantity > 0 else mark["mark_ask_minor"])
             value = minor_times_quantity(price, abs(quantity)) * (1 if quantity > 0 else -1)
@@ -490,10 +500,11 @@ class PersonalPaperService:
             raise PersonalPaperConflict("个人模拟账本余额不平，请联系支持。")
         return {
             "season": self._season(season), "cash_minor": cash,
+            "initial_cash_minor": int(season["initial_cash_minor"]),
             "reserved_cash_minor": reserved_cash, "buying_power_minor": cash - reserved_cash,
             "market_value_minor": market_value, "realized_pnl_minor": realized,
             "unrealized_pnl_minor": unrealized, "total_equity_minor": total_equity,
-            "as_of": _stamp(min(quote_times) if quote_times else self.clock()),
+            "as_of": _stamp(min(quote_times) if quote_times else now_value),
             "quote_state": quote_state, "account_version": season["version"],
             "positions": list(positions.values()),
         }
