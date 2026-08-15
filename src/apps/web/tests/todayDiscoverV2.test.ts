@@ -8,6 +8,7 @@ const today = readFileSync(resolve(root, 'src/pages/TodayV2Page.tsx'), 'utf8')
 const discover = readFileSync(resolve(root, 'src/pages/DiscoverV2Page.tsx'), 'utf8')
 const primitives = readFileSync(resolve(root, 'src/components/v2/V2Primitives.tsx'), 'utf8')
 const css = readFileSync(resolve(root, 'src/styles/today-discover-v2.css'), 'utf8')
+const app = readFileSync(resolve(root, 'src/App.tsx'), 'utf8')
 
 test('V2 pages keep stock terminology and safe missing-data paths', () => {
   assert.equal(today.includes('标的'), false)
@@ -23,6 +24,13 @@ test('Today owns priority work and delegates full workflows', () => {
   assert.match(today, /navigate\('\/discover'\)/)
   assert.match(today, /最多显示 5 条/)
   assert.doesNotMatch(today, /完整 K 线|完整 AI 对话|订单表/)
+})
+
+test('V2 routes are reachable while the real stock screener deep link remains intact', () => {
+  assert.match(app, /path="\/today" element=\{<TodayV2Page \/>\}/)
+  assert.match(app, /path="\/discover" element=\{<DiscoverRoute \/>\}/)
+  assert.match(app, /searchParams\.get\('tool'\) === 'screener' \? <OpportunitiesPage \/> : <DiscoverV2Page \/>/)
+  assert.match(app, /<LegacyRedirect to="\/discover" \/>/)
 })
 
 test('Discover keeps one primary research handoff and only safe paper seed', () => {

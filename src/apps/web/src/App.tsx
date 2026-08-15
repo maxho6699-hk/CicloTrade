@@ -1,9 +1,9 @@
 import { useEffect, type ReactNode } from 'react'
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { Navigate, Route, Routes, useLocation, useSearchParams } from 'react-router-dom'
 import { LoaderCircle } from 'lucide-react'
 import { useWorkspace } from './api/workspace-context'
 import { AppShell } from './components/AppShell'
-import { MarketsPage, TodayPage } from './pages'
+import { MarketsPage } from './pages'
 import { AccountPage } from './pages/AccountPage'
 import { MembershipPage } from './pages/MembershipPage'
 import { PromotionCenterPage } from './pages/PromotionCenterPage'
@@ -22,6 +22,8 @@ import { FeedbackPage } from './pages/FeedbackPage'
 import { AdminPage } from './pages/AdminPage'
 import { MoreRoute } from './pages/MoreRoute'
 import { PersonalPaperPage } from './pages/PersonalPaperPage'
+import { TodayV2Page } from './pages/TodayV2Page'
+import { DiscoverV2Page } from './pages/DiscoverV2Page'
 import { useLocale } from './i18n/useLocale'
 import { applyTheme, readStoredTheme } from './theme'
 
@@ -50,6 +52,11 @@ function LegacyRedirect({ to }: { to: string }) {
   return <Navigate to={`${to}${location.search}${location.hash}`} replace />
 }
 
+function DiscoverRoute() {
+  const [searchParams] = useSearchParams()
+  return searchParams.get('tool') === 'screener' ? <OpportunitiesPage /> : <DiscoverV2Page />
+}
+
 export default function App() {
   useLocale()
   const location = useLocation()
@@ -66,8 +73,8 @@ export default function App() {
     )
   }
   return <ProtectedConsole><AppShell><Routes>
-    <Route path="/today" element={<TodayPage />} />
-    <Route path="/discover" element={<OpportunitiesPage />} />
+    <Route path="/today" element={<TodayV2Page />} />
+    <Route path="/discover" element={<DiscoverRoute />} />
     <Route path="/research" element={<MarketsPage />} />
     <Route path="/paper" element={<PersonalPaperPage />} />
     <Route path="/more" element={<MoreRoute />} />
