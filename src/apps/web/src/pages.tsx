@@ -276,7 +276,7 @@ export function MarketsPage() {
       void searchMarket(watchQuery, marketFilter === 'CN' ? 'A股' : '美股').then((payload) => {
         if (!active) return
         setRemoteInstruments(payload.items.map((item) => ({ symbol: item.symbol.replace(/\.(SS|SZ)$/, ''), name: item.name, market: item.market, price: 0, changePct: 0, currency: item.market === 'CN' ? 'CNY' : 'USD' })))
-        setSearchStatus(payload.items.length ? `找到 ${payload.items.length} 个标的` : '没有在线匹配结果')
+        setSearchStatus(payload.items.length ? `找到 ${payload.items.length} 只股票` : '没有在线匹配结果')
       }).catch((caught) => { if (active) setSearchStatus(caught instanceof Error ? caught.message : '在线搜索暂时不可用') })
     }, 350)
     return () => { active = false; window.clearTimeout(timer) }
@@ -445,7 +445,7 @@ export function MarketsPage() {
     action: 'wait' as const,
     instrument: selected,
     title: '暂无当前正式行动',
-    summary: demoMode ? '该标的没有有效的正式量化事件。演示K线只用于界面预览，不生成购买建议。' : '该标的当前没有有效的正式量化事件。系统不会根据界面行情临时拼出购买建议。',
+    summary: demoMode ? '该股票没有有效的正式量化事件。演示K线只用于界面预览，不生成购买建议。' : '该股票当前没有有效的正式量化事件。系统不会根据界面行情临时拼出购买建议。',
     entry: '未生成',
     stop: '未生成',
     target: '未生成',
@@ -477,7 +477,7 @@ export function MarketsPage() {
         <button className="button secondary wide" type="button" onClick={() => setParam('tab', '信号时间线')}>查看完整证据</button>
         <footer><span>{inspectorDecision.modelVersion}</span><span>{inspectorDecision.eventId}</span></footer>
       </div>}
-      {inspectorTab === '新闻' && <div className="inspector-panel inspector-placeholder"><Newspaper size={22} /><h2>市场资讯</h2><p>这里显示已验证来源的公司新闻、财报和市场事件。没有来源或时间戳的内容不会伪装成新闻。</p><span>{currentLiveCandles.length ? '当前标的的新闻接口尚未接入' : '暂无可验证行情，暂不显示资讯'}</span></div>}
+      {inspectorTab === '新闻' && <div className="inspector-panel inspector-placeholder"><Newspaper size={22} /><h2>市场资讯</h2><p>这里显示已验证来源的公司新闻、财报和市场事件。没有来源或时间戳的内容不会伪装成新闻。</p><span>{currentLiveCandles.length ? '当前股票的新闻接口尚未接入' : '暂无可验证行情，暂不显示资讯'}</span></div>}
       {inspectorTab === '盘口' && <div className="inspector-panel inspector-placeholder"><Layers3 size={22} /><h2>价格深度</h2><p>这里预留买卖盘、买一到买五、卖一到卖五和逐笔成交。只有接入 Level 2 数据后才会显示，不用重复成交量占位。</p><span>当前数据源未提供可验证盘口</span></div>}
       {inspectorTab === '预警' && <div className="inspector-panel alert-panel"><div className="inspector-heading"><span>PRICE ALERT</span><strong>图内预警</strong></div><p>设定后会在 K 线上显示水平线；隐藏只影响这次查看，关闭会停用预警。</p><p className="alert-safety-note"><ShieldCheck size={15} /> 只提醒，不会自动买卖。</p><div className="inline-alert-form"><label><span>提醒价格</span><input aria-label="提醒价格" inputMode="decimal" min="0.01" step="0.01" type="number" value={alertPrice || ''} onChange={(event) => setAlertPrice(Number(event.target.value))} /></label><button className="button primary" type="button" disabled={alertBusy || !alertPrice} onClick={() => void saveAlertInChart()}><BellRing size={16} /> 保存</button></div><p className="form-status" role="status" aria-live="polite">{alertStatus}</p><div className="alert-list">{alerts.filter((item) => isAlertForInstrument(item, selected.market, selected.symbol)).map((item) => { const isActive = item.is_active === undefined || item.is_active === true; const markerVisible = item.id === undefined || !hiddenAlertIds.includes(item.id); return <div key={item.id ?? `${item.symbol}-${item.target_price}`}><span><strong>{item.target_price ?? '条件预警'}</strong><small>{isActive ? <><Bell size={13} aria-hidden="true" /> 已开启</> : <><BellOff size={13} aria-hidden="true" /> 已关闭</>}</small></span>{item.id && isActive && <span className="alert-list-actions"><button className="icon-button" type="button" aria-label={`${markerVisible ? '隐藏' : '显示'} ${item.symbol} ${item.target_price ?? ''} 预警线`} title={markerVisible ? '隐藏图上预警线' : '显示图上预警线'} onClick={() => toggleAlertMarker(item.id!)}>{markerVisible ? <Eye size={16} /> : <EyeOff size={16} />}</button><button className="icon-button danger" type="button" aria-label={`关闭 ${item.symbol} ${item.target_price ?? ''} 预警`} title="关闭预警并移除价格线" disabled={alertBusy} onClick={() => void disableAlertInChart(item.id!)}><Trash2 size={16} /></button></span>}</div> })}</div></div>}
       {inspectorTab === '资料' && <div className="inspector-panel inspector-placeholder"><SlidersHorizontal size={22} /><h2>数据说明</h2><p>K 线数据：{currentLiveCandles.length ? chartStatus : demoMode ? '界面演示数据' : '尚未取得'}</p><p>当前报价：{quoteStatus || '尚未核对报价权限与来源'}</p><p>账户状态：仅在用户主动授权券商后显示实盘连接；行情连接不等于账户连接。</p><span>延迟或未验证实时权限的数据只用于研究，不会覆盖正式行动的即时交易字段。</span></div>}

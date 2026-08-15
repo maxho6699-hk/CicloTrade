@@ -181,7 +181,7 @@ async function fetchOverviewQuotes(market: Market, candidates: Array<{ symbol: s
   const quotes = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
   const status = quotes.length === candidates.length
     ? (quotes[0]?.status ?? "行情已读取")
-    : `已读取 ${quotes.length}/${candidates.length} 个标的；失败项目未用演示数据替代。`;
+    : `已读取 ${quotes.length}/${candidates.length} 只股票；失败项目未用演示数据替代。`;
   const entry = { candidatesKey: candidatesKey(candidates), quotes, status };
   marketQuoteCache.set(market, entry);
   return entry;
@@ -320,7 +320,7 @@ export function MarketOverview({
       <header className="market-overview-header">
         <div>
           <span>MARKET DISCOVERY</span>
-          <h1>发现值得进一步查看的标的</h1>
+          <h1>发现值得进一步查看的股票</h1>
           <p>先从自选、热门、涨跌幅和波幅中发现机会，再进入完整 K线工作图。</p>
         </div>
         <div className="market-overview-actions">

@@ -117,6 +117,20 @@ function statusLabel(status: PersonalPaperOrder['status'], copy: typeof COPY[key
   return status === 'FILLED' ? copy.fill : status === 'PENDING' ? copy.pending : copy.cancelled
 }
 
+function orderSideLabel(side: PersonalPaperOrder['side'], locale: keyof typeof COPY): string {
+  const labels = locale === 'zh-Hant'
+    ? { BUY: '買入', SELL: '賣出', SHORT: '放空', COVER: '回補' }
+    : { BUY: '买入', SELL: '卖出', SHORT: '做空', COVER: '回补' }
+  return labels[side]
+}
+
+function orderTypeLabel(orderType: PersonalPaperOrder['order_type'], locale: keyof typeof COPY): string {
+  const labels = locale === 'zh-Hant'
+    ? { MARKET: '市價', LIMIT: '限價', STOP: '停損觸發', STOP_LIMIT: '停損限價' }
+    : { MARKET: '市价', LIMIT: '限价', STOP: '止损触发', STOP_LIMIT: '止损限价' }
+  return labels[orderType]
+}
+
 export function PersonalPaperPage() {
   const { locale } = useLocale()
   const copy = COPY[locale]
@@ -297,7 +311,7 @@ export function PersonalPaperPage() {
       <aside className="paper-account-rail" aria-label={locale === 'zh-Hant' ? '帳戶與訂單' : '账户与订单'}>
         <section className="paper-tasks"><header><h2>{copy.tasks}</h2><PaperRefreshButton label={copy.refresh} busy={busy === 'refresh'} disabled={workflowLocked} onClick={() => void loadAccount(account.season.id, 'refresh')} /></header><ol>{tasks.map(([label, done], index) => <li key={label} data-complete={done}><span>{done ? <CheckCircle2 size={16} /> : <span>{index + 1}</span>}</span><strong>{label}</strong><small>{done ? 'READY' : copy.awaiting}</small></li>)}</ol></section>
         <section className="paper-metrics" aria-label={locale === 'zh-Hant' ? '個人模擬帳戶摘要' : '个人模拟账户摘要'}>{metrics.map(([label, value]) => <article key={label}><span>{label}</span><strong className={label === copy.pnl ? pnlClass : ''}>{money(value)}</strong></article>)}</section>
-        <OrderList copy={copy} orders={orders} busy={workflowLocked} onCancel={cancel} />
+        <OrderList copy={copy} locale={locale} orders={orders} busy={workflowLocked} onCancel={cancel} />
       </aside>
 
       <section className="paper-flow" aria-labelledby="paper-draft-title">
@@ -308,7 +322,7 @@ export function PersonalPaperPage() {
         <RiskCheckList locale={locale} proof={riskProof} />
         <button className="button primary paper-submit" type="button" disabled={!proofPermitsSubmit || !draftValid || workflowLocked} onClick={() => void submit()}>{confirmLabel}</button>
         {submitState === 'unknown' && pendingRequest && <section className="paper-unknown" role="alert"><Clock3 size={21} /><div><h2>{copy.unknownTitle}</h2><p>{copy.unknownBody}</p><small>{copy.requestIdentity} · {pendingRequest.idempotency_key}</small></div><button className="button secondary" type="button" disabled={Boolean(busy)} onClick={() => void retryUnknown()}>{busy === 'submit' ? copy.submitting : copy.verify}</button></section>}
-        {receipt && <section className="paper-receipt" role="status"><ReceiptText size={21} /><div><small>{receipt.replayed ? copy.replay : copy.direct}</small><h2>{copy.receipt}</h2><p>{receipt.order.symbol} · {receipt.order.side} · {receipt.order.quantity} · {statusLabel(receipt.order.status, copy)}</p><code>{receipt.order.id}</code></div><CheckCircle2 size={24} /></section>}
+        {receipt && <section className="paper-receipt" role="status"><ReceiptText size={21} /><div><small>{receipt.replayed ? copy.replay : copy.direct}</small><h2>{copy.receipt}</h2><p>{receipt.order.symbol} · {orderSideLabel(receipt.order.side, locale)} · {receipt.order.quantity} · {statusLabel(receipt.order.status, copy)}</p><code>{receipt.order.id}</code></div><CheckCircle2 size={24} /></section>}
         {feedback && <p className="paper-feedback" role="status"><CheckCircle2 size={16} />{feedback}</p>}
       </section>
 
@@ -326,6 +340,6 @@ function PositionList({ copy, positions }: { copy: typeof COPY[keyof typeof COPY
   return <section className="paper-list paper-positions"><header><h2>{copy.positions}</h2><span>{positions.length}</span></header>{positions.length ? positions.map((position) => <article key={position.symbol}><span><strong>{position.symbol}</strong><small>US · STOCK</small></span><strong className={position.quantity > 0 ? 'positive' : 'negative'}>{position.quantity > 0 ? <ArrowUpFromLine size={15} /> : <ArrowDownToLine size={15} />}{position.quantity}</strong></article>) : <p>{copy.noPositions}</p>}</section>
 }
 
-function OrderList({ copy, orders, busy, onCancel }: { copy: typeof COPY[keyof typeof COPY]; orders: PersonalPaperOrder[]; busy: boolean; onCancel: (order: PersonalPaperOrder) => void }) {
-  return <section className="paper-list paper-orders"><header><h2>{copy.orders}</h2><span>{orders.length}</span></header>{orders.length ? orders.map((order) => <article key={order.id}><span><strong>{order.symbol} · {order.side}</strong><small>{order.order_type} · {order.quantity}</small></span><span className={`paper-order-state ${order.status.toLowerCase()}`}>{statusLabel(order.status, copy)}</span>{order.status === 'PENDING' && <button className="icon-button danger" type="button" aria-label={copy.cancel} disabled={busy} onClick={() => onCancel(order)}><XCircle size={16} /></button>}</article>) : <p>{copy.noOrders}</p>}</section>
+function OrderList({ copy, locale, orders, busy, onCancel }: { copy: typeof COPY[keyof typeof COPY]; locale: keyof typeof COPY; orders: PersonalPaperOrder[]; busy: boolean; onCancel: (order: PersonalPaperOrder) => void }) {
+  return <section className="paper-list paper-orders"><header><h2>{copy.orders}</h2><span>{orders.length}</span></header>{orders.length ? orders.map((order) => <article key={order.id}><span><strong>{order.symbol} · {orderSideLabel(order.side, locale)}</strong><small>{orderTypeLabel(order.order_type, locale)} · {order.quantity}</small></span><span className={`paper-order-state ${order.status.toLowerCase()}`}>{statusLabel(order.status, copy)}</span>{order.status === 'PENDING' && <button className="icon-button danger" type="button" aria-label={copy.cancel} disabled={busy} onClick={() => onCancel(order)}><XCircle size={16} /></button>}</article>) : <p>{copy.noOrders}</p>}</section>
 }

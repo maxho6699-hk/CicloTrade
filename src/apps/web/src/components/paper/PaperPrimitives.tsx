@@ -52,6 +52,20 @@ interface PaperDraftCardProps {
 const SIDES: PersonalPaperSide[] = ['BUY', 'SELL', 'SHORT', 'COVER']
 const ORDER_TYPES: PersonalPaperOrderType[] = ['MARKET', 'LIMIT', 'STOP', 'STOP_LIMIT']
 
+function sideOptionLabel(value: PersonalPaperSide, locale: PaperLocale): string {
+  const labels = locale === 'zh-Hant'
+    ? { BUY: '買入', SELL: '賣出', SHORT: '放空', COVER: '回補' }
+    : { BUY: '买入', SELL: '卖出', SHORT: '做空', COVER: '回补' }
+  return labels[value]
+}
+
+function orderTypeOptionLabel(value: PersonalPaperOrderType, locale: PaperLocale): string {
+  const labels = locale === 'zh-Hant'
+    ? { MARKET: '市價', LIMIT: '限價', STOP: '停損觸發', STOP_LIMIT: '停損限價' }
+    : { MARKET: '市价', LIMIT: '限价', STOP: '止损触发', STOP_LIMIT: '止损限价' }
+  return labels[value]
+}
+
 function EvidenceMark() {
   return <svg className="paper-evidence-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.7 13 4.6v6.8L8 14.3 3 11.4V4.6Z" /><path d="M10.7 5.4A3.35 3.35 0 1 0 10.7 10.6" /></svg>
 }
@@ -91,12 +105,12 @@ export function PaperDraftCard({ locale, draft, disabled, valid, quote, riskProo
     </header>
     <div className="paper-draft-grid">
       <label><span>{copy.symbol}</span><input name="personal-paper-symbol" autoComplete="off" value={draft.symbol} maxLength={16} autoCapitalize="characters" disabled={disabled} aria-invalid={!symbolValid} aria-describedby={!symbolValid ? validationId : undefined} onChange={(event) => patch({ symbol: event.target.value.trim().toUpperCase() })} /></label>
-      <label><span>{copy.side}</span><select name="personal-paper-side" autoComplete="off" value={draft.side} disabled={disabled} onChange={(event) => patch({ side: event.target.value as PersonalPaperSide })}>{SIDES.map((value) => <option key={value}>{value}</option>)}</select></label>
-      <label><span>{copy.orderType}</span><select name="personal-paper-order-type" autoComplete="off" value={draft.orderType} disabled={disabled} onChange={(event) => patch({ orderType: event.target.value as PersonalPaperOrderType })}>{ORDER_TYPES.map((value) => <option key={value}>{value}</option>)}</select></label>
+      <label><span>{copy.side}</span><select name="personal-paper-side" autoComplete="off" value={draft.side} disabled={disabled} onChange={(event) => patch({ side: event.target.value as PersonalPaperSide })}>{SIDES.map((value) => <option key={value} value={value}>{sideOptionLabel(value, locale)}</option>)}</select></label>
+      <label><span>{copy.orderType}</span><select name="personal-paper-order-type" autoComplete="off" value={draft.orderType} disabled={disabled} onChange={(event) => patch({ orderType: event.target.value as PersonalPaperOrderType })}>{ORDER_TYPES.map((value) => <option key={value} value={value}>{orderTypeOptionLabel(value, locale)}</option>)}</select></label>
       <label><span>{copy.quantity}</span><input name="personal-paper-quantity" autoComplete="off" type="number" inputMode="numeric" min="1" step="1" value={draft.quantity} disabled={disabled} aria-invalid={!quantityValid} aria-describedby={!quantityValid ? validationId : undefined} onChange={(event) => patch({ quantity: event.target.value })} /></label>
       {needsLimit && <label><span>{copy.limit}</span><input name="personal-paper-limit-price" autoComplete="off" type="number" inputMode="decimal" min="0.01" step="0.01" value={draft.limitPrice} disabled={disabled} aria-invalid={!limitValid} aria-describedby={!limitValid ? validationId : undefined} onChange={(event) => patch({ limitPrice: event.target.value })} /></label>}
       {needsStop && <label><span>{copy.stop}</span><input name="personal-paper-stop-price" autoComplete="off" type="number" inputMode="decimal" min="0.01" step="0.01" value={draft.stopPrice} disabled={disabled} aria-invalid={!stopValid} aria-describedby={!stopValid ? validationId : undefined} onChange={(event) => patch({ stopPrice: event.target.value })} /></label>}
-      <label><span>{copy.tif}</span><select name="personal-paper-time-in-force" value={draft.timeInForce} disabled={disabled} onChange={() => patch({ timeInForce: 'DAY' })}><option value="DAY">DAY</option></select></label>
+      <label><span>{copy.tif}</span><select name="personal-paper-time-in-force" value={draft.timeInForce} disabled={disabled} onChange={() => patch({ timeInForce: 'DAY' })}><option value="DAY">{locale === 'zh-Hant' ? '當日有效' : '当日有效'}</option></select></label>
     </div>
     {draft.sourceKind !== 'manual' && <div className="paper-source-context"><span title={draft.sourceReference ?? undefined}>{sourceLabel}{draft.sourceReference ? ` · ${draft.sourceReference}` : ''}</span><button type="button" disabled={disabled} onClick={() => patch({ sourceKind: 'manual', sourceReference: null })}>{copy.manualize}</button></div>}
     {!valid && <p id={validationId} className="paper-inline-note" role="alert" aria-live="polite"><AlertTriangle size={15} />{copy.invalid}</p>}
