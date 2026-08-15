@@ -13,7 +13,7 @@ import {
   WalletCards,
 } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import type { BrokerCatalogEntry } from '../api/client'
 import { brokerAccessApi, type BrokerAccessApplication, type BrokerProvider, isBrokerAccessRejection } from '../api/brokerAccess'
 import { useWorkspace } from '../api/workspace-context'
@@ -36,6 +36,24 @@ const capabilityLabels: Record<BrokerCatalogEntry['capabilities'][number], strin
   us_stock_limit_orders: '受限美股限价单后端',
 }
 
+const BROKER_ACCESS_PENDING_KEY = 'ciclotrade.brokerAccessPending'
+interface BrokerAccessPendingIntent { provider: BrokerProvider; requestReason: string; idempotencyKey: string }
+function readPendingIntent(): BrokerAccessPendingIntent | null {
+  try {
+    const value: unknown = JSON.parse(window.sessionStorage.getItem(BROKER_ACCESS_PENDING_KEY) ?? 'null')
+    if (!value || typeof value !== 'object') return null
+    const candidate = value as Partial<BrokerAccessPendingIntent>
+    return typeof candidate.provider === 'string' && typeof candidate.requestReason === 'string' && typeof candidate.idempotencyKey === 'string'
+      ? { provider: candidate.provider as BrokerProvider, requestReason: candidate.requestReason, idempotencyKey: candidate.idempotencyKey }
+      : null
+  } catch { return null }
+}
+function brokerAccessIntent(provider: BrokerProvider, requestReason: string, existing: BrokerAccessPendingIntent | null): BrokerAccessPendingIntent {
+  return existing?.provider === provider && existing.requestReason === requestReason
+    ? existing
+    : { provider, requestReason, idempotencyKey: `broker-${crypto.randomUUID()}` }
+}
+
 export function TradePage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
@@ -49,25 +67,40 @@ export function TradePage() {
   const [requestReason, setRequestReason] = useState('')
   const [requestState, setRequestState] = useState<string | null>(null)
   const [loadingApplications, setLoadingApplications] = useState(false)
+  const [applicationLoadError, setApplicationLoadError] = useState(false)
+  const pendingIntent = useRef<BrokerAccessPendingIntent | null>(readPendingIntent())
   const availableProviders = useMemo(() => brokerCatalog.filter((broker) => broker.connection_available), [brokerCatalog])
 
-  useEffect(() => {
+  const loadApplications = useCallback(async () => {
     if (!authenticated) return
     setLoadingApplications(true)
-    void brokerAccessApi.list().then(setApplications).catch(() => setApplications([])).finally(() => setLoadingApplications(false))
+    setApplicationLoadError(false)
+    try { setApplications(await brokerAccessApi.list()) } catch { setApplicationLoadError(true) }
+    finally { setLoadingApplications(false) }
   }, [authenticated])
+
+  useEffect(() => { void loadApplications() }, [loadApplications])
 
   async function submitAccessRequest(event: FormEvent) {
     event.preventDefault()
     if (!selectedProvider) return
     setRequestState(null)
     try {
-      const result = await brokerAccessApi.create(selectedProvider, requestReason.trim() || null, `broker-${crypto.randomUUID()}`)
+      const intent = brokerAccessIntent(selectedProvider, requestReason.trim(), pendingIntent.current)
+      pendingIntent.current = intent
+      try { window.sessionStorage.setItem(BROKER_ACCESS_PENDING_KEY, JSON.stringify(intent)) } catch { /* session storage may be disabled */ }
+      const result = await brokerAccessApi.create(intent.provider, intent.requestReason || null, intent.idempotencyKey)
+      pendingIntent.current = null
+      try { window.sessionStorage.removeItem(BROKER_ACCESS_PENDING_KEY) } catch { /* session storage may be disabled */ }
       setApplications((current) => [result.application, ...current.filter((item) => item.id !== result.application.id)])
       setRequestReason('')
       setRequestState(result.replayed ? '已恢复上次相同申请。' : '申请已提交，等待人工审核。')
     } catch (error) {
-      setRequestState(isBrokerAccessRejection(error) ? (error as Error).message : '网络响应未确认，请保留申请编号后重试读取。')
+      if (isBrokerAccessRejection(error)) {
+        pendingIntent.current = null
+        try { window.sessionStorage.removeItem(BROKER_ACCESS_PENDING_KEY) } catch { /* session storage may be disabled */ }
+        setRequestState((error as Error).message)
+      } else setRequestState('网络响应未确认；相同申请正文会复用原请求编号安全重试。')
     }
   }
 
@@ -99,7 +132,7 @@ export function TradePage() {
         <p className="admin-panel-note">申请只记录资格审核，不创建券商账户、不启用执行，也不会发送 Telegram。连接可用前不会显示“已连接”或“运行中”。</p>
         {availableProviders.length ? <form className="brokerage-access-form" onSubmit={submitAccessRequest}><label>券商<select value={selectedProvider} onChange={(event) => setSelectedProvider(event.target.value as BrokerProvider)}><option value="">选择券商</option>{availableProviders.map((broker) => <option value={broker.key} key={broker.key}>{broker.display_name}</option>)}</select></label><label>申请原因（可选）<textarea value={requestReason} maxLength={500} onChange={(event) => setRequestReason(event.target.value)} rows={2} /></label><button className="button primary" type="submit" disabled={!selectedProvider}>提交资格申请</button></form> : <p className="admin-panel-note">当前五家券商 connection_available 均为 false，资格申请入口保持锁定。</p>}
         {requestState && <p role="status" className="admin-panel-note">{requestState}</p>}
-        {loadingApplications ? <p className="admin-panel-note">正在读取资格历史…</p> : applications.length ? <ul className="brokerage-access-history">{applications.map((item) => <li key={item.id}><span><strong>{item.provider}</strong><small>{item.id} · {item.created_at}</small></span><span className={`admin-state ${item.status === 'approved' ? 'healthy' : item.status === 'rejected' ? 'risk' : 'pending'}`}>{item.status}</span>{item.status === 'submitted' && <button className="button tertiary" type="button" onClick={() => void withdrawAccessRequest(item)}>撤回申请</button>}</li>)}</ul> : <p className="admin-panel-note">暂无资格申请历史。</p>}
+        {loadingApplications ? <p className="admin-panel-note">正在读取资格历史…</p> : applicationLoadError ? <p className="admin-panel-note" role="alert">资格历史暂时无法读取，未将失败当作空历史。<button className="button tertiary" type="button" onClick={() => void loadApplications()}>重新读取</button></p> : applications.length ? <ul className="brokerage-access-history">{applications.map((item) => <li key={item.id}><span><strong>{item.provider}</strong><small>{item.id} · {item.created_at}</small></span><span className={`admin-state ${item.status === 'approved' ? 'healthy' : item.status === 'rejected' ? 'risk' : 'pending'}`}>{item.status}</span>{item.status === 'submitted' && <button className="button tertiary" type="button" onClick={() => void withdrawAccessRequest(item)}>撤回申请</button>}</li>)}</ul> : <p className="admin-panel-note">暂无资格申请历史。</p>}
       </section>}
 
       {(symbol || eventId) && <section className="brokerage-context-note"><FileCheck2 size={17} /><span><strong>你从一条研究或验证记录来到这里</strong><small>{symbol ? `${symbol} · ` : ''}{eventId ? `事件 QE-${eventId} · ` : ''}本页不会把它转换成模拟订单或自动发送到券商。</small></span><button className="button tertiary" type="button" onClick={() => navigate('/portfolio')}>查看模拟验证结果</button></section>}

@@ -32,9 +32,12 @@ export function isBrokerAccessRejection(error: unknown): error is BrowserApiErro
 
 function record(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === 'object' && !Array.isArray(value) }
 function timestamp(value: unknown): value is string { return typeof value === 'string' && Number.isFinite(Date.parse(value)) }
-function application(value: unknown): value is BrokerAccessApplication {
+const baseKeys = new Set(['id', 'provider', 'status', 'request_reason', 'decision_reason', 'created_at', 'updated_at', 'reviewed_at', 'withdrawn_at', 'eligibility_only', 'broker_account_created', 'execution_enabled'])
+const adminKeys = new Set(['user_id', 'user_email', 'user_display_name', 'reviewed_by', 'reviewer_email'])
+function baseApplication(value: unknown, allowAdminFields = false): value is BrokerAccessApplication {
   return record(value)
-    && Object.keys(value).length === 12
+    && Object.keys(value).every((key) => baseKeys.has(key) || (allowAdminFields && adminKeys.has(key)))
+    && Object.keys(value).length >= 12
     && typeof value.id === 'string' && /^bra_[A-Za-z0-9_-]{16,48}$/.test(value.id)
     && ['futu_moomoo', 'tiger', 'ibkr', 'webull', 'longbridge'].includes(String(value.provider))
     && ['submitted', 'approved', 'rejected', 'withdrawn', 'revoked', 'expired'].includes(String(value.status))
@@ -44,6 +47,17 @@ function application(value: unknown): value is BrokerAccessApplication {
     && (value.reviewed_at === null || timestamp(value.reviewed_at))
     && (value.withdrawn_at === null || timestamp(value.withdrawn_at))
     && value.eligibility_only === true && value.broker_account_created === false && value.execution_enabled === false
+}
+
+function application(value: unknown): value is BrokerAccessApplication { return baseApplication(value) }
+function adminApplication(value: unknown): value is AdminBrokerAccessApplication {
+  return baseApplication(value, true)
+    && Object.keys(value).length === 17
+    && typeof value.user_id === 'number'
+    && typeof value.user_email === 'string'
+    && typeof value.user_display_name === 'string'
+    && (value.reviewed_by === null || typeof value.reviewed_by === 'number')
+    && (value.reviewer_email === null || typeof value.reviewer_email === 'string')
 }
 
 function decodeApplications(value: unknown): BrokerAccessApplication[] {
@@ -75,13 +89,13 @@ export function createBrokerAccessApi(transport: typeof authenticatedJsonRequest
     },
     async adminList(status = 'submitted', signal) {
       const value = await transport(`/api/rewrite/v1/admin/broker-access-applications?status=${encodeURIComponent(status)}`, { cache: 'no-store', signal }) as unknown
-      if (!record(value) || !Array.isArray(value.items) || !value.items.every((item) => application(item) && typeof item.user_id === 'number' && typeof item.user_email === 'string' && typeof item.user_display_name === 'string' && (item.reviewed_by === null || typeof item.reviewed_by === 'number') && (item.reviewer_email === null || typeof item.reviewer_email === 'string'))) throw new Error('管理员券商资格响应格式无效。')
+      if (!record(value) || !Array.isArray(value.items) || !value.items.every(adminApplication)) throw new Error('管理员券商资格响应格式无效。')
       return value.items as AdminBrokerAccessApplication[]
     },
     async review(id, decision, reason, signal) {
       if (!/^bra_[A-Za-z0-9_-]{16,48}$/.test(id) || !['approved', 'rejected'].includes(decision) || !reason.trim()) throw new Error('券商资格审核字段无效。')
       const value = await transport(`/api/rewrite/v1/admin/broker-access-applications/${encodeURIComponent(id)}/review`, { method: 'POST', body: JSON.stringify({ decision, reason }), signal }) as unknown
-      if (!record(value) || !application(value.application)) throw new Error('管理员券商审核响应格式无效。')
+      if (!record(value) || !adminApplication(value.application)) throw new Error('管理员券商审核响应格式无效。')
       return value.application as AdminBrokerAccessApplication
     },
   }
