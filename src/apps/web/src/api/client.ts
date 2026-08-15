@@ -397,6 +397,18 @@ export interface MarketSearchItem {
 export type PersonalPaperSide = 'BUY' | 'SELL' | 'SHORT' | 'COVER'
 export type PersonalPaperOrderType = 'MARKET' | 'LIMIT' | 'STOP' | 'STOP_LIMIT'
 export type PersonalPaperQuoteState = 'fresh' | 'delayed' | 'stale' | 'missing'
+export type PersonalPaperRiskDecision = 'allow' | 'review' | 'reject'
+export type PersonalPaperRiskLevel = 'low' | 'moderate' | 'high' | 'blocked'
+export type PersonalPaperRiskDataState = 'fresh' | 'partial' | 'stale' | 'missing'
+export type PersonalPaperRiskCheckStatus = 'pass' | 'warn' | 'fail' | 'unknown'
+export type PersonalPaperRiskCheckCode =
+  | 'buying_power'
+  | 'max_loss'
+  | 'position_concentration'
+  | 'sector_concentration'
+  | 'drawdown'
+  | 'event_gap'
+  | 'liquidity'
 
 export interface PersonalPaperSeason {
   id: string
@@ -435,6 +447,54 @@ export interface PersonalPaperQuoteProof {
   symbol: string
 }
 
+export interface PersonalPaperRiskCheck {
+  code: PersonalPaperRiskCheckCode
+  status: PersonalPaperRiskCheckStatus
+  title: string
+  detail: string
+  value: string | null
+  limit: string | null
+  data_state: PersonalPaperRiskDataState
+}
+
+export interface PersonalPaperRiskProof {
+  id: string
+  schema_version: 'r1'
+  season_id: string
+  quote_id: string
+  account_version: number
+  draft_sha256: string
+  proof_sha256: string
+  created_at: string
+  computed_at: string
+  marks_as_of: string
+  expires_at: string
+  decision: PersonalPaperRiskDecision
+  risk_level: PersonalPaperRiskLevel
+  data_state: PersonalPaperRiskDataState
+  checks: PersonalPaperRiskCheck[]
+  blocking_reasons: string[]
+  warnings: string[]
+}
+
+export interface PersonalPaperRiskProofRequest {
+  season_id: string
+  market: 'US'
+  symbol: string
+  side: PersonalPaperSide
+  order_type: PersonalPaperOrderType
+  quantity: number
+  limit_price: number | null
+  stop_price: number | null
+  time_in_force: 'DAY'
+  quote_id: string
+  account_version: number
+  source_context: {
+    kind: 'manual' | 'recommendation' | 'chart' | 'screener'
+    reference_id: string | null
+  }
+}
+
 export interface PersonalPaperOrder {
   id: string
   season_id: string
@@ -460,6 +520,7 @@ export interface PersonalPaperOrderRequest {
   stop_price: number | null
   time_in_force: 'DAY'
   quote_id: string
+  risk_proof_id: string
   account_version: number
   source_context: {
     kind: 'manual' | 'recommendation' | 'chart' | 'screener'
@@ -1455,6 +1516,22 @@ export async function issuePersonalPaperQuote(symbol: string): Promise<PersonalP
   return payload
 }
 
+export async function issuePersonalPaperRiskProof(requestPayload: PersonalPaperRiskProofRequest): Promise<PersonalPaperRiskProof> {
+  if (!validPersonalPaperRiskProofRequest(requestPayload)) throw new BrowserApiError('个人模拟风险证明请求无效。', 400)
+  const payload = await request<unknown>('/api/rewrite/v1/personal-paper/risk-proofs', {
+    method: 'POST',
+    body: JSON.stringify(requestPayload),
+  })
+  if (!exactKeys(payload, ['risk_proof'])
+    || !validPersonalPaperRiskProof(payload.risk_proof)
+    || payload.risk_proof.season_id !== requestPayload.season_id
+    || payload.risk_proof.quote_id !== requestPayload.quote_id
+    || payload.risk_proof.account_version !== requestPayload.account_version) {
+    throw new BrowserApiError('个人模拟风险证明响应格式无效。', 502)
+  }
+  return payload.risk_proof
+}
+
 export async function submitPersonalPaperStockOrder(payload: PersonalPaperOrderRequest): Promise<PersonalPaperOrderResult> {
   const result = await request<unknown>('/api/rewrite/v1/personal-paper/orders', {
     method: 'POST',
@@ -1572,6 +1649,97 @@ export function validPersonalPaperQuoteProof(value: unknown): value is PersonalP
     && value.market === 'US'
     && typeof value.symbol === 'string'
     && /^[A-Z][A-Z0-9.-]{0,15}$/.test(value.symbol)
+}
+
+const PERSONAL_PAPER_RISK_CHECK_CODES: readonly PersonalPaperRiskCheckCode[] = [
+  'buying_power', 'max_loss', 'position_concentration', 'sector_concentration',
+  'drawdown', 'event_gap', 'liquidity',
+]
+
+function validPersonalPaperSourceContext(value: unknown): value is PersonalPaperRiskProofRequest['source_context'] {
+  return exactKeys(value, ['kind', 'reference_id'])
+    && ['manual', 'recommendation', 'chart', 'screener'].includes(value.kind as string)
+    && (value.reference_id === null || validOpaqueId(value.reference_id))
+}
+
+export function validPersonalPaperRiskProofRequest(value: unknown): value is PersonalPaperRiskProofRequest {
+  if (!(exactKeys(value, [
+    'season_id', 'market', 'symbol', 'side', 'order_type', 'quantity', 'limit_price',
+    'stop_price', 'time_in_force', 'quote_id', 'account_version', 'source_context',
+  ])
+    && validOpaqueId(value.season_id)
+    && value.market === 'US'
+    && typeof value.symbol === 'string'
+    && /^[A-Z][A-Z0-9.-]{0,15}$/.test(value.symbol)
+    && ['BUY', 'SELL', 'SHORT', 'COVER'].includes(value.side as string)
+    && ['MARKET', 'LIMIT', 'STOP', 'STOP_LIMIT'].includes(value.order_type as string)
+    && Number.isSafeInteger(value.quantity)
+    && Number(value.quantity) > 0
+    && (value.limit_price === null || (validFiniteNumber(value.limit_price) && value.limit_price > 0))
+    && (value.stop_price === null || (validFiniteNumber(value.stop_price) && value.stop_price > 0))
+    && value.time_in_force === 'DAY'
+    && validOpaqueId(value.quote_id)
+    && finiteNonNegativeInteger(value.account_version)
+    && validPersonalPaperSourceContext(value.source_context))) return false
+  const hasLimit = validFiniteNumber(value.limit_price) && value.limit_price > 0
+  const hasStop = validFiniteNumber(value.stop_price) && value.stop_price > 0
+  if (value.order_type === 'MARKET') return value.limit_price === null && value.stop_price === null
+  if (value.order_type === 'LIMIT') return hasLimit && value.stop_price === null
+  if (value.order_type === 'STOP') return value.limit_price === null && hasStop
+  return hasLimit && hasStop
+}
+
+function validPersonalPaperRiskCheck(value: unknown): value is PersonalPaperRiskCheck {
+  return exactKeys(value, ['code', 'status', 'title', 'detail', 'value', 'limit', 'data_state'])
+    && PERSONAL_PAPER_RISK_CHECK_CODES.includes(value.code as PersonalPaperRiskCheckCode)
+    && ['pass', 'warn', 'fail', 'unknown'].includes(value.status as string)
+    && typeof value.title === 'string'
+    && value.title.trim().length > 0
+    && typeof value.detail === 'string'
+    && value.detail.trim().length > 0
+    && (value.value === null || typeof value.value === 'string')
+    && (value.limit === null || typeof value.limit === 'string')
+    && ['fresh', 'partial', 'stale', 'missing'].includes(value.data_state as string)
+}
+
+export function validPersonalPaperRiskProof(value: unknown): value is PersonalPaperRiskProof {
+  if (!exactKeys(value, [
+    'id', 'schema_version', 'season_id', 'quote_id', 'account_version', 'draft_sha256',
+    'proof_sha256', 'created_at', 'computed_at', 'marks_as_of', 'expires_at', 'decision', 'risk_level', 'data_state', 'checks',
+    'blocking_reasons', 'warnings',
+  ])
+    || !validOpaqueId(value.id)
+    || value.schema_version !== 'r1'
+    || !validOpaqueId(value.season_id)
+    || !validOpaqueId(value.quote_id)
+    || !finiteNonNegativeInteger(value.account_version)
+    || !validSha256(value.draft_sha256)
+    || !validSha256(value.proof_sha256)
+    || !validIsoTimestamp(value.created_at)
+    || !validIsoTimestamp(value.computed_at)
+    || !validIsoTimestamp(value.marks_as_of)
+    || !validIsoTimestamp(value.expires_at)
+    || Date.parse(value.expires_at) <= Date.parse(value.created_at)
+    || !['allow', 'review', 'reject'].includes(value.decision as string)
+    || !['low', 'moderate', 'high', 'blocked'].includes(value.risk_level as string)
+    || !['fresh', 'partial', 'stale', 'missing'].includes(value.data_state as string)
+    || !Array.isArray(value.checks)
+    || value.checks.length !== PERSONAL_PAPER_RISK_CHECK_CODES.length
+    || !value.checks.every(validPersonalPaperRiskCheck)
+    || !Array.isArray(value.blocking_reasons)
+    || !value.blocking_reasons.every((reason) => typeof reason === 'string' && reason.trim().length > 0)
+    || !Array.isArray(value.warnings)
+    || !value.warnings.every((warning) => typeof warning === 'string' && warning.trim().length > 0)) return false
+  const codes = value.checks.map((check) => check.code)
+  const hasFailedCheck = value.checks.some((check) => check.status === 'fail')
+  const decisionIsConsistent = value.decision === 'reject'
+    ? hasFailedCheck && value.blocking_reasons.length > 0
+    : value.decision === 'allow'
+      ? !hasFailedCheck && value.blocking_reasons.length === 0
+      : true
+  return decisionIsConsistent
+    && new Set(codes).size === PERSONAL_PAPER_RISK_CHECK_CODES.length
+    && PERSONAL_PAPER_RISK_CHECK_CODES.every((code) => codes.includes(code))
 }
 
 export function validPersonalPaperOrder(value: unknown): value is PersonalPaperOrder {
