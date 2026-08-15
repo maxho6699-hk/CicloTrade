@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import inspect
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from json import JSONDecodeError
 from typing import Any, Callable
 
@@ -20,6 +20,7 @@ from core.personal_paper.quote_proof import (
     ActionableStockQuote,
     QuoteProofError,
     QuoteProofSignerVerifier,
+    DEFAULT_TTL_SECONDS,
 )
 
 
@@ -38,6 +39,27 @@ def _user_id(identity: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise PersonalPaperValidationError("登录身份无效。")
     return value
+
+
+def _stamp(value: datetime | None) -> str | None:
+    if value is None or value.tzinfo is None or value.utcoffset() is None:
+        return None
+    return value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _quote_projection(quote: ActionableStockQuote, now: datetime) -> dict[str, Any]:
+    quote_at = quote.quote_at or quote.as_of
+    prices_complete = all(
+        isinstance(value, int) and not isinstance(value, bool) and value > 0
+        for value in (quote.bid_minor, quote.ask_minor, quote.last_minor)
+    )
+    return {
+        "bid_minor": quote.bid_minor, "ask_minor": quote.ask_minor, "last_minor": quote.last_minor,
+        "quote_at": _stamp(quote_at), "observed_at": _stamp(quote.observed_at),
+        "available_at": _stamp(quote.available_at), "expires_at": _stamp(quote.expires_at),
+        "session": quote.session, "freshness": quote.freshness if prices_complete else "missing", "source": quote.source,
+        "state": "locked", "as_of": _stamp(now),
+    }
 
 
 class PersonalPaperApi:
@@ -83,6 +105,11 @@ class PersonalPaperApi:
                 symbol=payload["symbol"],
                 now=now,
             )
+            projection = _quote_projection(quote, now) if isinstance(quote, ActionableStockQuote) else {
+                "bid_minor": None, "ask_minor": None, "last_minor": None, "quote_at": None,
+                "observed_at": None, "available_at": None, "expires_at": None, "session": None,
+                "freshness": "missing", "source": None, "state": "locked", "as_of": _stamp(now),
+            }
             if (
                 not isinstance(quote, ActionableStockQuote)
                 or quote.is_realtime is not True
@@ -90,7 +117,27 @@ class PersonalPaperApi:
                 or quote.market != payload["market"]
                 or quote.symbol != payload["symbol"]
             ):
-                raise PersonalPaperRiskRejected("当前没有可执行的实时美股报价。")
+                return self._response(
+                    {"error": "当前没有可执行的实时美股报价。", "quote": projection}, 422
+                )
+            quote_at = quote.quote_at or quote.as_of
+            if (
+                not isinstance(quote_at, datetime) or quote_at.tzinfo is None
+                or (quote.expires_at is not None and (
+                    quote.expires_at.tzinfo is None or quote.expires_at <= now or quote.expires_at <= quote_at
+                ))
+                or (quote.freshness is not None and quote.freshness != "fresh")
+            ):
+                return self._response(
+                    {"error": "当前报价已过期或缺少可验证字段。", "quote": projection}, 422
+                )
+            if any(
+                isinstance(value, bool) or not isinstance(value, int) or value <= 0
+                for value in (quote.bid_minor, quote.ask_minor, quote.last_minor)
+            ) or quote.bid_minor > quote.ask_minor:
+                return self._response(
+                    {"error": "当前报价缺少可验证的 bid/ask/last，已锁定。", "quote": projection}, 422
+                )
             proof_id = await run_in_threadpool(
                 self.quote_proofs.issue,
                 user_id=user_id,
@@ -99,11 +146,26 @@ class PersonalPaperApi:
                 bid_minor=quote.bid_minor,
                 ask_minor=quote.ask_minor,
                 last_minor=quote.last_minor,
-                as_of=quote.as_of,
+                as_of=quote_at,
                 now=now,
+                quote_at=quote_at,
+                observed_at=quote.observed_at,
+                available_at=quote.available_at,
+                session=quote.session,
+                freshness=quote.freshness or ("fresh" if quote.is_realtime else "missing"),
+                source=quote.source,
             )
             return self._response(
-                {"quote_id": proof_id, "market": quote.market, "symbol": quote.symbol}, 201
+                {
+                    "quote_id": proof_id, "market": quote.market, "symbol": quote.symbol,
+                    "bid_minor": quote.bid_minor, "ask_minor": quote.ask_minor,
+                    "last_minor": quote.last_minor, "quote_at": _stamp(quote_at),
+                    "observed_at": _stamp(quote.observed_at), "available_at": _stamp(quote.available_at),
+                    "expires_at": _stamp(now + timedelta(seconds=DEFAULT_TTL_SECONDS)),
+                    "session": quote.session,
+                    "freshness": quote.freshness or ("fresh" if quote.is_realtime else "missing"),
+                    "source": quote.source,
+                }, 201
             )
         except (QuoteProofError, PersonalPaperRiskRejected) as exc:
             return self._response({"error": str(exc)}, 422)

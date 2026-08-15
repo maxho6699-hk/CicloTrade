@@ -95,6 +95,24 @@ def test_persisted_proof_round_trips_after_signer_restart_and_keeps_microseconds
     assert row["expires_at"] == "2026-08-13T01:02:18.456789Z"
 
 
+def test_quote_proof_binds_source_timestamps_session_freshness_and_source(tmp_path):
+    database, user_id, season_id = _account(tmp_path)
+    observed = NOW - timedelta(microseconds=100)
+    available = NOW - timedelta(microseconds=50)
+    proof_id = _issue(
+        _signer(database), user_id, observed_at=observed, available_at=available,
+        session="regular", freshness="fresh", source="verified-feed",
+    )
+    result = _consume(database, _signer(database), proof_id, user_id, season_id)
+    assert result.quote_at == NOW
+    assert result.expires_at == NOW + timedelta(seconds=15)
+    assert result.observed_at == observed
+    assert result.available_at == available
+    assert result.session == "regular"
+    assert result.freshness == "fresh"
+    assert result.source == "verified-feed"
+
+
 def test_real_order_transaction_consumes_proof_only_when_order_commits(tmp_path):
     database = DatabaseManager(str(tmp_path / "order-proof.db"))
     user = AuthService(database).register("order-proof@example.com", "StrongPass123", "Proof", True)

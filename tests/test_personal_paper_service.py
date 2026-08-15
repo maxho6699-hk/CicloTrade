@@ -166,12 +166,22 @@ def test_pending_order_can_be_cancelled_once_and_releases_cash(personal):
         _order(service, user_id, season, order_type="LIMIT", limit_price=90, quote_id="quote-limit"),
     )
     assert pending["order"]["status"] == "PENDING"
+    assert pending["order"]["cancel_eligible"] is True
+    assert pending["order"]["cancel_account_version"] == 1
+    assert pending["account"]["open_orders"][0]["id"] == pending["order"]["id"]
+    assert pending["account"]["recent_orders"][0]["id"] == pending["order"]["id"]
+    refreshed = service.account_snapshot(user_id, season["id"])
+    assert refreshed["open_orders"][0]["id"] == pending["order"]["id"]
+    assert refreshed["open_orders"][0]["cancel_account_version"] == 1
     assert pending["account"]["reserved_cash"] == 90
     cancelled = service.cancel_stock_order(
         user_id,
         {"season_id": season["id"], "order_id": pending["order"]["id"], "account_version": 1},
     )
     assert cancelled["order"]["status"] == "CANCELLED"
+    assert cancelled["order"]["cancel_eligible"] is False
+    assert cancelled["account"]["open_orders"] == []
+    assert cancelled["account"]["recent_orders"][0]["status"] == "CANCELLED"
     assert cancelled["account"]["reserved_cash"] == 0
     replay = service.cancel_stock_order(
         user_id,

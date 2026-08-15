@@ -34,6 +34,12 @@ class Quotes:
             "as_of": request["now"],
             "is_realtime": True,
             "actionable": True,
+            "observed_at": request["now"] - timedelta(microseconds=10),
+            "available_at": request["now"],
+            "expires_at": request["now"] + timedelta(seconds=15),
+            "session": "regular",
+            "freshness": "fresh",
+            "source": "verified-feed",
         }
         values.update(self.changes)
         return ActionableStockQuote(**values)
@@ -100,7 +106,18 @@ def test_personal_paper_http_adapter_creates_season_and_maps_idempotency_conflic
     season = json.loads(created.body)["season"]
     issued = asyncio.run(api.issue_quote(_request("POST", {"market": "US", "symbol": "AAPL"})))
     assert issued.status_code == 201
-    quote_id = json.loads(issued.body)["quote_id"]
+    issued_payload = json.loads(issued.body)
+    quote_id = issued_payload["quote_id"]
+    assert issued_payload["bid_minor"] == 9_900
+    assert issued_payload["ask_minor"] == 10_000
+    assert issued_payload["last_minor"] == 9_950
+    assert issued_payload["quote_at"] == "2026-08-13T00:00:00.123456Z"
+    assert issued_payload["observed_at"] == "2026-08-13T00:00:00.123446Z"
+    assert issued_payload["available_at"] == "2026-08-13T00:00:00.123456Z"
+    assert issued_payload["expires_at"] == "2026-08-13T00:00:15.123456Z"
+    assert issued_payload["session"] == "regular"
+    assert issued_payload["freshness"] == "fresh"
+    assert issued_payload["source"] == "verified-feed"
     assert quotes.calls == [{"user_id": user["id"], "market": "US", "symbol": "AAPL", "now": NOW}]
     payload = {
         "idempotency_key": "http-order-1", "season_id": season["id"], "market": "US",
@@ -203,4 +220,34 @@ def test_issue_quote_fails_closed_on_invalid_price_or_time(tmp_path, changes):
     response = asyncio.run(api.issue_quote(_request("POST", {"market": "US", "symbol": "AAPL"})))
 
     assert response.status_code == 422
+    assert database.fetch_one("SELECT COUNT(*) count FROM personal_paper_quote_proofs")["count"] == 0
+
+
+def test_issue_quote_returns_locked_missing_projection_without_fabricating_prices(tmp_path):
+    database = DatabaseManager(str(tmp_path / "missing-quote.db"))
+    user = AuthService(database).register("missing-quote@example.com", "StrongPass123", "HTTP", True)
+    api, _ = _api(database, user["id"], Quotes(bid_minor=None, ask_minor=None, last_minor=None))
+    asyncio.run(api.create_season(_request("POST")))
+
+    response = asyncio.run(api.issue_quote(_request("POST", {"market": "US", "symbol": "AAPL"})))
+
+    payload = json.loads(response.body)
+    assert response.status_code == 422
+    assert payload["quote"]["state"] == "locked"
+    assert payload["quote"]["freshness"] == "missing"
+    assert payload["quote"]["bid_minor"] is None
+    assert database.fetch_one("SELECT COUNT(*) count FROM personal_paper_quote_proofs")["count"] == 0
+
+
+def test_issue_quote_rejects_expired_source_snapshot_without_persisting_proof(tmp_path):
+    database = DatabaseManager(str(tmp_path / "expired-source-quote.db"))
+    user = AuthService(database).register("expired-source@example.com", "StrongPass123", "HTTP", True)
+    api, _ = _api(database, user["id"], Quotes(expires_at=NOW - timedelta(seconds=1)))
+    asyncio.run(api.create_season(_request("POST")))
+
+    response = asyncio.run(api.issue_quote(_request("POST", {"market": "US", "symbol": "AAPL"})))
+
+    payload = json.loads(response.body)
+    assert response.status_code == 422
+    assert payload["quote"]["state"] == "locked"
     assert database.fetch_one("SELECT COUNT(*) count FROM personal_paper_quote_proofs")["count"] == 0

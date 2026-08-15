@@ -21,7 +21,8 @@ MAX_TTL_SECONDS = 30
 MAX_PRICE_MINOR = 10_000_000_000_000
 CLAIM_KEYS = {
     "schema", "user_id", "season_id", "market", "symbol", "bid_minor", "ask_minor",
-    "last_minor", "as_of", "issued_at", "exp", "nonce",
+    "last_minor", "as_of", "quote_at", "observed_at", "available_at", "session",
+    "freshness", "source", "issued_at", "exp", "nonce",
 }
 TOKEN = re.compile(r"^q1\.([A-Za-z0-9_-]{16,60})\.([0-9a-f]{64})$")
 
@@ -34,12 +35,19 @@ class QuoteProofError(ValueError):
 class ActionableStockQuote:
     market: str
     symbol: str
-    bid_minor: int
-    ask_minor: int
-    last_minor: int
+    bid_minor: int | None
+    ask_minor: int | None
+    last_minor: int | None
     as_of: datetime
     is_realtime: bool
     actionable: bool
+    quote_at: datetime | None = None
+    observed_at: datetime | None = None
+    available_at: datetime | None = None
+    expires_at: datetime | None = None
+    session: str | None = None
+    freshness: str | None = None
+    source: str | None = None
 
 
 def _utc(value: datetime, label: str) -> datetime:
@@ -67,6 +75,24 @@ def _parse_stamp(value: object) -> datetime:
     if _stamp(parsed) != value:
         raise QuoteProofError("报价证明无效。")
     return parsed
+
+
+def _optional_stamp(value: object, label: str) -> datetime | None:
+    if value is None:
+        return None
+    return _parse_stamp(value)
+
+
+def _optional_utc(value: datetime | None, label: str) -> datetime | None:
+    return None if value is None else _utc(value, label)
+
+
+def _metadata_text(value: object, label: str, *, maximum: int = 128) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value or len(value) > maximum or "\x00" in value:
+        raise QuoteProofError(f"{label} 无效。")
+    return value
 
 
 def _user_id(value: object) -> int:
@@ -116,10 +142,19 @@ class QuoteProofSignerVerifier:
         as_of: datetime,
         now: datetime,
         ttl_seconds: int = DEFAULT_TTL_SECONDS,
+        quote_at: datetime | None = None,
+        observed_at: datetime | None = None,
+        available_at: datetime | None = None,
+        session: str | None = None,
+        freshness: str | None = None,
+        source: str | None = None,
     ) -> str:
         owner = _user_id(user_id)
         now = _utc(now, "now")
         as_of = _utc(as_of, "as_of")
+        quote_at = _optional_utc(quote_at or as_of, "quote_at")
+        observed_at = _optional_utc(observed_at, "observed_at")
+        available_at = _optional_utc(available_at, "available_at")
         if market != "US" or not isinstance(symbol, str) or not SYMBOL.fullmatch(symbol):
             raise QuoteProofError("报价证明只允许有效的美股代码。")
         bid = _strict_positive_minor(bid_minor)
@@ -129,6 +164,17 @@ class QuoteProofSignerVerifier:
             raise QuoteProofError("报价证明无效。")
         if as_of > now or now - as_of > MAX_QUOTE_AGE:
             raise QuoteProofError("报价时间无效或已过期。")
+        if quote_at is None or quote_at > now or now - quote_at > MAX_QUOTE_AGE:
+            raise QuoteProofError("报价时间无效或已过期。")
+        if observed_at is not None and observed_at > now:
+            raise QuoteProofError("报价观察时间无效。")
+        if available_at is not None and available_at > now:
+            raise QuoteProofError("报价可用时间无效。")
+        if observed_at is not None and available_at is not None and observed_at > available_at:
+            raise QuoteProofError("报价时间顺序无效。")
+        session = _metadata_text(session, "交易时段")
+        freshness = _metadata_text(freshness, "报价新鲜度", maximum=32)
+        source = _metadata_text(source, "报价来源")
         if (
             isinstance(ttl_seconds, bool)
             or not isinstance(ttl_seconds, int)
@@ -160,6 +206,12 @@ class QuoteProofSignerVerifier:
                     "ask_minor": ask,
                     "last_minor": last,
                     "as_of": _stamp(as_of),
+                    "quote_at": _stamp(quote_at),
+                    "observed_at": _stamp(observed_at) if observed_at else None,
+                    "available_at": _stamp(available_at) if available_at else None,
+                    "session": session,
+                    "freshness": freshness,
+                    "source": source,
                     "issued_at": _stamp(now),
                     "exp": _stamp(expires_at),
                     "nonce": nonce,
@@ -261,6 +313,9 @@ class QuoteProofSignerVerifier:
             if bid > ask:
                 raise QuoteProofError("报价证明无效。")
             as_of = _parse_stamp(claims.get("as_of"))
+            quote_at = _parse_stamp(claims.get("quote_at"))
+            observed_at = _optional_stamp(claims.get("observed_at"), "observed_at")
+            available_at = _optional_stamp(claims.get("available_at"), "available_at")
             issued_at = _parse_stamp(claims.get("issued_at"))
             expires_at = _parse_stamp(claims.get("exp"))
             if row["issued_at"] != _stamp(issued_at) or row["expires_at"] != _stamp(expires_at):
@@ -273,8 +328,17 @@ class QuoteProofSignerVerifier:
                 or as_of > issued_at
                 or as_of > now
                 or now - as_of > MAX_QUOTE_AGE
+                or quote_at > issued_at
+                or quote_at > now
+                or now - quote_at > MAX_QUOTE_AGE
+                or (observed_at is not None and observed_at > now)
+                or (available_at is not None and available_at > now)
+                or (observed_at is not None and available_at is not None and observed_at > available_at)
             ):
                 raise QuoteProofError("报价证明无效。")
+            session = _metadata_text(claims.get("session"), "交易时段")
+            freshness = _metadata_text(claims.get("freshness"), "报价新鲜度", maximum=32)
+            source = _metadata_text(claims.get("source"), "报价来源")
             if consume:
                 connection.execute(
                     """INSERT INTO personal_paper_quote_consumptions
@@ -292,6 +356,12 @@ class QuoteProofSignerVerifier:
                 as_of=as_of,
                 state="fresh",
                 commission_minor=0,
+                expires_at=expires_at,
+                observed_at=observed_at,
+                available_at=available_at,
+                session=session,
+                freshness=freshness,
+                source=source,
             )
         except QuoteProofError:
             raise

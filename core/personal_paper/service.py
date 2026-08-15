@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
 
@@ -38,6 +38,17 @@ class VerifiedQuote:
     as_of: datetime
     state: str
     commission_minor: int
+    expires_at: datetime | None = field(default=None, compare=False)
+    observed_at: datetime | None = None
+    available_at: datetime | None = None
+    session: str | None = None
+    freshness: str | None = None
+    source: str | None = None
+
+    @property
+    def quote_at(self) -> datetime:
+        """Canonical quote timestamp; ``as_of`` remains the storage alias."""
+        return self.as_of
 
 
 class QuoteProofVerifier(Protocol):
@@ -285,8 +296,14 @@ class PersonalPaperService:
                     "symbol": request["symbol"], "side": request["side"],
                     "order_type": request["order_type"], "quantity": _quantity(request["quantity_micros"]),
                     "status": status, "created_at": now, "quote_id": quote.proof_id,
+                    "account_version": request["account_version"],
+                    "cancel_eligible": status == "PENDING",
+                    "cancel_account_version": next_version if status == "PENDING" else None,
                 }
                 response = {"order": order, "account": account, "replayed": False}
+                if status == "PENDING":
+                    account["open_orders"] = [order, *account["open_orders"]]
+                account["recent_orders"] = [order, *account["recent_orders"]][:50]
                 connection.execute(
                     """INSERT INTO personal_paper_orders
                        (public_id,season_id,user_id,idempotency_key,request_sha256,market,instrument_type,
@@ -348,6 +365,8 @@ class PersonalPaperService:
             quote.proof_id != request["quote_id"]
             or quote.market != request["market"] or quote.symbol != request["symbol"]
             or quote.state != "fresh" or quote.as_of.tzinfo is None
+            or (quote.freshness is not None and quote.freshness != "fresh")
+            or (quote.expires_at is not None and (quote.expires_at.tzinfo is None or now >= quote.expires_at))
             or quote.as_of > now or now - quote.as_of > MAX_QUOTE_AGE
             or any(isinstance(item, bool) or not isinstance(item, int) for item in units)
             or quote.bid_minor <= 0 or quote.ask_minor < quote.bid_minor
@@ -418,13 +437,35 @@ class PersonalPaperService:
         }
 
     @staticmethod
-    def _public_order(row: Any, status: str | None = None) -> dict[str, Any]:
+    def _public_order(
+        row: Any, status: str | None = None, *, account_version: int | None = None
+    ) -> dict[str, Any]:
+        current_status = status or row["current_status"] if "current_status" in row.keys() else status or row["status"]
+        cancel_eligible = current_status == "PENDING"
         return {
             "id": row["public_id"], "season_id": row["season_id"], "market": row["market"],
             "symbol": row["symbol"], "side": row["side"], "order_type": row["order_type"],
-            "quantity": _quantity(int(row["quantity_micros"])), "status": status or row["status"],
+            "quantity": _quantity(int(row["quantity_micros"])), "status": current_status,
             "created_at": row["created_at"], "quote_id": row["quote_proof_id"],
+            "account_version": int(row["account_version"]),
+            "cancel_eligible": cancel_eligible,
+            "cancel_account_version": account_version if cancel_eligible else None,
         }
+
+    def _order_views(self, connection: Any, season: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        rows = connection.execute(
+            """SELECT o.*,
+                      CASE WHEN EXISTS(
+                          SELECT 1 FROM personal_paper_order_events e
+                          WHERE e.order_id=o.public_id AND e.event_type='CANCELLED'
+                      ) THEN 'CANCELLED' ELSE o.status END AS current_status
+               FROM personal_paper_orders o
+               WHERE o.season_id=? AND o.user_id=?
+               ORDER BY o.created_at DESC,o.public_id DESC LIMIT 50""",
+            (season["id"], season["user_id"]),
+        ).fetchall()
+        views = [self._public_order(row, account_version=int(season["version"])) for row in rows]
+        return [item for item in views if item["status"] == "PENDING"], views
 
     def _account_state(
         self, connection, season, *, now: datetime | None = None
@@ -498,6 +539,7 @@ class PersonalPaperService:
         total_equity = cash + market_value
         if total_equity != int(season["initial_cash_minor"]) + realized + unrealized:
             raise PersonalPaperConflict("个人模拟账本余额不平，请联系支持。")
+        open_orders, recent_orders = self._order_views(connection, season)
         return {
             "season": self._season(season), "cash_minor": cash,
             "initial_cash_minor": int(season["initial_cash_minor"]),
@@ -507,6 +549,7 @@ class PersonalPaperService:
             "as_of": _stamp(min(quote_times) if quote_times else now_value),
             "quote_state": quote_state, "account_version": season["version"],
             "positions": list(positions.values()),
+            "open_orders": open_orders, "recent_orders": recent_orders,
         }
 
     @staticmethod
@@ -525,6 +568,7 @@ class PersonalPaperService:
                  "quantity": _quantity(int(item["quantity_micros"]))}
                 for item in state["positions"] if int(item["quantity_micros"]) != 0
             ],
+            "open_orders": state["open_orders"], "recent_orders": state["recent_orders"],
         }
 
     @staticmethod
