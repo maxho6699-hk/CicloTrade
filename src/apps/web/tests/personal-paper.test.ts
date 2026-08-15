@@ -47,6 +47,12 @@ test('personal paper risk proof is fail-closed for every decision branch', () =>
   assert.equal(validPersonalPaperRiskProof({ ...proof, decision: 'review', risk_level: 'moderate', checks: warningChecks, warnings: ['wrong order'] }), false)
   assert.equal(validPersonalPaperRiskProof({ ...proof, decision: 'allow', risk_level: 'low', checks: warningChecks }), false)
   assert.equal(validPersonalPaperRiskProof({ ...proof, checks: checks.map((check, index) => index === 0 ? { ...check, value: '{"required":100}' } : check) }), false)
+  const sectorMissing = { ...checks[3], status: 'unknown', value: null, limit: JSON.stringify({ pct: 35 }), data_state: 'missing' }
+  const eventMissing = { ...checks[5], status: 'unknown', value: null, limit: null, data_state: 'missing' }
+  assert.equal(validPersonalPaperRiskProof({ ...proof, checks: checks.map((check, index) => index === 3 ? { ...sectorMissing, status: 'pass' } : check) }), false)
+  assert.equal(validPersonalPaperRiskProof({ ...proof, checks: checks.map((check, index) => index === 5 ? { ...eventMissing, status: 'pass' } : check) }), false)
+  assert.equal(validPersonalPaperRiskProof({ ...proof, decision: 'review', risk_level: 'moderate', data_state: 'missing', checks: checks.map((check, index) => index === 3 ? sectorMissing : check), warnings: [sectorMissing.detail] }), true)
+  assert.equal(validPersonalPaperRiskProof({ ...proof, decision: 'review', risk_level: 'moderate', data_state: 'missing', checks: checks.map((check, index) => index === 5 ? eventMissing : check), warnings: [eventMissing.detail] }), true)
 })
 
 test('personal paper risk check formatter rejects malformed JSON without exposing raw payloads', () => {

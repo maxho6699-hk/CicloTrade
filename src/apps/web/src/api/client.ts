@@ -1789,12 +1789,13 @@ function validPersonalPaperRiskCheck(value: unknown): value is PersonalPaperRisk
     && (value.limit === null || typeof value.limit === 'string')
     && ['fresh', 'partial', 'stale', 'missing'].includes(value.data_state as string))) return false
   if (value.value === null) {
-    if (value.data_state !== 'missing') return false
+    if (value.status !== 'unknown' || value.data_state !== 'missing') return false
     if (value.code === 'event_gap') return value.limit === null
     if (value.code !== 'sector_concentration') return false
     const limit = strictRiskObject(value.limit, ['pct'])
     return Boolean(limit && riskFiniteNumber(limit.pct))
   }
+  if (value.data_state === 'missing') return false
   return parsePersonalPaperRiskCheck(value as unknown as PersonalPaperRiskCheck) !== null
 }
 
