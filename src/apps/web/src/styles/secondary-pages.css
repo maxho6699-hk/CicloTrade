@@ -1,0 +1,74 @@
+.mystic-locked-panel,
+.legal-boundary,
+.legal-entry,
+.legal-receipt {
+  border: 0;
+  box-shadow: var(--shadow-panel);
+}
+
+.mystic-locked-panel {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+  padding: 24px;
+}
+
+.mystic-locked-icon {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--warning) 12%, var(--surface-subtle));
+  color: var(--warning);
+}
+
+.mystic-locked-panel h2 { margin: 12px 0 7px; font-size: 20px; }
+.mystic-locked-panel p { max-width: 680px; margin: 0 0 16px; color: var(--muted); font-size: 13px; line-height: 1.7; }
+.mystic-locked-panel .button { min-height: 44px; }
+
+.legal-boundary {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 15px 16px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  color: var(--accent);
+}
+
+.legal-boundary div { display: grid; gap: 4px; }
+.legal-boundary strong { color: var(--text); font-size: 14px; }
+.legal-boundary p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+
+.legal-entry-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.legal-entry { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; padding: 17px; }
+.legal-entry > svg { color: var(--accent); }
+.legal-entry h2 { margin: 0 0 5px; font-size: 15px; }
+.legal-entry p { margin: 0 0 12px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.legal-entry a { display: inline-flex; min-height: 44px; align-items: center; gap: 5px; color: var(--info-strong); font-size: 12px; text-decoration: underline; text-underline-offset: 3px; }
+
+.legal-receipt { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 11px; padding: 17px; background: var(--surface-subtle); }
+.legal-receipt > svg { color: var(--warning); }
+.legal-receipt > div { display: grid; gap: 5px; min-width: 0; }
+.legal-receipt > div > span { color: var(--muted-2); font: 10px var(--mono); letter-spacing: .06em; }
+.legal-receipt h2 { margin: 0; font-size: 16px; }
+.legal-receipt p, .legal-receipt small { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.legal-receipt dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin: 8px 0 0; background: var(--border); }
+.legal-receipt dl div { display: grid; gap: 4px; min-width: 0; padding: 9px; background: var(--surface); }
+.legal-receipt dt { color: var(--muted-2); font-size: 10px; }
+.legal-receipt dd { margin: 0; overflow-wrap: anywhere; color: var(--text); font: 11px var(--mono); }
+
+.account-layout .security-panel dd { color: var(--warning); }
+.account-layout .security-panel .button:disabled { color: var(--warning); opacity: .72; }
+
+@media (max-width: 700px) {
+  .mystic-locked-panel { grid-template-columns: 1fr; padding: 18px; }
+  .mystic-locked-panel .button { width: 100%; }
+  .legal-entry-grid { grid-template-columns: 1fr; }
+  .legal-receipt dl { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .secondary-pages * { transition-duration: .01ms !important; animation-duration: .01ms !important; }
+}

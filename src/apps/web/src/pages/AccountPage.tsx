@@ -1,11 +1,13 @@
 import { CheckCircle2, CircleAlert, KeyRound, Languages, Laptop, Link2, LogOut, PauseCircle, PlayCircle, ShieldCheck, Smartphone, UserRound } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { PageHeader } from '../components/PageHeader'
 import { WorkspaceState } from '../components/WorkspaceState'
 import { riskSettings } from '../data/workspace'
 import { useWorkspace } from '../api/workspace-context'
 import { BrowserApiError, resumeOpeningPause, saveRiskSettings } from '../api/client'
 import { useLocale } from '../i18n/useLocale'
+import '../styles/secondary-pages.css'
 
 export function AccountPage() {
   const workspace = useWorkspace()
@@ -77,10 +79,10 @@ export function AccountPage() {
           <header className="panel-heading"><div><span>RISK PREFERENCES</span><h2>风险偏好</h2></div><ShieldCheck size={20} /></header>
           <div className="risk-presets" role="group" aria-label="风险预设"><button className={riskPreset === 'conservative' ? 'active' : ''} type="button" onClick={() => applyRiskPreset('conservative')}><strong>保守</strong><small>单笔和总仓位减半，连续亏损后冷却更久</small></button><button className={riskPreset === 'balanced' ? 'active' : ''} type="button" onClick={() => applyRiskPreset('balanced')}><strong>平衡</strong><small>使用平台建议的默认上限</small></button><button className={riskPreset === 'custom' ? 'active' : ''} type="button" onClick={() => setRiskPreset('custom')}><strong>自定义</strong><small>自行调整下方金额，保存前请确认风险</small></button></div>
           <div className={`range-settings ${riskPreset !== 'custom' ? 'preset-locked' : ''}`} onInput={() => setRiskPreset('custom')}>
-            <label><span><strong>美股单标的上限</strong><small>任何新订单都不能让单一美股超过此金额</small></span><output>USD {risk.max_position_per_symbol.toLocaleString(formatLocale)}</output><input type="range" min="1000" max="50000" step="1000" value={risk.max_position_per_symbol} onChange={(event) => { setRiskPreset('custom'); setRisk({ ...risk, max_position_per_symbol: Number(event.target.value) }) }} /></label>
+            <label><span><strong>美股单只股票上限</strong><small>任何新订单都不能让单一美股超过此金额</small></span><output>USD {risk.max_position_per_symbol.toLocaleString(formatLocale)}</output><input type="range" min="1000" max="50000" step="1000" value={risk.max_position_per_symbol} onChange={(event) => { setRiskPreset('custom'); setRisk({ ...risk, max_position_per_symbol: Number(event.target.value) }) }} /></label>
             <label><span><strong>美股账户总仓位</strong><small>全部美股模拟仓位的金额上限</small></span><output>USD {risk.max_total_position.toLocaleString(formatLocale)}</output><input type="range" min="5000" max="500000" step="5000" value={risk.max_total_position} onChange={(event) => { setRiskPreset('custom'); setRisk({ ...risk, max_total_position: Number(event.target.value) }) }} /></label>
             <label><span><strong>美股单日最大亏损</strong><small>达到阈值后自动暂停新开仓</small></span><output>USD {risk.max_daily_loss.toLocaleString(formatLocale)}</output><input type="range" min="500" max="50000" step="500" value={risk.max_daily_loss} onChange={(event) => setRisk({ ...risk, max_daily_loss: Number(event.target.value) })} /></label>
-            <label><span><strong>A股单标的上限</strong><small>使用人民币独立计算，不与美股敞口混合</small></span><output>CNY {risk.max_position_per_symbol_cny.toLocaleString(formatLocale)}</output><input type="range" min="5000" max="350000" step="5000" value={risk.max_position_per_symbol_cny} onChange={(event) => setRisk({ ...risk, max_position_per_symbol_cny: Number(event.target.value) })} /></label>
+            <label><span><strong>A股单只股票上限</strong><small>使用人民币独立计算，不与美股敞口混合</small></span><output>CNY {risk.max_position_per_symbol_cny.toLocaleString(formatLocale)}</output><input type="range" min="5000" max="350000" step="5000" value={risk.max_position_per_symbol_cny} onChange={(event) => setRisk({ ...risk, max_position_per_symbol_cny: Number(event.target.value) })} /></label>
             <label><span><strong>A股账户总仓位</strong><small>全部A股模拟仓位的金额上限</small></span><output>CNY {risk.max_total_position_cny.toLocaleString(formatLocale)}</output><input type="range" min="10000" max="3500000" step="10000" value={risk.max_total_position_cny} onChange={(event) => setRisk({ ...risk, max_total_position_cny: Number(event.target.value) })} /></label>
             <label><span><strong>A股单日最大亏损</strong><small>达到阈值后自动暂停A股新开仓</small></span><output>CNY {risk.max_daily_loss_cny.toLocaleString(formatLocale)}</output><input type="range" min="1000" max="350000" step="1000" value={risk.max_daily_loss_cny} onChange={(event) => setRisk({ ...risk, max_daily_loss_cny: Number(event.target.value) })} /></label>
             <label><span><strong>连续亏损冷却</strong><small>{risk.consecutive_loss_limit} 次连续亏损后暂停</small></span><output>{risk.cooldown_minutes} 分钟</output><input type="range" min="5" max="240" step="5" value={risk.cooldown_minutes} onChange={(event) => setRisk({ ...risk, cooldown_minutes: Number(event.target.value) })} /></label>
@@ -97,15 +99,15 @@ export function AccountPage() {
 
         <aside className="data-panel security-panel">
           <header className="panel-heading"><div><span>SECURITY</span><h2>登录安全</h2></div><KeyRound size={20} /></header>
-          <dl><div><dt>邮箱验证</dt><dd>当前接口未提供</dd></div><div><dt>登录设备</dt><dd>未记录</dd></div><div><dt>绑定 IP</dt><dd>沿用原安全规则</dd></div><div><dt>最近登录</dt><dd>当前会话</dd></div></dl>
-          <button className="button secondary wide" type="button" onClick={() => setAccountNotice('修改密码仍由原安全中心处理；新界面不会绕过现有IP、失败次数和会话规则。')}>修改密码</button>
+          <dl><div><dt>邮箱验证</dt><dd>锁定 · 当前接口未提供</dd></div><div><dt>登录设备</dt><dd>锁定 · 当前接口未提供</dd></div><div><dt>当前 session</dt><dd>锁定 · 当前接口未提供</dd></div><div><dt>实盘 mandate</dt><dd>锁定 · 当前接口未提供</dd></div><div><dt>机器人外观</dt><dd>锁定 · 当前接口未提供</dd></div></dl>
+          <button className="button secondary wide" type="button" disabled title="当前接口未提供" onClick={() => setAccountNotice('修改密码仍由原安全中心处理；新界面不会绕过现有 IP、失败次数和会话规则。')}>修改密码（锁定）</button>
         </aside>
       </div>
 
       <section className="data-panel broker-panel">
         <header className="panel-heading"><div><span>BROKER & EXECUTION</span><h2>券商与交易权限</h2></div><span className={`status-chip ${execution?.can_increase_exposure ? 'official' : 'research'}`}>{execution?.can_increase_exposure ? <PlayCircle size={14} /> : <PauseCircle size={14} />} {execution?.can_increase_exposure ? '具备新增敞口条件' : '新增敞口未开放'}</span></header>
-        <div className="broker-row"><Link2 size={19} /><div><strong>自动交易控制账号名额</strong><small>{autoControlAccountLimit > 0 ? `当前会员最多可登记 ${autoControlAccountLimit} 个受控账号；每个账号仍需主动完成券商授权。` : '当前会员没有受控账号名额；高级会员 1 个，专业会员最多 5 个。'}</small></div><span className={autoControlAccountLimit > 0 ? 'positive-text' : 'warning-text'}>{accountsUsed} / {autoControlAccountLimit}</span><button className="button tertiary" type="button" onClick={() => location.assign('/membership')}>查看会员</button></div>
-        <div className="broker-row"><ShieldCheck size={19} /><div><strong>个人券商连接</strong><small>{authorizedAccounts.length ? `${authorizedAccounts.length} 个账户已标记为授权可用；页面不会显示外部账号 ID 或券商凭据。` : '尚未发现已授权可用的个人券商账户。'}</small></div><span className={authorizedAccounts.length ? 'positive-text' : 'warning-text'}>{authorizedAccounts.length ? '已授权' : '未连接'}</span><button className="button secondary" type="button" onClick={() => setAccountNotice('CicloTrade 提供实盘连接服务，但不会因会员付款自动连接。美股做空仍由券商保证金、可借券及账户权限决定；A 股不支持做空。')}>查看说明</button></div>
+        <div className="broker-row"><Link2 size={19} /><div><strong>自动交易控制账号名额</strong><small>{autoControlAccountLimit > 0 ? `服务端当前允许登记 ${autoControlAccountLimit} 个受控账号；每个账号仍需主动完成券商授权。` : '服务端当前未提供可用的受控账号名额。'}</small></div><span className={autoControlAccountLimit > 0 ? 'positive-text' : 'warning-text'}>{accountsUsed} / {autoControlAccountLimit}</span><Link className="button tertiary" to="/trade">打开交易控制台</Link></div>
+        <div className="broker-row"><ShieldCheck size={19} /><div><strong>个人券商连接</strong><small>{authorizedAccounts.length ? `${authorizedAccounts.length} 个账户已标记为授权可用；页面不会显示外部账号 ID 或券商凭据。` : '尚未发现已授权可用的个人券商账户。'}</small></div><span className={authorizedAccounts.length ? 'positive-text' : 'warning-text'}>{authorizedAccounts.length ? '已授权' : '未连接'}</span><Link className="button secondary" to="/trade">前往实盘接入</Link></div>
         {brokerage?.accounts.map((account) => <article className="broker-account-summary" key={account.id}><span className={account.authorized ? 'positive-text' : 'warning-text'}>{account.authorized ? <CheckCircle2 size={16} /> : <CircleAlert size={16} />}</span><div><strong>{account.alias}</strong><small>{account.provider} · {account.mode === 'live' ? '实盘' : '模拟'} · {account.status}</small></div><span>{account.last_checked ? `检查于 ${new Date(account.last_checked).toLocaleString(formatLocale, { hour12: false })}` : '尚未检查'}</span></article>)}
         <section className={`execution-control-card ${execution?.effective_opening_paused ? 'paused' : 'ready'}`}>
           <div className="execution-control-heading"><span>{execution?.effective_opening_paused ? <PauseCircle size={20} /> : <PlayCircle size={20} />}</span><div><strong>{execution?.effective_opening_paused ? '新开仓当前暂停' : '新开仓安全状态正常'}</strong><small>暂停只针对开多、加多、开空、加空和反手增加的敞口；已授权通道仍应保留减仓和平仓能力。</small></div></div>

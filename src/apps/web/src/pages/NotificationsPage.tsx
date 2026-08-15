@@ -15,6 +15,7 @@ import { BrowserApiError, saveTelegramEvents } from "../api/client";
 import { PageHeader } from "../components/PageHeader";
 import { WorkspaceState } from "../components/WorkspaceState";
 import { getFormatLocale } from "../i18n/runtime";
+import "../styles/secondary-pages.css";
 
 const defaultEvents = [
   {
@@ -22,35 +23,35 @@ const defaultEvents = [
     label: "正股买卖建议",
     note: "买入、加仓、持有、减仓与退出",
     enabled: false,
-    level: "高级会员",
+    capability: "tg_stock_signal",
   },
   {
     key: "option_signal",
     label: "期权策略建议",
     note: "合约、到期日、执行价与最大风险",
     enabled: false,
-    level: "专业会员",
+    capability: "tg_option_signal",
   },
   {
     key: "risk_rejected",
     label: "风险与止损提醒",
     note: "仓位、回撤、冷却期与系统暂停",
     enabled: false,
-    level: "标准会员",
+    capability: "tg_risk_alert",
   },
   {
     key: "order_filled",
     label: "订单与成交状态",
     note: "提交、成交、拒绝与异常恢复",
     enabled: false,
-    level: "标准会员",
+    capability: "tg_order_status",
   },
   {
     key: "membership_update",
     label: "会员与账单",
     note: "到期提醒、付款结果与权益变更",
     enabled: false,
-    level: "全部会员",
+    capability: "tg_membership_update",
   },
 ];
 
@@ -65,8 +66,7 @@ export function NotificationsPage() {
     telegram?.bound && telegram?.verified && telegram?.consented,
   );
   const capabilities = workspace.data?.membership.capabilities ?? [];
-  const canStockSignal = capabilities.includes("tg_stock_signal");
-  const canOptionSignal = capabilities.includes("tg_option_signal");
+  const capabilityListKnown = Array.isArray(workspace.data?.membership.capabilities);
 
   useEffect(() => {
     const stored = workspace.data?.telegram.events;
@@ -74,16 +74,11 @@ export function NotificationsPage() {
     setEvents((items) =>
       items.map((item) => {
         if (!(item.key in stored)) return item;
-        const allowed =
-          item.key === "stock_signal"
-            ? canStockSignal
-            : item.key === "option_signal"
-              ? canOptionSignal
-              : true;
+        const allowed = capabilityListKnown && capabilities.includes(item.capability);
         return { ...item, enabled: allowed && stored[item.key] };
       }),
     );
-  }, [canOptionSignal, canStockSignal, workspace.data]);
+  }, [capabilityListKnown, capabilities, workspace.data]);
 
   return (
     <div className="page operations-page notification-dashboard">
@@ -209,18 +204,18 @@ export function NotificationsPage() {
           </header>
           <div className="setting-list">
             {events.map((event) => {
-              const locked =
-                event.key === "stock_signal"
-                  ? !canStockSignal
-                  : event.key === "option_signal"
-                    ? !canOptionSignal
-                    : false;
+              const locked = !capabilityListKnown || !capabilities.includes(event.capability);
+              const entitlementLabel = !capabilityListKnown
+                ? "服务端能力未返回 · 已锁定"
+                : locked
+                  ? "当前账户未授予此服务端能力 · 已锁定"
+                  : "服务端能力已授予";
               return (
                 <article key={event.key}>
                   <div>
                     <strong>{event.label}</strong>
                     <small>{event.note}</small>
-                    <em>{locked ? `${event.level}开放` : event.level}</em>
+                    <em>{entitlementLabel}</em>
                   </div>
                   <button
                     className={`toggle ${event.enabled ? "on" : ""} ${pendingEventKey === event.key ? "is-loading" : ""}`}
@@ -233,7 +228,7 @@ export function NotificationsPage() {
                     data-disabled={locked || pendingEventKey === event.key || undefined}
                     aria-label={`${event.label}推送`}
                     disabled={locked || pendingEventKey === event.key}
-                    title={locked ? `需要${event.level}` : undefined}
+                    title={locked ? entitlementLabel : undefined}
                     onClick={async () => {
                       const next = !event.enabled;
                       if (workspace.mode !== "authenticated") {

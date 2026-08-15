@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { useLocation } from 'react-router-dom'
 import { BrowserApiError, fetchFeedback, submitFeedback, type FeedbackCategory, type FeedbackReceipt } from '../api/client'
 import { PageHeader } from '../components/PageHeader'
+import { useLocale } from '../i18n/useLocale'
+import '../styles/secondary-pages.css'
 
 const kinds: Array<{ value: FeedbackCategory; label: string; note: string }> = [
   { value: 'bug', label: '问题报告', note: '功能、显示或操作异常' },
@@ -16,10 +18,35 @@ function newIdempotencyKey() {
   return globalThis.crypto?.randomUUID?.() ?? `feedback-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
+const STATUS_LABELS: Record<string, { 'zh-Hans': string; 'zh-Hant': string }> = {
+  received: { 'zh-Hans': '已收到', 'zh-Hant': '已收到' },
+  pending: { 'zh-Hans': '处理中', 'zh-Hant': '處理中' },
+  acknowledged: { 'zh-Hans': '已确认', 'zh-Hant': '已確認' },
+  resolved: { 'zh-Hans': '已解决', 'zh-Hant': '已解決' },
+  closed: { 'zh-Hans': '已关闭', 'zh-Hant': '已關閉' },
+  rejected: { 'zh-Hans': '已拒绝', 'zh-Hant': '已拒絕' },
+  '已收到': { 'zh-Hans': '已收到', 'zh-Hant': '已收到' },
+  '处理中': { 'zh-Hans': '处理中', 'zh-Hant': '處理中' },
+  '處理中': { 'zh-Hans': '处理中', 'zh-Hant': '處理中' },
+  '已确认': { 'zh-Hans': '已确认', 'zh-Hant': '已確認' },
+  '已確認': { 'zh-Hans': '已确认', 'zh-Hant': '已確認' },
+  '已解决': { 'zh-Hans': '已解决', 'zh-Hant': '已解決' },
+  '已解決': { 'zh-Hans': '已解决', 'zh-Hant': '已解決' },
+  '已关闭': { 'zh-Hans': '已关闭', 'zh-Hant': '已關閉' },
+  '已關閉': { 'zh-Hans': '已关闭', 'zh-Hant': '已關閉' },
+  '已拒绝': { 'zh-Hans': '已拒绝', 'zh-Hant': '已拒絕' },
+  '已拒絕': { 'zh-Hans': '已拒绝', 'zh-Hant': '已拒絕' },
+}
+
+function statusLabel(status: string, locale: 'zh-Hans' | 'zh-Hant') {
+  return STATUS_LABELS[status.toLowerCase()]?.[locale] ?? status
+}
+
 export function FeedbackPage() {
   const location = useLocation()
+  const { locale } = useLocale()
   const [kind, setKind] = useState<FeedbackCategory>('suggestion')
-  const [page, setPage] = useState(location.state && typeof location.state === 'object' && typeof (location.state as { sourcePage?: unknown }).sourcePage === 'string' ? (location.state as { sourcePage: string }).sourcePage : '/today')
+  const [page, setPage] = useState(location.state && typeof location.state === 'object' && typeof (location.state as { sourcePage?: unknown }).sourcePage === 'string' ? (location.state as { sourcePage: string }).sourcePage : '/research')
   const [content, setContent] = useState('')
   const [contactPreference, setContactPreference] = useState<'none' | 'telegram' | 'email'>('none')
   const [receipts, setReceipts] = useState<FeedbackReceipt[]>([])
@@ -30,7 +57,7 @@ export function FeedbackPage() {
   const [historyError, setHistoryError] = useState('')
   const mounted = useRef(true)
   const receiptRequest = useRef(0)
-  const sourcePage = useMemo(() => page.trim().startsWith('/') ? page.trim() : '/today', [page])
+  const sourcePage = useMemo(() => page.trim().startsWith('/') ? page.trim() : '/research', [page])
 
   const loadReceipts = useCallback(async () => {
     const request = receiptRequest.current + 1
@@ -82,7 +109,7 @@ export function FeedbackPage() {
       </form>
       <section className="data-panel feedback-history" aria-busy={loading}>
         <header className="panel-heading"><div><span>YOUR RECEIPTS</span><h2>历史回执</h2></div><Lightbulb size={20} /></header>
-        {loading ? <div className="feedback-state"><LoaderCircle className="spin" size={20} />正在读取回执…</div> : historyError ? <div className="feedback-state feedback-state-error" role="alert"><CircleAlert size={20} /><strong>暂时无法读取历史回执</strong><span>{historyError}</span><button className="button secondary" type="button" onClick={() => void loadReceipts()}><RefreshCw size={15} />重新读取</button></div> : receipts.length ? <ol>{receipts.map((item) => <li key={item.id}><header><strong>{kinds.find((kindItem) => kindItem.value === item.category)?.label ?? '反馈'}</strong><span>{item.status}</span></header><p>{item.summary}</p><footer><code>{item.id}</code><time>{new Date(item.created_at).toLocaleString('zh-HK', { hour12: false, timeZone: 'Asia/Hong_Kong' })}</time></footer></li>)}</ol> : <div className="feedback-state"><RefreshCw size={20} /><strong>尚无反馈回执</strong><span>提交后将在这里显示处理状态。</span></div>}
+        {loading ? <div className="feedback-state"><LoaderCircle className="spin" size={20} />正在读取回执…</div> : historyError ? <div className="feedback-state feedback-state-error" role="alert"><CircleAlert size={20} /><strong>暂时无法读取历史回执</strong><span>{historyError}</span><button className="button secondary" type="button" onClick={() => void loadReceipts()}><RefreshCw size={15} />重新读取</button></div> : receipts.length ? <ol>{receipts.map((item) => <li key={item.id}><header><strong>{kinds.find((kindItem) => kindItem.value === item.category)?.label ?? '反馈'}</strong><span>{statusLabel(item.status, locale)}</span></header><p>{item.summary}</p><footer><code>{item.id}</code><time>{new Date(item.created_at).toLocaleString('zh-HK', { hour12: false, timeZone: 'Asia/Hong_Kong' })}</time></footer></li>)}</ol> : <div className="feedback-state"><RefreshCw size={20} /><strong>尚无反馈回执</strong><span>提交后将在这里显示处理状态。</span></div>}
       </section>
     </div>
   </div>
