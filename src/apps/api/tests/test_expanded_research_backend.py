@@ -246,8 +246,13 @@ def test_read_model_emits_exact_97_symbol_dto_and_requires_authentication(tmp_pa
     }
     assert "user_visible" not in latest["authority"]
     assert not {"raw", "worker_id", "receipt_key", "payload_json", "signature", "shared_secret", "secret"} & _nested_keys(latest)
-    assert latest["available"] is False
-    assert latest["cycle"] is None
+    assert latest["available"] is True
+    cycle = latest["cycle"]
+    assert cycle["evaluation_date"] == "2026-08-13"
+    assert len(cycle["symbols"]) == 97
+    assert cycle["summary"]["wait_count"] == 1 and cycle["summary"]["no_data_count"] == 96
+    assert next(item for item in cycle["symbols"] if item["symbol"] == "AAPL")["data_state"] != "missing"
+    assert sum(item["data_state"] == "missing" for item in cycle["symbols"]) == 96
 
 
 def test_latest_projection_never_mixes_dataset_end_cycles(tmp_path):
@@ -263,16 +268,22 @@ def test_latest_projection_never_mixes_dataset_end_cycles(tmp_path):
 
     assert [row["symbol"] for row in rows] == ["AAPL"]
     assert {row["dataset_end"] for row in rows} == {"2026-08-13"}
+    latest = ExpandedResearchReadModel(store, authorize=lambda identity: identity == "user").latest("user")
+    assert latest["available"] is True
+    assert latest["cycle"]["evaluation_date"] == "2026-08-13"
+    assert len(latest["cycle"]["symbols"]) == 97
+    assert sum(item["data_state"] == "missing" for item in latest["cycle"]["symbols"]) == 96
 
 
-def test_read_model_releases_only_a_complete_single_cycle(tmp_path):
+def test_read_model_exposes_partial_single_cycle_with_missing_slots(tmp_path):
     database = BacktestQueueDatabase(tmp_path / "backtest.db")
     store = ExpandedResearchStore(database, clock=lambda: NOW)
+    symbols = (*TIER_A, *TIER_C)[:45]
     _seed_receipts(
         database,
         [
             (_result(symbol, tier="A" if symbol in TIER_A else "C", dataset_end="2026-08-13", result_id=f"expanded-{symbol}-aaaaaaaaaaaaaaaa"), "2026-08-14T11:00:00Z")
-            for symbol in (*TIER_A, *TIER_C)
+            for symbol in symbols
         ],
     )
     model = ExpandedResearchReadModel(store, authorize=lambda identity: identity == "user")
@@ -282,6 +293,9 @@ def test_read_model_releases_only_a_complete_single_cycle(tmp_path):
     assert latest["available"] is True
     assert latest["cycle"]["evaluation_date"] == "2026-08-13"
     assert len(latest["cycle"]["symbols"]) == 97
+    assert latest["cycle"]["summary"]["wait_count"] == 45
+    assert latest["cycle"]["summary"]["no_data_count"] == 52
+    assert sum(item["data_state"] == "missing" for item in latest["cycle"]["symbols"]) == 52
 
 
 def test_read_model_unavailable_projections_are_exact_and_safe():
@@ -481,7 +495,9 @@ def test_read_model_keeps_active_history_consistent_after_one_result_is_invalida
     model = ExpandedResearchReadModel(store, authorize=lambda _identity: True)
     latest = model.latest("user")
     history = model.history("user")
-    assert latest["available"] is False and latest["cycle"] is None
+    assert latest["available"] is True
+    assert latest["cycle"]["summary"]["wait_count"] == 1
+    assert latest["cycle"]["summary"]["no_data_count"] == 96
     assert history["items"][0]["coverage_count"] == 2
     assert history["items"][0]["active_count"] == 1
     assert history["items"][0]["invalidated_count"] == 1

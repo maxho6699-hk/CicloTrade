@@ -61,11 +61,10 @@ class ExpandedResearchReadModel:
         self._require(identity)
         rows = self.store.latest_by_symbol()
         value = _latest_cycle(rows)
-        complete = len(value) == 97
         return {
-            "available": complete, "authority": _authority(),
-            "validation_label": "97 只股票扩容研究，仅供影子研究参考，不构成交易信号；周期不完整时不展示。",
-            "cycle": _cycle_payload(value) if complete else None,
+            "available": bool(value), "authority": _authority(),
+            "validation_label": "97 只股票扩容研究，仅供影子研究参考，不构成交易信号；当前周期按已收到结果展示，缺失股票标记为无数据。",
+            "cycle": _cycle_payload(value),
         }
 
     @staticmethod
