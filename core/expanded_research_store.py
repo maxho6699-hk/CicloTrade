@@ -12,6 +12,8 @@ from core.expanded_research_contracts import (
     ExpandedResearchConflict,
     ExpandedResearchError,
     ExpandedResearchStaleFence,
+    TIER_A,
+    TIER_C,
     UNIVERSE_SHA256,
     UNIVERSE_VERSION,
     canonical_json,
@@ -244,23 +246,21 @@ class ExpandedResearchStore:
         return invalidated
 
     def _latest_candidate_rows(self) -> list[dict[str, Any]]:
-        return self.database.fetch_all(
-            """SELECT latest.*
-               FROM (
-                   SELECT DISTINCT symbol
-                   FROM expanded_research_receipts INDEXED BY idx_expanded_research_latest_symbol
-               ) AS symbols
-               JOIN expanded_research_receipts AS latest
-                 ON latest.receipt_key=(
-                     SELECT candidate.receipt_key
-                     FROM expanded_research_receipts AS candidate
-                          INDEXED BY idx_expanded_research_latest_symbol
-                     WHERE candidate.symbol=symbols.symbol
-                     ORDER BY candidate.received_at DESC,candidate.receipt_key DESC
-                     LIMIT 1
-                 )
-               ORDER BY latest.symbol"""
-        )
+        rows: list[dict[str, Any]] = []
+        with self.database.transaction() as connection:
+            connection.execute("BEGIN")
+            for symbol in (*TIER_A, *TIER_C):
+                row = connection.execute(
+                    """SELECT *
+                       FROM expanded_research_receipts INDEXED BY idx_expanded_research_latest_symbol
+                       WHERE symbol=?
+                       ORDER BY received_at DESC,receipt_key DESC
+                       LIMIT 1""",
+                    (symbol,),
+                ).fetchone()
+                if row is not None:
+                    rows.append(dict(row))
+        return rows
 
     def _is_active(self, received_at: str) -> bool:
         try:

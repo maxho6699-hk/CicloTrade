@@ -1,10 +1,5 @@
 -- Append-only tombstones for invalidated 97-symbol research results.
 -- Strictly follows 0012_expanded_research_receipts.sql.
-CREATE INDEX idx_expanded_research_latest_symbol
-ON expanded_research_receipts(symbol, received_at DESC, receipt_key DESC);
-CREATE INDEX idx_expanded_research_dataset_cycle
-ON expanded_research_receipts(json_extract(payload_json, '$.dataset_end') DESC, received_at DESC, receipt_key DESC);
-
 CREATE TABLE expanded_research_invalidations (
     invalidation_key TEXT PRIMARY KEY,
     invalidation_id TEXT NOT NULL UNIQUE,

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 import hashlib
+from pathlib import Path
 
 import pytest
 
@@ -121,6 +123,69 @@ def test_invalidation_schema_is_migrated_before_store_construction(tmp_path, mon
     assert {"idx_expanded_research_latest_symbol", "idx_expanded_research_dataset_cycle"} <= indexes
     monkeypatch.setattr(database, "transaction", lambda: (_ for _ in ()).throw(AssertionError("store constructor must not write")))
     ExpandedResearchStore(database, clock=lambda: NOW)
+
+
+def test_old_0013_database_applies_only_additive_0014_and_reopens_safely(tmp_path):
+    migration_root = Path(__file__).resolve().parents[4] / "migrations/backtest"
+    legacy_root = tmp_path / "legacy-migrations"
+    legacy_root.mkdir()
+    for source in migration_root.glob("*.sql"):
+        if source.name <= "0013_expanded_research_invalidations.sql":
+            (legacy_root / source.name).write_bytes(source.read_bytes())
+    database_path = tmp_path / "backtest.db"
+    legacy = BacktestQueueDatabase(database_path, migrations=legacy_root)
+    receiver = ExpandedResearchReceiver(
+        ExpandedResearchStore(legacy, clock=lambda: NOW), shared_secret=SECRET, enabled=True, clock=lambda: NOW,
+    )
+    _request(receiver, _result())
+    applied_before = {row["version"] for row in legacy.fetch_all("SELECT version FROM schema_migrations")}
+    columns_before = legacy.fetch_all("PRAGMA table_info(expanded_research_receipts)")
+
+    upgraded = BacktestQueueDatabase(database_path, migrations=migration_root)
+    applied_after = {row["version"] for row in upgraded.fetch_all("SELECT version FROM schema_migrations")}
+    assert applied_after - applied_before == {"0014_expanded_research_projection_indexes.sql"}
+    assert upgraded.fetch_all("PRAGMA table_info(expanded_research_receipts)") == columns_before
+    assert [row["symbol"] for row in ExpandedResearchStore(upgraded, clock=lambda: NOW).latest_by_symbol()] == ["AAPL"]
+    assert len(BacktestQueueDatabase(database_path, migrations=migration_root).fetch_all(
+        "SELECT version FROM schema_migrations WHERE version='0014_expanded_research_projection_indexes.sql'"
+    )) == 1
+
+    migration_sql = (migration_root / "0014_expanded_research_projection_indexes.sql").read_text(encoding="utf-8").upper()
+    assert migration_sql.count("CREATE INDEX") == 2
+    assert migration_sql.count("IF NOT EXISTS") == 2
+    assert not any(token in migration_sql for token in ("DROP ", "ALTER ", "DELETE ", "UPDATE ", "INSERT "))
+    rolled_back = BacktestQueueDatabase(database_path, migrations=legacy_root)
+    assert rolled_back.fetch_one("SELECT count(*) AS total FROM expanded_research_receipts")["total"] == 1
+
+
+def test_0014_converges_when_intermediate_0013_already_created_indexes(tmp_path):
+    migration_root = Path(__file__).resolve().parents[4] / "migrations/backtest"
+    intermediate_root = tmp_path / "intermediate-migrations"
+    intermediate_root.mkdir()
+    for source in migration_root.glob("*.sql"):
+        if source.name <= "0013_expanded_research_invalidations.sql":
+            (intermediate_root / source.name).write_bytes(source.read_bytes())
+    intermediate_0013 = intermediate_root / "0013_expanded_research_invalidations.sql"
+    premature_indexes = (migration_root / "0014_expanded_research_projection_indexes.sql").read_text(
+        encoding="utf-8"
+    ).replace(" IF NOT EXISTS", "")
+    intermediate_0013.write_text(
+        intermediate_0013.read_text(encoding="utf-8") + "\n" + premature_indexes,
+        encoding="utf-8",
+    )
+    database_path = tmp_path / "backtest.db"
+    intermediate = BacktestQueueDatabase(database_path, migrations=intermediate_root)
+    assert intermediate.fetch_one(
+        "SELECT version FROM schema_migrations WHERE version='0014_expanded_research_projection_indexes.sql'"
+    ) is None
+
+    converged = BacktestQueueDatabase(database_path, migrations=migration_root)
+    assert converged.fetch_one(
+        "SELECT version FROM schema_migrations WHERE version='0014_expanded_research_projection_indexes.sql'"
+    )
+    indexes = converged.fetch_all("PRAGMA index_list(expanded_research_receipts)")
+    assert sum(row["name"] == "idx_expanded_research_latest_symbol" for row in indexes) == 1
+    assert sum(row["name"] == "idx_expanded_research_dataset_cycle" for row in indexes) == 1
 
 
 def test_receiver_accepts_existing_strategy_authority_and_replays_idempotently(tmp_path):
@@ -288,35 +353,56 @@ def test_invalidation_timestamp_allows_five_minute_skew_and_rejects_more(tmp_pat
     assert rejected_database.fetch_one("SELECT count(*) AS total FROM expanded_research_invalidations")["total"] == 0
 
 
-def test_latest_by_symbol_decodes_at_most_one_candidate_per_symbol(tmp_path, monkeypatch):
-    database = BacktestQueueDatabase(tmp_path / "backtest.db")
-    symbols = (*TIER_A, *TIER_C)
-    entries: list[tuple[dict, str]] = []
-    for revision in range(5):
-        dataset_end = (date(2026, 8, 13) - timedelta(days=revision)).isoformat()
-        received_at = f"2026-08-14T11:{revision:02d}:00Z"
-        for symbol in symbols:
-            tier = "A" if symbol in TIER_A else "C"
-            entries.append((_result(
-                symbol,
-                tier=tier,
-                dataset_end=dataset_end,
-                result_id=f"expanded-{symbol}-revision-{revision:02d}-aaaaaaaa",
-            ), received_at))
-    _seed_receipts(database, entries)
-    store = ExpandedResearchStore(database, clock=lambda: NOW)
-    decoded = 0
-    original_decode = store._decode
+def test_latest_lookup_uses_97_indexed_point_reads_with_non_linear_history_cost(tmp_path, monkeypatch):
+    def measure(name: str, revisions: int) -> tuple[int, int, int, int, list[str]]:
+        database = BacktestQueueDatabase(tmp_path / name)
+        entries = [
+            (_result(
+                symbol, tier="A" if symbol in TIER_A else "C", dataset_end="2026-08-13",
+                result_id=f"expanded-{symbol}-revision-{revision:03d}-aaaaaaaa",
+            ), (NOW - timedelta(minutes=revision)).isoformat().replace("+00:00", "Z"))
+            for revision in range(revisions) for symbol in (*TIER_A, *TIER_C)
+        ]
+        _seed_receipts(database, entries)
+        steps = transactions = point_reads = 0
+        original_transaction = database.transaction
 
-    def counting_decode(row):
-        nonlocal decoded
-        decoded += 1
-        return original_decode(row)
+        @contextmanager
+        def instrumented_transaction():
+            nonlocal steps, transactions, point_reads
+            transactions += 1
+            with original_transaction() as connection:
+                connection.set_progress_handler(lambda: _count_step(), 1)
+                class ConnectionSpy:
+                    def execute(self, sql, params=()):
+                        nonlocal point_reads
+                        point_reads += "WHERE symbol=?" in sql
+                        return connection.execute(sql, params)
+                try:
+                    yield ConnectionSpy()
+                finally:
+                    connection.set_progress_handler(None, 0)
 
-    monkeypatch.setattr(store, "_decode", counting_decode)
-    rows = store.latest_by_symbol()
-    assert len(rows) == 97
-    assert decoded == 97
+        def _count_step() -> int:
+            nonlocal steps
+            steps += 1
+            return 0
+
+        monkeypatch.setattr(database, "transaction", instrumented_transaction)
+        rows = ExpandedResearchStore(database, clock=lambda: NOW)._latest_candidate_rows()
+        plan = database.fetch_all(
+            """EXPLAIN QUERY PLAN SELECT * FROM expanded_research_receipts
+               INDEXED BY idx_expanded_research_latest_symbol WHERE symbol=?
+               ORDER BY received_at DESC,receipt_key DESC LIMIT 1""",
+            ("AAPL",),
+        )
+        return len(rows), steps, transactions, point_reads, [str(row["detail"]) for row in plan]
+
+    small = measure("small.db", 1)
+    large = measure("large.db", 100)
+    assert small[:1] == large[:1] == (97,) and small[2:4] == large[2:4] == (1, 97)
+    assert large[1] < small[1] * 2
+    assert any("SEARCH expanded_research_receipts USING INDEX idx_expanded_research_latest_symbol" in item for item in large[4])
 
 
 def test_history_returns_twenty_complete_97_symbol_cycles(tmp_path):
