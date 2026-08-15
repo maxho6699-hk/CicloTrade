@@ -77,6 +77,7 @@ def _source_repo(tmp_path: Path) -> Path:
         "migrations/0033_membership_promotion_settlement.sql": b"SELECT 33;\n",
         "migrations/0034_personal_paper.sql": b"SELECT 34;\n",
         "migrations/0035_entitlement_policy_versions.sql": b"SELECT 35;\n",
+        "migrations/0036_personal_paper_risk_proofs.sql": b"SELECT 36;\n",
         "migrations/backtest/0012_expanded_research_receipts.sql": b"SELECT 12;\n",
         "migrations/backtest/0013_expanded_research_invalidations.sql": b"SELECT 13;\n",
         "migrations/backtest/0014_expanded_research_projection_indexes.sql": b"SELECT 14;\n",
@@ -147,7 +148,7 @@ def test_build_is_reproducible_and_verifies(tmp_path: Path) -> None:
 
     assert artifact.read_bytes() == second.read_bytes()
     assert verifier.verify_release(root, artifact, manifest) == []
-    assert data["migrations"]["required"][-1] == "0035_entitlement_policy_versions.sql"
+    assert data["migrations"]["required"][-1] == "0036_personal_paper_risk_proofs.sql"
     assert data["migrations"]["required_backtest"] == [
         "0012_expanded_research_receipts.sql",
         "0013_expanded_research_invalidations.sql",
@@ -194,6 +195,22 @@ def test_builder_requires_expanded_research_backtest_migration(tmp_path: Path) -
     required.unlink()
     _run(root, "add", "-u")
     _run(root, "commit", "-m", "remove required backtest migration")
+    with pytest.raises(builder.ReleaseBuildError, match="missing required runtime inputs"):
+        builder.build_release(
+            root,
+            tmp_path / "release.tar.gz",
+            tmp_path / "release.json",
+            baseline=_run(root, "rev-parse", "HEAD"),
+            source_date_epoch=1,
+        )
+
+
+def test_builder_requires_personal_paper_risk_migration(tmp_path: Path) -> None:
+    root = _source_repo(tmp_path)
+    required = root / "migrations/0036_personal_paper_risk_proofs.sql"
+    required.unlink()
+    _run(root, "add", "-u")
+    _run(root, "commit", "-m", "remove required personal paper risk migration")
     with pytest.raises(builder.ReleaseBuildError, match="missing required runtime inputs"):
         builder.build_release(
             root,
@@ -254,6 +271,24 @@ def test_verifier_requires_backtest_migration_in_manifest_and_archive(tmp_path: 
     _rebind_artifact(removed, manifest)
     violations = verifier.verify_release(root, removed, manifest)
     assert "archive is missing required backtest migration" in violations
+
+
+def test_verifier_requires_personal_paper_risk_migration_in_manifest_and_archive(tmp_path: Path) -> None:
+    root = _source_repo(tmp_path)
+    artifact, manifest, _ = _bundle(root, tmp_path)
+    required = "migrations/0036_personal_paper_risk_proofs.sql"
+    data = verifier.read_manifest(manifest)
+    data["files"] = [item for item in data["files"] if item["path"] != required]
+    _write_manifest(manifest, data)
+    violations = verifier.verify_release(root, artifact, manifest)
+    assert "manifest is missing required migration" in violations
+    assert "archive has paths absent from manifest" in violations
+
+    removed = tmp_path / "missing-personal-paper-risk.tar.gz"
+    _rewrite_tar(artifact, removed, remove=required)
+    _rebind_artifact(removed, manifest)
+    violations = verifier.verify_release(root, removed, manifest)
+    assert "archive is missing required migration" in violations
 
 
 def test_verifier_rejects_rebound_archive_with_unapproved_backtest_migration(tmp_path: Path) -> None:

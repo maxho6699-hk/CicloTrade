@@ -24,6 +24,7 @@ REQUIRED_MIGRATIONS = (
     "0033_membership_promotion_settlement.sql",
     "0034_personal_paper.sql",
     "0035_entitlement_policy_versions.sql",
+    "0036_personal_paper_risk_proofs.sql",
 )
 REQUIRED_BACKTEST_MIGRATIONS = (
     "0012_expanded_research_receipts.sql",
