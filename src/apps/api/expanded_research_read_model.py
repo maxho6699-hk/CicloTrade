@@ -61,10 +61,11 @@ class ExpandedResearchReadModel:
         self._require(identity)
         rows = self.store.latest_by_symbol()
         value = _latest_cycle(rows)
+        complete = len(value) == 97
         return {
-            "available": bool(value), "authority": _authority(),
-            "validation_label": "97标的扩容研究，仅供影子研究参考，不构成交易信号。",
-            "cycle": _cycle_payload(value),
+            "available": complete, "authority": _authority(),
+            "validation_label": "97 只股票扩容研究，仅供影子研究参考，不构成交易信号；周期不完整时不展示。",
+            "cycle": _cycle_payload(value) if complete else None,
         }
 
     @staticmethod
@@ -72,7 +73,7 @@ class ExpandedResearchReadModel:
         return {
             "available": False,
             "authority": _authority(),
-            "validation_label": "97标的扩容研究尚未启用，当前没有可展示的影子研究结果。",
+            "validation_label": "97 只股票扩容研究尚未启用，当前没有可展示的影子研究结果。",
             "cycle": None,
         }
 
@@ -120,6 +121,9 @@ def _universe() -> dict[str, Any]:
 
 def _latest_cycle(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     if not rows:
+        return {}
+    dataset_ends = {str(row["dataset_end"]) for row in rows if "dataset_end" in row}
+    if len(dataset_ends) != 1 or any("dataset_end" not in row for row in rows):
         return {}
     selected: dict[str, dict[str, Any]] = {}
     for row in rows:

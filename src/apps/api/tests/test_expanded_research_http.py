@@ -170,10 +170,8 @@ def test_expanded_routes_return_one_consistent_sanitized_projection(browser_api,
 
     assert (status_code, latest_code, history_code) == (200, 200, 200)
     assert status["coverage_count"] == 1 and status["no_data_count"] == 96
-    assert latest["cycle"]["evidence"]["universe_sha256"] == status["universe"]["sha256"]
-    assert len(latest["cycle"]["symbols"]) == 97
-    assert {item["tier"] for item in latest["cycle"]["symbols"]} == {"A", "C"}
-    assert history["items"][0]["cycle_id"] == latest["cycle"]["cycle_id"]
+    assert latest["available"] is False and latest["cycle"] is None
+    assert history["items"][0]["coverage_count"] == 1
     assert latest["authority"]["projection_scope"] == "authenticated_research"
     assert latest["authority"]["source_user_visible"] is False
     assert all(key not in json.dumps(latest) for key in ("secret", "worker_id", "fencing_epoch"))

@@ -231,7 +231,6 @@ def test_read_model_emits_exact_97_symbol_dto_and_requires_authentication(tmp_pa
     with pytest.raises(PermissionError):
         model.latest("guest")
     latest = model.latest("user")
-    cycle = latest["cycle"]
     assert set(latest) == {"available", "authority", "validation_label", "cycle"}
     assert AUTHORITY["user_visible"] is False
     assert latest["authority"] == {
@@ -247,14 +246,42 @@ def test_read_model_emits_exact_97_symbol_dto_and_requires_authentication(tmp_pa
     }
     assert "user_visible" not in latest["authority"]
     assert not {"raw", "worker_id", "receipt_key", "payload_json", "signature", "shared_secret", "secret"} & _nested_keys(latest)
-    assert len(cycle["symbols"]) == 97
-    assert cycle["summary"]["no_data_count"] == 96
-    assert {item["data_state"] for item in cycle["symbols"] if item["symbol"] != "AAPL"} == {"missing"}
-    assert all(item["signal"] == "wait" for item in cycle["symbols"])
-    assert sum(item["tier"] == "A" for item in cycle["symbols"]) == 13
-    assert sum(item["tier"] == "C" for item in cycle["symbols"]) == 84
-    assert next(item for item in cycle["symbols"] if item["symbol"] == "AAPL")["tier"] == "A"
-    assert next(item for item in cycle["symbols"] if item["symbol"] == TIER_C[0])["tier"] == "C"
+    assert latest["available"] is False
+    assert latest["cycle"] is None
+
+
+def test_latest_projection_never_mixes_dataset_end_cycles(tmp_path):
+    database = BacktestQueueDatabase(tmp_path / "backtest.db")
+    store = ExpandedResearchStore(database, clock=lambda: NOW)
+    old = [
+        (_result(symbol, tier="A" if symbol in TIER_A else "C", dataset_end="2026-08-12", result_id=f"expanded-{symbol}-old-aaaaaaaa"), "2026-08-14T11:00:00Z")
+        for symbol in (*TIER_A, *TIER_C)
+    ]
+    _seed_receipts(database, old + [(_result("AAPL", dataset_end="2026-08-13", result_id="expanded-AAPL-new-aaaaaaaa"), "2026-08-14T11:30:00Z")])
+
+    rows = store.latest_by_symbol()
+
+    assert [row["symbol"] for row in rows] == ["AAPL"]
+    assert {row["dataset_end"] for row in rows} == {"2026-08-13"}
+
+
+def test_read_model_releases_only_a_complete_single_cycle(tmp_path):
+    database = BacktestQueueDatabase(tmp_path / "backtest.db")
+    store = ExpandedResearchStore(database, clock=lambda: NOW)
+    _seed_receipts(
+        database,
+        [
+            (_result(symbol, tier="A" if symbol in TIER_A else "C", dataset_end="2026-08-13", result_id=f"expanded-{symbol}-aaaaaaaaaaaaaaaa"), "2026-08-14T11:00:00Z")
+            for symbol in (*TIER_A, *TIER_C)
+        ],
+    )
+    model = ExpandedResearchReadModel(store, authorize=lambda identity: identity == "user")
+
+    latest = model.latest("user")
+
+    assert latest["available"] is True
+    assert latest["cycle"]["evaluation_date"] == "2026-08-13"
+    assert len(latest["cycle"]["symbols"]) == 97
 
 
 def test_read_model_unavailable_projections_are_exact_and_safe():
@@ -442,7 +469,7 @@ def test_history_uses_global_latest_result_when_limited_cycle_excludes_it(tmp_pa
     ])
     rows = ExpandedResearchStore(database, clock=lambda: NOW).history(1)
     assert [row["result_id"] for row in rows] == [selected["result_id"]]
-    assert rows[0]["projection_state"] == "superseded"
+    assert rows[0]["projection_state"] == "active"
 
 
 def test_read_model_keeps_active_history_consistent_after_one_result_is_invalidated(tmp_path):
@@ -454,7 +481,7 @@ def test_read_model_keeps_active_history_consistent_after_one_result_is_invalida
     model = ExpandedResearchReadModel(store, authorize=lambda _identity: True)
     latest = model.latest("user")
     history = model.history("user")
-    assert latest["cycle"]["summary"]["wait_count"] == 1
+    assert latest["available"] is False and latest["cycle"] is None
     assert history["items"][0]["coverage_count"] == 2
     assert history["items"][0]["active_count"] == 1
     assert history["items"][0]["invalidated_count"] == 1
@@ -479,7 +506,7 @@ def test_expired_result_is_removed_from_active_projection_but_remains_in_history
 
 def test_full_coverage_with_one_stale_symbol_is_not_healthy(monkeypatch):
     store = object.__new__(ExpandedResearchStore)
-    rows = [{"symbol": symbol, "received_at": "stale" if index == 0 else "fresh"} for index, symbol in enumerate((*TIER_A, *TIER_C))]
+    rows = [{"symbol": symbol, "dataset_end": "2026-08-13", "received_at": "stale" if index == 0 else "fresh"} for index, symbol in enumerate((*TIER_A, *TIER_C))]
     monkeypatch.setattr(store, "latest_by_symbol", lambda: rows)
     monkeypatch.setattr("src.apps.api.expanded_research_read_model._stale", lambda value: value == "stale")
     model = ExpandedResearchReadModel(store, authorize=lambda _identity: True)

@@ -249,14 +249,24 @@ class ExpandedResearchStore:
         rows: list[dict[str, Any]] = []
         with self.database.transaction() as connection:
             connection.execute("BEGIN")
+            cycle = connection.execute(
+                """SELECT json_extract(payload_json,'$.dataset_end') AS dataset_end
+                   FROM expanded_research_receipts INDEXED BY idx_expanded_research_dataset_cycle
+                   ORDER BY dataset_end DESC,received_at DESC,receipt_key DESC
+                   LIMIT 1"""
+            ).fetchone()
+            if cycle is None:
+                return rows
+            dataset_end = str(cycle["dataset_end"])
             for symbol in (*TIER_A, *TIER_C):
                 row = connection.execute(
                     """SELECT *
                        FROM expanded_research_receipts INDEXED BY idx_expanded_research_latest_symbol
                        WHERE symbol=?
+                         AND json_extract(payload_json,'$.dataset_end')=?
                        ORDER BY received_at DESC,receipt_key DESC
                        LIMIT 1""",
-                    (symbol,),
+                    (symbol, dataset_end),
                 ).fetchone()
                 if row is not None:
                     rows.append(dict(row))
