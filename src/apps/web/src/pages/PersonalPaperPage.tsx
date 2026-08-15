@@ -138,6 +138,8 @@ export function PersonalPaperPage() {
   const copy = COPY[locale]
   const [searchParams] = useSearchParams()
   const initialSymbol = (searchParams.get('symbol') ?? '').toUpperCase()
+  const requestedMarket = (searchParams.get('market') ?? '').trim().toUpperCase()
+  const marketSupported = requestedMarket === 'US'
   const sourceParam = searchParams.get('source')
   const sourceKind: PaperDraftValues['sourceKind'] = ['recommendation', 'chart', 'screener'].includes(sourceParam ?? '') ? sourceParam as PaperDraftValues['sourceKind'] : 'manual'
   const referenceParam = searchParams.get('reference')
@@ -148,7 +150,7 @@ export function PersonalPaperPage() {
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState('')
   const [draft, setDraft] = useState<PaperDraftValues>({
-    symbol: /^[A-Z][A-Z0-9.-]{0,15}$/.test(initialSymbol) ? initialSymbol : 'AAPL',
+    symbol: /^[A-Z][A-Z0-9.-]{0,15}$/.test(initialSymbol) ? initialSymbol : '',
     side: ['BUY', 'SELL', 'SHORT', 'COVER'].includes(searchParams.get('side')?.toUpperCase() ?? '') ? searchParams.get('side')?.toUpperCase() as PersonalPaperSide : 'BUY',
     orderType: 'MARKET', quantity: '1', limitPrice: '', stopPrice: '', timeInForce: 'DAY', sourceKind,
     sourceReference: sourceKind === 'manual' ? null : initialReference,
@@ -211,17 +213,18 @@ export function PersonalPaperPage() {
   const validQuantity = /^\d+$/.test(draft.quantity) && Number(draft.quantity) > 0
   const validLimit = !needsLimit || (Number.isFinite(Number(draft.limitPrice)) && Number(draft.limitPrice) > 0)
   const validStop = !needsStop || (Number.isFinite(Number(draft.stopPrice)) && Number(draft.stopPrice) > 0)
-  const draftValid = /^[A-Z][A-Z0-9.-]{0,15}$/.test(draft.symbol) && validQuantity && validLimit && validStop
+  const draftValid = marketSupported && /^[A-Z][A-Z0-9.-]{0,15}$/.test(draft.symbol) && validQuantity && validLimit && validStop
   const proofExpired = Boolean(riskProof && Date.parse(riskProof.expires_at) <= Date.now())
   const proofPermitsSubmit = Boolean(riskProof && !proofExpired && (riskProof.decision === 'allow' || riskProof.decision === 'review'))
   const warningReviewComplete = Boolean(!riskProof?.warnings.length || riskProof.warnings.every((_, index) => reviewedWarnings[index]))
-  const workflowLocked = Boolean(busy) || submitState === 'unknown'
+  const workflowLocked = !marketSupported || Boolean(busy) || submitState === 'unknown'
   const positions = account?.positions ?? []
   const pnlClass = (account?.unrealized_pnl ?? 0) > 0 ? 'positive' : (account?.unrealized_pnl ?? 0) < 0 ? 'negative' : ''
   const longCount = positions.filter((position) => position.quantity > 0).length
   const shortCount = positions.filter((position) => position.quantity < 0).length
 
   const start = async () => {
+    if (!marketSupported) return
     setStarting(true); setError('')
     try { const season = await createPersonalPaperSeason(); window.localStorage.setItem(SEASON_STORAGE_KEY, season.id); setSeasonId(season.id); await loadAccount(season.id) }
     catch (caught) { setError(caughtMessage(caught)) } finally { setStarting(false) }
@@ -311,9 +314,10 @@ export function PersonalPaperPage() {
       <span><ShieldCheck size={16} />{copy.official}<strong>{copy.isolated}</strong></span>
       <span><CircleDollarSign size={16} />{copy.live}<strong>{copy.disconnected}</strong></span>
     </section>
+    {!marketSupported && <div className="paper-alert error" role="alert"><AlertTriangle size={18} /><span>{requestedMarket ? `个人模拟当前只支持 US；${requestedMarket} 暂不支持。` : '个人模拟需要明确的 market 参数；当前只支持 US。'}</span></div>}
     {error && <div className="paper-alert error" role="alert"><AlertTriangle size={18} /><span>{localizeError(error, locale)}</span>{seasonId && <button type="button" onClick={() => void loadAccount(seasonId)}>{copy.retry}</button>}</div>}
     {loading && <div className="paper-state" role="status"><LoaderCircle className="spin" /><strong>{copy.loading}</strong></div>}
-    {!loading && !account && <section className="paper-onboarding"><BadgeDollarSign size={30} /><div><h2>{copy.startTitle}</h2><p>{copy.startBody}</p></div><button className="button primary" type="button" disabled={starting} onClick={() => void start()}>{starting ? copy.loading : copy.start}</button></section>}
+    {!loading && !account && <section className="paper-onboarding"><BadgeDollarSign size={30} /><div><h2>{copy.startTitle}</h2><p>{copy.startBody}</p></div><button className="button primary" type="button" disabled={starting || !marketSupported} onClick={() => void start()}>{starting ? copy.loading : copy.start}</button></section>}
     {account && <div className="paper-console">
       <aside className="paper-account-rail" aria-label={locale === 'zh-Hant' ? '帳戶與訂單' : '账户与订单'}>
         <section className="paper-tasks"><header><h2>{copy.tasks}</h2><PaperRefreshButton label={copy.refresh} busy={busy === 'refresh'} disabled={workflowLocked} onClick={() => void loadAccount(account.season.id, 'refresh')} /></header><ol>{tasks.map(([label, done], index) => <li key={label} data-complete={done}><span>{done ? <CheckCircle2 size={16} /> : <span>{index + 1}</span>}</span><strong>{label}</strong><small>{done ? 'READY' : copy.awaiting}</small></li>)}</ol></section>

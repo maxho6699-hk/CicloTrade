@@ -1,6 +1,6 @@
 import { ArrowDownRight, ArrowUpRight, ChevronDown, Clock3, History, ListChecks, ShieldCheck, WalletCards } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useWorkspace } from '../api/workspace-context'
 import { PageHeader } from '../components/PageHeader'
 import { WorkspaceState } from '../components/WorkspaceState'
@@ -24,8 +24,8 @@ type ClosedOrder = {
   closedAt: string
   quantity: number
   entry: number
-  exit: number
-  pnl: number
+  exit: number | null
+  pnl: number | null
 }
 
 type TimelineItem = {
@@ -64,7 +64,17 @@ export function PortfolioPage() {
   const workspace = useWorkspace()
   const { formatLocale } = useLocale()
   const navigate = useNavigate()
-  const [market, setMarket] = useState<AccountMarket>('US')
+  const [searchParams] = useSearchParams()
+  const requestedMarket = searchParams.get('market')?.toUpperCase()
+  const requestedSymbol = searchParams.get('symbol')?.trim().toUpperCase() ?? ''
+  const requestedEvent = searchParams.get('event_id')?.trim() ?? ''
+  const requestedEventId = requestedEvent ? Number(requestedEvent) : null
+  const contextValid = (!requestedSymbol && !requestedEvent) || Boolean(
+    requestedSymbol && requestedMarket && ['US', 'CN', 'HK'].includes(requestedMarket)
+      && /^[A-Z][A-Z0-9.-]{0,15}$/.test(requestedSymbol)
+      && (!requestedEvent || (Number.isSafeInteger(requestedEventId) && requestedEventId! > 0)),
+  )
+  const [market, setMarket] = useState<AccountMarket>(requestedMarket === 'CN' || requestedMarket === 'HK' ? requestedMarket : 'US')
   const authenticated = workspace.mode === 'authenticated'
   // This page is intentionally fail-closed: personal paper orders and local
   // demo fixtures never represent CicloTrade's immutable validation ledger.
@@ -73,11 +83,12 @@ export function PortfolioPage() {
     () => (portfolio?.positions ?? []).map(apiPositionToPosition),
     [portfolio],
   )
-  const marketPositions = shownPositions.filter((position) => position.market === market)
+  const marketPositions = shownPositions.filter((position) => position.market === market && (!requestedSymbol || position.symbol === requestedSymbol))
   const activity = portfolio?.activity
   const intervalDirection = new Map((activity?.intervals ?? []).map((item) => [item.interval_id, item.direction]))
   const officialTimeline = (activity?.execution_previews_by_market?.[market]
     ?? (activity?.executions ?? []).filter((item) => item.market === market))
+    .filter((item) => !requestedSymbol || item.symbol === requestedSymbol)
     .map<TimelineItem>((item) => {
       const direction = intervalDirection.get(item.interval_id)
       const action = direction === 'SHORT'
@@ -98,7 +109,7 @@ export function PortfolioPage() {
     })
   const timeline = officialTimeline.slice(0, 8)
   const closed = (activity?.intervals ?? [])
-    .filter((item) => item.market === market && item.status === 'CLOSED')
+    .filter((item) => item.market === market && item.status === 'CLOSED' && (!requestedSymbol || item.symbol === requestedSymbol))
     .map<ClosedOrder>((item) => ({
       id: item.interval_id,
       symbol: item.symbol,
@@ -110,14 +121,16 @@ export function PortfolioPage() {
       closedAt: formatTime(item.closed_at, formatLocale),
       quantity: item.opened_quantity,
       entry: item.average_entry_price,
-      exit: item.average_exit_price ?? 0,
-      pnl: item.realized_pnl ?? 0,
+      exit: item.average_exit_price,
+      pnl: item.realized_pnl,
     }))
   const currency = market === 'CN' ? 'CNY' : market === 'HK' ? 'HKD' : 'USD'
   const account = portfolio?.accounts?.[market]
-  const accountAvailable = account?.status === 'recorded' || account?.status === 'not_recorded'
+  const accountAvailable = contextValid && (account?.status === 'recorded' || account?.status === 'not_recorded')
   const accountUnavailableLabel = account ? '尚未接入' : '账户不可用'
-  const accountEmptyText = !account
+  const accountEmptyText = !contextValid
+    ? '研究上下文无效：market、symbol 和 event_id 必须成组且可验证。'
+    : !account
     ? `${marketLabels[market]}官方验证账户合同不可用。`
     : account.status === 'not_connected'
       ? `${marketLabels[market]}官方验证账户尚未接入。`
@@ -140,7 +153,7 @@ export function PortfolioPage() {
     || marketPositions.length
     || (activity?.intervals ?? []).some((item) => item.market === market),
   )
-  const hasOfficialRecords = Boolean(
+  const hasOfficialRecords = contextValid && Boolean(
     portfolio && (
       portfolio.orders.length
       || portfolio.positions.length
@@ -192,7 +205,7 @@ export function PortfolioPage() {
       </article>
       <article className="data-panel account-closed">
         <header className="panel-heading"><div><span>CLOSED ORDERS / REALIZED P&amp;L</span><h2>已平仓订单及盈亏</h2></div><span className="status-chip research">逐组核对</span></header>
-        {!accountAvailable ? <div className="inline-empty">{accountEmptyText}</div> : closed.length ? <div className="closed-order-list">{closed.map((item) => <div className="closed-order-row" key={item.id}><div><strong>{item.symbol} · {item.quantity} {item.instrumentType === 'option' ? '张' : '股'}</strong><small>{item.openedAt} 开仓 → {item.closedAt} 平仓</small></div><div><span>{item.direction === 'SHORT' ? '卖出开仓' : '买入开仓'} {item.entry.toFixed(2)} · {item.direction === 'SHORT' ? '买入平空' : '卖出平多'} {item.exit.toFixed(2)}</span><strong className={item.pnl >= 0 ? 'positive-text' : 'negative-text'}>{formatAmount(item.pnl, item.currency, true)}</strong></div></div>)}</div> : <div className="inline-empty">{closedEmptyText}</div>}
+        {!accountAvailable ? <div className="inline-empty">{accountEmptyText}</div> : closed.length ? <div className="closed-order-list">{closed.map((item) => <div className="closed-order-row" key={item.id}><div><strong>{item.symbol} · {item.quantity} {item.instrumentType === 'option' ? '张' : '股'}</strong><small>{item.openedAt} 开仓 → {item.closedAt} 平仓</small></div><div><span>{item.direction === 'SHORT' ? '卖出开仓' : '买入开仓'} {item.entry.toFixed(2)} · {item.direction === 'SHORT' ? '买入平空' : '卖出平多'} {item.exit == null ? '未记录/尚未结算' : item.exit.toFixed(2)}</span><strong className={item.pnl == null ? '' : item.pnl >= 0 ? 'positive-text' : 'negative-text'}>{item.pnl == null ? '未记录/尚未结算' : formatAmount(item.pnl, item.currency, true)}</strong></div></div>)}</div> : <div className="inline-empty">{closedEmptyText}</div>}
       </article>
     </section>
   </div>
