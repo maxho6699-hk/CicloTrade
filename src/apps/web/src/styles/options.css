@@ -315,7 +315,7 @@
 .option-pagination { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 43px; border-top: 1px solid var(--border); background: var(--surface); color: var(--muted); font: 11px var(--mono); }
 
 .option-chart-panel { grid-template-rows: auto auto auto minmax(0, 1fr); }
-.option-chart-panel.is-expanded { position: fixed; z-index: 120; inset: 12px; height: calc(100dvh - 24px); box-shadow: 0 18px 60px rgba(0, 0, 0, .38); }
+.option-chart-panel.is-expanded { position: fixed; z-index: 120; inset: 12px; height: calc(100dvh - 24px); box-shadow: var(--shadow-overlay); }
 .option-chart-controls { display: flex; align-items: center; gap: 5px; }
 .option-chart-controls select { width: 82px; min-height: 30px; }
 .option-candle-source { display: flex; align-items: center; gap: 7px; min-height: 34px; padding: 6px 10px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 11px; }

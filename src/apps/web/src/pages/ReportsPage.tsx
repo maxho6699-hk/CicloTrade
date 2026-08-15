@@ -117,7 +117,7 @@ export function ReportsPage() {
         <div className="toolbar-row strategy-research-scope-toolbar">
           <div className="segmented-control" role="group" aria-label={locale === 'zh-Hant' ? '策略研究範圍' : '策略研究范围'}>
             <button type="button" className={researchScope === 'stable' ? 'active' : ''} aria-pressed={researchScope === 'stable'} onClick={() => setResearchScope('stable')}>{locale === 'zh-Hant' ? '13 股穩定研究' : '13 股稳定研究'}</button>
-            <button type="button" className={researchScope === 'expanded' ? 'active' : ''} aria-pressed={researchScope === 'expanded'} onClick={() => setResearchScope('expanded')}>{locale === 'zh-Hant' ? '97 標的擴容研究' : '97 标的扩容研究'}</button>
+            <button type="button" className={researchScope === 'expanded' ? 'active' : ''} aria-pressed={researchScope === 'expanded'} onClick={() => setResearchScope('expanded')}>{locale === 'zh-Hant' ? '97 隻股票擴容研究' : '97 只股票扩容研究'}</button>
           </div>
         </div>
         {researchScope === 'expanded' ? <StrategyResearch97Panel /> : <SystemCycleResearchPanel />}

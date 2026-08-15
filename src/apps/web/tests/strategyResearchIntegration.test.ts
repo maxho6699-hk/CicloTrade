@@ -8,7 +8,7 @@ test('reports page exposes stable and expanded research as explicit URL-bound sc
   assert.match(source, /StrategyResearch97Panel/)
   assert.match(source, /research_scope/)
   assert.match(source, /13 股稳定研究/)
-  assert.match(source, /97 标的扩容研究/)
+  assert.match(source, /97 只股票扩容研究/)
   assert.match(source, /researchScope === 'expanded' \? <StrategyResearch97Panel \/> : <SystemCycleResearchPanel \/>/)
 })
 

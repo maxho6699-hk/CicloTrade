@@ -202,7 +202,7 @@ test('the panel exposes all safety states and contains no execution control', as
 test('overview card keeps stable and expanded chains distinct and links to research evidence', async () => {
   const card = await readFile(new URL('../src/components/StrategyResearchOverviewCard.tsx', import.meta.url), 'utf8')
   assert.match(card, /13 股稳定 shadow/)
-  assert.match(card, /97 标的扩容 research/)
+  assert.match(card, /97 只股票扩容 research/)
   assert.match(card, /reports\?view=影子策略研究&research_scope=expanded/)
   assert.match(card, /StrategyResearchOverviewLocale/)
   assert.match(card, /expandedCoverage === null \? '—'/)

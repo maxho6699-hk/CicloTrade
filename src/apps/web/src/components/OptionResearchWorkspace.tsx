@@ -510,7 +510,7 @@ export function OptionResearchWorkspace({
         }}
       >
         <label>
-          <span>美股标的</span>
+          <span>美股股票</span>
           <span className="option-symbol-field">
             <Search size={15} />
             <input

@@ -36,8 +36,8 @@ export interface StrategyResearchOverviewCardProps {
   href?: string
 }
 
-const SIMPLIFIED: StrategyResearchOverviewCopy = { title: '策略研究覆盖', coverage: '扩容覆盖', updated: '最后更新', stableLabel: '13 股稳定 shadow', expandedLabel: '97 标的扩容 research', running: '运行中', waiting: '等待中', unavailable: '暂不可用', stale: '已过期', degraded: '降级', link: '查看研究证据' }
-const TRADITIONAL: StrategyResearchOverviewCopy = { title: '策略研究覆蓋', coverage: '擴容覆蓋', updated: '最後更新', stableLabel: '13 股穩定 shadow', expandedLabel: '97 標的擴容 research', running: '運行中', waiting: '等待中', unavailable: '暫不可用', stale: '已過期', degraded: '降級', link: '檢視研究證據' }
+const SIMPLIFIED: StrategyResearchOverviewCopy = { title: '策略研究覆盖', coverage: '扩容覆盖', updated: '最后更新', stableLabel: '13 股稳定 shadow', expandedLabel: '97 只股票扩容 research', running: '运行中', waiting: '等待中', unavailable: '暂不可用', stale: '已过期', degraded: '降级', link: '查看研究证据' }
+const TRADITIONAL: StrategyResearchOverviewCopy = { title: '策略研究覆蓋', coverage: '擴容覆蓋', updated: '最後更新', stableLabel: '13 股穩定 shadow', expandedLabel: '97 隻股票擴容 research', running: '運行中', waiting: '等待中', unavailable: '暫不可用', stale: '已過期', degraded: '降級', link: '檢視研究證據' }
 
 function stateLabel(state: StrategyResearchOverview['expandedState'], copy: StrategyResearchOverviewCopy): string {
   return state === 'unavailable' ? copy.unavailable : state === 'healthy' ? copy.running : state === 'waiting' ? copy.waiting : state === 'stale' ? copy.stale : copy.degraded

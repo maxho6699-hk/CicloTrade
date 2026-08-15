@@ -193,7 +193,7 @@ when rsi(14) < 30 and close > sma(50)
               <input defaultValue="RSI · 趋势确认" />
             </label>
             <label>
-              标的
+              股票
               <input
                 value={symbol}
                 onChange={(event) =>
@@ -223,7 +223,7 @@ when rsi(14) < 30 and close > sma(50)
               生成规则草稿
             </button>
             <small>
-              当前解析标的、周期、方向、常见
+              当前解析股票、周期、方向、常见
               RSI/均线/价格触发与风控；未识别内容会保留为人工补充，不会自动下单或发布。
             </small>
           </div>
@@ -319,7 +319,7 @@ when rsi(14) < 30 and close > sma(50)
           <div className="lab-config-zone">
             <div className="backtest-form">
               <label>
-                标的
+                股票
                 <input
                   value={symbol}
                   onChange={(event) =>
