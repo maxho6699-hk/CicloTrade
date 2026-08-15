@@ -106,7 +106,8 @@
 .app-shell .paper-source-context button { flex: none; }
 .app-shell .paper-source-context button { color: var(--paper-ai-text); }
 .app-shell .paper-inline-note, .app-shell .paper-short-risk { display: flex; align-items: center; gap: 7px; margin: 0 14px 12px; color: var(--paper-warning); font-size: 12px; }
-.app-shell .paper-proof-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 0 14px 14px; }
+.app-shell .paper-proof-actions { display: grid; grid-template-columns: 1fr; gap: 10px; padding: 0 14px 14px; }
+.app-shell .paper-proof-actions .paper-proof-action:last-child { display: none; }
 .app-shell .paper-proof-action { display: grid; min-height: 66px; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 9px; padding: 9px 11px; border: 1px solid var(--paper-control-border); border-radius: 7px; background: var(--paper-surface); color: var(--paper-muted); cursor: pointer; text-align: left; transition: border-color 150ms ease-out, background-color 150ms ease-out, transform 100ms ease-out; }
 .app-shell .paper-proof-action span { display: grid; min-width: 0; gap: 3px; }
 .app-shell .paper-proof-action strong { color: var(--paper-text); font-size: 12px; }
@@ -158,11 +159,28 @@
 .app-shell .paper-risk-check-list article[data-status='fail'] > svg { color: var(--paper-negative); }
 .app-shell .paper-risk-check-list article[data-status='unknown'] > svg { color: var(--paper-muted-2); }
 
-.app-shell .paper-submit { width: 100%; min-height: 48px; border: 0; border-radius: 7px; background: var(--paper-gradient); background-size: 112% 100%; background-position: left center; color: #fff; font-weight: 700; box-shadow: inset 0 1px rgb(255 255 255 / .16), var(--shadow-cta); transition: background-position 150ms ease-out, box-shadow 150ms ease-out, transform 100ms ease-out; }
-.app-shell .paper-submit:hover:not(:disabled) { background-position: right center; box-shadow: inset 0 1px rgb(255 255 255 / .2), var(--shadow-cta); transform: translateY(-1px); }
-.app-shell .paper-submit:active:not(:disabled) { transform: translateY(0) scale(.995); }
-.app-shell .paper-submit:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
-.app-shell .paper-submit:disabled { background: var(--paper-raised); color: var(--paper-muted-2); box-shadow: none; }
+.app-shell .paper-risk-review-cta { width: 100%; min-height: 48px; border: 0; border-radius: 7px; background: var(--paper-gradient); background-size: 112% 100%; background-position: left center; color: #fff; font-weight: 700; box-shadow: inset 0 1px rgb(255 255 255 / .16), var(--shadow-cta); transition: background-position 150ms ease-out, box-shadow 150ms ease-out, transform 100ms ease-out; }
+.app-shell .paper-risk-review-cta:hover:not(:disabled) { background-position: right center; box-shadow: inset 0 1px rgb(255 255 255 / .2), var(--shadow-cta); transform: translateY(-1px); }
+.app-shell .paper-risk-review-cta:active:not(:disabled) { transform: translateY(0) scale(.995); }
+.app-shell .paper-risk-review-cta:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.app-shell .paper-risk-review-cta:disabled { background: var(--paper-raised); color: var(--paper-muted-2); box-shadow: none; }
+.app-shell .paper-submit { width: 100%; min-height: 48px; border-color: var(--paper-control-border); border-radius: 7px; background: var(--paper-surface); color: var(--paper-text); font-weight: 650; box-shadow: none; }
+.app-shell .paper-submit:hover:not(:disabled) { border-color: var(--paper-ai-blue); background: color-mix(in srgb, var(--paper-ai-blue) 7%, var(--paper-surface)); }
+.app-shell .paper-submit:focus-visible { outline: 2px solid var(--paper-ai-blue); outline-offset: 2px; }
+.app-shell .paper-submit:disabled { border-color: var(--paper-border); background: var(--paper-raised); color: var(--paper-muted-2); box-shadow: none; }
+
+.app-shell .paper-warning-review { display: grid; overflow: hidden; border: 0; border-radius: 8px; background: color-mix(in srgb, var(--paper-warning) 6%, var(--paper-workspace)); box-shadow: var(--shadow-panel); }
+.app-shell .paper-warning-review > header { display: grid; min-height: 64px; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; padding: 10px 13px; border-bottom: 1px solid var(--paper-border-subtle); color: var(--paper-warning); }
+.app-shell .paper-warning-review h2 { margin: 0; color: var(--paper-text); font-size: 15px; }
+.app-shell .paper-warning-review p { margin: 4px 0 0; color: var(--paper-muted); font-size: 11px; line-height: 1.5; }
+.app-shell .paper-warning-review > div { display: grid; }
+.app-shell .paper-warning-review label { display: grid; min-height: 64px; grid-template-columns: 22px minmax(0, 1fr); align-items: start; gap: 9px; padding: 10px 13px; border-bottom: 1px solid var(--paper-border-subtle); cursor: pointer; }
+.app-shell .paper-warning-review label:last-child { border-bottom: 0; }
+.app-shell .paper-warning-review input { width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--paper-ai-blue); }
+.app-shell .paper-warning-review label > span { display: grid; gap: 4px; }
+.app-shell .paper-warning-review label strong { color: var(--paper-text); font-size: 12px; }
+.app-shell .paper-warning-review label small { color: var(--paper-warning); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.app-shell .paper-warning-review input:focus-visible { outline: 2px solid var(--paper-ai-blue); outline-offset: 3px; }
 .app-shell .paper-feedback { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--paper-positive); font-size: 12px; }
 .app-shell .paper-unknown, .app-shell .paper-receipt { display: grid; min-height: 92px; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--paper-warning) 50%, var(--paper-border)); border-radius: 8px; background: color-mix(in srgb, var(--paper-warning) 7%, var(--paper-workspace)); color: var(--paper-warning); }
 .app-shell .paper-unknown p, .app-shell .paper-receipt p { margin: 5px 0; color: var(--paper-muted); font-size: 12px; line-height: 1.5; }

@@ -12,7 +12,7 @@ import {
   WalletCards,
   XCircle,
 } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   BrowserApiError,
@@ -56,7 +56,8 @@ const COPY = {
     loading: '正在读取个人模拟账户', retry: '重新读取', unavailable: '个人模拟服务暂时不可用',
     cash: '现金', buyingPower: '可用购买力', equity: '总权益', pnl: '未实现盈亏', reserved: '已冻结资金', marketValue: '持仓市值',
     tasks: '账户待办', accountReady: 'USD 10,000 账户已就绪', draftReady: '股票订单草稿有效', quoteReady: '报价证明已取得', riskReady: '风险证明已取得', awaiting: '待完成',
-    confirm: '确认提交个人模拟订单', submitting: '正在提交…', confirmBlocked: '风险证明拒绝提交', confirmExpired: '风险证明已过期', confirmWaiting: '完成风险证明后确认', refresh: '刷新账户',
+    confirm: '确认个人模拟草稿', submitting: '正在提交…', confirmBlocked: '风险证明拒绝提交', confirmExpired: '风险证明已过期', confirmWaiting: '完成风险证明后确认', confirmReview: '请先逐项审阅风险警告', refresh: '刷新账户',
+    reviewRisk: '查看风险与证据', recheckRisk: '重新检查风险与证据', reviewWarnings: '逐项审阅服务端警告', warningReviewed: '我已阅读并理解此项警告', warningReviewNote: '当前浏览器审阅状态仅控制本次确认按钮；服务端不会收到或保存这些勾选。',
     positions: '个人模拟持仓', noPositions: '当前没有个人模拟持仓。', orders: '本次会话订单', noOrders: '本次会话尚未提交订单。', cancel: '撤销挂单',
     fill: '已成交', pending: '待成交', cancelled: '已撤销', replayed: '已安全返回同一订单结果，没有重复下单。',
     risk: '持仓风险', riskBody: '个人模拟仍会经历购买力不足、集中度、回撤、事件跳空与流动性风险。', longPositions: '多头股票', shortPositions: '空头股票',
@@ -72,7 +73,8 @@ const COPY = {
     loading: '正在讀取個人模擬帳戶', retry: '重新讀取', unavailable: '個人模擬服務暫時不可用',
     cash: '現金', buyingPower: '可用購買力', equity: '總權益', pnl: '未實現盈虧', reserved: '已凍結資金', marketValue: '持倉市值',
     tasks: '帳戶待辦', accountReady: 'USD 10,000 帳戶已就緒', draftReady: '股票訂單草稿有效', quoteReady: '報價證明已取得', riskReady: '風險證明已取得', awaiting: '待完成',
-    confirm: '確認提交個人模擬訂單', submitting: '正在提交…', confirmBlocked: '風險證明拒絕提交', confirmExpired: '風險證明已過期', confirmWaiting: '完成風險證明後確認', refresh: '重新整理帳戶',
+    confirm: '確認個人模擬草稿', submitting: '正在提交…', confirmBlocked: '風險證明拒絕提交', confirmExpired: '風險證明已過期', confirmWaiting: '完成風險證明後確認', confirmReview: '請先逐項審閱風險警告', refresh: '重新整理帳戶',
+    reviewRisk: '查看風險與證據', recheckRisk: '重新檢查風險與證據', reviewWarnings: '逐項審閱服務端警告', warningReviewed: '我已閱讀並理解此項警告', warningReviewNote: '目前瀏覽器審閱狀態僅控制本次確認按鈕；服務端不會收到或儲存這些勾選。',
     positions: '個人模擬持倉', noPositions: '目前沒有個人模擬持倉。', orders: '本次工作階段訂單', noOrders: '本次工作階段尚未提交訂單。', cancel: '撤銷掛單',
     fill: '已成交', pending: '待成交', cancelled: '已撤銷', replayed: '已安全傳回同一訂單結果，沒有重複下單。',
     risk: '持倉風險', riskBody: '個人模擬仍會經歷購買力不足、集中度、回撤、事件跳空與流動性風險。', longPositions: '多頭股票', shortPositions: '空頭股票',
@@ -160,10 +162,12 @@ export function PersonalPaperPage() {
   const [receipt, setReceipt] = useState<PersonalPaperOrderResult | null>(null)
   const [pendingRequest, setPendingRequest] = useState<PersonalPaperOrderRequest | null>(null)
   const [submitState, setSubmitState] = useState<SubmitState>('idle')
+  const [reviewedWarnings, setReviewedWarnings] = useState<Record<number, boolean>>({})
+  const submitInFlightRef = useRef(false)
   const [, setClock] = useState(() => Date.now())
 
   const resetProofs = () => {
-    setQuote(null); setRiskProof(null); setKey(''); setFeedback(''); setReceipt(null); setPendingRequest(null); setSubmitState('idle')
+    setQuote(null); setRiskProof(null); setKey(''); setFeedback(''); setReceipt(null); setPendingRequest(null); setSubmitState('idle'); setReviewedWarnings({})
   }
   const updateDraft = (next: PaperDraftValues) => { setDraft(next); resetProofs() }
 
@@ -210,6 +214,7 @@ export function PersonalPaperPage() {
   const draftValid = /^[A-Z][A-Z0-9.-]{0,15}$/.test(draft.symbol) && validQuantity && validLimit && validStop
   const proofExpired = Boolean(riskProof && Date.parse(riskProof.expires_at) <= Date.now())
   const proofPermitsSubmit = Boolean(riskProof && !proofExpired && (riskProof.decision === 'allow' || riskProof.decision === 'review'))
+  const warningReviewComplete = Boolean(!riskProof?.warnings.length || riskProof.warnings.every((_, index) => reviewedWarnings[index]))
   const workflowLocked = Boolean(busy) || submitState === 'unknown'
   const positions = account?.positions ?? []
   const pnlClass = (account?.unrealized_pnl ?? 0) > 0 ? 'positive' : (account?.unrealized_pnl ?? 0) < 0 ? 'negative' : ''
@@ -239,7 +244,7 @@ export function PersonalPaperPage() {
   const requestRisk = async () => {
     const requestPayload = riskRequest()
     if (!requestPayload || workflowLocked) return
-    setBusy('risk'); setError(''); setFeedback(''); setReceipt(null)
+    setBusy('risk'); setError(''); setFeedback(''); setReceipt(null); setReviewedWarnings({})
     try { setRiskProof(await issuePersonalPaperRiskProof(requestPayload)); setKey(idempotencyKey()) }
     catch (caught) { setRiskProof(null); setKey(''); setError(caughtMessage(caught)) } finally { setBusy('') }
   }
@@ -252,6 +257,8 @@ export function PersonalPaperPage() {
   }
 
   const attemptSubmit = async (payload: PersonalPaperOrderRequest) => {
+    if (submitInFlightRef.current) return
+    submitInFlightRef.current = true
     setBusy('submit'); setError(''); setFeedback('')
     try { handleSubmitResult(await submitPersonalPaperStockOrder(payload)) }
     catch (caught) {
@@ -265,11 +272,11 @@ export function PersonalPaperPage() {
         // Keep the same idempotency key, quote, risk proof, account version, source and original request until the result is known.
         setPendingRequest(payload); setSubmitState('unknown')
       }
-    } finally { setBusy('') }
+    } finally { submitInFlightRef.current = false; setBusy('') }
   }
 
   const submit = async () => {
-    if (!account || !quote || !riskProof || !key || !draftValid || !proofPermitsSubmit || workflowLocked) return
+    if (!account || !quote || !riskProof || !key || !draftValid || !proofPermitsSubmit || !warningReviewComplete || workflowLocked || submitInFlightRef.current) return
     const payload: PersonalPaperOrderRequest = { ...riskRequest()!, idempotency_key: key, risk_proof_id: riskProof.id }
     setPendingRequest(payload)
     await attemptSubmit(payload)
@@ -295,7 +302,7 @@ export function PersonalPaperPage() {
   const coreStateLabel: Record<CicloCoreState, string> = locale === 'zh-Hant'
     ? { neutral: '待命', processing: '核驗中', locked: '已鎖定', offline: '離線' }
     : { neutral: '待命', processing: '核验中', locked: '已锁定', offline: '离线' }
-  const confirmLabel = busy === 'submit' ? copy.submitting : riskProof?.decision === 'reject' ? copy.confirmBlocked : proofExpired ? copy.confirmExpired : !proofPermitsSubmit ? copy.confirmWaiting : copy.confirm
+  const confirmLabel = busy === 'submit' ? copy.submitting : riskProof?.decision === 'reject' ? copy.confirmBlocked : proofExpired ? copy.confirmExpired : !proofPermitsSubmit ? copy.confirmWaiting : !warningReviewComplete ? copy.confirmReview : copy.confirm
 
   return <div className="page personal-paper-page">
     <PageHeader kicker={copy.kicker} title={copy.title} description={copy.description} />
@@ -318,9 +325,11 @@ export function PersonalPaperPage() {
         <PaperDraftCard locale={locale} draft={draft} disabled={workflowLocked} valid={draftValid} quote={quote} riskProof={riskProof} busy={busy} onChange={updateDraft} onQuote={() => void requestQuote()} onRisk={() => void requestRisk()} />
         {draft.side === 'SHORT' && <div className="paper-short-risk" role="note"><AlertTriangle size={17} />{copy.shortRisk}</div>}
         <OrderPreview locale={locale} request={draft} quote={quote} proof={riskProof} />
+        <button className="button primary paper-risk-review-cta" type="button" disabled={!quote || workflowLocked} onClick={() => void requestRisk()}><ShieldCheck size={17} />{riskProof ? copy.recheckRisk : copy.reviewRisk}</button>
         <DecisionSummary locale={locale} proof={riskProof} side={draft.side} expired={proofExpired} />
         <RiskCheckList locale={locale} proof={riskProof} />
-        <button className="button primary paper-submit" type="button" disabled={!proofPermitsSubmit || !draftValid || workflowLocked} onClick={() => void submit()}>{confirmLabel}</button>
+        {riskProof && riskProof.warnings.length > 0 && <section className="paper-warning-review" aria-labelledby="paper-warning-review-title"><header><AlertTriangle size={17} /><div><h2 id="paper-warning-review-title">{copy.reviewWarnings}</h2><p id="paper-warning-review-note">{copy.warningReviewNote}</p></div></header><div>{riskProof.warnings.map((warning, index) => <label key={`${index}-${warning}`}><input type="checkbox" checked={Boolean(reviewedWarnings[index])} disabled={workflowLocked} aria-describedby="paper-warning-review-note" onChange={(event) => setReviewedWarnings((current) => ({ ...current, [index]: event.target.checked }))} /><span><strong>{copy.warningReviewed}</strong><small>{warning}</small></span></label>)}</div></section>}
+        <button className="button secondary paper-submit" type="button" disabled={!proofPermitsSubmit || !warningReviewComplete || !draftValid || workflowLocked} onClick={() => void submit()}>{confirmLabel}</button>
         {submitState === 'unknown' && pendingRequest && <section className="paper-unknown" role="alert"><Clock3 size={21} /><div><h2>{copy.unknownTitle}</h2><p>{copy.unknownBody}</p><small>{copy.requestIdentity} · {pendingRequest.idempotency_key}</small></div><button className="button secondary" type="button" disabled={Boolean(busy)} onClick={() => void retryUnknown()}>{busy === 'submit' ? copy.submitting : copy.verify}</button></section>}
         {receipt && <section className="paper-receipt" role="status"><ReceiptText size={21} /><div><small>{receipt.replayed ? copy.replay : copy.direct}</small><h2>{copy.receipt}</h2><p>{receipt.order.symbol} · {orderSideLabel(receipt.order.side, locale)} · {receipt.order.quantity} · {statusLabel(receipt.order.status, copy)}</p><code>{receipt.order.id}</code></div><CheckCircle2 size={24} /></section>}
         {feedback && <p className="paper-feedback" role="status"><CheckCircle2 size={16} />{feedback}</p>}

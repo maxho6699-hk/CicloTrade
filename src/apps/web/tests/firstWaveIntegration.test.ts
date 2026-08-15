@@ -123,7 +123,7 @@ test('paper and more routes are local authenticated pages while legacy URLs reta
 test('personal paper ticket preserves explicit confirmation and safe retry identity', () => {
   for (const value of ['MARKET', 'LIMIT', 'STOP', 'STOP_LIMIT', 'BUY', 'SELL', 'SHORT', 'COVER']) assert.match(paper, new RegExp(`'${value}'`))
   assert.match(paper, /Keep the same idempotency key, quote, risk proof, account version, source and original request/)
-  assert.match(paper, /disabled=\{!proofPermitsSubmit \|\| !draftValid \|\| workflowLocked\}/)
+  assert.match(paper, /disabled=\{!proofPermitsSubmit \|\| !warningReviewComplete \|\| !draftValid \|\| workflowLocked\}/)
   assert.match(paper, /提交结果暂时未知/)
   assert.match(paper, /核对提交结果/)
   assert.match(paper, /PaperRefreshButton label=\{copy\.refresh\} busy=\{busy === 'refresh'\} disabled=\{workflowLocked\}/)

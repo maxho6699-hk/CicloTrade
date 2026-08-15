@@ -47,11 +47,11 @@ function formatAmount(value: number | null | undefined, currency: string, signed
   return `${sign}${new Intl.NumberFormat(getFormatLocale(), { maximumFractionDigits: 2 }).format(value)} ${currency}`
 }
 
-function PositionRow({ position }: { position: Position }) {
+function PositionRow({ position, onResearch }: { position: Position; onResearch: (position: Position) => void }) {
   const [expanded, setExpanded] = useState(false)
   const unit = position.instrumentType === 'option' ? '张' : '股'
   return <article className={`account-position-row ${expanded ? 'is-expanded' : ''}`}>
-    <div className="account-symbol"><strong>{position.symbol}</strong><small>{position.name} · {marketLabels[position.market]}</small></div>
+    <div className="account-symbol"><button className="account-symbol-link" type="button" onClick={() => onResearch(position)}><strong>{position.symbol}</strong><small>{position.name} · {marketLabels[position.market]} · 打开股票研究</small></button></div>
     <div><span>数量</span><strong>{position.quantity} {unit}</strong></div>
     <div><span>成本 / 记录价</span><strong>{position.averagePrice.toFixed(2)} / {position.lastPrice.toFixed(2)}</strong></div>
     <div><span>未实现盈亏</span><strong className={position.unrealizedPnl >= 0 ? 'positive-text' : 'negative-text'}>{position.unrealizedPnl >= 0 ? <ArrowUpRight size={13} /> : <ArrowDownRight size={13} />}{position.unrealizedPnl.toFixed(2)} <small>{position.unrealizedPnlPct.toFixed(2)}%</small></strong></div>
@@ -126,6 +126,9 @@ export function PortfolioPage() {
   const marketValue = account?.market_value
   const unrealized = account?.unrealized_pnl
   const realized = account?.realized_pnl
+  const capturedAt = account?.captured_at ? formatTime(account.captured_at, formatLocale) : '未记录快照时间'
+  const returnedExecutionLimit = activity?.returned_execution_limit ?? 0
+  const activityTruncated = activity?.truncated ?? false
   const officialRecordCount = (() => {
     const reported = activity?.execution_counts_by_market?.[market]
     return typeof reported === 'number' && Number.isFinite(reported) && reported >= 0
@@ -156,12 +159,12 @@ export function PortfolioPage() {
     : `${marketLabels[market]}暂无已平仓记录。`
 
   return <div className="page operations-page">
-    <PageHeader kicker="PORTFOLIO / RISK" title="CicloTrade模拟持仓及建议" description="官方验证账户只记录 CicloTrade 的系统行动；它不是你的券商账户，也不会自动下单。USD、CNY 和 HKD 始终分开查看。" />
+    <PageHeader kicker="PORTFOLIO / OFFICIAL VALIDATION" title="官方验证模拟组合与复盘" description="只读取 CicloTrade 官方验证模拟账户；它不是你的个人模拟或券商实盘账户，也不会自动下单。USD、CNY 和 HKD 始终分开查看。" />
     <WorkspaceState empty={!hasOfficialRecords} emptyText="当前没有 CicloTrade 官方验证记录；系统不会用个人练习订单或演示订单填充。" />
     <div className="account-source-bar">
-      <span><WalletCards size={18} /> CicloTrade 官方验证账户</span>
+      <span><WalletCards size={18} /> CicloTrade 官方验证模拟</span>
       <strong><i className={marketHasOfficialRecords ? 'positive-dot' : 'neutral-dot'} /> {account?.status === 'not_connected' ? `${marketLabels[market]}尚未接入` : marketHasOfficialRecords ? `${marketLabels[market]}不可变日志已同步` : `${marketLabels[market]}暂无官方记录`}</strong>
-      <small><Clock3 size={14} /> {authenticated ? '估值来自最后记录价，不是实时可成交报价' : '登录并同步官方验证记录后显示。'}</small>
+      <small><Clock3 size={14} /> {authenticated ? `快照 ${capturedAt} · ${portfolio?.mark_source ?? '来源未记录'} · 记录价非实时可成交报价` : '登录并同步官方验证记录后显示。'}</small>
     </div>
 
     <div className="account-market-tabs" role="tablist" aria-label="官方验证账户市场">
@@ -179,11 +182,13 @@ export function PortfolioPage() {
       <article className="data-panel account-timeline">
         <header className="panel-heading"><div><span>OFFICIAL ACTION TIMELINE</span><h2>交易时间线</h2></div><ListChecks size={20} /></header>
         {!accountAvailable ? <div className="inline-empty">{accountEmptyText}</div> : timeline.length ? <div className="timeline-list">{timeline.map((item) => <div className="timeline-item" key={item.id}><span className={`timeline-dot ${item.side === 'BUY' ? 'buy' : 'sell'}`} /><div><strong>{item.action} {item.symbol} · {item.quantity} {item.instrumentType === 'option' ? '张' : '股'}</strong><small>{item.createdAt} · {item.status === 'verified' ? '官方日志记录' : item.status === 'rejected' ? '风险闸门拒绝' : '等待处理'}</small></div><b>{item.price.toFixed(2)}</b></div>)}</div> : <div className="inline-empty">{timelineEmptyText}</div>}
+        <div className={`portfolio-projection-note ${activityTruncated ? 'warning' : ''}`} role="note"><strong>{activityTruncated ? '执行记录已截断' : '执行记录范围'}</strong><span>当前首屏显示 {timeline.length} 条；服务端返回上限 {returnedExecutionLimit || '未提供'}。{activityTruncated ? '请打开验证报告查看完整范围与导出限制。' : '当前响应未声明截断。'}</span></div>
         <button className="button tertiary account-timeline-link" type="button" onClick={() => navigate('/reports')}><History size={15} /> 打开验证报告</button>
       </article>
       <article className="data-panel account-current">
         <header className="panel-heading"><div><span>{market} / OPEN POSITIONS</span><h2>当前持仓及建议</h2></div><span className="status-chip official"><ShieldCheck size={14} /> 官方验证</span></header>
-        {!accountAvailable ? <div className="inline-empty">{accountEmptyText}</div> : marketPositions.length ? <div className="account-position-list">{marketPositions.map((position) => <PositionRow position={position} key={`${position.symbol}-${position.name}`} />)}</div> : <div className="inline-empty">{positionsEmptyText}</div>}
+        {!accountAvailable ? <div className="inline-empty">{accountEmptyText}</div> : marketPositions.length ? <div className="account-position-list">{marketPositions.map((position) => <PositionRow position={position} onResearch={(item) => navigate(`/research?market=${item.market}&symbol=${encodeURIComponent(item.symbol)}`)} key={`${position.symbol}-${position.name}`} />)}</div> : <div className="inline-empty">{positionsEmptyText}</div>}
+        <div className="portfolio-capability-lock" role="note"><ShieldCheck size={17} /><div><strong>风险与计划偏差能力尚未接入</strong><span>当前只展示真实快照、持仓和执行日志，不生成伪风险分数或偏差结论。请从验证报告核对现有证据。</span></div></div>
       </article>
       <article className="data-panel account-closed">
         <header className="panel-heading"><div><span>CLOSED ORDERS / REALIZED P&amp;L</span><h2>已平仓订单及盈亏</h2></div><span className="status-chip research">逐组核对</span></header>

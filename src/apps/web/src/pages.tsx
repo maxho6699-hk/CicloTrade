@@ -12,30 +12,26 @@ import {
   CircleDollarSign,
   Layers3,
   Newspaper,
-  Pin,
   PanelBottomClose,
   PanelBottomOpen,
   Eye,
   EyeOff,
-  PinOff,
   SlidersHorizontal,
   Search,
   Settings2,
   ShieldCheck,
   Trash2,
-  X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { DecisionCard } from './components/DecisionCard'
 import { ChartWorkspace } from './components/ChartWorkspace'
-import { MarketOverview } from './components/MarketOverview'
 import { PageHeader } from './components/PageHeader'
-import { WatchlistToggle } from './components/WatchlistToggle'
 import { WorkspaceState } from './components/WorkspaceState'
 import { useWorkspace } from './api/workspace-context'
-import { createPriceAlert, deactivatePriceAlert, fetchMarketCandles, fetchMarketQuote, searchMarket, type MarketQuotePayload, type PriceAlert } from './api/client'
+import { createPriceAlert, deactivatePriceAlert, fetchMarketCandles, fetchMarketQuote, fetchSystemCycleResearchStatus, type MarketQuotePayload, type PriceAlert, type SystemCycleResearchStatus } from './api/client'
 import { subscribeMarketStream } from './api/marketStream'
+import { fetchStrategyResearch97Aggregate, type StrategyResearch97AggregateLoad } from './api/strategyResearch97'
 import { recommendationToDecision } from './data/adapters'
 import { candles, candidateDecisions, instruments, primaryDecision } from './data/demo'
 import type { Candle, Instrument, Market } from './types'
@@ -114,13 +110,10 @@ export function MarketsPage() {
   const workspace = useWorkspace()
   const { updateMarketDataStatus } = workspace
   const { formatLocale } = useLocale()
-  const [searchOpen, setSearchOpen] = useState(false)
-  const [watchQuery, setWatchQuery] = useState('')
-  const [remoteInstruments, setRemoteInstruments] = useState<Instrument[]>([])
-  const [searchStatus, setSearchStatus] = useState('')
+  const [switcherStatus, setSwitcherStatus] = useState('')
   const [watchBusy, setWatchBusy] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [mobileWatchlistOpen, setMobileWatchlistOpen] = useState(false)
+  const [stockSwitcherOpen, setStockSwitcherOpen] = useState(false)
   const [mobileEvidenceOpen, setMobileEvidenceOpen] = useState(() => window.matchMedia('(max-width: 600px)').matches)
   const [inspectorOpen, setInspectorOpen] = useState(() => Boolean(validRequestedInspectorTab) || window.matchMedia('(min-width: 1071px)').matches)
   const previousRequestedInspectorTab = useRef(validRequestedInspectorTab)
@@ -137,7 +130,10 @@ export function MarketsPage() {
   const [alertBusy, setAlertBusy] = useState(false)
   const [localAlerts, setLocalAlerts] = useState<PriceAlert[] | null>(null)
   const [hiddenAlertIds, setHiddenAlertIds] = useState<number[]>([])
-  const requestedSymbol = (searchParams.get('symbol') ?? 'AAPL').toUpperCase()
+  const [stableResearchStatus, setStableResearchStatus] = useState<SystemCycleResearchStatus | null>(null)
+  const [expandedResearchLoad, setExpandedResearchLoad] = useState<StrategyResearch97AggregateLoad | null>(null)
+  const [researchChainStatus, setResearchChainStatus] = useState('')
+  const requestedSymbol = (searchParams.get('symbol') ?? '').toUpperCase()
   const timeframe = searchParams.get('timeframe') ?? '日线'
   const activeTab = searchParams.get('tab') ?? '概览'
   const inspectorTab = validRequestedInspectorTab ?? '建议'
@@ -145,10 +141,8 @@ export function MarketsPage() {
   const demoMode = workspace.mode === 'demo' || workspace.mode === 'offline'
   const marketDataEnabled = workspace.mode === 'authenticated' && Boolean(workspace.data?.market_data) && workspace.data?.market_data.freshness !== '已停用'
   const watchlists = workspace.data?.settings.watchlists ?? { us: [], a_share: [] }
-  const watchlistPins = workspace.data?.settings.watchlist_pins ?? { us: [], a_share: [] }
   const currentSavedSymbols = marketFilter === 'CN' ? watchlists.a_share : watchlists.us
-  const currentPinnedSymbols = marketFilter === 'CN' ? watchlistPins.a_share : watchlistPins.us
-  const catalog = useMemo(() => [...instruments, ...remoteInstruments.filter((item) => !instruments.some((existing) => existing.symbol === item.symbol))], [remoteInstruments])
+  const catalog = instruments
   const savedInstruments = useMemo<Instrument[]>(() => currentSavedSymbols.map((symbol) => {
     const catalogItem = catalog.find((item) => item.symbol === symbol)
     return {
@@ -160,7 +154,7 @@ export function MarketsPage() {
       currency: catalogItem?.currency ?? (marketFilter === 'CN' ? 'CNY' : 'USD'),
     }
   }), [catalog, currentSavedSymbols, demoMode, marketFilter])
-  const allInstruments = useMemo(() => demoMode ? catalog : [...savedInstruments, ...remoteInstruments], [catalog, demoMode, remoteInstruments, savedInstruments])
+  const allInstruments = demoMode ? catalog : savedInstruments
   const selectedBase = useMemo<Instrument>(() => allInstruments.find((item) => item.symbol === requestedSymbol) ?? ({
     symbol: requestedSymbol,
     name: requestedSymbol,
@@ -181,9 +175,7 @@ export function MarketsPage() {
     next.set('symbol', saved[0] ?? instruments.find((item) => item.market === market)?.symbol ?? 'AAPL')
     next.delete('event_id')
     setSearchParams(next)
-    setWatchQuery('')
-    setRemoteInstruments([])
-    setMobileWatchlistOpen(false)
+    setStockSwitcherOpen(false)
   }
   const visibleInstruments = demoMode
     ? instruments.filter((instrument) => instrument.market === marketFilter)
@@ -207,9 +199,32 @@ export function MarketsPage() {
   }, [workspace.data?.alerts.items])
 
   useEffect(() => {
+    if (workspace.mode !== 'authenticated') {
+      setStableResearchStatus(null)
+      setExpandedResearchLoad(null)
+      setResearchChainStatus('登录后读取 13/97 股票研究链状态。')
+      return
+    }
+    let active = true
+    setResearchChainStatus('正在读取研究链状态…')
+    void Promise.allSettled([
+      fetchSystemCycleResearchStatus(),
+      fetchStrategyResearch97Aggregate(),
+    ]).then(([stable, expanded]) => {
+      if (!active) return
+      setStableResearchStatus(stable.status === 'fulfilled' ? stable.value : null)
+      setExpandedResearchLoad(expanded.status === 'fulfilled' ? expanded.value : null)
+      setResearchChainStatus(stable.status === 'rejected' && expanded.status === 'rejected'
+        ? '研究链状态暂时不可读取。'
+        : '研究链状态已更新；全部结果仅供研究。')
+    })
+    return () => { active = false }
+  }, [workspace.mode])
+
+  useEffect(() => {
     let active = true
     setLiveCandles([])
-    if (!marketDataEnabled) { setChartStatus(''); return () => { active = false } }
+    if (!marketDataEnabled || !selectedBase.symbol) { setChartStatus(''); return () => { active = false } }
     setChartStatus('正在读取受控行情…')
     const stopPolling = createVisibilityPolling(async () => {
       const sequence = ++candleRequestSequence.current
@@ -230,7 +245,7 @@ export function MarketsPage() {
   useEffect(() => {
     let active = true
     setMarketQuote(null)
-    if (!marketDataEnabled) {
+    if (!marketDataEnabled || !selectedBase.symbol) {
       setQuoteStatus('')
       return () => { active = false }
     }
@@ -269,36 +284,23 @@ export function MarketsPage() {
     return () => { active = false; stopPolling() }
   }, [marketDataEnabled, selectedBase.symbol, updateMarketDataStatus])
 
-  useEffect(() => {
-    let active = true
-    if (!marketDataEnabled || !searchOpen || watchQuery.trim().length < 2) { setSearchStatus(''); return () => { active = false } }
-    const timer = window.setTimeout(() => {
-      void searchMarket(watchQuery, marketFilter === 'CN' ? 'A股' : '美股').then((payload) => {
-        if (!active) return
-        setRemoteInstruments(payload.items.map((item) => ({ symbol: item.symbol.replace(/\.(SS|SZ)$/, ''), name: item.name, market: item.market, price: 0, changePct: 0, currency: item.market === 'CN' ? 'CNY' : 'USD' })))
-        setSearchStatus(payload.items.length ? `找到 ${payload.items.length} 只股票` : '没有在线匹配结果')
-      }).catch((caught) => { if (active) setSearchStatus(caught instanceof Error ? caught.message : '在线搜索暂时不可用') })
-    }, 350)
-    return () => { active = false; window.clearTimeout(timer) }
-  }, [marketDataEnabled, marketFilter, searchOpen, watchQuery])
-
   const openInstrument = (instrument: Instrument) => {
     const next = new URLSearchParams(searchParams)
     next.set('market', instrument.market)
     next.set('symbol', instrument.symbol)
     next.delete('event_id')
     setSearchParams(next)
-    setMobileWatchlistOpen(false)
+    setStockSwitcherOpen(false)
   }
 
   const changeWatchlist = async (instrument: Instrument, remove: boolean) => {
     setWatchBusy(instrument.symbol)
-    setSearchStatus('')
+    setSwitcherStatus('')
     try {
       await workspace.changeWatchlist(instrument.market, instrument.symbol, remove)
-      setSearchStatus(remove ? `${instrument.symbol} 已从自选移除` : `${instrument.symbol} 已加入自选`)
+      setSwitcherStatus(remove ? `${instrument.symbol} 已从自选移除` : `${instrument.symbol} 已加入自选`)
     } catch (caught) {
-      setSearchStatus(caught instanceof Error ? caught.message : '自选更新失败。')
+      setSwitcherStatus(caught instanceof Error ? caught.message : '自选更新失败。')
     } finally {
       setWatchBusy('')
     }
@@ -309,19 +311,6 @@ export function MarketsPage() {
       symbol, name: symbol, market, price: 0, changePct: 0, currency: market === 'CN' ? 'CNY' as const : 'USD' as const,
     }
     await changeWatchlist(instrument, remove)
-  }
-
-  const changeWatchlistPin = async (instrument: Instrument, pinned: boolean) => {
-    setWatchBusy(instrument.symbol)
-    setSearchStatus('')
-    try {
-      await workspace.changeWatchlistPin(instrument.market, instrument.symbol, pinned)
-      setSearchStatus(pinned ? `${instrument.symbol} 已置顶` : `${instrument.symbol} 已取消置顶`)
-    } catch (caught) {
-      setSearchStatus(caught instanceof Error ? caught.message : '自选置顶更新失败。')
-    } finally {
-      setWatchBusy('')
-    }
   }
 
   const currentCandleIdentity = `${selectedBase.symbol}:${timeframe}`
@@ -453,6 +442,9 @@ export function MarketsPage() {
     modelVersion: '无正式版本',
     eventId: 'NO-ACTIVE-EVENT',
   }
+  const expandedResearchStatus = expandedResearchLoad && expandedResearchLoad.status.state !== 'error'
+    ? expandedResearchLoad.status.data
+    : null
   const auxiliaryInspector = (
     <div className="canonical-auxiliary-inspector">
       <nav className="inspector-tabs" aria-label="行情辅助面板">
@@ -473,47 +465,37 @@ export function MarketsPage() {
           <div><dt>目标</dt><dd>{inspectorDecision.target}</dd></div>
           <div><dt>最大风险</dt><dd>{inspectorDecision.maxLoss}</dd></div>
         </dl>
-        <button className="button primary wide" type="button" onClick={() => navigate(`/portfolio?market=${selected.market}&symbol=${encodeURIComponent(selected.symbol)}&event_id=${officialDecision?.officialEventId ?? ''}`)}><CircleDollarSign size={16} /> 查看官方模拟账户</button>
-        <button className="button secondary wide" type="button" onClick={() => setParam('tab', '信号时间线')}>查看完整证据</button>
+        <button className="button tertiary wide" type="button" onClick={() => navigate(`/portfolio?market=${selected.market}&symbol=${encodeURIComponent(selected.symbol)}&event_id=${officialDecision?.officialEventId ?? ''}`)}><CircleDollarSign size={16} /> 查看官方验证复盘</button>
+        <button className="button primary wide" type="button" onClick={() => setParam('tab', '信号时间线')}>查看现有证据</button>
         <footer><span>{inspectorDecision.modelVersion}</span><span>{inspectorDecision.eventId}</span></footer>
       </div>}
       {inspectorTab === '新闻' && <div className="inspector-panel inspector-placeholder"><Newspaper size={22} /><h2>市场资讯</h2><p>这里显示已验证来源的公司新闻、财报和市场事件。没有来源或时间戳的内容不会伪装成新闻。</p><span>{currentLiveCandles.length ? '当前股票的新闻接口尚未接入' : '暂无可验证行情，暂不显示资讯'}</span></div>}
       {inspectorTab === '盘口' && <div className="inspector-panel inspector-placeholder"><Layers3 size={22} /><h2>价格深度</h2><p>这里预留买卖盘、买一到买五、卖一到卖五和逐笔成交。只有接入 Level 2 数据后才会显示，不用重复成交量占位。</p><span>当前数据源未提供可验证盘口</span></div>}
       {inspectorTab === '预警' && <div className="inspector-panel alert-panel"><div className="inspector-heading"><span>PRICE ALERT</span><strong>图内预警</strong></div><p>设定后会在 K 线上显示水平线；隐藏只影响这次查看，关闭会停用预警。</p><p className="alert-safety-note"><ShieldCheck size={15} /> 只提醒，不会自动买卖。</p><div className="inline-alert-form"><label><span>提醒价格</span><input aria-label="提醒价格" inputMode="decimal" min="0.01" step="0.01" type="number" value={alertPrice || ''} onChange={(event) => setAlertPrice(Number(event.target.value))} /></label><button className="button primary" type="button" disabled={alertBusy || !alertPrice} onClick={() => void saveAlertInChart()}><BellRing size={16} /> 保存</button></div><p className="form-status" role="status" aria-live="polite">{alertStatus}</p><div className="alert-list">{alerts.filter((item) => isAlertForInstrument(item, selected.market, selected.symbol)).map((item) => { const isActive = item.is_active === undefined || item.is_active === true; const markerVisible = item.id === undefined || !hiddenAlertIds.includes(item.id); return <div key={item.id ?? `${item.symbol}-${item.target_price}`}><span><strong>{item.target_price ?? '条件预警'}</strong><small>{isActive ? <><Bell size={13} aria-hidden="true" /> 已开启</> : <><BellOff size={13} aria-hidden="true" /> 已关闭</>}</small></span>{item.id && isActive && <span className="alert-list-actions"><button className="icon-button" type="button" aria-label={`${markerVisible ? '隐藏' : '显示'} ${item.symbol} ${item.target_price ?? ''} 预警线`} title={markerVisible ? '隐藏图上预警线' : '显示图上预警线'} onClick={() => toggleAlertMarker(item.id!)}>{markerVisible ? <Eye size={16} /> : <EyeOff size={16} />}</button><button className="icon-button danger" type="button" aria-label={`关闭 ${item.symbol} ${item.target_price ?? ''} 预警`} title="关闭预警并移除价格线" disabled={alertBusy} onClick={() => void disableAlertInChart(item.id!)}><Trash2 size={16} /></button></span>}</div> })}</div></div>}
-      {inspectorTab === '资料' && <div className="inspector-panel inspector-placeholder"><SlidersHorizontal size={22} /><h2>数据说明</h2><p>K 线数据：{currentLiveCandles.length ? chartStatus : demoMode ? '界面演示数据' : '尚未取得'}</p><p>当前报价：{quoteStatus || '尚未核对报价权限与来源'}</p><p>账户状态：仅在用户主动授权券商后显示实盘连接；行情连接不等于账户连接。</p><span>延迟或未验证实时权限的数据只用于研究，不会覆盖正式行动的即时交易字段。</span></div>}
+      {inspectorTab === '资料' && <div className="inspector-panel inspector-placeholder"><SlidersHorizontal size={22} /><h2>数据与研究链说明</h2><p>K 线数据：{currentLiveCandles.length ? chartStatus : demoMode ? '界面演示数据' : '尚未取得'}</p><p>当前报价：{quoteStatus || '尚未核对报价权限与来源'}</p><div className="research-chain-summary" aria-label="13 和 97 股票研究链状态"><section><strong>13 股票稳定研究链</strong><span>{stableResearchStatus ? `${stableResearchStatus.coverage_count}/${stableResearchStatus.stock_count} 有覆盖 · ${stableResearchStatus.no_data_count} 缺资料` : '状态不可用'}</span><small>{stableResearchStatus?.last_result_at ? `最近结果 ${new Date(stableResearchStatus.last_result_at).toLocaleString(formatLocale, { hour12: false })}` : '暂无新鲜结果时间'}</small></section><section><strong>97 股票扩展研究链</strong><span>{expandedResearchStatus ? `${expandedResearchStatus.coverage_count}/97 有覆盖 · ${expandedResearchStatus.no_data_count} 缺资料` : expandedResearchLoad?.forbidden ? '当前权限不可查看' : '状态不可用'}</span><small>{expandedResearchStatus?.last_result_at ? `最近结果 ${new Date(expandedResearchStatus.last_result_at).toLocaleString(formatLocale, { hour12: false })}` : '暂无新鲜结果时间'}</small></section></div><p className="research-only-note"><ShieldCheck size={15} /> 研究用途，不产生订单；缺资料、失效和过期结果不会升级为官方验证或实盘。</p><span>{researchChainStatus || '研究链状态尚未读取。'} 行情连接不等于券商账户连接。</span></div>}
     </div>
   )
 
   if (!searchParams.has('symbol')) {
-    return <MarketOverview
-      market={marketFilter}
-      watchlist={currentSavedSymbols}
-      authenticated={workspace.mode === 'authenticated'}
-      marketDataEnabled={marketDataEnabled}
-      demoMode={demoMode}
-      busySymbol={watchBusy}
-      onMarketChange={(market) => {
-        const next = new URLSearchParams(searchParams)
-        next.set('market', market)
-        next.delete('symbol')
-        setSearchParams(next)
-      }}
-      onOpen={openInstrument}
-      onWatchlist={(instrument, remove) => changeWatchlist(instrument, remove)}
-    />
+    return <div className="page research-stock-empty">
+      <PageHeader kicker="RESEARCH / STOCK CONTEXT" title="选择一只股票开始研究" description="研究页只承载当前股票的正式 K 线、报价、现有证据与研究状态，不复制发现页的候选池和筛选器。" />
+      <section className="research-stock-empty-panel">
+        <div><Search size={26} /><h2>从已知股票或候选池进入</h2><p>使用顶部股票搜索可直接打开已知股票；如果还没有候选，请到发现页查看覆盖、事件和数据状态。</p></div>
+        <div className="research-empty-market" role="group" aria-label="快捷股票市场">
+          <button className={marketFilter === 'US' ? 'active' : ''} type="button" onClick={() => setMarket('US')}>美股</button>
+          <button className={marketFilter === 'CN' ? 'active' : ''} type="button" onClick={() => setMarket('CN')}>A股</button>
+        </div>
+        {savedInstruments.length > 0 && <div className="research-saved-stocks" aria-label="最近自选股票">{savedInstruments.slice(0, 6).map((instrument) => <button type="button" onClick={() => openInstrument(instrument)} key={instrument.symbol}><strong>{instrument.symbol}</strong><span>{instrument.name}</span></button>)}</div>}
+        <button className="button primary" type="button" onClick={() => navigate('/discover')}>前往发现股票 <ArrowRight size={16} /></button>
+      </section>
+    </div>
   }
 
   return (
-    <div className={`market-workspace ${mobileWatchlistOpen ? 'mobile-watchlist-open' : ''} ${mobileEvidenceOpen ? 'mobile-evidence-open' : ''}`}>
-      <aside className="watchlist-panel" id="mobile-watchlist-panel" aria-label="我的自选">
-        <header><div><span>WATCHLIST</span><strong>我的自选</strong></div><button className="icon-button" type="button" aria-label={searchOpen ? '关闭股票搜索' : '搜索全市场股票'} onClick={() => setSearchOpen(!searchOpen)}>{searchOpen ? <X size={17} /> : <Search size={17} />}</button></header>
-        {searchOpen && <div className="watch-search"><Search size={15} /><input autoFocus aria-label="搜索全市场股票" autoComplete="off" name="watchlist-search" placeholder={marketFilter === 'US' ? '代码或名称，例如 PLTR…' : '6 位代码或公司名称…'} value={watchQuery} onChange={(event) => setWatchQuery(event.target.value)} />{searchStatus && <small role="status" aria-live="polite">{searchStatus}</small>}{remoteInstruments.length > 0 && <div className="watch-search-results">{remoteInstruments.filter((item) => item.market === marketFilter).map((instrument) => { const saved = currentSavedSymbols.includes(instrument.symbol); return <div key={instrument.symbol}><button type="button" onClick={() => openInstrument(instrument)}><strong>{instrument.symbol}</strong><small>{instrument.name}</small></button><WatchlistToggle symbol={instrument.symbol} saved={saved} busy={watchBusy === instrument.symbol} onToggle={(remove) => changeWatchlist(instrument, remove)} /></div> })}</div>}</div>}
-        <div className="market-tabs"><button className={marketFilter === 'US' ? 'active' : ''} type="button" onClick={() => setMarket('US')}>美股</button><button className={marketFilter === 'CN' ? 'active' : ''} type="button" onClick={() => setMarket('CN')}>A股</button></div>
-        <div className="watchlist-rows">{visibleInstruments.map((instrument) => { const pinned = currentPinnedSymbols.includes(instrument.symbol); return <div className={instrument.symbol === selected.symbol ? 'watch-row active' : 'watch-row'} key={instrument.symbol}><button className="watch-row-main" type="button" onClick={() => openInstrument(instrument)}><span><strong>{instrument.symbol}</strong><small>{instrument.name}</small></span><span className={instrument.changePct >= 0 ? 'positive-text' : 'negative-text'}><strong>{instrument.price ? instrument.price.toFixed(2) : '待加载'}</strong><small>{instrument.price ? `${instrument.changePct >= 0 ? '+' : ''}${instrument.changePct.toFixed(2)}%` : marketDataEnabled ? '打开后加载' : '行情未连接'}</small></span></button>{!demoMode && <><button className={`watch-pin ${pinned ? 'active' : ''}`} type="button" disabled={watchBusy === instrument.symbol} aria-label={pinned ? `取消置顶 ${instrument.symbol}` : `置顶 ${instrument.symbol}`} title={pinned ? '取消置顶' : '置顶'} onClick={() => void changeWatchlistPin(instrument, !pinned)}>{pinned ? <PinOff size={14} /> : <Pin size={14} />}</button><WatchlistToggle className="watch-row-toggle" symbol={instrument.symbol} saved onToggle={(remove) => changeWatchlist(instrument, remove)} busy={watchBusy === instrument.symbol} /></>}</div> })}{!visibleInstruments.length && <p className="watch-empty">自选为空，使用上方搜索股票或切换到热门关注。</p>}</div>
-      </aside>
-
+    <div className={`market-workspace research-market-workspace ${stockSwitcherOpen ? 'stock-switcher-open' : ''} ${mobileEvidenceOpen ? 'mobile-evidence-open' : ''}`}>
       <section className="chart-workspace">
-        <header className="instrument-header"><div><span>{selected.name} · {selected.market === 'US' ? '美股' : 'A股'}</span><h1>{selected.symbol}</h1></div><div className="instrument-price"><strong>{selected.price ? selected.price.toFixed(2) : '—'}</strong>{selected.price > 0 && <span className={selected.changePct >= 0 ? 'positive-text' : 'negative-text'}>{selected.changePct >= 0 ? <ArrowUpRight size={16} /> : <ArrowDownRight size={16} />}{Math.abs(selected.changePct).toFixed(2)}%</span>}</div><div className="instrument-actions"><button className="button primary" type="button" onClick={() => navigate('/portfolio')}><CircleDollarSign size={16} /> 官方模拟账户</button></div><div className="mobile-market-controls"><button type="button" aria-controls="mobile-watchlist-panel" aria-expanded={mobileWatchlistOpen} onClick={() => setMobileWatchlistOpen((current) => !current)}><Search size={16} /> 自选</button><button type="button" aria-controls="mobile-evidence-panel" aria-expanded={mobileEvidenceOpen} onClick={() => setMobileEvidenceOpen((current) => !current)}>{mobileEvidenceOpen ? <PanelBottomClose size={16} /> : <PanelBottomOpen size={16} />} 分析</button></div></header>
+        <header className="instrument-header"><div><span>{selected.name} · {selected.market === 'US' ? '美股' : 'A股'}</span><h1>{selected.symbol}</h1></div><div className="instrument-price"><strong>{selected.price ? selected.price.toFixed(2) : '—'}</strong>{selected.price > 0 && <span className={selected.changePct >= 0 ? 'positive-text' : 'negative-text'}>{selected.changePct >= 0 ? <ArrowUpRight size={16} /> : <ArrowDownRight size={16} />}{Math.abs(selected.changePct).toFixed(2)}%</span>}</div><div className="instrument-actions"><button className="button secondary" type="button" aria-controls="research-stock-switcher" aria-expanded={stockSwitcherOpen} onClick={() => setStockSwitcherOpen((current) => !current)}><Search size={16} /> 切换股票</button><button className="button tertiary" type="button" onClick={() => navigate('/portfolio')}><CircleDollarSign size={16} /> 官方验证复盘</button></div><div className="mobile-market-controls"><button type="button" aria-controls="research-stock-switcher" aria-expanded={stockSwitcherOpen} onClick={() => setStockSwitcherOpen((current) => !current)}><Search size={16} /> 股票</button><button type="button" aria-controls="mobile-evidence-panel" aria-expanded={mobileEvidenceOpen} onClick={() => setMobileEvidenceOpen((current) => !current)}>{mobileEvidenceOpen ? <PanelBottomClose size={16} /> : <PanelBottomOpen size={16} />} 分析</button></div></header>
+        {stockSwitcherOpen && <section className="research-stock-switcher" id="research-stock-switcher" aria-label="当前股票切换"><header><strong>切换当前股票</strong><span>不复制全局搜索或发现筛选</span></header><div className="market-tabs"><button className={marketFilter === 'US' ? 'active' : ''} type="button" onClick={() => setMarket('US')}>美股</button><button className={marketFilter === 'CN' ? 'active' : ''} type="button" onClick={() => setMarket('CN')}>A股</button></div><div className="research-switcher-list">{visibleInstruments.slice(0, 8).map((instrument) => <button className={instrument.symbol === selected.symbol ? 'active' : ''} type="button" onClick={() => openInstrument(instrument)} key={instrument.symbol}><span><strong>{instrument.symbol}</strong><small>{instrument.name}</small></span><span>{instrument.price ? instrument.price.toFixed(2) : '待加载'}</span></button>)}{!visibleInstruments.length && <p>当前市场没有自选股票。请前往发现页建立候选。</p>}</div>{switcherStatus && <p className="form-status" role="status" aria-live="polite">{switcherStatus}</p>}<button className="button tertiary wide" type="button" onClick={() => navigate('/discover')}>前往发现股票</button></section>}
         <div className="chart-frame"><ChartWorkspace userId={workspace.data?.me.id} initialSymbol={selected.symbol} initialMarket={selected.market} initialTimeframe={timeframe} inspectorOpen={inspectorOpen} onInspectorOpenChange={setInspectorOpen} inspectorExtra={auxiliaryInspector} toolbarActions={<><button type="button" aria-label="打开价格预警" title="价格预警" disabled={!selected.price} onClick={() => setInspectorTab('预警')}><BellRing size={15} /><span>预警</span></button><button type="button" aria-label="查看技术指标" title="技术指标" onClick={openTechnicalIndicators}><Activity size={15} /><span>指标</span></button><button className={settingsOpen ? 'active' : ''} type="button" aria-label="图表设置" title="图表设置" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(!settingsOpen)}><Settings2 size={15} /><span>设置</span></button></>} candles={chartData} showGrid={chartOptions.grid} showVolume={chartOptions.volume} upColor={chartOptions.upColor} downColor={chartOptions.downColor} textColor={chartOptions.textColor} dataStatus={currentLiveCandles.length ? chartStatus : demoMode ? '当前使用界面演示数据' : chartStatus || '暂无行情'} initialQuote={marketQuote?.symbol === selected.symbol ? marketQuote : null} loadQuote={marketDataEnabled ? loadWorkspaceQuote : undefined} subscribeMarketStream={marketDataEnabled ? subscribeMarketStream : undefined} officialActivity={workspace.data?.portfolio.activity ?? null} alertPrices={alertPricesForInstrument} watchlistSymbols={{ US: watchlists.us, CN: watchlists.a_share }} isWatchlisted={(market, symbol) => (market === 'CN' ? watchlists.a_share : watchlists.us).includes(symbol)} onWatchlistToggle={changeChartWatchlist} watchBusy={watchBusy} loadCandles={marketDataEnabled ? loadWorkspaceCandles : undefined} onSymbolChange={(symbol, market) => { const next = new URLSearchParams(searchParams); next.set('market', market); next.set('symbol', symbol); next.delete('event_id'); setSearchParams(next) }} onTimeframeChange={(nextTimeframe) => setParam('timeframe', nextTimeframe)} />{!currentLiveCandles.length && !demoMode && <div className="chart-empty-state"><CircleAlert size={22} /><strong>{marketDataEnabled ? '暂时无法读取 K 线' : '行情连接未启用'}</strong><span>{chartStatus || '登录并确认行情服务后可加载真实 K 线。'}</span></div>}</div>
         {settingsOpen && <div className="chart-settings" aria-label="图表设置"><label><input type="checkbox" checked={chartOptions.volume} onChange={(event) => setChartOptions({ ...chartOptions, volume: event.target.checked })} />成交量</label><label><input type="checkbox" checked={chartOptions.grid} onChange={(event) => setChartOptions({ ...chartOptions, grid: event.target.checked })} />网格</label><label className="chart-color-setting">上涨颜色<input type="color" value={chartOptions.upColor} onChange={(event) => setChartOptions({ ...chartOptions, upColor: event.target.value })} /></label><label className="chart-color-setting">下跌颜色<input type="color" value={chartOptions.downColor} onChange={(event) => setChartOptions({ ...chartOptions, downColor: event.target.value })} /></label><label className="chart-color-setting">文字颜色<input type="color" value={chartOptions.textColor} onChange={(event) => setChartOptions({ ...chartOptions, textColor: event.target.value })} /></label><button className="button tertiary" type="button" onClick={() => setChartOptions({ volume: true, grid: true, upColor: '#27b487', downColor: '#e4606b', textColor: '#98a2ae' })}>恢复默认</button></div>}
         <div className="mobile-evidence-panel" id="mobile-evidence-panel">

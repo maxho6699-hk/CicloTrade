@@ -209,7 +209,7 @@
 
 .account-source-bar > span { display: flex; align-items: center; gap: 8px; font-weight: 600; }
 .account-source-bar > strong { display: flex; align-items: center; gap: 8px; color: var(--positive); font-size: 13px; }
-.account-source-bar > small { display: flex; align-items: center; gap: 6px; margin-left: auto; color: var(--muted); font: 12px var(--mono); }
+.account-source-bar > small { display: flex; min-width: 220px; align-items: center; justify-content: flex-end; gap: 6px; margin-left: auto; color: var(--muted); font: 12px/1.45 var(--mono); text-align: right; }
 
 .metric-grid { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--border); background: var(--workspace); }
 .metric-grid article { display: grid; gap: 6px; min-height: 104px; padding: 17px; border-right: 1px solid var(--border); }
@@ -473,12 +473,22 @@ td.positive-text, td.negative-text { align-items: center; gap: 4px; }
 .account-position-row > div > strong { font: 13px var(--mono); }
 .account-position-row .account-symbol strong { font-family: inherit; font-size: 14px; }
 .account-position-row .account-symbol small { color: var(--muted); font-size: 11px; }
+.account-symbol-link { display: grid; min-height: 44px; align-content: center; gap: 3px; padding: 0; border: 0; background: transparent; color: var(--text); cursor: pointer; text-align: left; }
+.account-symbol-link:hover strong, .account-symbol-link:focus-visible strong { color: var(--accent); }
+.account-symbol-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .account-position-row .positive-text, .account-position-row .negative-text { display: inline-flex; align-items: center; gap: 3px; }
 .account-position-row .positive-text small, .account-position-row .negative-text small { color: inherit; }
 .account-position-expand { display: none; }
 .closed-order-row { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
 .closed-order-row > div:last-child { justify-items: end; text-align: right; }
 .closed-order-row > div:last-child strong { font: 600 14px var(--mono); }
+.portfolio-projection-note, .portfolio-capability-lock { display: flex; align-items: flex-start; gap: 9px; padding: 11px 15px; border-top: 1px solid var(--border); background: var(--surface-inset); color: var(--muted); font-size: 12px; line-height: 1.5; }
+.portfolio-projection-note { display: grid; gap: 4px; }
+.portfolio-projection-note strong, .portfolio-capability-lock strong { color: var(--text); font-size: 12px; }
+.portfolio-projection-note.warning { background: color-mix(in srgb, var(--warning) 8%, var(--surface-inset)); }
+.portfolio-projection-note.warning strong { color: var(--warning); }
+.portfolio-capability-lock > svg { flex: 0 0 auto; color: var(--warning); }
+.portfolio-capability-lock > div { display: grid; gap: 3px; }
 
 .quote-value { font: 600 22px var(--mono); }
 .quote-value small { font-size: 13px; }
