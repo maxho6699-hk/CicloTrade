@@ -36,9 +36,17 @@ const riskRequest = {
   account_version: 2, source_context: { kind: 'manual', reference_id: null },
 }
 const riskChecks = [
-  'buying_power', 'max_loss', 'position_concentration', 'sector_concentration',
-  'drawdown', 'event_gap', 'liquidity',
-].map((code) => ({ code, status: 'pass', title: code, detail: `${code} passed`, value: null, limit: null, data_state: 'fresh' }))
+  { code: 'buying_power', value: { required: 100, available: 900 }, limit: { required_max: 900 } },
+  { code: 'max_loss', value: { usd: 100, pct: 1, unbounded: false }, limit: { usd: 1000, pct: 10 } },
+  { code: 'position_concentration', value: { usd: 100, pct: 1 }, limit: { pct: 25 } },
+  { code: 'sector_concentration', value: { industry: 'Technology', usd: 100, pct: 1 }, limit: { pct: 35 } },
+  { code: 'drawdown', value: { pct: 2, peak_usd: 10000, current_usd: 9800 }, limit: { pct: 20 } },
+  { code: 'event_gap', value: { scheduled_at: '2026-08-18T20:15:00Z', revision_id: 1, payload_sha256: 'c'.repeat(64) }, limit: { scheduled_at: 'must_be_known' } },
+  { code: 'liquidity', value: { spread_pct: 0.5 }, limit: { spread_pct: 2 } },
+].map(({ code, value, limit }) => ({
+  code, status: 'pass', title: code, detail: `${code} passed`,
+  value: JSON.stringify(value), limit: JSON.stringify(limit), data_state: 'fresh',
+}))
 const riskProof = {
   id: 'ppr_1234567890', schema_version: 'r1', season_id: 'pps_1234567890', quote_id: 'ppq_1234567890',
   account_version: 2, draft_sha256: 'a'.repeat(64), proof_sha256: 'b'.repeat(64), created_at: '2026-08-14T00:00:00+00:00',
@@ -78,7 +86,7 @@ test('personal paper risk proof freezes the request matrix and seven-check decis
   assert.equal(validPersonalPaperRiskProof({ ...riskProof, checks: [...riskChecks.slice(0, 6), riskChecks[0]] }), false)
   const failedChecks = riskChecks.map((check, index) => index === 0 ? { ...check, status: 'fail' } : check)
   assert.equal(validPersonalPaperRiskProof({ ...riskProof, checks: failedChecks }), false)
-  assert.equal(validPersonalPaperRiskProof({ ...riskProof, decision: 'reject', risk_level: 'blocked', checks: failedChecks, blocking_reasons: ['购买力不足'] }), true)
+  assert.equal(validPersonalPaperRiskProof({ ...riskProof, decision: 'reject', risk_level: 'blocked', checks: failedChecks, blocking_reasons: [failedChecks[0].detail] }), true)
   assert.equal(validPersonalPaperRiskProof({ ...riskProof, decision: 'reject', risk_level: 'blocked' }), false)
 })
 
