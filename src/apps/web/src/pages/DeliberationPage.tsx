@@ -41,8 +41,8 @@ export function DeliberationPage() {
       <aside className="deliberation-evidence" aria-labelledby="directional-evidence-title">
         <header className="intelligence-section-heading"><div><span>DIRECTIONAL EVIDENCE</span><h2 id="directional-evidence-title">牛熊独立证据强度</h2></div></header>
         <div className="directional-emblems" aria-hidden="true"><span className="is-bull">牛</span><span className="is-bear">熊</span></div>
-        <EvidenceStrength label="支持证据强度" value={null} tone="support" />
-        <EvidenceStrength label="反向证据强度" value={null} tone="counter" />
+        <EvidenceStrength label="支持证据强度" value={null} status={null} coverage={null} methodVersion={null} observedAt={null} availableAt={null} asOf={null} calculatedAt={null} tone="support" />
+        <EvidenceStrength label="反向证据强度" value={null} status={null} coverage={null} methodVersion={null} observedAt={null} availableAt={null} asOf={null} calculatedAt={null} tone="counter" />
         <div className="deliberation-evidence-groups">
           <article><strong>支持证据</strong><span>—</span><small>missing</small></article>
           <article><strong>反向证据</strong><span>—</span><small>missing</small></article>
@@ -53,7 +53,7 @@ export function DeliberationPage() {
 
       <section className="intelligence-panel deliberation-timeline" aria-labelledby="deliberation-timeline-title">
         <header className="intelligence-section-heading"><div><span>REAL WORKFLOW TIMELINE</span><h2 id="deliberation-timeline-title">审议任务时间轴</h2></div>{taskId && <Link to={`/workflow/${encodeURIComponent(taskId)}`}>查看真实 Workflow <ArrowRight /></Link>}</header>
-        <TruthState title="暂无真实审议节点" detail="审议服务没有返回 queued、running、partial、succeeded、failed 或 cancelled 节点；这里不会使用演示日志填充。" />
+        <TruthState title="暂无真实审议节点" detail="审议服务没有返回 queued、running、partial、succeeded、failed、cancelled、blocked 或 timed_out 节点；这里不会使用演示日志填充。" />
       </section>
     </div>
   </div>

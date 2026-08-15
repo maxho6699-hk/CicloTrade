@@ -54,11 +54,37 @@ test('AI page fails closed when no provider is available and exposes no order-su
 
 test('Workflow reads the real backtest task projection and covers the public lifecycle', () => {
   assert.match(workflow, /backtestApi\.getJob/)
-  for (const status of ['queued', 'running', 'partial', 'succeeded', 'failed', 'cancelled']) {
+  for (const status of ['queued', 'running', 'partial', 'succeeded', 'failed', 'cancelled', 'blocked', 'timed_out']) {
     assert.match(workflowStatus, new RegExp(`${status}:`))
+    assert.match(intelligencePrimitives, new RegExp(`'${status}'`))
   }
   assert.match(workflow, /任务服务没有返回/)
   assert.doesNotMatch(workflow, /伪造日志|demoLog|mockTask/)
+})
+
+test('Workflow terminal states use distinct failure, cancellation, block, and timeout semantics', () => {
+  assert.match(intelligencePrimitives, /failed:\s*XCircle/)
+  assert.match(intelligencePrimitives, /cancelled:\s*CircleSlash2/)
+  assert.match(intelligencePrimitives, /blocked:\s*ShieldX/)
+  assert.match(intelligencePrimitives, /timed_out:\s*TimerOff/)
+  assert.match(intelligencePrimitives, /succeeded:\s*CheckCircle2/)
+  assert.doesNotMatch(intelligencePrimitives, /terminalStatuses[\s\S]*CheckCircle2/)
+})
+
+test('Directional strength is ready only with authoritative score binding metadata', () => {
+  for (const binding of [
+    /status === 'ready'/,
+    /coverage !== null/,
+    /methodVersion\.trim\(\)/,
+    /observedAt/,
+    /availableAt/,
+    /asOf/,
+    /calculatedAt/,
+    /Date\.parse/,
+  ]) assert.match(intelligencePrimitives, binding)
+  assert.match(deliberation, /status=\{null\}/)
+  assert.match(deliberation, /coverage=\{null\}/)
+  assert.match(deliberation, /methodVersion=\{null\}/)
 })
 
 test('Deliberation keeps the fixed four-seat, Ciclo, bull-bear and real-timeline structure', () => {

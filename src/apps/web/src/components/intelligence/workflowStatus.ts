@@ -1,6 +1,6 @@
 import type { BacktestStatus } from '../../api/backtests'
 
-export type WorkflowPublicStatus = BacktestStatus | 'partial'
+export type WorkflowPublicStatus = BacktestStatus | 'partial' | 'timed_out'
 
 export const WORKFLOW_STATUS_COPY: Record<WorkflowPublicStatus, string> = {
   queued: '排队中',
@@ -10,4 +10,5 @@ export const WORKFLOW_STATUS_COPY: Record<WorkflowPublicStatus, string> = {
   failed: '失败',
   cancelled: '已取消',
   blocked: '已阻断',
+  timed_out: '已超时',
 }
