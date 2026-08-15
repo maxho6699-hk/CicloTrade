@@ -23,37 +23,37 @@ const defaultEvents = [
     label: "正股买卖建议",
     note: "买入、加仓、持有、减仓与退出",
     enabled: false,
-    capability: "tg_stock_signal",
   },
   {
     key: "option_signal",
     label: "期权策略建议",
     note: "合约、到期日、执行价与最大风险",
     enabled: false,
-    capability: "tg_option_signal",
   },
   {
     key: "risk_rejected",
     label: "风险与止损提醒",
     note: "仓位、回撤、冷却期与系统暂停",
     enabled: false,
-    capability: "tg_risk_alert",
   },
   {
     key: "order_filled",
     label: "订单与成交状态",
     note: "提交、成交、拒绝与异常恢复",
     enabled: false,
-    capability: "tg_order_status",
   },
   {
     key: "membership_update",
     label: "会员与账单",
     note: "到期提醒、付款结果与权益变更",
     enabled: false,
-    capability: "tg_membership_update",
   },
 ];
+
+const EVENT_CAPABILITIES: Partial<Record<(typeof defaultEvents)[number]["key"], string>> = {
+  stock_signal: "tg_stock_signal",
+  option_signal: "tg_option_signal",
+};
 
 export function NotificationsPage() {
   const workspace = useWorkspace();
@@ -74,11 +74,13 @@ export function NotificationsPage() {
     setEvents((items) =>
       items.map((item) => {
         if (!(item.key in stored)) return item;
-        const allowed = capabilityListKnown && capabilities.includes(item.capability);
+        const requiredCapability = EVENT_CAPABILITIES[item.key];
+        const allowed = telegramReady
+          && (!requiredCapability || (capabilityListKnown && capabilities.includes(requiredCapability)));
         return { ...item, enabled: allowed && stored[item.key] };
       }),
     );
-  }, [capabilityListKnown, capabilities, workspace.data]);
+  }, [capabilityListKnown, capabilities, telegramReady, workspace.data]);
 
   return (
     <div className="page operations-page notification-dashboard">
@@ -204,12 +206,17 @@ export function NotificationsPage() {
           </header>
           <div className="setting-list">
             {events.map((event) => {
-              const locked = !capabilityListKnown || !capabilities.includes(event.capability);
-              const entitlementLabel = !capabilityListKnown
-                ? "服务端能力未返回 · 已锁定"
-                : locked
-                  ? "当前账户未授予此服务端能力 · 已锁定"
-                  : "服务端能力已授予";
+              const requiredCapability = EVENT_CAPABILITIES[event.key];
+              const capabilityLocked = Boolean(requiredCapability)
+                && (!capabilityListKnown || !capabilities.includes(requiredCapability));
+              const locked = !telegramReady || capabilityLocked;
+              const entitlementLabel = !telegramReady
+                ? "Telegram 授权未完成 · 已锁定"
+                : requiredCapability && !capabilityListKnown
+                  ? "服务端能力未返回 · 已锁定"
+                  : capabilityLocked
+                    ? "当前账户未授予服务端能力 · 已锁定"
+                    : "Telegram 授权已完成";
               return (
                 <article key={event.key}>
                   <div>

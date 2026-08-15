@@ -17,6 +17,9 @@ test('Notifications gates preferences by server capabilities and does not fabric
   const source = read('NotificationsPage.tsx')
   assert.match(source, /capabilities/)
   assert.match(source, /EVENT_CAPABILITIES|服务端能力|能力未返回/)
+  assert.match(source, /stock_signal: "tg_stock_signal"[\s\S]*option_signal: "tg_option_signal"/)
+  assert.match(source, /!telegramReady/)
+  assert.doesNotMatch(source, /risk_rejected:\s*"tg_|order_filled:\s*"tg_|membership_update:\s*"tg_/)
   assert.doesNotMatch(source, /高级会员|专业会员|標準會員|高級會員/)
   assert.match(source, /没有返回任何真实投递结果|不会展示演示送达记录/)
 })
@@ -48,4 +51,10 @@ test('Legal exposes static policy entry points without claiming a consent receip
   assert.match(source, /政策|隐私|账户域|版本化同意收据/)
   assert.match(source, /未接入|未提供|locked|锁定/)
   assert.doesNotMatch(source, /consent.*true|versioned.*receipt.*verified/i)
+})
+
+test('secondary page reduced motion rule targets the actual operations page host', () => {
+  const styles = readFileSync(new URL('../src/styles/secondary-pages.css', import.meta.url), 'utf8')
+  assert.match(styles, /prefers-reduced-motion:[^}]*\{[\s\S]*\.operations-page \*/)
+  assert.doesNotMatch(styles, /\.secondary-pages \*/)
 })
