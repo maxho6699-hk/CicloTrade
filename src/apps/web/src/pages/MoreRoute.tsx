@@ -22,7 +22,6 @@ export function MoreRoute() {
     try {
       setCatalog(await fetchFeatureCatalog())
     } catch (caught) {
-      setCatalog(null)
       setError(message(caught))
     } finally {
       setLoading(false)

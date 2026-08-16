@@ -298,15 +298,15 @@ test('market workspace keeps alert controls explicit and local marker visibility
   assert.match(pagesSource, /return \{ \.\.\.selectedBase, price: 0, changePct: 0 \}/)
 })
 
-test('market discovery caches each market safely while calendar and option data retain explicit groups', () => {
+test('market discovery caches each market safely while calendar stays truthful and option data retain explicit groups', () => {
   assert.match(marketOverviewSource, /marketQuoteCache = new Map<Market, MarketQuoteCacheEntry>/)
   assert.match(marketOverviewSource, /fetchOverviewQuotes\(otherMarket, preloadCandidates\)/)
   assert.match(marketOverviewSource, /requestSequence\.current !== sequence/)
   assert.match(marketCalendarSource, /market: Market/)
-  assert.match(marketCalendarSource, /PREVIEW_EVENTS\.filter\(\(item\) => item\.market === market\)/)
+  assert.doesNotMatch(marketCalendarSource, /PREVIEW_EVENTS/)
   assert.doesNotMatch(marketCalendarSource, /澳洲|英國|日本/)
-  assert.match(marketCalendarSource, /財報日期預覽/)
-  assert.match(marketCalendarSource, /香港时区预览/)
+  assert.match(marketCalendarSource, /真实事件源待接入/)
+  assert.match(marketCalendarSource, /不会用预览日期或虚构数字填充/)
   assert.doesNotMatch(marketCalendarSource, /台北|Taipei|Asia\/Taipei/)
   assert.match(optionWorkspaceSource, /className="option-chain-groups"/)
   assert.match(optionWorkspaceSource, /colSpan=\{4\}>Greeks/)

@@ -7,7 +7,6 @@ import {
   CircleDollarSign,
   Clock3,
   LoaderCircle,
-  ReceiptText,
   ShieldCheck,
   WalletCards,
   XCircle,
@@ -31,6 +30,7 @@ import {
   type PersonalPaperSide,
 } from '../api/client'
 import { PageHeader } from '../components/PageHeader'
+import { StockLogo } from '../components/StockLogo'
 import { CicloCore, type CicloCoreState } from '../components/paper/CicloCore'
 import { useCicloTier } from '../api/use-ciclo-tier'
 import {
@@ -182,6 +182,17 @@ export function PersonalPaperPage() {
     setQuote(null); setRiskProof(null); setKey(''); setFeedback(''); setReceipt(null); setPendingRequest(null); setSubmitState('idle'); setReviewedWarnings({})
   }
   const updateDraft = (next: PaperDraftValues) => { setDraft(next); resetProofs() }
+  const changeMarket = (market: 'US' | 'HK' | 'CN') => {
+    const next = new URLSearchParams(searchParams)
+    next.set('market', market)
+    setSearchParams(next)
+  }
+
+  useEffect(() => {
+    setError('')
+    resetProofs()
+    if (!marketSupported) setLoading(false)
+  }, [requestedMarket])
 
   const acceptAccount = (next: PersonalPaperAccount) => {
     if (account && account.account_version !== next.account_version) resetProofs()
@@ -200,7 +211,7 @@ export function PersonalPaperPage() {
   }
 
   useEffect(() => {
-    if (!seasonId) return
+    if (!seasonId || !marketSupported) return
     let active = true
     setLoading(true); setError('')
     void fetchPersonalPaperAccount(seasonId).then((payload) => { if (active) setAccount(payload) }).catch((caught) => {
@@ -209,7 +220,7 @@ export function PersonalPaperPage() {
       if (/不存在|不属于|404/.test(message)) { window.localStorage.removeItem(SEASON_STORAGE_KEY); setSeasonId(''); setAccount(null) }
     }).finally(() => { if (active) setLoading(false) })
     return () => { active = false }
-  }, [seasonId])
+  }, [marketSupported, seasonId])
 
   useEffect(() => {
     if (!riskProof) return
@@ -324,16 +335,17 @@ export function PersonalPaperPage() {
       <span><ShieldCheck size={16} />{copy.official}<strong>{copy.isolated}</strong></span>
       <span><CircleDollarSign size={16} />{copy.live}<strong>{copy.disconnected}</strong></span>
     </section>
-    {!marketSupported && <div className="paper-alert error" role="alert"><AlertTriangle size={18} /><span>{requestedMarket ? `个人模拟当前只支持 US；${requestedMarket} 暂不支持。` : '个人模拟需要明确的 market 参数；当前只支持 US。'}</span></div>}
-    {error && <div className="paper-alert error" role="alert"><AlertTriangle size={18} /><span>{localizeError(error, locale)}</span>{seasonId && <button type="button" onClick={() => void loadAccount(seasonId)}>{copy.retry}</button>}</div>}
-    {loading && <div className="paper-state" role="status"><LoaderCircle className="spin" /><strong>{copy.loading}</strong></div>}
-    {!loading && !account && <section className="paper-onboarding"><BadgeDollarSign size={30} /><div><h2>{copy.startTitle}</h2><p>{copy.startBody}</p></div><button className="button primary" type="button" disabled={starting || !marketSupported} onClick={() => void start()}>{starting ? copy.loading : copy.start}</button></section>}
-    {!loading && !account && <section className="page-assist-grid" aria-label={locale === 'zh-Hant' ? '個人模擬規則摘要' : '个人模拟规则摘要'}>
+    <section className="paper-market-switch" aria-label="个人模拟持仓市场"><header><span>MARKET SCOPE</span><div><strong>个人模拟持仓市场</strong><small>市场账户严格隔离，不跨市场复用持仓</small></div></header><div role="group" aria-label="切换个人模拟市场"><button className={requestedMarket === 'US' ? 'active' : ''} type="button" onClick={() => changeMarket('US')}>美股</button><button className={requestedMarket === 'HK' ? 'active' : ''} type="button" onClick={() => changeMarket('HK')}>港股</button><button className={requestedMarket === 'CN' ? 'active' : ''} type="button" onClick={() => changeMarket('CN')}>A股</button></div></section>
+    {!marketSupported && <section className="paper-market-unavailable" role="status"><WalletCards size={24} /><div><span>{requestedMarket === 'HK' ? '港股' : 'A股'}个人模拟</span><h2>该市场账户尚未接入</h2><p>{locale === 'zh-Hant' ? '個人模擬目前只支援 US（美股）。這裡不會顯示美股持倉，也不會產生預留位置持倉；後續市場帳本接入後將獨立展示。' : '个人模拟当前只支持 US（美股）。这里不会显示美股持仓，也不会生成占位持仓；后续市场账本接入后将独立展示。'}</p></div><button className="button secondary" type="button" onClick={() => changeMarket('US')}>返回美股账户</button></section>}
+    {marketSupported && error && <div className="paper-alert error" role="alert"><AlertTriangle size={18} /><span>{localizeError(error, locale)}</span>{seasonId && <button type="button" onClick={() => void loadAccount(seasonId)}>{copy.retry}</button>}</div>}
+    {marketSupported && loading && <div className="paper-state" role="status"><LoaderCircle className="spin" /><strong>{copy.loading}</strong></div>}
+    {marketSupported && !loading && !account && <section className="paper-onboarding"><BadgeDollarSign size={30} /><div><h2>{copy.startTitle}</h2><p>{copy.startBody}</p></div><button className="button primary" type="button" disabled={starting} onClick={() => void start()}>{starting ? copy.loading : copy.start}</button></section>}
+    {marketSupported && !loading && !account && <section className="page-assist-grid" aria-label={locale === 'zh-Hant' ? '個人模擬規則摘要' : '个人模拟规则摘要'}>
       <article><WalletCards size={18} /><div><span>{locale === 'zh-Hant' ? '帳戶說明' : '账户说明'}</span><h2>{locale === 'zh-Hant' ? '獨立 USD 模擬資金域' : '独立 USD 模拟资金域'}</h2><p>{locale === 'zh-Hant' ? '不混入官方驗證或券商實盤資產。' : '不混入官方验证或券商实盘资产。'}</p></div></article>
       <article><ShieldCheck size={18} /><div><span>{locale === 'zh-Hant' ? '規則摘要' : '规则摘要'}</span><h2>{locale === 'zh-Hant' ? '每筆訂單由你確認' : '每笔订单由你确认'}</h2><p>{locale === 'zh-Hant' ? '先取得報價與風險證明，AI 不會代為提交。' : '先取得报价与风险证明，AI 不会代为提交。'}</p></div></article>
       <article><BadgeDollarSign size={18} /><div><span>{locale === 'zh-Hant' ? '權益提示' : '权益提示'}</span><h2>{locale === 'zh-Hant' ? '模擬收益不可提現' : '模拟收益不可提现'}</h2><p>{locale === 'zh-Hant' ? '賽季結果只用於練習與復盤，不代表真實投資收益。' : '赛季结果只用于练习与复盘，不代表真实投资收益。'}</p></div></article>
     </section>}
-    {account && <div className="paper-console">
+    {marketSupported && account && <div className="paper-console">
       <aside className="paper-account-rail" aria-label={locale === 'zh-Hant' ? '帳戶與訂單' : '账户与订单'}>
         <section className="paper-tasks"><header><h2>{copy.tasks}</h2><PaperRefreshButton label={copy.refresh} busy={busy === 'refresh'} disabled={workflowLocked} onClick={() => void loadAccount(account.season.id, 'refresh')} /></header><ol>{tasks.map(([label, done], index) => <li key={label} data-complete={done}><span>{done ? <CheckCircle2 size={16} /> : <span>{index + 1}</span>}</span><strong>{label}</strong><small>{done ? 'READY' : copy.awaiting}</small></li>)}</ol></section>
         <section className="paper-metrics" aria-label={locale === 'zh-Hant' ? '個人模擬帳戶摘要' : '个人模拟账户摘要'}>{metrics.map(([label, value]) => <article key={label}><span>{label}</span><strong className={label === copy.pnl ? pnlClass : ''}>{money(value)}</strong></article>)}</section>
@@ -350,7 +362,7 @@ export function PersonalPaperPage() {
         {riskProof && riskProof.warnings.length > 0 && <section className="paper-warning-review" aria-labelledby="paper-warning-review-title"><header><AlertTriangle size={17} /><div><h2 id="paper-warning-review-title">{copy.reviewWarnings}</h2><p id="paper-warning-review-note">{copy.warningReviewNote}</p></div></header><div>{riskProof.warnings.map((warning, index) => <label key={`${index}-${warning}`}><input type="checkbox" checked={Boolean(reviewedWarnings[index])} disabled={workflowLocked} aria-describedby="paper-warning-review-note" onChange={(event) => setReviewedWarnings((current) => ({ ...current, [index]: event.target.checked }))} /><span><strong>{copy.warningReviewed}</strong><small>{warning}</small></span></label>)}</div></section>}
         <button className="button secondary paper-submit" type="button" disabled={!proofPermitsSubmit || !warningReviewComplete || !draftValid || workflowLocked} onClick={() => void submit()}>{confirmLabel}</button>
         {submitState === 'unknown' && pendingRequest && <section className="paper-unknown" role="alert"><Clock3 size={21} /><div><h2>{copy.unknownTitle}</h2><p>{copy.unknownBody}</p><small>{copy.requestIdentity} · {pendingRequest.idempotency_key}</small></div><button className="button secondary" type="button" disabled={Boolean(busy)} onClick={() => void retryUnknown()}>{busy === 'submit' ? copy.submitting : copy.verify}</button></section>}
-        {receipt && <section className="paper-receipt" role="status"><ReceiptText size={21} /><div><small>{receipt.replayed ? copy.replay : copy.direct}</small><h2>{copy.receipt}</h2><p>{receipt.order.symbol} · {orderSideLabel(receipt.order.side, locale)} · {receipt.order.quantity} · {statusLabel(receipt.order.status, copy)}</p><code>{receipt.order.id}</code></div><CheckCircle2 size={24} /></section>}
+        {receipt && <section className="paper-receipt" role="status"><StockLogo symbol={receipt.order.symbol} /><div><small>{receipt.replayed ? copy.replay : copy.direct}</small><h2>{copy.receipt}</h2><p>{receipt.order.symbol} · {orderSideLabel(receipt.order.side, locale)} · {receipt.order.quantity} · {statusLabel(receipt.order.status, copy)}</p><code>{receipt.order.id}</code></div><CheckCircle2 size={24} /></section>}
         {feedback && <p className="paper-feedback" role="status"><CheckCircle2 size={16} />{feedback}</p>}
       </section>
 
@@ -365,9 +377,9 @@ export function PersonalPaperPage() {
 }
 
 function PositionList({ copy, positions }: { copy: typeof COPY[keyof typeof COPY]; positions: PersonalPaperAccount['positions'] }) {
-  return <section className="paper-list paper-positions"><header><h2>{copy.positions}</h2><span>{positions.length}</span></header>{positions.length ? positions.map((position) => <article key={position.symbol}><span><strong>{position.symbol}</strong><small>US · STOCK</small></span><strong className={position.quantity > 0 ? 'positive' : 'negative'}>{position.quantity > 0 ? <ArrowUpFromLine size={15} /> : <ArrowDownToLine size={15} />}{position.quantity}</strong></article>) : <p>{copy.noPositions}</p>}</section>
+  return <section className="paper-list paper-positions"><header><h2>{copy.positions}</h2><span>{positions.length}</span></header>{positions.length ? positions.map((position) => <article key={position.symbol}><StockLogo symbol={position.symbol} size="sm" /><span><strong>{position.symbol}</strong><small>US · STOCK</small></span><strong className={position.quantity > 0 ? 'positive' : 'negative'}>{position.quantity > 0 ? <ArrowUpFromLine size={15} /> : <ArrowDownToLine size={15} />}{position.quantity}</strong></article>) : <p>{copy.noPositions}</p>}</section>
 }
 
 function OrderList({ copy, locale, orders, busy, onCancel }: { copy: typeof COPY[keyof typeof COPY]; locale: keyof typeof COPY; orders: PersonalPaperOrder[]; busy: boolean; onCancel: (order: PersonalPaperOrder) => void }) {
-  return <section className="paper-list paper-orders"><header><h2>{copy.orders}</h2><span>{orders.length}</span></header>{orders.length ? orders.map((order) => <article key={order.id}><span><strong>{order.symbol} · {orderSideLabel(order.side, locale)}</strong><small>{orderTypeLabel(order.order_type, locale)} · {order.quantity}</small></span><span className={`paper-order-state ${order.status.toLowerCase()}`}>{statusLabel(order.status, copy)}</span>{order.status === 'PENDING' && <button className="icon-button danger" type="button" aria-label={copy.cancel} disabled={busy} onClick={() => onCancel(order)}><XCircle size={16} /></button>}</article>) : <p>{copy.noOrders}</p>}</section>
+  return <section className="paper-list paper-orders"><header><h2>{copy.orders}</h2><span>{orders.length}</span></header>{orders.length ? orders.map((order) => <article key={order.id}><StockLogo symbol={order.symbol} size="sm" /><span><strong>{order.symbol} · {orderSideLabel(order.side, locale)}</strong><small>{orderTypeLabel(order.order_type, locale)} · {order.quantity}</small></span><span className={`paper-order-state ${order.status.toLowerCase()}`}>{statusLabel(order.status, copy)}</span>{order.status === 'PENDING' && <button className="icon-button danger" type="button" aria-label={copy.cancel} disabled={busy} onClick={() => onCancel(order)}><XCircle size={16} /></button>}</article>) : <p>{copy.noOrders}</p>}</section>
 }

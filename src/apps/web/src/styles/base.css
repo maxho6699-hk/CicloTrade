@@ -301,6 +301,7 @@ a {
 
 button {
   letter-spacing: 0;
+  white-space: nowrap;
 }
 
 a {
@@ -340,8 +341,8 @@ textarea:focus-visible {
 }
 
 ::-webkit-scrollbar {
-  width: 9px;
-  height: 9px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
@@ -349,11 +350,17 @@ textarea:focus-visible {
 }
 
 ::-webkit-scrollbar-thumb {
-  border: 2px solid transparent;
-  border-radius: 8px;
-  background: var(--border-strong);
-  background-clip: padding-box;
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--brand-violet) 52%, transparent), color-mix(in srgb, var(--brand-blue) 48%, transparent));
 }
+
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, var(--brand-violet), var(--brand-blue));
+  box-shadow: 0 0 8px color-mix(in srgb, var(--brand-violet) 48%, transparent);
+}
+
+* { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--brand-violet) 58%, transparent) transparent; }
 
 .skip-link {
   position: fixed;

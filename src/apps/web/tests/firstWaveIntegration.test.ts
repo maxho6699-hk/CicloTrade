@@ -102,11 +102,11 @@ test('personal paper risk proof freezes the request matrix and seven-check decis
   assert.equal(validPersonalPaperRiskProof({ ...riskProof, decision: 'reject', risk_level: 'blocked' }), false)
 })
 
-test('first wave exposes six desktop modules and exactly five fixed mobile modules', () => {
+test('desktop navigation adds recommendations and deliberation while mobile keeps five fixed modules', () => {
   const desktopBlock = shell.match(/const navItems = \[([\s\S]*?)\] as const/)?.[1] ?? ''
   const mobileBlock = shell.match(/const mobileNavItems = \[([\s\S]*?)\] as const/)?.[1] ?? ''
-  for (const route of ['/today', '/discover', '/research', '/paper', '/portfolio', '/more']) assert.match(desktopBlock, new RegExp(`to: '${route}'`))
-  assert.equal((desktopBlock.match(/to: '/g) ?? []).length, 6)
+  for (const route of ['/today', '/discover', '/recommendations', '/research', '/paper', '/portfolio', '/deliberation', '/more']) assert.match(desktopBlock, new RegExp(`to: '${route}'`))
+  assert.equal((desktopBlock.match(/to: '/g) ?? []).length, 8)
   for (const route of ['/today', '/discover', '/research', '/paper', '/more']) assert.match(mobileBlock, new RegExp(`to: '${route}'`))
   assert.equal((mobileBlock.match(/to: '/g) ?? []).length, 5)
   assert.doesNotMatch(mobileBlock, /pinned|secondaryTools/)

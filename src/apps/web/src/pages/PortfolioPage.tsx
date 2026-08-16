@@ -3,6 +3,7 @@ import { useMemo, useState, type CSSProperties } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useWorkspace } from '../api/workspace-context'
 import { PageHeader } from '../components/PageHeader'
+import { StockLogo } from '../components/StockLogo'
 import { WorkspaceState } from '../components/WorkspaceState'
 import { apiPositionToPosition, formatTime } from '../data/adapters'
 import { getFormatLocale } from '../i18n/runtime'
@@ -53,7 +54,7 @@ function PositionRow({ position, onResearch }: { position: Position; onResearch:
   const [expanded, setExpanded] = useState(false)
   const unit = position.instrumentType === 'option' ? '张' : '股'
   return <article className={`account-position-row ${expanded ? 'is-expanded' : ''}`}>
-    <div className="account-symbol"><button className="account-symbol-link" type="button" onClick={() => onResearch(position)}><strong>{position.symbol}</strong><small>{position.name} · {marketLabels[position.market]} · 打开股票研究</small></button></div>
+    <div className="account-symbol"><StockLogo symbol={position.symbol} /><button className="account-symbol-link" type="button" onClick={() => onResearch(position)}><strong>{position.symbol}</strong><small>{position.name} · {marketLabels[position.market]} · 打开股票研究</small></button></div>
     <div><span>数量</span><strong>{position.quantity} {unit}</strong></div>
     <div><span>成本 / 记录价</span><strong>{position.averagePrice.toFixed(2)} / {position.lastPrice.toFixed(2)}</strong></div>
     <div><span>未实现盈亏</span><strong className={position.unrealizedPnl >= 0 ? 'positive-text' : 'negative-text'}>{position.unrealizedPnl >= 0 ? <ArrowUpRight size={13} /> : <ArrowDownRight size={13} />}{position.unrealizedPnl.toFixed(2)} <small>{position.unrealizedPnlPct.toFixed(2)}%</small></strong></div>
@@ -218,7 +219,7 @@ export function PortfolioPage() {
     <section className="account-layout account-simulator-grid">
       <article className="data-panel account-timeline">
         <header className="panel-heading"><div><span>OFFICIAL ACTION TIMELINE</span><h2>交易时间线</h2></div><ListChecks size={20} /></header>
-        {!accountAvailable ? <div className="inline-empty">{accountEmptyText}</div> : timeline.length ? <div className="timeline-list">{timeline.map((item) => <div className="timeline-item" key={item.id}><span className={`timeline-dot ${item.side === 'BUY' ? 'buy' : 'sell'}`} /><div><strong>{item.action} {item.symbol} · {item.quantity} {item.instrumentType === 'option' ? '张' : '股'}</strong><small>{item.createdAt} · {item.status === 'verified' ? '官方日志记录' : item.status === 'rejected' ? '风险闸门拒绝' : '等待处理'}</small></div><b>{item.price.toFixed(2)}</b></div>)}</div> : <div className="inline-empty">{timelineEmptyText}</div>}
+        {!accountAvailable ? <div className="inline-empty">{accountEmptyText}</div> : timeline.length ? <div className="timeline-list">{timeline.map((item) => <div className="timeline-item" key={item.id}><span className={`timeline-dot ${item.side === 'BUY' ? 'buy' : 'sell'}`} /><StockLogo symbol={item.symbol} size="sm" /><div><strong>{item.action} {item.symbol} · {item.quantity} {item.instrumentType === 'option' ? '张' : '股'}</strong><small>{item.createdAt} · {item.status === 'verified' ? '官方日志记录' : item.status === 'rejected' ? '风险闸门拒绝' : '等待处理'}</small></div><b>{item.price.toFixed(2)}</b></div>)}</div> : <div className="inline-empty">{timelineEmptyText}</div>}
         <div className={`portfolio-projection-note ${activityTruncated ? 'warning' : ''}`} role="note"><strong>{activityTruncated ? '执行记录已截断' : '执行记录范围'}</strong><span>当前首屏显示 {timeline.length} 条；服务端返回上限 {returnedExecutionLimit || '未提供'}。{activityTruncated ? '请打开验证报告查看完整范围与导出限制。' : '当前响应未声明截断。'}</span></div>
         <button className="button tertiary account-timeline-link" type="button" onClick={() => navigate('/reports')}><History size={15} /> 打开验证报告</button>
       </article>
@@ -229,7 +230,7 @@ export function PortfolioPage() {
       </article>
       <article className="data-panel account-closed">
         <header className="panel-heading"><div><span>CLOSED ORDERS / REALIZED P&amp;L</span><h2>已平仓订单及盈亏</h2></div><span className="status-chip research">逐组核对</span></header>
-        {!accountAvailable ? <div className="inline-empty">{accountEmptyText}</div> : closed.length ? <div className="closed-order-list">{closed.map((item) => <div className="closed-order-row" key={item.id}><div><strong>{item.symbol} · {item.quantity} {item.instrumentType === 'option' ? '张' : '股'}</strong><small>{item.openedAt} 开仓 → {item.closedAt} 平仓</small></div><div><span>{item.direction === 'SHORT' ? '卖出开仓' : '买入开仓'} {item.entry.toFixed(2)} · {item.direction === 'SHORT' ? '买入平空' : '卖出平多'} {item.exit == null ? '未记录/尚未结算' : item.exit.toFixed(2)}</span><strong className={item.pnl == null ? '' : item.pnl >= 0 ? 'positive-text' : 'negative-text'}>{item.pnl == null ? '未记录/尚未结算' : formatAmount(item.pnl, item.currency, true)}</strong></div></div>)}</div> : <div className="inline-empty">{closedEmptyText}</div>}
+        {!accountAvailable ? <div className="inline-empty">{accountEmptyText}</div> : closed.length ? <div className="closed-order-list">{closed.map((item) => <div className="closed-order-row" key={item.id}><StockLogo symbol={item.symbol} size="sm" /><div><strong>{item.symbol} · {item.quantity} {item.instrumentType === 'option' ? '张' : '股'}</strong><small>{item.openedAt} 开仓 → {item.closedAt} 平仓</small></div><div><span>{item.direction === 'SHORT' ? '卖出开仓' : '买入开仓'} {item.entry.toFixed(2)} · {item.direction === 'SHORT' ? '买入平空' : '卖出平多'} {item.exit == null ? '未记录/尚未结算' : item.exit.toFixed(2)}</span><strong className={item.pnl == null ? '' : item.pnl >= 0 ? 'positive-text' : 'negative-text'}>{item.pnl == null ? '未记录/尚未结算' : formatAmount(item.pnl, item.currency, true)}</strong></div></div>)}</div> : <div className="inline-empty">{closedEmptyText}</div>}
       </article>
     </section>
   </div>

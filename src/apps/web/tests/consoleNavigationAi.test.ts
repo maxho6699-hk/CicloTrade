@@ -27,7 +27,8 @@ test('canonical console and public routes are wired without changing the six pri
 
 test('Ciclo AI launcher navigates directly to the bounded-context page', () => {
   assert.match(shell, /className=\{`ai-pill/)
-  assert.match(shell, /membership\.capabilities\.includes\('ai_workspace'\)/)
+  assert.match(shell, /const aiAvailable = workspace\.mode === 'authenticated'/)
+  assert.doesNotMatch(shell, /membership\.capabilities\.includes\('ai_workspace'\)/)
   assert.match(shell, /to=\{aiAvailable \? '\/ai' : '\/membership'\}/)
   assert.doesNotMatch(shell, /ai-unavailable-popover|aiPanelOpen/)
 })

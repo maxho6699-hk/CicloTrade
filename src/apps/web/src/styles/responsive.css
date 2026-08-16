@@ -36,8 +36,10 @@
   .market-workspace { grid-template-columns: 168px minmax(0, 1fr); }
   .chart-workbench-body { grid-template-columns: 43px minmax(0, 1fr); }
   .multi-chart-grid { grid-column: 2; }
-  .chart-workspace-shell.has-tool-panel .chart-workbench-body { grid-template-columns: 43px 43px minmax(0, 1fr); }
-  .chart-workspace-shell.has-tool-panel .multi-chart-grid { grid-column: 3; }
+.chart-workspace-shell.has-tool-panel .chart-workbench-body { grid-template-columns: 43px 43px minmax(0, 1fr); }
+.chart-workspace-shell.has-tool-panel .multi-chart-grid { grid-column: 3; }
+.chart-workspace-shell.has-tool-panel.is-tool-panel-collapsed .chart-workbench-body { grid-template-columns: 43px minmax(0, 1fr); }
+.chart-workspace-shell.has-tool-panel.is-tool-panel-collapsed .multi-chart-grid { grid-column: 2; }
   .chart-tool-panel { width: 43px; grid-template-rows: 42px; }
   .chart-tool-panel-content { display: none; }
   .chart-tool-panel-toggle { width: 43px; justify-content: center; padding: 0; }

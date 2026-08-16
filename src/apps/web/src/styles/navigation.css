@@ -1,6 +1,10 @@
 .app-shell .secondary-tools { display: grid; gap: 3px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--sidebar-border); }
 .app-shell .secondary-tools h2 { margin: 0 10px 4px; color: var(--sidebar-text); font: 11px var(--mono); letter-spacing: .08em; }
 .app-shell .nav-item.secondary { min-height: 36px; font-size: 12px; }
+.app-shell .nav-item { font-family: 'Noto Sans TC', 'Noto Sans SC', var(--font-ui); letter-spacing: .01em; }
+.app-shell .nav-item span { line-height: 1.2; }
+.app-shell .topbar :is(button, a, strong, span) { font-family: 'Noto Sans TC', 'Noto Sans SC', var(--font-ui); }
+.app-shell .page-route-chip { border: 1px solid color-mix(in srgb, var(--brand-violet) 20%, var(--border)); background: color-mix(in srgb, var(--surface) 74%, transparent); box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent), 0 10px 28px color-mix(in srgb, var(--brand-violet) 10%, transparent); backdrop-filter: blur(14px); }
 .app-shell .nav-item.active::before { display: none; }
 .app-shell .nav-item.active,
 .app-shell .nav-item.secondary.active { background: var(--nav-active-bg); color: var(--nav-active-fg); }

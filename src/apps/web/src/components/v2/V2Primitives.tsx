@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { Candle } from '../../types'
 import { fetchMarketCandles } from '../../api/client'
 import { getFormatLocale } from '../../i18n/runtime'
+import { StockLogo } from '../StockLogo'
 
 export type V2State = 'loading' | 'empty' | 'error' | 'forbidden' | 'locked' | 'stale' | 'missing' | 'disconnected' | 'offline' | 'partial' | 'success' | 'disabled' | 'selected'
 
@@ -153,8 +154,7 @@ export function EmptyInspector({ title, detail }: { title: string; detail: strin
 }
 
 export function V2Logo({ symbol }: { symbol?: string }) {
-  const text = symbol?.slice(0, 2).toUpperCase() || '—'
-  return <span className="v2-stock-logo" aria-hidden="true">{text}</span>
+  return <StockLogo symbol={symbol} />
 }
 
 export function LoadingSkeleton() {

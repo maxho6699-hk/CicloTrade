@@ -1,4 +1,4 @@
-import { Activity, CircleGauge, Clock3, History, ListChecks, ShieldAlert, Sparkles, WalletCards } from 'lucide-react'
+import { Activity, AlertTriangle, CheckCircle2, CircleGauge, Clock3, History, ListChecks, ShieldAlert, Sparkles, WalletCards } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useWorkspace } from '../api/workspace-context'
@@ -171,6 +171,46 @@ function priorityState(task: TodayPriority) {
   return { label: '待复核', state: 'info' as const }
 }
 
+const RECOMMENDATION_FIELD_LABELS: Record<string, string> = {
+  market: '市场', symbol: '股票代码', currency: '币种', reference_price: '参考价', current_price: '当前价',
+  quote_at: '报价时间', stop_price: '风险线', target_price: '目标价', max_loss: '最大风险', rationale: '推荐理由',
+  option_expiry: '到期日', option_right: 'Call / Put', option_strike: '行权价', implied_volatility: '隐含波动率',
+}
+
+function priorityLabel(task: TodayPriority) {
+  if (task.kind === 'auto-live' || task.item?.action === 'EXIT') return 'P0 立即处理'
+  if (task.item?.actionable || task.kind === 'risk' || task.item?.action === 'REDUCE') return 'P1 今日复核'
+  return 'P2 排队处理'
+}
+
+function evidenceState(task: TodayPriority) {
+  if (!task.item) return { complete: null, label: '状态证据', missing: [] as string[] }
+  const missing = task.item.missing_fields ?? []
+  const complete = task.item.contract_status === 'complete' && missing.length === 0
+  return { complete, label: complete ? '证据完整' : '证据不完整', missing }
+}
+
+function evidenceCompleteness(task: TodayPriority) {
+  if (!task.item) return { value: null, completed: 0, total: 0 }
+  const item = task.item
+  const hasValue = (value: unknown) => value !== null && value !== undefined && String(value).trim() !== ''
+  const checks = [
+    item.market,
+    item.symbol,
+    item.currency,
+    item.current_price ?? item.reference_price,
+    item.quote_at,
+    item.stop_price,
+    item.target_price,
+    item.max_loss,
+    item.rationale,
+    item.strategy_name,
+    item.strategy_version,
+  ]
+  const completed = checks.filter(hasValue).length
+  return { value: Math.round((completed / checks.length) * 100), completed, total: checks.length }
+}
+
 function TodayActionCard({ items, authenticated, source, onOpen }: { items: TodayPriority[]; authenticated: boolean; source: string; onOpen: (task: TodayPriority) => void }) {
   const latestAt = items.map((task) => task.item?.occurred_at || task.item?.available_at || '').filter(Boolean).sort().at(-1)
   return <V2Card className="today-action-card"><header className="today-card-heading"><div><span className="v2-eyebrow">TODAY ACTION MATRIX</span><h2>今日行动矩阵</h2></div><V2StatusPill state={items.length ? 'warning' : 'success'}>{items.length ? `${items.length} 项优先` : '已清空'}</V2StatusPill></header>{items.length ? <div className="today-action-table"><div className="today-action-columns" aria-hidden="true"><span>股票 / 工作项</span><span>行动状态</span><span>当前价</span><span>失效条件</span><span>最大风险</span><span>证据摘要</span><span>操作</span></div>{items.map((task) => {
@@ -178,14 +218,29 @@ function TodayActionCard({ items, authenticated, source, onOpen }: { items: Toda
     const status = priorityState(task)
     const price = item ? safeNumber(item.current_price ?? item.reference_price) : null
     const updatedAt = item?.occurred_at || item?.available_at
-    return <article className="today-action-row" key={task.id}>
-      <div className="today-action-identity" data-label="股票 / 工作项">{item ? <StockTaskBadge symbol={item.symbol} name={item.symbol ? undefined : '股票名称未提供'} market={marketName(item.market)} /> : <span className={`today-task-mark is-${task.kind}`}><BotMark /></span>}<span>{item ? <small>{item.strategy_name || '策略名称未提供'} · {item.strategy_version || '版本未提供'}</small> : <><strong>{task.title}</strong><small>系统工作项</small></>}</span></div>
-      <div className="today-action-status" data-label="行动状态"><V2StatusPill state={status.state}>{status.label}</V2StatusPill></div>
-      <div className="today-action-value" data-label="当前价"><strong>{item ? (price == null ? '价格未提供' : itemMoney(price, item.currency)) : '不涉及行情'}</strong><small>{item?.quote_at ? formatTime(item.quote_at) : item ? '报价时间未提供' : '系统状态'}</small></div>
-      <div className="today-action-value" data-label="失效条件"><strong>{item ? item.contract_status === 'incomplete' ? '资料不完整' : item.state === 'locked' ? '权限或数据门受限' : '进入研究页核对' : '按工作项复核'}</strong><small>{item?.stop_price == null ? '失效条件未量化' : `风险线 ${itemMoney(item.stop_price, item.currency)}`}</small></div>
-      <div className="today-action-value" data-label="最大风险"><strong>{item?.max_loss == null ? item ? '最大风险未提供' : '未产生金额估算' : itemMoney(item.max_loss, item.currency)}</strong><small>{item ? '服务端研究记录' : '不替用户估算'}</small></div>
-      <div className="today-action-evidence" data-label="证据摘要"><p>{task.detail}</p><small>{item ? `${source} · ${updatedAt ? formatTime(updatedAt) : '记录时间未提供'}` : 'Workspace 工作状态 · 状态时间未提供'}</small></div>
-      <div className="today-action-cta" data-label="操作"><V2PrimaryButton onClick={() => onOpen(task)}>{task.cta}</V2PrimaryButton></div>
+    const evidence = evidenceState(task)
+    const completeness = evidenceCompleteness(task)
+    const missingCopy = evidence.missing.map((field) => RECOMMENDATION_FIELD_LABELS[field] ?? field).join('、')
+    return <article className={`today-action-row ${evidence.complete === false ? 'has-evidence-gap' : ''}`} key={task.id}>
+      <div className="today-action-info">
+        <header className="today-action-card-head">
+          <div className="today-action-identity">{item ? <StockTaskBadge symbol={item.symbol} name={item.symbol ? undefined : '股票名称未提供'} market={marketName(item.market)} /> : <><span className={`today-task-mark is-${task.kind}`}><BotMark /></span><span><strong>{task.title}</strong><small>系统工作项</small></span></>}</div>
+          <div className="today-action-badges"><span className={`today-priority-badge is-${priorityLabel(task).slice(0, 2).toLowerCase()}`}>{priorityLabel(task)}</span><V2StatusPill state={status.state}>{status.label}</V2StatusPill><span className={`today-evidence-badge is-${evidence.complete === true ? 'complete' : evidence.complete === false ? 'missing' : 'na'}`}>{evidence.label}</span></div>
+        </header>
+        <div className="today-action-facts">
+          <div><span>当前价</span><strong>{item ? (price == null ? '未提供' : itemMoney(price, item.currency)) : '不涉及行情'}</strong><small>{item?.quote_at ? formatTime(item.quote_at) : item ? '报价时间未提供' : '系统状态'}</small></div>
+          <div><span>失效条件</span><strong>{item ? item.state === 'locked' ? '权限 / 数据门受限' : item.stop_price == null ? '尚未量化' : itemMoney(item.stop_price, item.currency) : '按工作项复核'}</strong><small>{item ? '进入研究页核对完整条件' : '由账户状态决定'}</small></div>
+          <div className="is-risk"><span>最大风险</span><strong>{item?.max_loss == null ? item ? '未提供' : '不产生金额估算' : itemMoney(item.max_loss, item.currency)}</strong><small>{item ? '只显示服务端研究记录' : '不替用户估算'}</small></div>
+          <div className={evidence.complete === false ? 'is-gap' : ''}><span>资料缺口</span><strong>{item ? missingCopy || (evidence.complete ? '无已知缺口' : '字段未列明') : '不适用'}</strong><small>{item ? `${evidence.missing.length} 个缺失字段` : '系统状态工作项'}</small></div>
+        </div>
+      </div>
+      <div className="today-action-operation">
+        <div className="today-action-evidence">
+          <div className="today-evidence-progress"><span><b>证据完整度</b><strong>{completeness.value == null ? '不适用' : `${completeness.value}%`}</strong></span><i role="progressbar" aria-label="证据完整度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={completeness.value ?? undefined} aria-valuetext={completeness.value == null ? '系统状态工作项不适用证券证据进度' : `${completeness.value}%`}><b style={{ width: `${completeness.value ?? 0}%` }} /></i><small>{completeness.value == null ? '系统状态由账户工作区直接提供' : `${completeness.completed}/${completeness.total} 个核心字段已提供`}</small></div>
+          <span>证据与理由</span><p>{task.detail}</p><small>{item ? `${source} · ${updatedAt ? formatTime(updatedAt) : '记录时间未提供'} · ${item.strategy_name || '策略未提供'} ${item.strategy_version || ''}` : 'Workspace 工作状态 · 状态时间未提供'}</small>
+        </div>
+        <footer className="today-action-cta"><div><ShieldAlert size={14} /><span>{item?.actionable ? '可进入人工复核' : '先核对资料与风险，再决定下一步'}</span></div><V2PrimaryButton onClick={() => onOpen(task)}>{task.cta}</V2PrimaryButton></footer>
+      </div>
     </article>
   })}</div> : <V2StatePanel state={authenticated ? 'empty' : 'locked'} title={authenticated ? '今天没有待处理工作' : '请登录查看今日行动'} detail={authenticated ? '当前账户没有可验证的真实工作项；系统不会用演示建议填充。' : '登录后显示真实股票研究、账户和通知工作项。'} />}<footer className="today-panel-source"><DataSourceNote source={authenticated ? source : '登录后读取真实工作来源'} availableAt={latestAt} /><span>所有行动均需人工确认，AI 不会自动下单。</span></footer></V2Card>
 }
@@ -249,14 +304,20 @@ function DataHealthCard({ data, authenticated }: { data: BootstrapPayload | null
 function WeekTrajectory({ data, priorities, authenticated }: { data: BootstrapPayload | null; priorities: TodayPriority[]; authenticated: boolean }) {
   const todayKey = new Date().toDateString()
   const processed = data?.portfolio.activity?.executions.filter((item) => new Date(item.executed_at).toDateString() === todayKey).length ?? 0
-  const riskRecords = data?.recommendations.items.filter((item) => item.action === 'REDUCE' || item.action === 'EXIT' || item.state === 'locked').length ?? 0
-  const riskCount = (data?.execution_control.block_reasons.length ?? 0) + riskRecords
+  const recommendations = data?.recommendations.items ?? []
+  const started = recommendations.length
+  const inProgress = recommendations.filter((item) => item.state === 'official' && item.contract_status === 'complete' && item.actionable).length
+  const blocked = (data?.execution_control.block_reasons.length ?? 0) + recommendations.filter((item) => item.state === 'locked').length
+  const failed = recommendations.filter((item) => item.contract_status === 'incomplete').length
   const nodes = [
-    { key: 'processed', label: '今日已处理', value: processed, detail: processed ? `${processed} 条真实执行回执` : '今日暂无执行回执', tone: 'positive' },
-    { key: 'pending', label: '待办', value: priorities.length, detail: priorities.length ? `${priorities.length} 项需要人工复核` : '当前队列已清空', tone: 'info' },
-    { key: 'risk', label: '风险点', value: riskCount, detail: riskCount ? `${riskCount} 项阻断或风险记录` : '当前未见阻断记录', tone: riskCount ? 'negative' : 'positive' },
+    { key: 'started', label: '开始', value: started, detail: started ? `${started} 条研究记录已进入流程` : '本周尚无研究记录', tone: 'info', Icon: Clock3 },
+    { key: 'running', label: '进行中', value: inProgress, detail: inProgress ? `${inProgress} 条可继续人工复核` : '暂无进行中研究', tone: 'running', Icon: Activity },
+    { key: 'blocked', label: '阻塞', value: blocked, detail: blocked ? `${blocked} 项受权限或执行门阻断` : '当前未见阻断', tone: blocked ? 'warning' : 'positive', Icon: ShieldAlert },
+    { key: 'completed', label: '完成', value: processed, detail: processed ? `${processed} 条真实执行回执` : '今日暂无执行回执', tone: 'positive', Icon: CheckCircle2 },
+    { key: 'failed', label: '失败', value: failed, detail: failed ? `${failed} 条资料契约未完成` : '未见资料校验失败', tone: failed ? 'negative' : 'positive', Icon: AlertTriangle },
+    { key: 'pending', label: '待确认', value: priorities.length, detail: priorities.length ? `${priorities.length} 项等待人工确认` : '待确认队列已清空', tone: 'info', Icon: ListChecks },
   ]
-  return <V2Card className="today-trajectory-card"><header className="today-card-heading"><div><span className="v2-eyebrow">WEEKLY WORK TRACE</span><h2>本周工作轨迹</h2></div><span className="today-heading-note"><Clock3 size={14} />当前周 · 真实状态聚合</span></header>{authenticated ? <ol className="today-trajectory">{nodes.map((node) => <li className={`is-${node.tone}`} key={node.key}><i aria-hidden="true" /><span>{node.label}</span><strong>{node.value}</strong><small>{node.detail}</small></li>)}</ol> : <V2StatePanel state="locked" title="工作轨迹尚未解锁" detail="登录后聚合今日执行回执、待办和风险记录。" />}<footer><DataSourceNote source="Workspace、官方验证组合与研究记录" availableAt={data?.market_data.observed_at} /><span>研究与风险信息只供人工决策，不会自动产生订单。</span></footer></V2Card>
+  return <V2Card className="today-trajectory-card"><header className="today-card-heading"><div><span className="v2-eyebrow">WEEKLY WORK TRACE</span><h2>本周工作轨迹</h2></div><span className="today-heading-note"><Clock3 size={14} />开始 → 进行中 → 阻塞 → 完成 → 失败 → 待确认</span></header>{authenticated ? <ol className="today-trajectory">{nodes.map((node) => <li className={`is-${node.tone} ${node.value > 0 ? 'has-count' : 'is-empty'} ${node.key === 'completed' ? 'is-completed' : ''}`} key={node.key}><div className="today-trajectory-marker"><node.Icon aria-hidden="true" /><strong aria-label={`${node.value} 项`}>{node.value}</strong></div><span>{node.label}</span><small>{node.detail}</small></li>)}</ol> : <V2StatePanel state="locked" title="工作轨迹尚未解锁" detail="登录后聚合开始、进行中、阻塞、完成、失败与待确认记录。" />}<footer><DataSourceNote source="Workspace、官方验证组合与研究记录" availableAt={data?.market_data.observed_at} /><span>研究与风险信息只供人工决策，不会自动产生订单。</span></footer></V2Card>
 }
 
 export function TodayV2Page() {
@@ -291,11 +352,12 @@ export function TodayV2Page() {
     return navigate(task.route)
   }
   return <div className="v2-page today-v2-page">
-    <header className="today-heading"><div className="today-heading-copy"><span className="v2-eyebrow">TODAY / CONTROL DESK</span><h1>今天先处理什么</h1><p>把真实股票工作、账户风险、研究链与数据状态融汇成一张高密度行动桌面。</p></div><div className="today-heading-meta"><V2StatusPill state={authenticated ? 'success' : 'info'}>{authenticated ? '真实工作区' : '安全只读状态'}</V2StatusPill><CicloStatusAvatar size="sm" label="Ciclo AI 状态助手" /><InspectorToggle open={inspectorOpen} onClick={() => setInspectorOpen((value) => !value)} label="打开风险面板" /></div></header>
+    <header className="today-heading"><div className="today-heading-copy"><span className="v2-eyebrow">TODAY / CONTROL DESK</span><h1>今天先处理什么</h1><p>把真实股票工作、账户风险、研究链与数据状态融汇成一张高密度行动桌面。</p></div><div className="today-heading-meta"><V2StatusPill state={authenticated ? 'success' : 'info'}>{authenticated ? '真实工作区' : '安全只读状态'}</V2StatusPill><CicloStatusAvatar size="sm" label="Ciclo AI 状态助手" /><V2SecondaryButton onClick={() => navigate('/recommendations')}>新手推荐</V2SecondaryButton><InspectorToggle open={inspectorOpen} onClick={() => setInspectorOpen((value) => !value)} label="打开风险面板" /></div></header>
     <V2PageContext task="今日优先级" account="研究域 / 官方验证只读" market="美股与 A股" freshness={marketFreshness} observedAt={observedAt} detail={workspace.data?.market_data.detail} />
     <TodayKpis data={workspace.data} mode={workspace.mode} priorities={priorities} />
+    <TodayActionCard items={actionItems} authenticated={authenticated} source={researchSource} onOpen={openPriority} />
     <div className="v2-layout today-dashboard">
-      <main className="v2-main-column today-main-column"><TodayActionCard items={actionItems} authenticated={authenticated} source={researchSource} onOpen={openPriority} /><PriorityQueue items={queuedItems} authenticated={authenticated} source={researchSource} onOpen={openPriority} /><ContinueWorkCard latest={latestStock} personalSeason={personalSeason} authenticated={authenticated} source={researchSource} onResearch={openResearch} onPaper={() => navigate('/paper?market=US')} onDiscover={() => navigate('/discover')} /></main>
+      <main className="v2-main-column today-main-column"><PriorityQueue items={queuedItems} authenticated={authenticated} source={researchSource} onOpen={openPriority} /><ContinueWorkCard latest={latestStock} personalSeason={personalSeason} authenticated={authenticated} source={researchSource} onResearch={openResearch} onPaper={() => navigate('/paper?market=US')} onDiscover={() => navigate('/discover')} /></main>
       <aside className={`v2-inspector today-status-rail ${inspectorOpen ? 'is-open' : ''}`} aria-label="账户风险与系统健康"><AccountRiskCard data={workspace.data} authenticated={authenticated} onPortfolio={() => navigate('/portfolio?market=US')} onPaper={() => navigate('/paper?market=US')} /><DataHealthCard data={workspace.data} authenticated={authenticated} /></aside>
     </div>
     <WeekTrajectory data={workspace.data} priorities={priorities} authenticated={authenticated} />

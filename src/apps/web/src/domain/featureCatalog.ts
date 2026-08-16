@@ -102,6 +102,14 @@ export interface MorePageCopy {
   viewLabel: string
   listView: string
   iconView: string
+  hubGroups: Record<'account' | 'ai' | 'research' | 'reports' | 'notifications' | 'support' | 'legal', { title: string; description: string }>
+  hubAvailable: string
+  hubEmpty: string
+  serviceFlowLabel: string
+  serviceFlow: string[]
+  directoryTitle: string
+  directoryDescription: string
+  serviceCount: string
   categories: Record<FeatureCategory, string>
   availability: Record<FeatureAvailability, string>
 }
@@ -148,6 +156,22 @@ export const MORE_PAGE_COPY: Record<UiLocale, MorePageCopy> = {
     viewLabel: '功能显示方式',
     listView: '列表',
     iconView: '图标',
+    hubGroups: {
+      account: { title: '账号与会员', description: '个人资料、会员方案与账户安全' },
+      ai: { title: 'AI 与自动化', description: 'Ciclo AI、工作流与受控自动化' },
+      research: { title: '研究与实验室', description: '筛选、事件、研究工具与实验室' },
+      reports: { title: '业绩与报告', description: '组合复盘、报告与绩效证据' },
+      notifications: { title: '通知与推广', description: '通知渠道、提醒与推广服务' },
+      support: { title: '支持与意见', description: '帮助中心、客服与产品反馈' },
+      legal: { title: '法律与平台', description: '法律条款、平台边界与系统说明' },
+    },
+    hubAvailable: '{count} 可用',
+    hubEmpty: '当前目录没有这一组的独立工具；服务接入后会在这里出现。',
+    serviceFlowLabel: '综合功能工作流',
+    serviceFlow: ['发现', '研究', '模拟', '复盘', '通知'],
+    directoryTitle: '七组综合功能中心',
+    directoryDescription: '点击分组在当前页面展开；再次点击或按 Esc 收起，任一时刻只展开一组。',
+    serviceCount: '{count} 项服务',
     categories: { discover: '发现机会', research: '研究工具', simulate: '模拟与风险', review: '组合与复盘', automation: '自动化', account: '账户服务' },
     availability: { available: '可用', locked: '当前未开放', planned: '开发中', degraded: '服务降级', unavailable: '暂不可用' },
   },
@@ -192,6 +216,22 @@ export const MORE_PAGE_COPY: Record<UiLocale, MorePageCopy> = {
     viewLabel: '功能顯示方式',
     listView: '列表',
     iconView: '圖示',
+    hubGroups: {
+      account: { title: '帳號與會員', description: '個人資料、會員方案與帳戶安全' },
+      ai: { title: 'AI 與自動化', description: 'Ciclo AI、工作流程與受控自動化' },
+      research: { title: '研究與實驗室', description: '篩選、事件、研究工具與實驗室' },
+      reports: { title: '績效與報告', description: '組合複盤、報告與績效證據' },
+      notifications: { title: '通知與推廣', description: '通知管道、提醒與推廣服務' },
+      support: { title: '支援與意見', description: '說明中心、客服與產品回饋' },
+      legal: { title: '法律與平台', description: '法律條款、平台邊界與系統說明' },
+    },
+    hubAvailable: '{count} 可用',
+    hubEmpty: '目前目錄沒有這一組的獨立工具；服務接入後會在這裡出現。',
+    serviceFlowLabel: '綜合功能工作流程',
+    serviceFlow: ['發現', '研究', '模擬', '複盤', '通知'],
+    directoryTitle: '七組綜合功能中心',
+    directoryDescription: '點擊分組在目前頁面展開；再次點擊或按 Esc 收起，任一時刻只展開一組。',
+    serviceCount: '{count} 項服務',
     categories: { discover: '發現機會', research: '研究工具', simulate: '模擬與風險', review: '組合與複盤', automation: '自動化', account: '帳戶服務' },
     availability: { available: '可用', locked: '目前未開放', planned: '開發中', degraded: '服務降級', unavailable: '暫不可用' },
   },

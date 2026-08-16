@@ -27,6 +27,7 @@ import { DiscoverV2Page } from './pages/DiscoverV2Page'
 import { AIWorkspacePage } from './pages/AIWorkspacePage'
 import { WorkflowTaskPage } from './pages/WorkflowTaskPage'
 import { DeliberationPage } from './pages/DeliberationPage'
+import { RecommendationsPage } from './pages/RecommendationsPage'
 import { LegalPage } from './pages/LegalPage'
 import { useLocale } from './i18n/useLocale'
 import { applyTheme, readStoredTheme } from './theme'
@@ -81,6 +82,7 @@ export default function App() {
   return <ProtectedConsole><AppShell><Routes>
     <Route path="/today" element={<TodayV2Page />} />
     <Route path="/discover" element={<DiscoverRoute />} />
+    <Route path="/recommendations" element={<RecommendationsPage />} />
     <Route path="/research" element={<MarketsPage />} />
     <Route path="/paper" element={<PersonalPaperPage />} />
     <Route path="/more" element={<MoreRoute />} />

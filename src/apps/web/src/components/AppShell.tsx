@@ -8,6 +8,7 @@ import {
   ChartCandlestick,
   ChevronRight,
   ClipboardCheck,
+  Swords,
   MessageSquareText,
   FlaskConical,
   Gauge,
@@ -61,9 +62,11 @@ interface AppShellProps {
 const navItems = [
   { to: '/today', key: 'today', icon: House },
   { to: '/discover', key: 'discover', icon: Radar },
+  { to: '/recommendations', key: 'recommendations', icon: Sparkles },
   { to: '/research', key: 'research', icon: CandlestickChart },
   { to: '/paper', key: 'paper', icon: WalletCards },
   { to: '/portfolio', key: 'portfolio', icon: ClipboardCheck },
+  { to: '/deliberation', key: 'deliberation', icon: Swords },
   { to: '/more', key: 'more', icon: Grid2X2 },
 ] as const
 
@@ -77,8 +80,8 @@ const mobileNavItems = [
 const feedbackItem = { to: '/feedback', label: '反馈建议', icon: MessageSquareText }
 const promotionItem = { to: '/promotion', label: '推广中心', icon: Target }
 const NAV_COPY = {
-  'zh-Hans': { today: '今日', discover: '发现', research: '行情与研究', market: '行情', paper: '模拟', portfolio: '组合与复盘', more: '更多功能', moreShort: '更多', pinned: '固定工具' },
-  'zh-Hant': { today: '今日', discover: '發現', research: '行情與研究', market: '行情', paper: '模擬', portfolio: '組合與複盤', more: '更多功能', moreShort: '更多', pinned: '固定工具' },
+  'zh-Hans': { today: '今日', discover: '发现', recommendations: '新手推荐', research: '行情与研究', market: '行情', paper: '模拟', portfolio: '组合与复盘', deliberation: '牛熊 PK', more: '更多功能', moreShort: '更多', pinned: '固定工具' },
+  'zh-Hant': { today: '今日', discover: '發現', recommendations: '新手推薦', research: '行情與研究', market: '行情', paper: '模擬', portfolio: '組合與複盤', deliberation: '牛熊 PK', more: '更多功能', moreShort: '更多', pinned: '固定工具' },
 } as const
 const AI_COPY = {
   'zh-Hans': {
@@ -192,7 +195,7 @@ export function AppShell({ children }: AppShellProps) {
   const telegramReady = Boolean(workspace.data?.telegram.bound && workspace.data?.telegram.verified && workspace.data?.telegram.consented)
   const hasModelSnapshots = Boolean(workspace.data?.performance.items.length)
   const isSuperAdmin = workspace.user?.admin_role === 'super_admin'
-  const aiAvailable = workspace.data?.membership.capabilities.includes('ai_workspace') === true
+  const aiAvailable = workspace.mode === 'authenticated'
   const navCopy = NAV_COPY[locale]
   const activePrimaryNav = navItems.find((item) => pathname === item.to || pathname.startsWith(`${item.to}/`))
   const ActiveRouteIcon = activePrimaryNav?.icon ?? Grid2X2

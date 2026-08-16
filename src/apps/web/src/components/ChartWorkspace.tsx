@@ -191,7 +191,7 @@ export function ChartWorkspace({
       setWorkspace((current) => current.inspectorOpen === open ? current : { ...current, inspectorOpen: open })
     }
   }, [controlledInspectorOpen, onInspectorOpenChange])
-  const [workbenchOpen, setWorkbenchOpen] = useState(() => layoutDefinition(workspace.layout).count > 1)
+  const [workbenchOpen, setWorkbenchOpen] = useState(false)
   const [layoutPickerOpen, setLayoutPickerOpen] = useState(false)
   const [toolPanelOpen, setToolPanelOpen] = useState(loadToolPanelOpen)
   const [mobileDrawingToolsOpen, setMobileDrawingToolsOpen] = useState(false)
@@ -480,7 +480,6 @@ export function ChartWorkspace({
     setFocusedSlotId(null)
     setSymbolEditorId(null)
     setLayoutPickerOpen(false)
-    if (layoutDefinition(layout).count > 1) setWorkbenchOpen(true)
   }
 
   const activateSlot = (slotId: string) => {
@@ -618,6 +617,7 @@ export function ChartWorkspace({
         </div>
         <div className="multi-chart-actions">
           {toolbarActions && <span className="multi-chart-utility-actions">{toolbarActions}</span>}
+          {toolPanel && <button className="chart-tool-panel-toggle-top" type="button" aria-label={toolPanelOpen ? `收起${toolPanelLabel}` : `展开${toolPanelLabel}`} aria-expanded={toolPanelOpen} title={toolPanelOpen ? `收起${toolPanelLabel}` : `展开${toolPanelLabel}`} onClick={toggleToolPanel}>{toolPanelOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}</button>}
           <button type="button" title={inspectorVisible ? '收起检查器' : '展开检查器'} aria-label={inspectorVisible ? '收起检查器' : '展开检查器'} aria-expanded={inspectorVisible} onClick={() => { setSymbolEditorId(null); setInspectorVisible(!inspectorVisible) }}>{inspectorVisible ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}</button>
           <button type="button" title={workbenchOpen ? '返回行情页' : '打开全屏K线工作图'} aria-label={workbenchOpen ? '返回行情页' : '打开全屏K线工作图'} onClick={() => workbenchOpen ? exitWorkbench() : enterWorkbench()}>{workbenchOpen ? <Shrink size={16} /> : <Expand size={16} />}</button>
         </div>
@@ -631,10 +631,7 @@ export function ChartWorkspace({
           onCommand={sendDrawingCommand}
         />
 
-        {toolPanel && <aside className="chart-tool-panel" aria-label={toolPanelLabel}>
-          <button className="chart-tool-panel-toggle" type="button" aria-label={toolPanelOpen ? `收起${toolPanelLabel}` : `展开${toolPanelLabel}`} aria-expanded={toolPanelOpen} title={toolPanelOpen ? `收起${toolPanelLabel}` : `展开${toolPanelLabel}`} onClick={toggleToolPanel}>{toolPanelOpen ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}<span>{toolPanelOpen ? `收起${toolPanelLabel}` : toolPanelLabel}</span></button>
-          {toolPanelOpen && <div className="chart-tool-panel-content">{toolPanel}</div>}
-        </aside>}
+        {toolPanel && toolPanelOpen && <aside className="chart-tool-panel" aria-label={toolPanelLabel}><div className="chart-tool-panel-content">{toolPanel}</div></aside>}
 
         <div className={`multi-chart-grid layout-${workspace.layout}`}>
           {definition.count > 1 && <nav className="mobile-chart-tabs" aria-label="切换图表">

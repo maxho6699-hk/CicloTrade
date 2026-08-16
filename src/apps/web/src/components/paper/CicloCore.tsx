@@ -36,6 +36,13 @@ export function CicloCore({ label, size = 'hero', state = 'neutral', tier = 'fre
   const hasOrbits = tier !== 'free'
   const hasHalo = isAdvanced
   const hasEnergyLines = isPro
+  const artwork = {
+    free: '/media/ciclo/ciclo-shell-f0-v1.svg',
+    standard: '/media/ciclo/ciclo-shell-s1-v1.svg',
+    advanced: '/media/ciclo/ciclo-shell-a2-v1.svg',
+    professional: '/media/ciclo/ciclo-shell-p3-v1.svg',
+    custom: '/media/ciclo/ciclo-shell-p3-v1.svg',
+  }[tier]
 
   return <figure className={`ciclo-core ciclo-core-${size} ciclo-core-${tier}`} data-state={state} data-tier={tier} role="img" aria-label={`${label}（${TIER_LABELS[tier]}）`}>
     {hasEnergyLines && <span className="ciclo-core-energy-field" aria-hidden="true"><i /><i /><i /><i /></span>}
@@ -44,7 +51,7 @@ export function CicloCore({ label, size = 'hero', state = 'neutral', tier = 'fre
     <span className="ciclo-core-image-frame" aria-hidden="true">
       <img
         className="ciclo-core-hero-image"
-        src="/assets/robot/robot-hero.png"
+        src={artwork}
         alt=""
         width="320"
         height="300"
