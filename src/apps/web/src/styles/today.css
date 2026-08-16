@@ -620,7 +620,7 @@
 
 .today-v2-page .today-action-table{
   display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(min(100%,520px),1fr));
+  grid-template-columns:repeat(auto-fit,minmax(min(100%,540px),1fr));
   gap:14px;
   overflow:visible;
   padding:14px;
@@ -629,12 +629,12 @@
 .today-v2-page .today-action-row{
   display:grid;
   width:100%;
-  max-width:880px;
+  max-width:none;
   min-width:0;
   min-height:0;
-  grid-template-columns:minmax(0,7fr) minmax(210px,3fr)!important;
+  grid-template-columns:minmax(0,3fr) minmax(190px,1fr)!important;
   grid-template-areas:none!important;
-  justify-self:start;
+  justify-self:stretch;
   align-items:stretch;
   gap:0;
   padding:0;
@@ -745,17 +745,17 @@
 
 .today-trajectory{
   grid-template-columns:repeat(6,minmax(118px,1fr));
-  padding:22px 18px 18px;
+  padding:22px 18px 20px;
 }
 
 .today-trajectory::before{
-  top:41px;
+  top:47px;
   right:8.5%;
   left:8.5%;
-  height:2px;
+  height:3px;
   border-radius:999px;
   background:linear-gradient(90deg,var(--today-blue),var(--today-blue) 22%,var(--today-warning) 43%,var(--today-positive) 62%,var(--today-negative) 81%,var(--today-blue));
-  box-shadow:0 0 10px color-mix(in srgb,var(--today-blue) 28%,transparent);
+  box-shadow:0 0 8px color-mix(in srgb,var(--today-blue) 55%,transparent),0 0 18px color-mix(in srgb,var(--today-violet) 34%,transparent);
 }
 
 .today-trajectory li{min-width:118px;gap:6px}
@@ -764,31 +764,23 @@
   position:relative;
   z-index:1;
   display:grid;
-  width:38px;
-  height:38px;
+  width:52px;
+  height:52px;
+  grid-template-rows:16px 20px;
+  place-content:center;
   place-items:center;
-  border:4px solid var(--today-surface);
+  gap:1px;
+  border:2px solid color-mix(in srgb,var(--trajectory-tone) 56%,var(--today-border));
   border-radius:50%;
-  background:var(--trajectory-tone);
-  box-shadow:0 0 0 3px color-mix(in srgb,var(--trajectory-tone) 16%,transparent),0 0 20px color-mix(in srgb,var(--trajectory-tone) 52%,transparent);
-  color:#fff;
+  background:color-mix(in srgb,var(--today-surface-2) 88%,var(--today-text));
+  box-shadow:inset 0 0 0 4px color-mix(in srgb,var(--today-surface) 56%,transparent),0 0 0 1px color-mix(in srgb,var(--trajectory-tone) 16%,transparent);
+  color:color-mix(in srgb,var(--trajectory-tone) 72%,var(--today-muted));
 }
-.today-trajectory-marker svg{width:15px;height:15px}
+.today-trajectory-marker svg{width:16px;height:16px;stroke-width:2.4}
 .today-trajectory-marker strong{
-  position:absolute;
-  top:-9px;
-  right:-12px;
-  display:grid;
-  min-width:22px;
-  height:19px;
-  place-items:center;
-  padding:0 5px;
-  border:2px solid var(--today-surface);
-  border-radius:999px;
-  background:color-mix(in srgb,var(--trajectory-tone) 84%,#07111e);
-  box-shadow:0 0 12px color-mix(in srgb,var(--trajectory-tone) 48%,transparent);
-  color:#fff;
-  font:700 11px var(--mono);
+  color:inherit;
+  font:800 20px var(--mono);
+  letter-spacing:-.06em;
   line-height:1;
 }
 .today-trajectory li.is-running .today-trajectory-marker{--trajectory-tone:#6f8fff}
@@ -796,21 +788,23 @@
 .today-trajectory li.is-positive .today-trajectory-marker{--trajectory-tone:var(--today-positive)}
 .today-trajectory li.is-negative .today-trajectory-marker{--trajectory-tone:var(--today-negative)}
 .today-trajectory li.is-empty .today-trajectory-marker{
-  border-color:color-mix(in srgb,var(--today-subtle) 24%,var(--today-surface));
-  background:color-mix(in srgb,var(--today-subtle) 18%,var(--today-surface-2));
-  box-shadow:0 0 0 2px color-mix(in srgb,var(--today-subtle) 8%,transparent);
+  border-color:color-mix(in srgb,var(--today-subtle) 58%,var(--today-border));
+  background:color-mix(in srgb,var(--today-surface-2) 92%,var(--today-text));
+  box-shadow:inset 0 0 0 4px color-mix(in srgb,var(--today-surface) 62%,transparent),0 0 0 1px color-mix(in srgb,var(--today-subtle) 16%,transparent);
   color:var(--today-subtle);
 }
-.today-trajectory li.is-empty .today-trajectory-marker strong{
-  background:var(--today-surface-2);
-  box-shadow:none;
-  color:var(--today-subtle);
+.today-trajectory li.has-count .today-trajectory-marker{
+  border-color:color-mix(in srgb,var(--trajectory-tone) 86%,#fff);
+  background:linear-gradient(145deg,color-mix(in srgb,var(--trajectory-tone) 94%,#fff),color-mix(in srgb,var(--trajectory-tone) 76%,#07111e));
+  box-shadow:0 0 0 4px color-mix(in srgb,var(--trajectory-tone) 18%,transparent),0 0 26px color-mix(in srgb,var(--trajectory-tone) 62%,transparent),inset 0 1px rgba(255,255,255,.36);
+  color:#fff;
 }
 .today-trajectory li.is-completed.has-count .today-trajectory-marker{
   --trajectory-tone:var(--today-positive);
-  box-shadow:0 0 0 4px color-mix(in srgb,var(--today-positive) 18%,transparent),0 0 26px color-mix(in srgb,var(--today-positive) 62%,transparent);
+  box-shadow:0 0 0 5px color-mix(in srgb,var(--today-positive) 22%,transparent),0 0 32px color-mix(in srgb,var(--today-positive) 72%,transparent),inset 0 1px rgba(255,255,255,.42);
 }
-.today-trajectory li>span{color:var(--today-muted);font-size:12px}
+.today-trajectory li>span{color:var(--today-muted);font-size:12px;font-weight:700}
+.today-trajectory li.has-count>span{color:var(--today-text)}
 .today-trajectory li>small{max-width:150px;color:var(--today-subtle);font-size:12px;line-height:1.45}
 
 @media (max-width:1180px){
