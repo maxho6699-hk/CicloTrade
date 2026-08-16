@@ -1,13 +1,15 @@
-import { CheckCircle2, CircleAlert, KeyRound, Languages, Laptop, Link2, LockKeyhole, LogOut, PauseCircle, PlayCircle, ShieldCheck, Smartphone, UserRound } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { BarChart3, BellRing, CheckCircle2, CircleAlert, Copy, Crown, FileText, HelpCircle, KeyRound, Languages, Laptop, Link2, LockKeyhole, LogOut, PauseCircle, PlayCircle, Settings, ShieldCheck, SlidersHorizontal, Smartphone, Sparkles, TrendingUp, UserRound } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { PageHeader } from '../components/PageHeader'
 import { WorkspaceState } from '../components/WorkspaceState'
 import { riskSettings } from '../data/workspace'
 import { useWorkspace } from '../api/workspace-context'
-import { BrowserApiError, saveRiskSettings } from '../api/client'
+import { BrowserApiError, fetchPersonalPaperAccount, saveRiskSettings, type PersonalPaperAccount } from '../api/client'
 import { accountCenterApi, type AccountContent, type AccountMemory, type AccountOverview, type AppearancePayload, type DataAuthorization } from '../api/accountCenter'
 import type { RiskSettings } from '../api/client'
+import { useCicloTier } from '../api/use-ciclo-tier'
+import { CicloCore, type CicloCoreTier } from '../components/paper/CicloCore'
 import { useLocale } from '../i18n/useLocale'
 import '../styles/secondary-pages.css'
 import '../styles/account-center.css'
@@ -20,6 +22,22 @@ const authorizationPages: Record<string, string[]> = {
 }
 
 const authorizationKinds = ['quotes', 'research', 'content', 'ai_memory'] as const
+
+const tierOrder: CicloCoreTier[] = ['free', 'standard', 'advanced', 'professional', 'custom']
+const tierProfile: Record<CicloCoreTier, { level: string; title: string }> = {
+  free: { level: 'LV.1', title: '基础形态' },
+  standard: { level: 'LV.2', title: '进阶形态' },
+  advanced: { level: 'LV.3', title: '高级形态' },
+  professional: { level: 'LV.4', title: '专业形态' },
+  custom: { level: 'LV.5', title: '定制形态' },
+}
+
+function remainingDays(value: string | null | undefined) {
+  if (!value) return '长期有效'
+  const expiresAt = Date.parse(value)
+  if (!Number.isFinite(expiresAt)) return '日期待同步'
+  return `${Math.max(0, Math.ceil((expiresAt - Date.now()) / 86_400_000))} 天`
+}
 
 function authorizationLabel(kind: string): string {
   return { quotes: '行情', research: '研究', content: '我的内容', ai_memory: 'AI 可控记忆' }[kind] ?? kind
@@ -42,6 +60,7 @@ function completeRiskSettings(value: Partial<RiskSettings> | undefined): value i
 
 export function AccountPage() {
   const workspace = useWorkspace()
+  const tier = useCicloTier()
   const { locale, formatLocale, setLocale, syncState } = useLocale()
   const [risk, setRisk] = useState(riskSettings)
   const [riskPreset, setRiskPreset] = useState<'conservative' | 'balanced' | 'custom'>('balanced')
@@ -59,6 +78,8 @@ export function AccountPage() {
   const [authorizationBusy, setAuthorizationBusy] = useState<string | null>(null)
   const [appearanceBusy, setAppearanceBusy] = useState<string | null>(null)
   const [notificationState, setNotificationState] = useState('')
+  const [paperAccount, setPaperAccount] = useState<PersonalPaperAccount | null>(null)
+  const [paperAccountState, setPaperAccountState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const [searchParams] = useSearchParams()
   const notificationKind = searchParams.get('notification_kind')
   const notificationPublicId = searchParams.get('notification_public_id')
@@ -69,6 +90,30 @@ export function AccountPage() {
   const accountsUsed = brokerage?.accounts_used ?? 0
   const authorizedAccounts = brokerage?.accounts.filter((account) => account.authorized) ?? []
   const hasVerifiedRisk = completeRiskSettings(workspace.data?.settings.risk)
+  const tierIndex = tierOrder.indexOf(tier)
+  const profileTier = tierProfile[tier]
+  const accountPublicId = accountOverview?.account.public_id ?? (workspace.user ? `UID-${workspace.user.id}` : '未登录')
+  const planName = accountOverview?.membership.plan ?? workspace.user?.plan_display_name ?? '会员状态待同步'
+  const expiresAt = accountOverview?.membership.subscription_expire ?? workspace.user?.subscription_expire
+  const reportCount = content.filter((item) => /report|research|研报|研究/i.test(item.content_key)).length
+  const currentPlan = workspace.data?.membership.plans.find((plan) => plan.key === workspace.user?.plan)
+  const growthBenefit = currentPlan?.features.find((feature) => /成长|加速/.test(feature)) ?? (tier === 'free' ? '标准成长速度' : '成长权益以套餐页为准')
+  const weeklyActivity = useMemo(() => {
+    const today = new Date()
+    const events = [...content.map((item) => item.created_at), ...memories.map((item) => item.created_at)]
+    return Array.from({ length: 7 }, (_, index) => {
+      const day = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (6 - index))
+      const key = day.toDateString()
+      return {
+        label: day.toLocaleDateString(formatLocale, { weekday: 'short' }),
+        value: events.filter((value) => new Date(value).toDateString() === key).length,
+      }
+    })
+  }, [content, formatLocale, memories])
+  const weeklyMax = Math.max(1, ...weeklyActivity.map((item) => item.value))
+  const weeklyPoints = weeklyActivity.map((item, index) => `${4 + index * 15.3},${82 - (item.value / weeklyMax) * 58}`).join(' ')
+  const todayActivity = weeklyActivity.at(-1)?.value ?? 0
+  const formatUsd = (value: number) => new Intl.NumberFormat(formatLocale, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(value)
 
   useEffect(() => {
     if (!notificationKind || !notificationPublicId || !Number.isSafeInteger(notificationVersion) || notificationVersion < 1) return
@@ -112,6 +157,33 @@ export function AccountPage() {
       setAccountCenterState('账户中心已同步；未配置能力会保持锁定。')
     }).catch(() => {
       if (active) setAccountCenterState('账户中心接口尚未完整配置；已隐藏无法证明的状态。')
+    })
+    return () => { active = false }
+  }, [workspace.mode])
+
+  useEffect(() => {
+    if (workspace.mode !== 'authenticated') {
+      setPaperAccount(null)
+      setPaperAccountState('idle')
+      return
+    }
+    let active = true
+    let seasonId = ''
+    try { seasonId = window.localStorage.getItem('ciclotrade.personalPaper.activeSeason.v1')?.trim() ?? '' } catch { /* local storage can be disabled */ }
+    if (!seasonId) {
+      setPaperAccount(null)
+      setPaperAccountState('idle')
+      return
+    }
+    setPaperAccountState('loading')
+    void fetchPersonalPaperAccount(seasonId).then((account) => {
+      if (!active) return
+      setPaperAccount(account)
+      setPaperAccountState('ready')
+    }).catch(() => {
+      if (!active) return
+      setPaperAccount(null)
+      setPaperAccountState('error')
     })
     return () => { active = false }
   }, [workspace.mode])
@@ -189,13 +261,104 @@ export function AccountPage() {
     setRiskPreset(preset)
   }
 
+  const copyAccountPublicId = async () => {
+    try {
+      await navigator.clipboard.writeText(accountPublicId)
+      setAccountCenterState('用户 ID 已复制。')
+    } catch {
+      setAccountCenterState('浏览器未允许复制，请手动选择用户 ID。')
+    }
+  }
+
   return (
     <div className="page operations-page">
-      <PageHeader kicker="ACCOUNT / SECURITY" title="账户与安全" description="身份、会员、风控偏好、会话和券商连接集中管理。高风险开关不会默认开启。" />
+      <PageHeader kicker="PROFILE / PERSONAL CENTER" title="个人中心" description="集中查看会员、智能体成长、个人模拟账户、投资偏好与授权设置。AI 只辅助研究，不会替你下单。" />
       <WorkspaceState />
-      <section className="profile-strip data-panel">
-        <span className="profile-avatar"><UserRound size={26} /></span><div><span>当前账户</span>{workspace.user ? <h2 data-no-localize>{workspace.user.display_name}</h2> : <h2>演示账户</h2>}<p>{workspace.user ? `${workspace.user.plan_display_name} · ${workspace.user.subscription_expire ?? '长期有效'}` : '登录后读取真实会员与风控设置'}</p></div><span className={`status-chip ${workspace.user ? 'official' : 'research'}`}><ShieldCheck size={14} /> {workspace.user ? '真实会话' : '演示模式'}</span><button className="button secondary" type="button" onClick={() => workspace.user ? void workspace.logout().then(() => location.assign('/')) : location.assign('/login')}>{workspace.user ? '退出登录' : '登录账户'}</button>
+
+      <section className="profile-identity-bar data-panel">
+        <span className="profile-identity-avatar"><UserRound size={34} /></span>
+        <div className="profile-identity-copy">
+          <div><h2 data-no-localize>{workspace.user?.display_name ?? 'CicloTrade 用户'}</h2><span className="profile-verified"><ShieldCheck size={13} />已认证</span></div>
+          <p><span data-no-localize>{accountPublicId}</span><button type="button" aria-label="复制用户 ID" title="复制用户 ID" onClick={() => void copyAccountPublicId()}><Copy size={13} /></button></p>
+        </div>
+        <span className="profile-membership-pill"><Crown size={15} /><strong>{planName}</strong><small>成长权益启用中</small></span>
+        <dl className="profile-identity-stats">
+          <div><dt>使用时长</dt><dd>待同步</dd></div>
+          <div><dt>生成报告数</dt><dd>{reportCount}</dd></div>
+          <div><dt>AI 对话数</dt><dd>待同步</dd></div>
+        </dl>
+        <div className="profile-identity-actions"><button className="button secondary" type="button" disabled title="编辑资料接口尚未提供">编辑资料</button><a className="button tertiary" href="#account-security-details">账户安全</a></div>
       </section>
+
+      <section className="profile-overview-layout">
+        <section className="profile-agent-card data-panel">
+          <div className="profile-agent-copy">
+            <header><div><span>MY CICLO AGENT</span><h2>我的智能体</h2></div><Sparkles size={20} /></header>
+            <div className="profile-agent-level"><strong>{profileTier.level}</strong><span>{profileTier.title}</span><small>{planName}</small></div>
+            <div className="profile-agent-progress">
+              <div><span>会员形态进度</span><strong>{tierIndex + 1} / {tierOrder.length}</strong></div>
+              <i><b style={{ width: `${((tierIndex + 1) / tierOrder.length) * 100}%` }} /></i>
+              <p>成长积分与预计升级天数需由服务端同步；当前只按真实会员等级展示机器人形态。</p>
+            </div>
+            <dl className="profile-agent-facts">
+              <div><dt>成长积分</dt><dd>待同步</dd></div>
+              <div><dt>距离下等级</dt><dd>{tierIndex === tierOrder.length - 1 ? '已到当前最高形态' : '等待成长积分'}</dd></div>
+              <div><dt>预计升级</dt><dd>待同步</dd></div>
+              <div><dt>会员加速</dt><dd>{growthBenefit}</dd></div>
+            </dl>
+            <div className="profile-agent-actions"><Link className="button secondary" to="/membership">成长规则</Link><Link className="button primary" to="/membership">管理套餐</Link></div>
+          </div>
+          <div className="profile-agent-stage">
+            <div className="profile-agent-glow" aria-hidden="true" />
+            <CicloCore label={`${profileTier.level} ${profileTier.title}`} tier={tier} />
+            <span className="profile-agent-badge" aria-hidden="true">A</span>
+            <ol className="profile-evolution-path" aria-label="智能体进化路径">
+              {tierOrder.map((item, index) => <li className={`${index < tierIndex ? 'is-complete' : ''} ${index === tierIndex ? 'is-current' : ''}`} key={item}><i>{index < tierIndex ? '✓' : index + 1}</i><span>LV.{index + 1}</span><small>{tierProfile[item].title}</small></li>)}
+            </ol>
+          </div>
+        </section>
+
+        <aside className="profile-side-stack">
+          <section className="profile-growth-card profile-card data-panel">
+            <header><div><span>TODAY GROWTH</span><h2>今日成长</h2></div><TrendingUp size={19} /></header>
+            <dl><div><dt>基础积分</dt><dd>待同步</dd></div><div><dt>会员加速</dt><dd>{tier === 'free' ? '未启用' : '套餐已启用'}</dd></div><div><dt>今日累计</dt><dd>{todayActivity} 条活动</dd></div><div><dt>连续活跃</dt><dd>待同步</dd></div></dl>
+            <div className="profile-growth-chart" role="img" aria-label={`最近七日账户内容与记忆活动，共 ${weeklyActivity.reduce((sum, item) => sum + item.value, 0)} 条`}>
+              <svg viewBox="0 0 100 90" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id="profile-growth-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stopColor="#7c63ff" stopOpacity=".48" /><stop offset="1" stopColor="#4b85ff" stopOpacity=".04" /></linearGradient></defs><path d="M4 24H96 M4 53H96 M4 82H96" /><polygon points={`4,84 ${weeklyPoints} 96,84`} /><polyline points={weeklyPoints} /></svg>
+              <div>{weeklyActivity.map((item) => <span key={item.label}>{item.label}</span>)}</div>
+            </div>
+            <a href="#profile-memory">查看成长记录</a>
+          </section>
+
+          <section className="profile-plan-card profile-card data-panel">
+            <span className="profile-plan-icon"><Crown size={20} /></span><div><small>当前套餐</small><strong>{planName}</strong><span>{expiresAt ? `有效期至 ${new Date(expiresAt).toLocaleDateString(formatLocale)}` : '长期有效或日期待同步'}</span></div><dl><div><dt>剩余</dt><dd>{remainingDays(expiresAt)}</dd></div><div><dt>成长速度</dt><dd>{growthBenefit}</dd></div></dl><Link className="button secondary" to="/membership">管理套餐</Link>
+          </section>
+
+          <section className="profile-paper-card profile-card data-panel">
+            <header><div><span>PERSONAL PAPER ACCOUNT</span><h2>个人模拟账户</h2></div><span className="profile-paper-shield"><ShieldCheck size={27} /></span></header>
+            <dl>
+              <div><dt>模拟资产</dt><dd>{paperAccount ? formatUsd(paperAccount.total_equity) : paperAccountState === 'loading' ? '读取中' : paperAccountState === 'error' ? '暂不可用' : '尚未创建'}</dd></div>
+              <div><dt>累计收益</dt><dd className={paperAccount && paperAccount.total_equity - paperAccount.season.initial_cash < 0 ? 'negative-text' : 'positive-text'}>{paperAccount ? formatUsd(paperAccount.total_equity - paperAccount.season.initial_cash) : '—'}</dd></div>
+              <div><dt>当前持仓</dt><dd>{paperAccount ? `${paperAccount.positions.length} 个` : '—'}</dd></div>
+            </dl>
+            <p>{paperAccount ? `独立 USD 账户域 · 更新于 ${new Date(paperAccount.as_of).toLocaleString(formatLocale, { hour12: false })}` : '个人模拟账户与官方验证组合、券商实盘完全隔离。'}</p>
+            <footer><Link className="button primary" to="/paper">查看模拟账户</Link><a className="button secondary" href="#account-security-details">风险设置</a></footer>
+          </section>
+        </aside>
+      </section>
+
+      <section className="profile-lower-grid">
+        <section className="profile-card data-panel" id="profile-memory"><header><div><span>INVESTMENT MEMORY</span><h2>投资偏好记忆</h2></div><SlidersHorizontal size={19} /></header><dl className="profile-preference-list"><div><dt>风险偏好</dt><dd>{hasVerifiedRisk ? riskPreset === 'conservative' ? '保守' : riskPreset === 'balanced' ? '平衡' : '自定义' : '待同步'}</dd></div><div><dt>投资周期</dt><dd>服务端未提供</dd></div><div><dt>关注方向</dt><dd>{memories.length ? memories.slice(0, 2).map((item) => item.memory_key).join(' · ') : '尚未配置'}</dd></div><div><dt>分析偏好</dt><dd>{memories.length ? `${memories.length} 条可控记忆` : '尚未配置'}</dd></div></dl><footer><span>AI 自动更新：{authorizations.find((item) => item.data_kind === 'ai_memory')?.authorized ? '已授权' : '未授权'}</span><a href="#account-memory-editor">管理记忆</a></footer></section>
+
+        <section className="profile-card data-panel"><header><div><span>DATA AUTHORIZATION</span><h2>数据与授权</h2></div><ShieldCheck size={19} /></header><div className="profile-authorization-list">{authorizationKinds.map((kind) => { const item = authorizations.find((entry) => entry.data_kind === kind); const configured = item?.policy_state === 'configured'; const label = { quotes: '自选股与行情', research: '模拟持仓与研究', content: '研报历史与内容', ai_memory: '对话行为与记忆' }[kind]; return <div key={kind}><span><strong>{label}</strong><small>{configured ? item?.authorized ? '已授权' : '未授权' : '政策未配置'}</small></span><button type="button" role="switch" aria-checked={Boolean(item?.authorized)} className={item?.authorized ? 'is-on' : ''} disabled={!configured || authorizationBusy !== null} onClick={() => void updateAuthorization(kind, Boolean(item?.authorized))}><i /></button></div> })}</div><footer><span>授权按当前账户隔离</span><a href="#account-security-details">管理授权</a></footer></section>
+
+        <section className="profile-card data-panel"><header><div><span>MY CONTENT</span><h2>我的内容</h2></div><FileText size={19} /></header><nav className="profile-link-list"><Link to="/reports"><span>我的研报</span><strong>{reportCount}</strong></Link><Link to="/paper"><span>个人模拟记录</span><strong>{paperAccount?.recent_orders.length ?? 0}</strong></Link><Link to="/reports"><span>下载与验证记录</span><strong>查看</strong></Link><Link to="/ai"><span>对话历史</span><strong>打开</strong></Link></nav></section>
+
+        <section className="profile-card data-panel"><header><div><span>MESSAGES / SETTINGS</span><h2>消息与设置</h2></div><Settings size={19} /></header><nav className="profile-link-list"><Link to="/notifications"><span><BellRing size={15} />消息与预警</span><strong>查看</strong></Link><a href="#account-security-details"><span><ShieldCheck size={15} />账户与安全</span><strong>管理</strong></a><a href="#account-security-details"><span><KeyRound size={15} />隐私与授权</span><strong>管理</strong></a><Link to="/help"><span><HelpCircle size={15} />帮助与反馈</span><strong>打开</strong></Link></nav></section>
+
+        <section className="profile-card profile-usage-card data-panel"><header><div><span>AI USAGE</span><h2>本周期 AI 用量</h2></div><BarChart3 size={19} /></header><div className="profile-usage-row"><div><span>模型调用</span><strong>待同步</strong></div><i><b style={{ width: 0 }} /></i><small>后端尚未提供账户级配额</small></div><div className="profile-usage-row"><div><span>报告生成</span><strong>{reportCount} / 配额待同步</strong></div><i><b style={{ width: 0 }} /></i><small>仅显示可验证的报告索引数量</small></div><Link to="/membership">查看用量与套餐</Link></section>
+      </section>
+
+      <h2 className="profile-settings-heading" id="account-security-details">账户与安全详细设置</h2>
 
       <section className="language-preference data-panel">
         <div><Languages size={20} /><span><strong>界面语言</strong><small>默认繁体中文；登录后会同步到当前账户。</small></span></div>
@@ -234,7 +397,7 @@ export function AccountPage() {
         </section>
       </section>
 
-      <section className="data-panel account-center-memory">
+      <section className="data-panel account-center-memory" id="account-memory-editor">
         <header className="panel-heading"><div><span>CONTROLLED MEMORY</span><h2>可控记忆</h2></div><KeyRound size={20} /></header>
         <div className="memory-create-form"><label><span>记忆名称</span><input value={memoryKey} maxLength={128} placeholder="例如：研究表达偏好" onChange={(event) => setMemoryKey(event.target.value)} /></label><label><span>记忆内容</span><input value={memoryValue} maxLength={500} placeholder="例如：先列风险与反向证据" onChange={(event) => setMemoryValue(event.target.value)} /></label><button className="button primary" type="button" disabled={memoryBusy || !memoryKey.trim() || !memoryValue.trim()} onClick={() => void saveMemory()}>{memoryBusy ? '保存中…' : '保存记忆'}</button></div>
         {memories.length ? <div className="memory-list">{memories.map((memory) => { const linked = notificationKind === 'memory' && notificationPublicId === memory.public_id; return <article data-notification-target={linked ? memory.public_id : undefined} tabIndex={linked ? 0 : undefined} className={linked ? 'notification-target-match' : undefined} key={memory.public_id}><div><strong>{memory.memory_key}</strong><small>来源：账户中心 · 范围：当前账户 · {memory.expires_at ? `到期 ${memory.expires_at}` : '未设置到期时间'}</small></div><button className="button tertiary" type="button" onClick={() => void deleteMemory(memory)}>删除</button></article> })}</div> : <div className="account-center-empty"><LockKeyhole size={18} /><span>暂无可控记忆；服务端没有数据时不展示演示记忆。</span></div>}

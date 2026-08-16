@@ -65,7 +65,7 @@
 .app-shell .paper-tasks li:last-child { border-bottom: 0; }
 .app-shell .paper-tasks li > span { display: grid; width: 24px; height: 24px; place-items: center; border: 1px solid var(--paper-border-strong); border-radius: 50%; color: var(--paper-muted-2); font: 11px var(--mono); }
 .app-shell .paper-tasks li strong { font-size: 12px; font-weight: 500; }
-.app-shell .paper-tasks li small { color: var(--paper-muted-2); font: 10px var(--mono); }
+.app-shell .paper-tasks li small { color: var(--paper-muted-2); font: 11px var(--mono); }
 .app-shell .paper-tasks li[data-complete='true'] > span { border-color: color-mix(in srgb, var(--paper-ai-blue) 66%, var(--paper-border)); background: color-mix(in srgb, var(--paper-ai-blue) 13%, transparent); color: var(--paper-ai-text); }
 .app-shell .paper-tasks li[data-complete='true'] strong { color: var(--paper-text); }
 
@@ -84,14 +84,14 @@
 .app-shell .paper-list article:last-child { border-bottom: 0; }
 .app-shell .paper-list article > span:first-child { display: grid; gap: 3px; }
 .app-shell .paper-list article strong { display: inline-flex; align-items: center; gap: 5px; color: var(--paper-text); font-size: 12px; }
-.app-shell .paper-list article small { color: var(--paper-muted); font: 10px var(--mono); }
-.app-shell .paper-order-state { color: var(--paper-muted); font: 10px var(--mono); }
+.app-shell .paper-list article small { color: var(--paper-muted); font: 11px var(--mono); }
+.app-shell .paper-order-state { color: var(--paper-muted); font: 11px var(--mono); }
 .app-shell .paper-order-state.filled { color: var(--paper-positive); }
 .app-shell .paper-order-state.pending { color: var(--paper-warning); }
 .app-shell .paper-order-state.cancelled { color: var(--paper-muted-2); }
 
 .app-shell .paper-draft-card > header { display: flex; min-height: 68px; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--paper-border); }
-.app-shell .paper-draft-card > header small, .app-shell .paper-core-panel > div > small, .app-shell .paper-decision-summary > header small { color: var(--paper-ai-text); font: 10px var(--mono); letter-spacing: .06em; }
+.app-shell .paper-draft-card > header small, .app-shell .paper-core-panel > div > small, .app-shell .paper-decision-summary > header small { color: var(--paper-ai-text); font: 11px var(--mono); letter-spacing: .06em; }
 .app-shell .paper-draft-card h2, .app-shell .paper-core-panel h2, .app-shell .paper-decision-summary h2, .app-shell .paper-unknown h2, .app-shell .paper-receipt h2 { margin: 4px 0 0; color: var(--paper-text); font-size: 17px; }
 .app-shell .paper-source-chip { display: inline-flex; min-height: 30px; align-items: center; gap: 5px; padding: 0 9px; border: 1px solid color-mix(in srgb, var(--paper-ai-violet) 50%, var(--paper-border)); border-radius: 999px; background: color-mix(in srgb, var(--paper-ai-violet) 11%, transparent); color: var(--paper-muted); font-size: 11px; }
 .app-shell .paper-evidence-mark { width: 14px; height: 14px; overflow: visible; fill: none; stroke: var(--paper-ai-magenta); stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.45; }
@@ -112,7 +112,7 @@
 .app-shell .paper-proof-action { display: grid; min-height: 66px; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 9px; padding: 9px 11px; border: 1px solid var(--paper-control-border); border-radius: 7px; background: var(--paper-surface); color: var(--paper-muted); cursor: pointer; text-align: left; transition: border-color 150ms ease-out, background-color 150ms ease-out, transform 100ms ease-out; }
 .app-shell .paper-proof-action span { display: grid; min-width: 0; gap: 3px; }
 .app-shell .paper-proof-action strong { color: var(--paper-text); font-size: 12px; }
-.app-shell .paper-proof-action small { overflow: hidden; color: var(--paper-muted-2); font: 10px var(--mono); text-overflow: ellipsis; }
+.app-shell .paper-proof-action small { overflow: hidden; color: var(--paper-muted-2); font: 11px var(--mono); text-overflow: ellipsis; }
 .app-shell .paper-proof-action.is-ready { border-color: color-mix(in srgb, var(--paper-ai-blue) 62%, var(--paper-border)); background: color-mix(in srgb, var(--paper-ai-blue) 9%, var(--paper-surface)); }
 .app-shell .paper-proof-action.is-ready > svg { color: var(--paper-ai-blue); }
 .app-shell .paper-proof-action:disabled { opacity: .48; cursor: not-allowed; }
@@ -122,12 +122,12 @@
 .app-shell .paper-decision-summary > header { display: grid; min-height: 64px; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 9px 13px; border-bottom: 1px solid var(--paper-border); }
 .app-shell .paper-order-preview { border: 1px solid var(--paper-border); border-radius: 8px; background: var(--paper-surface); overflow: hidden; }
 .app-shell .paper-order-preview > header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 9px 13px; border-bottom: 1px solid var(--paper-border); }
-.app-shell .paper-order-preview > header span { color: var(--paper-muted-2); font: 10px var(--mono); }
+.app-shell .paper-order-preview > header span { color: var(--paper-muted-2); font: 11px var(--mono); }
 .app-shell .paper-order-preview h2 { margin: 0; color: var(--paper-text); font-size: 13px; }
 .app-shell .paper-order-preview dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; }
 .app-shell .paper-order-preview dl > div { display: grid; gap: 4px; min-width: 0; padding: 8px 13px; border-bottom: 1px solid var(--paper-border-subtle); }
 .app-shell .paper-order-preview dl > div:nth-child(odd) { border-right: 1px solid var(--paper-border-subtle); }
-.app-shell .paper-order-preview dt { color: var(--paper-muted); font-size: 10px; }
+.app-shell .paper-order-preview dt { color: var(--paper-muted); font-size: 11px; }
 .app-shell .paper-order-preview dd { margin: 0; color: var(--paper-text); font: 11px var(--mono); overflow-wrap: anywhere; }
 .app-shell .paper-decision-summary > header > svg { color: var(--paper-ai-blue); }
 .app-shell .paper-decision-summary > header > strong { padding: 5px 8px; border: 1px solid var(--paper-border-strong); border-radius: 999px; color: var(--paper-muted); font-size: 11px; }
@@ -138,13 +138,13 @@
 .app-shell .paper-decision-summary dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; border-bottom: 1px solid var(--paper-border-subtle); }
 .app-shell .paper-decision-summary dl > div { display: grid; gap: 5px; padding: 11px 13px; border-right: 1px solid var(--paper-border-subtle); }
 .app-shell .paper-decision-summary dl > div:last-child { border-right: 0; }
-.app-shell .paper-decision-summary dt { color: var(--paper-muted); font-size: 10px; }
+.app-shell .paper-decision-summary dt { color: var(--paper-muted); font-size: 11px; }
 .app-shell .paper-decision-summary dd { display: inline-flex; align-items: center; gap: 5px; margin: 0; color: var(--paper-text); font: 12px var(--mono); }
 .app-shell .paper-blocking-reasons, .app-shell .paper-warning-reasons { display: grid; gap: 5px; margin: 0; padding: 10px 13px 10px 30px; color: var(--paper-negative); font-size: 12px; line-height: 1.55; }
 .app-shell .paper-warning-reasons { color: var(--paper-warning); }
 .app-shell .paper-blocking-reasons + .paper-warning-reasons { border-top: 1px solid var(--paper-border-subtle); }
-.app-shell .paper-proof-fingerprint { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 13px; border-top: 1px solid var(--paper-border-subtle); color: var(--paper-muted); font-size: 10px; }
-.app-shell .paper-proof-fingerprint code { color: var(--paper-muted-2); font: 10px var(--mono); }
+.app-shell .paper-proof-fingerprint { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 13px; border-top: 1px solid var(--paper-border-subtle); color: var(--paper-muted); font-size: 11px; }
+.app-shell .paper-proof-fingerprint code { color: var(--paper-muted-2); font: 11px var(--mono); }
 
 .app-shell .paper-risk-checks > header span { margin-left: auto; color: var(--paper-muted-2); font: 11px var(--mono); }
 .app-shell .paper-risk-checks > p { margin: 0; padding: 20px 13px; color: var(--paper-muted); font-size: 12px; }
@@ -153,7 +153,7 @@
 .app-shell .paper-risk-check-list article:last-child { border-bottom: 0; }
 .app-shell .paper-risk-check-list article > div { display: grid; min-width: 0; gap: 3px; }
 .app-shell .paper-risk-check-list article strong { color: var(--paper-text); font-size: 12px; }
-.app-shell .paper-risk-check-list article small { color: var(--paper-muted); font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
+.app-shell .paper-risk-check-list article small { color: var(--paper-muted); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
 .app-shell .paper-risk-check-list article > span { display: grid; justify-items: end; color: var(--paper-text); font: 11px var(--mono); }
 .app-shell .paper-risk-check-list article[data-status='pass'] > svg { color: var(--paper-positive); }
 .app-shell .paper-risk-check-list article[data-status='warn'] > svg { color: var(--paper-warning); }
@@ -185,7 +185,7 @@
 .app-shell .paper-feedback { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--paper-positive); font-size: 12px; }
 .app-shell .paper-unknown, .app-shell .paper-receipt { display: grid; min-height: 92px; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--paper-warning) 50%, var(--paper-border)); border-radius: 8px; background: color-mix(in srgb, var(--paper-warning) 7%, var(--paper-workspace)); color: var(--paper-warning); }
 .app-shell .paper-unknown p, .app-shell .paper-receipt p { margin: 5px 0; color: var(--paper-muted); font-size: 12px; line-height: 1.5; }
-.app-shell .paper-unknown small, .app-shell .paper-receipt small, .app-shell .paper-receipt code { color: var(--paper-muted-2); font: 10px var(--mono); overflow-wrap: anywhere; }
+.app-shell .paper-unknown small, .app-shell .paper-receipt small, .app-shell .paper-receipt code { color: var(--paper-muted-2); font: 11px var(--mono); overflow-wrap: anywhere; }
 .app-shell .paper-receipt { border-color: color-mix(in srgb, var(--paper-positive) 48%, var(--paper-border)); background: color-mix(in srgb, var(--paper-positive) 6%, var(--paper-workspace)); color: var(--paper-positive); }
 
 .app-shell .paper-core-panel { display: grid; min-height: 300px; grid-template-rows: auto 1fr; padding: 14px; background: radial-gradient(circle at 50% 68%, color-mix(in srgb, var(--paper-ai-blue) 13%, transparent), transparent 46%), var(--paper-workspace); }
@@ -208,16 +208,88 @@
 .app-shell .ciclo-core[data-state='offline'] { filter: grayscale(.7); opacity: .66; }
 .app-shell .ciclo-core[data-state='offline'] .ciclo-core-status { fill: var(--paper-muted-2); }
 
+/* ===== 机器人按会员等级形态（产品负责人 2026-08-16）===== */
+/* 免费版：基础形态，无轨道无粒子，低调 */
+.app-shell .ciclo-core-free .ciclo-core-orbits { display: none; }
+.app-shell .ciclo-core-free .ciclo-core-rails { display: none; }
+.app-shell .ciclo-core-free .ciclo-core-halo { display: none; }
+.app-shell .ciclo-core-free .ciclo-core-particles { display: none; }
+.app-shell .ciclo-core-free .ciclo-core-energy-lines { display: none; }
+.app-shell .ciclo-core-free .ciclo-core-shell,
+.app-shell .ciclo-core-free .ciclo-core-head,
+.app-shell .ciclo-core-free .ciclo-core-side,
+.app-shell .ciclo-core-free .ciclo-core-arm,
+.app-shell .ciclo-core-free .ciclo-core-neck { fill: #7c8494; stroke: #99a2b1; filter: none; }
+.app-shell .ciclo-core-free .ciclo-core-inset { fill: #2c3340; stroke: #4a5360; }
+.app-shell .ciclo-core-free .ciclo-core-visor { fill: #1c222e; stroke: #49505c; }
+.app-shell .ciclo-core-free .ciclo-core-visor-line { stroke: #8d96a5; filter: none; }
+.app-shell .ciclo-core-free .ciclo-core-evidence path { fill: #454d5c; stroke: #5f6a7a; }
+.app-shell .ciclo-core-free .ciclo-core-evidence path:last-child { fill: #1c222c; stroke: #69717f; }
+.app-shell .ciclo-core-free .ciclo-core-badge { fill: #3a4250; stroke: #5a6472; filter: none; }
+.app-shell .ciclo-core-free .ciclo-core-badge-letter { fill: #b9c2ce; }
+.app-shell .ciclo-core-free .ciclo-core-status { fill: #7a8494; }
+.app-shell .ciclo-core-free { opacity: .82; filter: saturate(.55); }
+.app-shell .ciclo-core-free svg { filter: drop-shadow(0 4px 10px rgba(0, 0, 0, .3)); }
+.app-shell .ciclo-core-free .ciclo-core-visor-line { opacity: .5; }
+
+/* 标准版：蓝紫渐变核心 + 轨道，无光环粒子 */
+.app-shell .ciclo-core-standard .ciclo-core-halo { display: none; }
+.app-shell .ciclo-core-standard .ciclo-core-particles { display: none; }
+.app-shell .ciclo-core-standard .ciclo-core-energy-lines { display: none; }
+.app-shell .ciclo-core-standard .ciclo-core-shell,
+.app-shell .ciclo-core-standard .ciclo-core-head,
+.app-shell .ciclo-core-standard .ciclo-core-side,
+.app-shell .ciclo-core-standard .ciclo-core-arm,
+.app-shell .ciclo-core-standard .ciclo-core-neck { fill: #b9c6d8; stroke: #dde6f2; }
+.app-shell .ciclo-core-standard .ciclo-core-badge { fill: var(--paper-ai-blue); stroke: var(--paper-ai-violet); }
+.app-shell .ciclo-core-standard .ciclo-core-badge-letter { fill: #fff; }
+
+/* 高级版：霓虹外轮廓 + 光环 + 粒子 */
+.app-shell .ciclo-core-advanced .ciclo-core-energy-lines { display: none; }
+.app-shell .ciclo-core-advanced .ciclo-core-halo-ring { fill: none; stroke: color-mix(in srgb, var(--paper-ai-blue) 30%, transparent); stroke-width: 1.5; animation: paper-halo-breathe 3.2s ease-in-out infinite; }
+.app-shell .ciclo-core-advanced .ciclo-core-halo-ring.is-second { stroke: color-mix(in srgb, var(--paper-ai-magenta) 24%, transparent); animation-delay: -1.6s; }
+.app-shell .ciclo-core-advanced .ciclo-core-shell,
+.app-shell .ciclo-core-advanced .ciclo-core-head,
+.app-shell .ciclo-core-advanced .ciclo-core-side,
+.app-shell .ciclo-core-advanced .ciclo-core-arm,
+.app-shell .ciclo-core-advanced .ciclo-core-neck { fill: #cdd8e6; stroke: #f2f6fc; filter: drop-shadow(0 0 6px color-mix(in srgb, var(--paper-ai-blue) 45%, transparent)); }
+.app-shell .ciclo-core-advanced .ciclo-core-particle { fill: var(--paper-ai-magenta); filter: drop-shadow(0 0 6px var(--paper-ai-magenta)); animation: paper-particle-float 3.4s ease-in-out infinite; }
+.app-shell .ciclo-core-advanced .ciclo-core-particle:nth-child(2n) { fill: var(--paper-ai-blue); animation-delay: -1.2s; }
+
+/* 专业版/定制版：全特效——金属银白机身 + 全息底座光 + 能量线 + 粒子 + 光环 */
+.app-shell .ciclo-core-professional .ciclo-core-shell,
+.app-shell .ciclo-core-professional .ciclo-core-head,
+.app-shell .ciclo-core-professional .ciclo-core-side,
+.app-shell .ciclo-core-professional .ciclo-core-arm,
+.app-shell .ciclo-core-professional .ciclo-core-neck { fill: url(#metalGradient); stroke: #eef3fb; stroke-width: 2; filter: drop-shadow(0 0 10px color-mix(in srgb, var(--paper-ai-violet) 55%, transparent)); }
+.app-shell .ciclo-core-professional .ciclo-core-inset { fill: #1d2a44; stroke: #5d6f96; }
+.app-shell .ciclo-core-professional .ciclo-core-halo-ring { fill: none; stroke: color-mix(in srgb, var(--paper-ai-violet) 35%, transparent); stroke-width: 1.5; animation: paper-halo-breathe 2.8s ease-in-out infinite; }
+.app-shell .ciclo-core-professional .ciclo-core-halo-ring.is-second { stroke: color-mix(in srgb, var(--paper-ai-magenta) 28%, transparent); animation-delay: -1.4s; }
+.app-shell .ciclo-core-professional .ciclo-core-particle { fill: var(--paper-ai-blue); filter: drop-shadow(0 0 8px var(--paper-ai-blue)); animation: paper-particle-float 2.6s ease-in-out infinite; }
+.app-shell .ciclo-core-professional .ciclo-core-particle:nth-child(2n) { fill: var(--paper-ai-magenta); animation-delay: -1s; }
+.app-shell .ciclo-core-professional .ciclo-core-energy { fill: none; stroke: url(#orbitGradient); stroke-width: 2; stroke-dasharray: 6 8; opacity: .8; animation: paper-energy-flow 2.4s linear infinite; }
+.app-shell .ciclo-core-professional .ciclo-core-badge { fill: url(#coreGradient); stroke: #fff; stroke-width: 1.2; filter: drop-shadow(0 0 8px var(--paper-ai-magenta)); }
+.app-shell .ciclo-core-professional .ciclo-core-badge-letter { fill: #fff; font-size: 15px; }
+
+/* 定制版继承专业版 */
+.app-shell .ciclo-core-custom { filter: hue-rotate(14deg) saturate(1.15); }
+
+/* 等级动效 */
+@keyframes paper-halo-breathe { 0%, 100% { opacity: .45; } 50% { opacity: .95; } }
+@keyframes paper-particle-float { 0%, 100% { opacity: .35; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-5px); } }
+@keyframes paper-energy-flow { to { stroke-dashoffset: -28; } }
+
+
 .app-shell .paper-position-risk { padding-bottom: 12px; }
 .app-shell .paper-position-risk > p { margin: 0; padding: 11px 13px; color: var(--paper-muted); font-size: 12px; line-height: 1.55; }
 .app-shell .paper-position-risk dl { display: grid; grid-template-columns: 1fr 1fr; margin: 0 12px; border: 1px solid var(--paper-border-subtle); }
 .app-shell .paper-position-risk dl > div { display: grid; gap: 5px; padding: 10px; }
 .app-shell .paper-position-risk dl > div + div { border-left: 1px solid var(--paper-border-subtle); }
-.app-shell .paper-position-risk dt { color: var(--paper-muted); font-size: 10px; }
+.app-shell .paper-position-risk dt { color: var(--paper-muted); font-size: 11px; }
 .app-shell .paper-position-risk dd { margin: 0; font: 600 18px var(--mono); }
 .app-shell .paper-data-health > header { justify-content: space-between; }
 .app-shell .paper-data-health > header > div { display: flex; align-items: center; gap: 8px; }
-.app-shell .paper-data-health > header > span, .app-shell .paper-data-health dd[data-state] { color: var(--paper-muted); font: 10px var(--mono); }
+.app-shell .paper-data-health > header > span, .app-shell .paper-data-health dd[data-state] { color: var(--paper-muted); font: 11px var(--mono); }
 .app-shell .paper-data-health [data-state='fresh'] { color: var(--paper-positive); }
 .app-shell .paper-data-health [data-state='partial'], .app-shell .paper-data-health [data-state='stale'] { color: var(--paper-warning); }
 .app-shell .paper-data-health [data-state='missing'] { color: var(--paper-negative); }
@@ -225,7 +297,7 @@
 .app-shell .paper-data-health dl > div { display: flex; min-height: 44px; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--paper-border-subtle); }
 .app-shell .paper-data-health dl > div:last-child { border-bottom: 0; }
 .app-shell .paper-data-health dt { color: var(--paper-muted); font-size: 11px; }
-.app-shell .paper-data-health dd { margin: 0; color: var(--paper-text); font: 10px var(--mono); text-align: right; }
+.app-shell .paper-data-health dd { margin: 0; color: var(--paper-text); font: 11px var(--mono); text-align: right; }
 .app-shell .personal-paper-page button { touch-action: manipulation; }
 .app-shell .spin { animation: command-spin .9s linear infinite; }
 

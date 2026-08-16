@@ -23,7 +23,6 @@ import {
   Radar,
   RadioTower,
   Search,
-  Settings,
   ShieldCheck,
   Sparkles,
   Sun,
@@ -95,6 +94,16 @@ const FEATURE_ICONS: Record<string, LucideIcon> = {
 const SEARCH_HISTORY_STORAGE_KEY = 'ciclotrade.searchHistory'
 const MAX_RECENT_SEARCHES = 6
 
+function visualFamilyForPath(pathname: string, locale: 'zh-Hans' | 'zh-Hant') {
+  const traditional = locale === 'zh-Hant'
+  if (pathname === '/paper' || pathname === '/portfolio') return { key: 'assets', label: traditional ? '帳戶資產' : '账户资产' }
+  if (pathname === '/membership' || pathname === '/promotion') return { key: 'growth', label: traditional ? '商業增長' : '商业增长' }
+  if (['/more', '/notifications', '/help', '/feedback', '/mystic'].includes(pathname)) return { key: 'service', label: traditional ? '系統服務' : '系统服务' }
+  if (pathname === '/admin') return { key: 'admin', label: traditional ? '管理後台' : '管理后台' }
+  if (['/earnings', '/reports', '/lab', '/trade', '/ai', '/workflow', '/deliberation'].some((route) => pathname === route || pathname.startsWith(`${route}/`))) return { key: 'intelligence', label: traditional ? 'AI 能力' : 'AI 能力' }
+  return { key: 'workspace', label: traditional ? '核心工作台' : '核心工作台' }
+}
+
 interface CommandHistoryItem {
   to: string
   label: string
@@ -115,6 +124,12 @@ function GlobalAutoLiveKillSwitch({ snapshot, snapshotState }: { snapshot: AutoL
   const idempotency = useRef(createSessionIdempotencyRegistry('ciclotrade.autoLivePending.v1'))
   const view = deriveAutoLiveKillSwitchView(snapshot, snapshotState, result, pauseUnknown)
   if (!view.visible) return null
+  const compactLabel = view.tone === 'unknown'
+    ? snapshotState === 'loading' ? '状态读取中' : pauseUnknown ? '暂停未知' : '状态未知'
+    : view.tone === 'failed' ? '暂停失败'
+      : view.tone === 'partial' ? result ? `暂停 ${result.confirmed}/${result.total}` : '暂停确认中'
+        : view.tone === 'stale' ? '状态过期'
+          : '暂停实盘'
   const pauseAll = async () => {
     if (busy) return
     setBusy(true)
@@ -128,7 +143,7 @@ function GlobalAutoLiveKillSwitch({ snapshot, snapshotState }: { snapshot: AutoL
     } catch { setPauseUnknown(true) }
     finally { setBusy(false) }
   }
-  return <button className={`global-auto-live-kill-switch is-${view.tone}`} type="button" onClick={() => void pauseAll()} disabled={busy} aria-label={view.label}><ShieldCheck size={15} /><span role="status" aria-live="polite">{busy ? '正在暂停…' : view.label}</span></button>
+  return <button className={`global-auto-live-kill-switch is-${view.tone}`} type="button" title={view.label} onClick={() => void pauseAll()} disabled={busy} aria-label={view.label}><ShieldCheck size={15} /><span role="status" aria-live="polite">{busy ? '暂停中…' : compactLabel}</span></button>
 }
 
 function storedSearchHistory(): CommandHistoryItem[] {
@@ -165,6 +180,7 @@ export function AppShell({ children }: AppShellProps) {
   const { pathname } = useLocation()
   const workspace = useWorkspace()
   const { locale, setLocale, syncState } = useLocale()
+  const visualFamily = visualFamilyForPath(pathname, locale)
   const realData = workspace.mode === 'authenticated'
   const marketStatus = workspace.data?.market_data
   const marketDelay = displayDeliveryDelay(marketStatus?.delivery_delay_minutes)
@@ -375,7 +391,7 @@ export function AppShell({ children }: AppShellProps) {
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell visual-family-${visualFamily.key}`} data-visual-family={visualFamily.key}>
       <a className="skip-link" href="#main-content">跳到主要内容</a>
       <aside className="sidebar" aria-label="主要导航">
         <NavLink className="brand" to="/today" aria-label="CicloTrade 今日工作台">
@@ -406,22 +422,25 @@ export function AppShell({ children }: AppShellProps) {
 
       <div className="shell-content">
         <header className="topbar">
-          <button ref={commandTrigger} className="command-search" type="button" aria-haspopup="dialog" aria-controls="command-palette" aria-expanded={commandOpen} onClick={() => setCommandOpen(true)}>
-            <Search size={17} />
-            <span>搜索股票</span>
-            <kbd>Ctrl K</kbd>
-          </button>
+          <div className="topbar-leading">
+            <span className="page-family-label"><i aria-hidden="true" />{visualFamily.label}</span>
+            <button ref={commandTrigger} className="command-search" type="button" aria-haspopup="dialog" aria-controls="command-palette" aria-expanded={commandOpen} onClick={() => setCommandOpen(true)}>
+              <Search size={17} />
+              <span>搜索股票</span>
+              <kbd>Ctrl K</kbd>
+            </button>
+          </div>
           <div className="global-status" aria-label="系统状态">
             <div className="ai-launcher">
               <NavLink className={`ai-pill ${aiAvailable ? '' : 'is-locked'}`} to={aiAvailable ? '/ai' : '/membership'} aria-label={aiAvailable ? aiCopy.label : `${aiCopy.label} · 当前会员未解锁`} onClick={() => setUserMenuOpen(false)}>
                 <Bot aria-hidden="true" />
-                <span>{aiAvailable ? aiCopy.label : `${aiCopy.label} · 未解锁`}</span>
+                <span>{aiAvailable ? 'Ciclo AI' : 'Ciclo AI・未解锁'}</span>
               </NavLink>
             </div>
-            <span className="live-status"><i /> {realData ? marketDisconnected ? '行情未连接' : marketStatusLabel : '界面演示'}</span>
+            <span className="live-status" title={realData ? marketDisconnected ? '行情未连接' : marketStatusLabel : '界面演示'}><i /> {realData ? marketDisconnected ? '行情未连' : marketStatusLabel : '演示'}</span>
             <GlobalAutoLiveKillSwitch snapshot={autoLiveSnapshot} snapshotState={realData && autoLiveSnapshotState === 'idle' ? 'loading' : autoLiveSnapshotState} />
-            <span>行情 · {marketStatusLabel}</span>
-            <NavLink to="/notifications"><Bot size={16} /> TG {telegramReady ? '已验证' : realData ? '未连接' : '演示'}</NavLink>
+              <span className="market-status-compact" title={`行情・${marketStatusLabel}`}><CandlestickChart size={15} />行情・{marketStatusLabel}</span>
+            <NavLink to="/notifications" title={`Telegram ${telegramReady ? '已验证' : realData ? '未连接' : '演示'}`}><Bot size={16} />TG {telegramReady ? '已连线' : realData ? '未连线' : '演示'}</NavLink>
             <button className="locale-button" type="button" title={locale === 'zh-Hant' ? '切换为简体中文' : '切换为繁体中文'} aria-label={locale === 'zh-Hant' ? '切换为简体中文' : '切换为繁体中文'} onClick={() => void setLocale(locale === 'zh-Hant' ? 'zh-Hans' : 'zh-Hant')}><Languages size={17} /><span>{locale === 'zh-Hant' ? '繁' : '简'}</span></button>
             <button className="theme-button" type="button" title={theme === 'dark' ? '切换为浅色界面' : '切换为深色界面'} aria-label={theme === 'dark' ? '切换为浅色界面' : '切换为深色界面'} aria-pressed={theme === 'light'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
               {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
@@ -432,7 +451,7 @@ export function AppShell({ children }: AppShellProps) {
               <header role="presentation"><strong>{workspace.user?.display_name ?? 'CicloTrade 用户'}</strong><small>{workspace.user?.plan_display_name ?? '账户'}</small></header>
               <a role="menuitem" href="/" onClick={() => setUserMenuOpen(false)}><House size={16} /> 返回欢迎页</a>
               <NavLink role="menuitem" to="/notifications" onClick={() => setUserMenuOpen(false)}><BellRing size={16} /> 消息通知</NavLink>
-              <NavLink role="menuitem" to="/account" onClick={() => setUserMenuOpen(false)}><Settings size={16} /> 用户设定</NavLink>
+              <NavLink role="menuitem" to="/account" onClick={() => setUserMenuOpen(false)}><UserRound size={16} /> 个人中心</NavLink>
               <NavLink role="menuitem" to="/membership" onClick={() => setUserMenuOpen(false)}><ShieldCheck size={16} /> 订阅会员</NavLink>
               <NavLink role="menuitem" to={promotionItem.to} onClick={() => setUserMenuOpen(false)}><Target size={16} /> {promotionItem.label}</NavLink>
               <NavLink role="menuitem" to="/help" onClick={() => setUserMenuOpen(false)}><HelpCircle size={16} /> 帮助与支持</NavLink>

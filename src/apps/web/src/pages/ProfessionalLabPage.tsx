@@ -51,7 +51,7 @@ function csvErrorMessage(error: unknown, fallback: string) {
 }
 
 function formatCsvDate(value: string | null) {
-  if (!value) return "—";
+  if (!value) return "时间未提供";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-TW", { dateStyle: "medium", timeStyle: "short" });
 }
@@ -228,8 +228,8 @@ function CsvImportHistoryPanel() {
                       {detailState === "loading" && <p className="lab-csv-state">正在读取股票记录…</p>}
                       {detailState === "error" && <p className="lab-csv-state is-error" role="alert">{detailError}</p>}
                       {detailState === "ready" && detail?.public_id === job.public_id && <>
-                        <div className="lab-csv-provenance"><span>记录编号 <code>{detail.public_id}</code></span><span>完成时间 {formatCsvDate(detail.completed_at)}</span><span>来源校验 <code>{detail.source_sha256?.slice(0, 12) ?? "—"}…</code></span></div>
-                        {signals.length === 0 ? <p className="lab-csv-state">这条导入记录没有股票行。</p> : <div className="lab-csv-signal-table"><table><thead><tr><th>股票</th><th>操作</th><th>数量</th><th>价格</th><th>时间</th></tr></thead><tbody>{signals.map((signal) => <tr key={signal.signal_id}><td data-label="股票">{signal.symbol}</td><td data-label="操作">{signal.action}</td><td data-label="数量">{signal.quantity ?? "—"}</td><td data-label="价格">{signal.price ?? "—"}</td><td data-label="时间">{formatCsvDate(signal.timestamp)}</td></tr>)}</tbody></table></div>}
+                        <div className="lab-csv-provenance"><span>记录编号 <code>{detail.public_id}</code></span><span>完成时间 {formatCsvDate(detail.completed_at)}</span><span>来源校验 <code>{detail.source_sha256?.slice(0, 12) ?? "校验值未提供"}</code></span></div>
+                        {signals.length === 0 ? <p className="lab-csv-state">这条导入记录没有股票行。</p> : <div className="lab-csv-signal-table"><table><thead><tr><th>股票</th><th>操作</th><th>数量</th><th>价格</th><th>时间</th></tr></thead><tbody>{signals.map((signal) => <tr key={signal.signal_id}><td data-label="股票">{signal.symbol}</td><td data-label="操作">{signal.action}</td><td data-label="数量">{signal.quantity ?? "未提供"}</td><td data-label="价格">{signal.price ?? "未提供"}</td><td data-label="时间">{formatCsvDate(signal.timestamp)}</td></tr>)}</tbody></table></div>}
                       </>}
                     </div>}
                   </article>

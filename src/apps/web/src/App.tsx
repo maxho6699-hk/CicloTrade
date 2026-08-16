@@ -30,6 +30,7 @@ import { DeliberationPage } from './pages/DeliberationPage'
 import { LegalPage } from './pages/LegalPage'
 import { useLocale } from './i18n/useLocale'
 import { applyTheme, readStoredTheme } from './theme'
+import './styles/visual-waves.css'
 
 function ProtectedConsole({ children }: { children: ReactNode }) {
   const workspace = useWorkspace()

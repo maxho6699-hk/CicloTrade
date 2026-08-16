@@ -206,7 +206,7 @@
 .option-chart-header h3 { overflow: hidden; margin: 0; color: var(--text); font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
 .option-chain-panel header small,
 .option-combination-panel header small,
-.option-chart-header small { color: var(--accent); font: 600 10px var(--mono); letter-spacing: .06em; }
+.option-chart-header small { color: var(--accent); font: 600 11px var(--mono); letter-spacing: .06em; }
 .option-chain-panel header > span,
 .option-combination-panel header > strong { color: var(--muted); font-size: 11px; }
 
@@ -242,7 +242,7 @@
   border-right: 1px solid var(--border-strong);
   background: var(--surface-inset);
   color: var(--accent);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: .04em;
   text-align: center;
@@ -284,7 +284,7 @@
 .option-chain-scroll td:first-child > small { display: block; max-width: 150px; overflow: hidden; margin-top: 3px; color: var(--muted); text-overflow: ellipsis; }
 .option-contract-trigger b,
 .option-leg-list b.call,
-.option-leg-list b.put { padding: 2px 4px; border-radius: 2px; font-size: 9px; }
+.option-leg-list b.put { padding: 2px 4px; border-radius: 2px; font-size: 12px; }
 .option-contract-trigger b.call,
 .option-leg-list b.call { background: color-mix(in srgb, var(--option-call) 14%, transparent); color: var(--option-call); }
 .option-contract-trigger b.put,
@@ -345,7 +345,7 @@
 .option-combination-summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0; border-top: 1px solid var(--border); }
 .option-combination-summary div { display: grid; gap: 5px; padding: 11px; border-right: 1px solid var(--border); }
 .option-combination-summary div:last-child { border-right: 0; }
-.option-combination-summary dt { color: var(--muted); font-size: 10px; }
+.option-combination-summary dt { color: var(--muted); font-size: 11px; }
 .option-combination-summary dd { margin: 0; color: var(--text); font: 600 15px var(--mono); font-variant-numeric: tabular-nums; }
 .option-combination-summary small { color: var(--muted); font-size: 11px; }
 .option-research-disclaimer { margin: 0; padding: 10px 11px; border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; line-height: 1.55; }
@@ -424,7 +424,7 @@
   .lab-tab-options .option-detail-tabs button { min-height: 36px; }
   .lab-tab-options .option-chain-panel > header { min-height: 42px; padding: 5px 9px; }
   .option-chart-canvas { height: auto; min-height: 0; }
-  .option-research-boundary { font-size: 10px; }
+  .option-research-boundary { font-size: 11px; }
 }
 
 @media (pointer: coarse) {

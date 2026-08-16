@@ -218,7 +218,7 @@ function EarningsHistoryView({ history }: { history: EarningsHistory | null }) {
   if (!history.items.length) return <div className="earnings-state"><History /><strong>暂无已完成事件</strong><span>结果与复盘只会在可验证结果按时可用后出现。</span></div>
   return <section className="earnings-history-table"><header className="earnings-section-heading"><div><span>OUTCOME / POSTMORTEM</span><h2>历史结果与复盘</h2></div><small>{history.items.length} 个事件</small></header><div role="table">
     <div className="earnings-table-head" role="row"><span role="columnheader">事件</span><span role="columnheader">结果检查点</span><span role="columnheader">实际波动</span><span role="columnheader">复盘</span></div>
-    {history.items.map((item) => { const outcome = item.outcomes.at(-1); const postmortem = item.postmortems.at(-1); return <div role="row" key={item.event_id}><span role="cell"><strong>{item.symbol}</strong><small>{item.fiscal_period} · {dateTime(item.scheduled_at, false)}</small></span><span role="cell">{outcome?.checkpoint ?? '等待结果'}</span><span role="cell" className={outcome && outcome.return_pct >= 0 ? 'positive-text' : 'negative-text'}>{outcome ? percent(outcome.return_pct) : '—'}</span><span role="cell">{postmortem ? <><strong>{postmortem.direction_correct ? '方向正确' : '方向偏差'}</strong><small>{postmortem.stage} · {dateTime(postmortem.completed_at, false)}</small></> : '等待复盘'}</span></div>})}
+    {history.items.map((item) => { const outcome = item.outcomes.at(-1); const postmortem = item.postmortems.at(-1); return <div role="row" key={item.event_id}><span role="cell"><strong>{item.symbol}</strong><small>{item.fiscal_period} · {dateTime(item.scheduled_at, false)}</small></span><span role="cell">{outcome?.checkpoint ?? '等待结果'}</span><span role="cell" className={outcome && outcome.return_pct >= 0 ? 'positive-text' : 'negative-text'}>{outcome ? percent(outcome.return_pct) : '暂无结果'}</span><span role="cell">{postmortem ? <><strong>{postmortem.direction_correct ? '方向正确' : '方向偏差'}</strong><small>{postmortem.stage} · {dateTime(postmortem.completed_at, false)}</small></> : '等待复盘'}</span></div>})}
   </div></section>
 }
 
@@ -369,6 +369,7 @@ export function EarningsForecastPage() {
 
   const researchOverview = overview?.state === 'research' ? overview : null
   const headerCount = useMemo(() => overview?.state === 'research' ? overview.items.length : overview?.confirmed_event_count ?? 0, [overview])
+  const showGuidance = phase !== 'ready' || overview?.state !== 'research' || headerCount === 0
 
   return <div className="page earnings-page">
     <header className="earnings-command-header">
@@ -377,6 +378,11 @@ export function EarningsForecastPage() {
     </header>
     <nav className="earnings-tabs" aria-label="业绩预测视图">{TABS.map(({ id, label, icon: Icon }) => <button className={tab === id ? 'is-selected' : ''} type="button" aria-pressed={tab === id} onClick={() => selectTab(id)} key={id}><Icon size={15} />{label}</button>)}</nav>
     {error && phase === 'ready' && <div className="earnings-inline-error" role="status"><CircleAlert size={15} />{error}</div>}
+    {showGuidance && <section className="page-assist-grid" aria-label="业绩预测规则摘要">
+      <article><FileLock2 size={18} /><div><span>快照规则</span><h2>D-7 至 D-1 永久封存</h2><p>只显示按时间可用的真实研究快照，不回写历史预测。</p></div></article>
+      <article><History size={18} /><div><span>复盘条件</span><h2>可验证结果出现后才复盘</h2><p>没有确认事件或结果时，页面不会用推测日期与虚构公司填充。</p></div></article>
+      <article><ShieldCheck size={18} /><div><span>权益与边界</span><h2>仅限已有历史有效权益</h2><p>当前不开放新购；研究行动不会提交订单或冒充账户收益。</p></div></article>
+    </section>}
     {phase === 'loading' ? <EarningsLoading /> : phase === 'error' ? <EarningsError message={error} onRetry={() => setRevision((value) => value + 1)} /> : overview?.state === 'locked' ? <EarningsLockedView locked={overview} /> : researchOverview ? (
       tab === 'future' ? <FutureWorkspace overview={researchOverview} detail={detail} selectedDay={selectedDay} onSelectDay={(forecast) => setSelectedDay(forecast.countdown_day)} onSelectEvent={selectEvent} option={option} optionReferences={optionReferences} selectedOptionId={selectedOptionId} onSelectOption={setSelectedOptionId} optionLoading={optionLoading} />
         : tab === 'history' ? <EarningsHistoryView history={history} />

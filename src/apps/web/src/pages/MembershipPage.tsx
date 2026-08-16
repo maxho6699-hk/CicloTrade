@@ -153,7 +153,7 @@ function membershipText(
   value: string | undefined,
   locale: "zh-Hant" | "zh-Hans",
 ) {
-  if (!value) return "—";
+  if (!value) return locale === "zh-Hant" ? "資料未提供" : "资料未提供";
   return locale === "zh-Hant" ? localizeText(value) : value;
 }
 
@@ -162,7 +162,7 @@ function billingCycleText(
   annualBonusEnabled: boolean,
   locale: "zh-Hant" | "zh-Hans",
 ) {
-  if (!cycle) return "—";
+  if (!cycle) return locale === "zh-Hant" ? "週期未選擇" : "周期未选择";
   const labels: Record<MembershipBillingCycle, string> =
     locale === "zh-Hant"
       ? {

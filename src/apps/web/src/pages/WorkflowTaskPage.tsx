@@ -8,8 +8,8 @@ import '../styles/intelligence.css'
 
 type LoadState = 'loading' | 'ready' | 'missing' | 'forbidden' | 'error'
 const TERMINAL = new Set<WorkflowTask['status']>(['partial', 'succeeded', 'failed', 'cancelled', 'blocked', 'timed_out'])
-function formatTime(value: string | null) { if (!value) return '—'; const parsed = new Date(value); return Number.isNaN(parsed.valueOf()) ? '—' : new Intl.DateTimeFormat('zh-HK', { dateStyle: 'medium', timeStyle: 'medium', timeZone: 'Asia/Hong_Kong' }).format(parsed) }
-function displayJson(value: unknown) { if (value === null || value === undefined) return '—'; try { return JSON.stringify(value, null, 2) } catch { return '—' } }
+function formatTime(value: string | null) { if (!value) return '时间未提供'; const parsed = new Date(value); return Number.isNaN(parsed.valueOf()) ? '时间格式异常' : new Intl.DateTimeFormat('zh-HK', { dateStyle: 'medium', timeStyle: 'medium', timeZone: 'Asia/Hong_Kong' }).format(parsed) }
+function displayJson(value: unknown) { if (value === null || value === undefined) return '内容未提供'; try { return JSON.stringify(value, null, 2) } catch { return '内容格式异常' } }
 function sourceHash(task: WorkflowTask) { const deliberation = task.deliberation; if (deliberation && typeof deliberation === 'object' && !Array.isArray(deliberation) && typeof deliberation.source_event_sha256 === 'string') return deliberation.source_event_sha256; return task.source_sha256 }
 
 export function WorkflowTaskPage() {
@@ -56,7 +56,7 @@ export function WorkflowTaskPage() {
       <aside className="workflow-inspector">
         <section className="intelligence-panel"><header className="intelligence-section-heading"><div><span>SAFE CONTEXT</span><h2>任务上下文</h2></div></header><pre className="workflow-json" aria-label="安全任务上下文">{displayJson(task.context)}</pre></section>
         <section className="intelligence-panel"><header className="intelligence-section-heading"><div><span>SAFE RESULT</span><h2>任务结果</h2></div></header>{task.result === null ? <TruthState title="暂无任务结果" detail="只有服务端返回 result 后才会展示；不会用演示结果替代。" /> : <pre className="workflow-json" aria-label="安全任务结果">{displayJson(task.result)}</pre>}</section>
-        <section className="intelligence-panel"><header className="intelligence-section-heading"><div><span>HASH BINDINGS</span><h2>来源与完整性</h2></div></header><dl className="workflow-detail-list"><div><dt>Source SHA-256</dt><dd>{sourceHash(task) ?? '—'}</dd></div><div><dt>Context SHA-256</dt><dd>{task.context_sha256}</dd></div><div><dt>Provenance SHA-256</dt><dd>{task.provenance_sha256}</dd></div><div><dt>Result SHA-256</dt><dd>{task.result_sha256 ?? '—'}</dd></div></dl></section>
+        <section className="intelligence-panel"><header className="intelligence-section-heading"><div><span>HASH BINDINGS</span><h2>来源与完整性</h2></div></header><dl className="workflow-detail-list"><div><dt>Source SHA-256</dt><dd>{sourceHash(task) ?? '未提供'}</dd></div><div><dt>Context SHA-256</dt><dd>{task.context_sha256}</dd></div><div><dt>Provenance SHA-256</dt><dd>{task.provenance_sha256}</dd></div><div><dt>Result SHA-256</dt><dd>{task.result_sha256 ?? '未提供'}</dd></div></dl></section>
       </aside>
     </div>}
   </div>

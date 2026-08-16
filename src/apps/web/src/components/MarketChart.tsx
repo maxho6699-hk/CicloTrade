@@ -56,6 +56,13 @@ function candleEpoch(value: Candle['time']) {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
+function isRenderableCandle(value: unknown): value is Candle {
+  if (!value || typeof value !== 'object') return false
+  const candle = value as Partial<Candle>
+  return (typeof candle.time === 'string' || typeof candle.time === 'number')
+    && [candle.open, candle.high, candle.low, candle.close, candle.volume].every((item) => typeof item === 'number' && Number.isFinite(item))
+}
+
 function drawingTimeToChartTime(time: ChartDrawingPoint['time']): Time {
   return time as Time
 }
@@ -180,7 +187,7 @@ function resultLabel(active: ActiveRange) {
 }
 
 export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(function MarketChart({
-  candles,
+  candles: candleInput,
   userId,
   market,
   symbol,
@@ -208,6 +215,7 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
   onCrosshairChange,
   onVisibleTimeRangeChange,
 }: MarketChartProps, ref) {
+  const candles = useMemo(() => Array.isArray(candleInput) ? candleInput.filter(isRenderableCandle) : [], [candleInput])
   const chartHost = useRef<HTMLDivElement>(null)
   const chartApi = useRef<IChartApi | null>(null)
   const candleSeriesApi = useRef<ISeriesApi<'Candlestick'> | null>(null)

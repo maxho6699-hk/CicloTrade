@@ -13,9 +13,10 @@ test('research keeps the chart first without duplicating Discover or the global 
   assert.match(research, /className="page research-stock-empty"/)
   assert.match(research, /前往发现股票/)
   assert.match(research, /className="research-stock-switcher"/)
-  assert.match(research, /13 股票稳定研究链/)
-  assert.match(research, /97 股票扩展研究链/)
-  assert.match(research, /研究用途，不产生订单/)
+  assert.match(research, /const researchToolPanel = <div className="research-tool-panel-inner">/)
+  assert.match(research, /toolPanel=\{researchToolPanel\}/)
+  assert.match(research, /只提醒，不会自动买卖/)
+  assert.doesNotMatch(research, /13 股票稳定研究链|97 股票扩展研究链|正式行动合同|research-ai-column/)
 })
 
 test('personal paper makes risk review primary and keeps final submit secondary and duplicate-safe', () => {

@@ -170,6 +170,7 @@ export function PortfolioPage() {
   const closedEmptyText = account?.status === 'not_recorded'
     ? accountEmptyText
     : `${marketLabels[market]}暂无已平仓记录。`
+  const showGuidance = !accountAvailable || (!marketPositions.length && !timeline.length && !closed.length)
 
   return <div className="page operations-page">
     <PageHeader kicker="PORTFOLIO / OFFICIAL VALIDATION" title="官方验证模拟组合与复盘" description="只读取 CicloTrade 官方验证模拟账户；它不是你的个人模拟或券商实盘账户，也不会自动下单。USD、CNY 和 HKD 始终分开查看。" />
@@ -183,6 +184,11 @@ export function PortfolioPage() {
     <div className="account-market-tabs" role="tablist" aria-label="官方验证账户市场">
       {(['US', 'HK', 'CN'] as AccountMarket[]).map((value) => <button className={market === value ? 'active' : ''} type="button" role="tab" aria-selected={market === value} onClick={() => setMarket(value)} key={value}>{marketLabels[value]}</button>)}
     </div>
+    {showGuidance && <section className="page-assist-grid" aria-label="官方验证组合规则摘要">
+      <article><WalletCards size={18} /><div><span>账户说明</span><h2>只读官方验证模拟记录</h2><p>不混入个人模拟余额、练习订单或券商实盘资产。</p></div></article>
+      <article><ShieldCheck size={18} /><div><span>计价规则</span><h2>USD、CNY、HKD 分开查看</h2><p>不同币种不相加；空白代表尚无可验证快照，不代表零资产。</p></div></article>
+      <article><History size={18} /><div><span>复盘入口</span><h2>从不可变日志核对结果</h2><p>持仓、执行与已平仓记录出现后，可继续到验证报告追溯证据。</p></div></article>
+    </section>}
 
     <section className="metric-grid portfolio-metrics" aria-label={`${marketLabels[market]}账户摘要`}>
       <article><span>{marketLabels[market]}模拟余额</span><strong>{accountAvailable ? formatAmount(balance, currency) : accountUnavailableLabel}</strong><small>{account?.status === 'not_recorded' ? '尚无官方权益快照' : accountAvailable ? `${currency} 独立显示` : accountEmptyText}</small></article>

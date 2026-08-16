@@ -6,6 +6,8 @@ import {
   Maximize2,
   Minimize2,
   MoreHorizontal,
+  PanelLeftClose,
+  PanelLeftOpen,
   PencilRuler,
   PanelRightClose,
   PanelRightOpen,
@@ -70,10 +72,13 @@ interface ChartWorkspaceProps {
   onInspectorOpenChange?: (open: boolean) => void
   inspectorExtra?: ReactNode
   toolbarActions?: ReactNode
+  toolPanel?: ReactNode
+  toolPanelLabel?: string
 }
 
 const STORAGE_KEY = 'ciclotrade:chart-workspace:v2'
 const LEGACY_STORAGE_KEY = 'ciclotrade:chart-workspace:v1'
+const TOOL_PANEL_STORAGE_KEY = 'ciclotrade:chart-tool-panel-open:v1'
 const NARROW_CHART_QUERY = '(max-width: 760px), (max-width: 980px) and (max-height: 560px) and (orientation: landscape)'
 const MULTI_CHART_POPULAR: Record<Market, string[]> = {
   US: ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'META', 'TSLA', 'SPY', 'QQQ', 'NBIS', 'CRWV', 'COHR', 'CSCO', 'AMAT'],
@@ -120,6 +125,14 @@ function loadWorkspace(initial: ChartSlotState) {
   }
 }
 
+function loadToolPanelOpen() {
+  try {
+    return localStorage.getItem(TOOL_PANEL_STORAGE_KEY) !== 'collapsed'
+  } catch {
+    return true
+  }
+}
+
 function marketLabel(market: Market) {
   return market === 'US' ? '美股' : 'A股'
 }
@@ -156,6 +169,8 @@ export function ChartWorkspace({
   onInspectorOpenChange,
   inspectorExtra,
   toolbarActions,
+  toolPanel,
+  toolPanelLabel = '研究工具',
 }: ChartWorkspaceProps) {
   const initial = useMemo<ChartSlotState>(() => ({
     id: 'chart-1', symbol: initialSymbol, market: initialMarket, timeframe: initialTimeframe,
@@ -178,6 +193,7 @@ export function ChartWorkspace({
   }, [controlledInspectorOpen, onInspectorOpenChange])
   const [workbenchOpen, setWorkbenchOpen] = useState(() => layoutDefinition(workspace.layout).count > 1)
   const [layoutPickerOpen, setLayoutPickerOpen] = useState(false)
+  const [toolPanelOpen, setToolPanelOpen] = useState(loadToolPanelOpen)
   const [mobileDrawingToolsOpen, setMobileDrawingToolsOpen] = useState(false)
   const [isNarrowViewport, setIsNarrowViewport] = useState(() => window.matchMedia(NARROW_CHART_QUERY).matches)
   const [focusedSlotId, setFocusedSlotId] = useState<string | null>(null)
@@ -408,7 +424,7 @@ export function ChartWorkspace({
     const previousOverflow = document.body.style.overflow
     const previousGutter = document.documentElement.style.scrollbarGutter
     document.body.style.overflow = 'hidden'
-    document.documentElement.style.scrollbarGutter = 'stable'
+    document.documentElement.style.scrollbarGutter = 'auto'
     return () => {
       document.body.style.overflow = previousOverflow
       document.documentElement.style.scrollbarGutter = previousGutter
@@ -423,11 +439,18 @@ export function ChartWorkspace({
       slotsToReflow.forEach((slot) => chartRefs.current[slot.id]?.reflow())
     })
     return () => window.cancelAnimationFrame(frame)
-  }, [focusedSlotId, inspectorVisible, requestedSlots, workbenchOpen, workspace.layout])
+  }, [focusedSlotId, inspectorVisible, requestedSlots, toolPanelOpen, workbenchOpen, workspace.layout])
 
   useEffect(() => {
     const escape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
+      if (workbenchOpen) {
+        focusOpenedWorkbench.current = false
+        setFocusedSlotId(null)
+        setInspectorVisible(false)
+        setWorkbenchOpen(false)
+        return
+      }
       if (layoutPickerOpen) {
         setLayoutPickerOpen(false)
         return
@@ -445,9 +468,6 @@ export function ChartWorkspace({
         if (focusOpenedWorkbench.current) setWorkbenchOpen(false)
         focusOpenedWorkbench.current = false
         return
-      }
-      if (workbenchOpen) {
-        setWorkbenchOpen(false)
       }
     }
     window.addEventListener('keydown', escape)
@@ -562,6 +582,21 @@ export function ChartWorkspace({
     setWorkbenchOpen(false)
   }
 
+  const enterWorkbench = () => {
+    setInspectorVisible(false)
+    setLayoutPickerOpen(false)
+    setMobileDrawingToolsOpen(false)
+    setWorkbenchOpen(true)
+  }
+
+  const toggleToolPanel = () => {
+    setToolPanelOpen((current) => {
+      const next = !current
+      try { localStorage.setItem(TOOL_PANEL_STORAGE_KEY, next ? 'open' : 'collapsed') } catch { /* storage can be disabled */ }
+      return next
+    })
+  }
+
   const sendDrawingCommand = (type: DrawingCommand['type']) => {
     if (!activeSlot) return
     setDrawingCommand((current) => ({ id: current.id + 1, type, targetMarkerId: `drawing-arrow-${activeSlot.id}` }))
@@ -574,7 +609,7 @@ export function ChartWorkspace({
   const latest = slotLatest(activeCandles)
 
   return (
-    <section className={`chart-workspace-shell ${workbenchOpen ? 'is-workbench-open' : ''} ${focusedSlotId ? 'is-pane-focused' : ''} ${inspectorVisible ? 'has-workbench-inspector' : ''} ${mobileDrawingToolsOpen ? 'mobile-drawing-tools-open' : ''}`} aria-label="多图 K线工作图">
+    <section className={`chart-workspace-shell ${workbenchOpen ? 'is-workbench-open' : ''} ${focusedSlotId ? 'is-pane-focused' : ''} ${inspectorVisible ? 'has-workbench-inspector' : ''} ${toolPanel ? 'has-tool-panel' : ''} ${toolPanelOpen ? 'is-tool-panel-open' : 'is-tool-panel-collapsed'} ${mobileDrawingToolsOpen ? 'mobile-drawing-tools-open' : ''}`} aria-label="多图 K线工作图">
       <header className="multi-chart-toolbar">
         <div className="workbench-title"><span className="workbench-title-label"><LayoutGrid size={16} /><strong>K线工作图</strong></span>{onWatchlistToggle && <WatchlistToggle symbol={activeSlot.symbol} saved={isWatchlisted?.(activeSlot.market, activeSlot.symbol) ?? false} busy={watchBusy === activeSlot.symbol} variant="label" className="workbench-watchlist-toggle" onToggle={(remove) => onWatchlistToggle(activeSlot.market, activeSlot.symbol, remove)} />}</div>
         <div className="multi-chart-layout-picker" ref={layoutPickerRef}>
@@ -584,7 +619,7 @@ export function ChartWorkspace({
         <div className="multi-chart-actions">
           {toolbarActions && <span className="multi-chart-utility-actions">{toolbarActions}</span>}
           <button type="button" title={inspectorVisible ? '收起检查器' : '展开检查器'} aria-label={inspectorVisible ? '收起检查器' : '展开检查器'} aria-expanded={inspectorVisible} onClick={() => { setSymbolEditorId(null); setInspectorVisible(!inspectorVisible) }}>{inspectorVisible ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}</button>
-          <button type="button" title={workbenchOpen ? '返回行情页' : '打开全屏K线工作图'} aria-label={workbenchOpen ? '返回行情页' : '打开全屏K线工作图'} onClick={() => workbenchOpen ? exitWorkbench() : setWorkbenchOpen(true)}>{workbenchOpen ? <Shrink size={16} /> : <Expand size={16} />}</button>
+          <button type="button" title={workbenchOpen ? '返回行情页' : '打开全屏K线工作图'} aria-label={workbenchOpen ? '返回行情页' : '打开全屏K线工作图'} onClick={() => workbenchOpen ? exitWorkbench() : enterWorkbench()}>{workbenchOpen ? <Shrink size={16} /> : <Expand size={16} />}</button>
         </div>
       </header>
 
@@ -595,6 +630,11 @@ export function ChartWorkspace({
           onChange={(patch) => setDrawingToolState((current) => ({ ...current, ...patch }))}
           onCommand={sendDrawingCommand}
         />
+
+        {toolPanel && <aside className="chart-tool-panel" aria-label={toolPanelLabel}>
+          <button className="chart-tool-panel-toggle" type="button" aria-label={toolPanelOpen ? `收起${toolPanelLabel}` : `展开${toolPanelLabel}`} aria-expanded={toolPanelOpen} title={toolPanelOpen ? `收起${toolPanelLabel}` : `展开${toolPanelLabel}`} onClick={toggleToolPanel}>{toolPanelOpen ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}<span>{toolPanelOpen ? `收起${toolPanelLabel}` : toolPanelLabel}</span></button>
+          {toolPanelOpen && <div className="chart-tool-panel-content">{toolPanel}</div>}
+        </aside>}
 
         <div className={`multi-chart-grid layout-${workspace.layout}`}>
           {definition.count > 1 && <nav className="mobile-chart-tabs" aria-label="切换图表">
@@ -724,6 +764,7 @@ export function ChartWorkspace({
             </details>
           </aside>
         )}
+        {workbenchOpen && <button className="chart-fullscreen-exit" type="button" aria-label="退出 K 线全屏" title="退出全屏（Esc）" onClick={exitWorkbench}><Shrink size={18} /></button>}
       </div>
     </section>
   )

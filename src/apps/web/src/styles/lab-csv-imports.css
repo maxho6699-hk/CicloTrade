@@ -27,11 +27,11 @@
 .lab-csv-job-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .lab-csv-detail { padding: 0 16px 14px 46px; }
 .lab-csv-provenance { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 10px 0; color: var(--muted); font-size: 11px; }
-.lab-csv-provenance code { color: var(--text); font: 10px var(--mono); }
+.lab-csv-provenance code { color: var(--text); font: 11px var(--mono); }
 .lab-csv-signal-table { overflow-x: auto; border: 1px solid var(--border); }
 .lab-csv-signal-table table { width: 100%; border-collapse: collapse; min-width: 560px; }
 .lab-csv-signal-table th, .lab-csv-signal-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 11px; text-align: left; }
-.lab-csv-signal-table th { color: var(--muted-2); font: 10px var(--mono); letter-spacing: .04em; }
+.lab-csv-signal-table th { color: var(--muted-2); font: 11px var(--mono); letter-spacing: .04em; }
 .lab-csv-signal-table td:first-child, .lab-csv-signal-table td:nth-child(2) { color: var(--text); font-weight: 600; }
 .lab-csv-signal-table tr:last-child td { border-bottom: 0; }
 .lab-csv-spin { animation: lab-csv-spin .9s linear infinite; }

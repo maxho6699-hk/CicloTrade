@@ -13,30 +13,67 @@ export const THEME_CANVAS: Record<Theme, string> = {
  */
 export const THEME_V2_TOKENS = {
   dark: {
-    brandBlue: 'hsl(232 88% 52%)',
-    brandViolet: 'hsl(257 76% 53%)',
-    navActiveBg: 'hsl(245 52% 20%)',
-    navActiveFg: 'hsl(232 88% 75%)',
-    aiPillBg: 'hsl(244 30% 16%)',
-    aiPillBorder: 'hsl(244 28% 58% / .24)',
-    aiPillFg: 'hsl(244 70% 88%)',
-    positive: 'hsl(160 72% 58%)',
-    negative: 'hsl(352 84% 70%)',
-    warning: 'hsl(38 84% 76%)',
-    info: 'hsl(216 78% 72%)',
+    canvas: '#050914',
+    surfaceBase: '#0B1020',
+    surfaceRaised: '#10172B',
+    surfaceSelected: '#151D35',
+    textPrimary: '#F4F7FC',
+    textSecondary: '#AEB9CC',
+    textMuted: '#6F7C94',
+    brandBlue: '#3B63FF',
+    brandViolet: '#8B5CFF',
+    brandPink: '#FF4FA3',
+    navActiveBg: 'rgba(101, 79, 255, .24)',
+    navActiveFg: '#F4F7FC',
+    navForeground: '#B7C0D2',
+    navMuted: '#68748B',
+    controlSurface: '#10172B',
+    controlBorder: 'rgba(120, 145, 255, .28)',
+    controlDisabledBg: '#151A29',
+    controlDisabledFg: '#58657D',
+    surfaceGlass: 'rgba(12, 18, 34, .72)',
+    borderGlass: 'rgba(120, 145, 255, .16)',
+    aiPillBg: 'rgba(101, 79, 255, .16)',
+    aiPillBorder: 'rgba(139, 92, 255, .32)',
+    aiPillFg: '#E7E1FF',
+    positive: '#2FE68A',
+    negative: '#FF5277',
+    warning: '#FFC857',
+    info: '#6EA4FF',
   },
   light: {
-    brandBlue: 'hsl(232 88% 54%)',
-    brandViolet: 'hsl(257 76% 55%)',
-    navActiveBg: 'hsl(245 52% 94%)',
-    navActiveFg: 'hsl(232 88% 43%)',
-    aiPillBg: 'hsl(244 30% 96%)',
-    aiPillBorder: 'hsl(244 28% 45% / .18)',
-    aiPillFg: 'hsl(244 70% 38%)',
-    positive: 'hsl(160 72% 28%)',
-    negative: 'hsl(352 84% 42%)',
-    warning: 'hsl(38 84% 33%)',
-    info: 'hsl(216 78% 43%)',
+    canvas: '#F8FBFC',
+    shellCanvas: '#F8FBFC',
+    sidebarSurface: '#FFFFFF',
+    topbarSurface: 'rgba(255, 255, 255, .96)',
+    pageSurface: '#F8FBFC',
+    shellDivider: '#D9E2F0',
+    surfaceBase: '#FFFFFF',
+    surfaceRaised: '#F2F6FC',
+    surfaceSelected: '#E9EFFA',
+    textPrimary: '#101526',
+    textSecondary: '#59657D',
+    textMuted: '#647188',
+    brandBlue: '#315FD1',
+    brandViolet: '#7045D1',
+    brandPink: '#C83284',
+    navActiveBg: 'linear-gradient(115deg, #DCE8FF, #E9E2FF)',
+    navActiveFg: '#1E3A8A',
+    navForeground: '#17213F',
+    navMuted: '#59657D',
+    controlSurface: '#FFFFFF',
+    controlBorder: '#52658E',
+    controlDisabledBg: '#E6EBF4',
+    controlDisabledFg: '#7A869D',
+    surfaceGlass: 'rgba(255, 255, 255, .82)',
+    borderGlass: 'rgba(66, 89, 136, .22)',
+    aiPillBg: 'rgba(112, 69, 209, .09)',
+    aiPillBorder: 'rgba(112, 69, 209, .2)',
+    aiPillFg: '#57359E',
+    positive: '#249966',
+    negative: '#D94B68',
+    warning: '#B77816',
+    info: '#315FAE',
   },
 } as const satisfies Record<Theme, Record<string, string>>
 
@@ -49,7 +86,12 @@ export function readStoredTheme(): Theme {
 }
 
 export function applyTheme(theme: Theme, persist = false) {
-  document.documentElement.dataset.theme = theme
+  const root = document.documentElement
+  root.dataset.theme = theme
+  Object.entries(THEME_V2_TOKENS[theme]).forEach(([name, value]) => {
+    const cssName = name.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)
+    root.style.setProperty(`--theme-v2-${cssName}`, value)
+  })
   document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute('content', THEME_CANVAS[theme])
   if (!persist) return
   try {

@@ -1,6 +1,5 @@
 import { Check, ChevronDown } from 'lucide-react'
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { createPortal } from 'react-dom'
 
 export interface TimeframeChoice {
   value: string
@@ -15,21 +14,18 @@ interface TimeframeDropdownProps {
   onChange: (value: string) => void
 }
 
-interface MenuPosition {
-  left: number
-  top: number
+interface MenuLayout {
   maxHeight: number
   placement: 'top' | 'bottom'
 }
 
-const MENU_WIDTH = 180
 const MENU_MAX_HEIGHT = 320
 const VIEWPORT_GAP = 8
 
 /** A small, native-menu-free listbox for dense chart toolbars. */
 export function TimeframeDropdown({ value, options, ariaLabel, onChange }: TimeframeDropdownProps) {
   const [open, setOpen] = useState(false)
-  const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null)
+  const [menuLayout, setMenuLayout] = useState<MenuLayout | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -40,7 +36,7 @@ export function TimeframeDropdown({ value, options, ariaLabel, onChange }: Timef
   const selected = options[selectedIndex] ?? options[0]
   const groups = [...new Set(options.map((option) => option.group))]
 
-  const updatePosition = useCallback(() => {
+  const updateLayout = useCallback(() => {
     const trigger = triggerRef.current
     if (!trigger) return
     const rect = trigger.getBoundingClientRect()
@@ -49,11 +45,7 @@ export function TimeframeDropdown({ value, options, ariaLabel, onChange }: Timef
     const roomAbove = rect.top - VIEWPORT_GAP - 4
     const placement = roomBelow < Math.min(measuredHeight, 180) && roomAbove > roomBelow ? 'top' : 'bottom'
     const maxHeight = Math.max(96, Math.min(measuredHeight, placement === 'top' ? roomAbove : roomBelow))
-    const top = placement === 'top'
-      ? Math.max(VIEWPORT_GAP, rect.top - maxHeight - 4)
-      : Math.min(window.innerHeight - VIEWPORT_GAP - maxHeight, rect.bottom + 4)
-    const left = Math.max(VIEWPORT_GAP, Math.min(rect.left, window.innerWidth - VIEWPORT_GAP - MENU_WIDTH))
-    setMenuPosition({ left, top, maxHeight, placement })
+    setMenuLayout({ maxHeight, placement })
   }, [])
 
   const focusOption = useCallback((index: number) => {
@@ -65,7 +57,7 @@ export function TimeframeDropdown({ value, options, ariaLabel, onChange }: Timef
 
   const closeMenu = useCallback((restoreFocus = false) => {
     setOpen(false)
-    setMenuPosition(null)
+    setMenuLayout(null)
     pendingFocusIndex.current = null
     if (restoreFocus) requestAnimationFrame(() => triggerRef.current?.focus({ preventScroll: true }))
   }, [])
@@ -77,14 +69,14 @@ export function TimeframeDropdown({ value, options, ariaLabel, onChange }: Timef
 
   useLayoutEffect(() => {
     if (!open) return
-    updatePosition()
+    updateLayout()
     const frame = requestAnimationFrame(() => {
-      updatePosition()
+      updateLayout()
       focusOption(pendingFocusIndex.current ?? selectedIndex)
       pendingFocusIndex.current = null
     })
     return () => cancelAnimationFrame(frame)
-  }, [focusOption, open, selectedIndex, updatePosition])
+  }, [focusOption, open, selectedIndex, updateLayout])
 
   useEffect(() => {
     if (!open) return
@@ -92,7 +84,7 @@ export function TimeframeDropdown({ value, options, ariaLabel, onChange }: Timef
       const target = event.target as Node
       if (!rootRef.current?.contains(target) && !menuRef.current?.contains(target)) closeMenu()
     }
-    const reposition = () => updatePosition()
+    const reposition = () => updateLayout()
     window.addEventListener('pointerdown', closeOnOutside)
     window.addEventListener('resize', reposition)
     window.addEventListener('scroll', reposition, true)
@@ -101,7 +93,7 @@ export function TimeframeDropdown({ value, options, ariaLabel, onChange }: Timef
       window.removeEventListener('resize', reposition)
       window.removeEventListener('scroll', reposition, true)
     }
-  }, [closeMenu, open, updatePosition])
+  }, [closeMenu, open, updateLayout])
 
   const select = (next: TimeframeChoice) => {
     onChange(next.value)
@@ -119,9 +111,6 @@ export function TimeframeDropdown({ value, options, ariaLabel, onChange }: Timef
   }
 
   let optionIndex = -1
-  const portalTarget = document.fullscreenElement
-    ?? rootRef.current?.closest('.chart-workspace-shell')
-    ?? document.body
   return <div className="timeframe-dropdown" ref={rootRef}>
     <button
       ref={triggerRef}
@@ -140,20 +129,17 @@ export function TimeframeDropdown({ value, options, ariaLabel, onChange }: Timef
         }
       }}
     ><span>{selected?.label ?? value}</span><ChevronDown size={13} aria-hidden="true" /></button>
-    {open && createPortal(<div
+    {open && <div
       className="timeframe-dropdown-menu"
-      data-placement={menuPosition?.placement}
+      data-placement={menuLayout?.placement}
       id={listId}
       ref={menuRef}
       role="listbox"
       aria-label={ariaLabel}
       onKeyDown={handleListKeyDown}
       style={{
-        position: 'fixed',
-        visibility: menuPosition ? 'visible' : 'hidden',
-        top: menuPosition?.top ?? 0,
-        left: menuPosition?.left ?? 0,
-        maxHeight: menuPosition?.maxHeight ?? MENU_MAX_HEIGHT,
+        visibility: menuLayout ? 'visible' : 'hidden',
+        maxHeight: menuLayout?.maxHeight ?? MENU_MAX_HEIGHT,
       }}
     >
       {groups.map((group) => <div className="timeframe-dropdown-group" role="group" aria-label={group} key={group}>
@@ -172,6 +158,6 @@ export function TimeframeDropdown({ value, options, ariaLabel, onChange }: Timef
           ><span>{option.label}</span>{option.value === value && <Check size={13} aria-hidden="true" />}</button>
         })}
       </div>)}
-    </div>, portalTarget)}
+    </div>}
   </div>
 }

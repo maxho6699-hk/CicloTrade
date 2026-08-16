@@ -1,8 +1,13 @@
 :root {
-  --font-hant: 'Noto Sans TC Variable', 'PingFang TC', 'Microsoft JhengHei UI', 'Microsoft JhengHei', system-ui, sans-serif;
-  --font-hans: 'Noto Sans SC Variable', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-hant: 'Noto Sans TC Variable', 'Noto Sans TC', 'Noto Sans HK', 'Source Han Sans TC', 'PingFang TC', 'Microsoft JhengHei UI', 'Microsoft JhengHei', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-hans: 'Noto Sans SC Variable', 'Noto Sans SC', 'Source Han Sans SC', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-ui: var(--font-hant);
+  --font-label: 'Inter Variable', 'Inter', var(--font-hant);
   --font-number: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   --font-size-micro: 11px;
   --font-size-meta: 12px;
   --font-size-data: 13px;
@@ -42,7 +47,7 @@
   --divider: hsl(220 20% 72% / .12);
   --text-primary: hsl(220 22% 97%);
   --text-secondary: hsl(220 18% 75%);
-  --text-muted: hsl(220 14% 56%);
+  --text-muted: #8a94a8;
   --text: var(--text-primary);
   --muted: var(--text-secondary);
   --muted-2: var(--text-muted);
@@ -95,8 +100,8 @@
   --motion-fast: 140ms;
   --motion-ui: 180ms;
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
-  --mono: var(--font-number);
-  --font-mono: var(--font-number);
+  --mono: var(--font-label);
+  --font-mono: var(--font-label);
   --font: var(--font-ui);
   --sidebar: var(--canvas);
   --sidebar-border: var(--divider);
@@ -136,7 +141,7 @@
   --heat-negative: hsl(352 84% 46%);
 }
 
-html:lang(zh-Hans) { --font-ui: var(--font-hans); }
+html:lang(zh-Hans),
 html:lang(zh-Hant) { --font-ui: var(--font-hant); }
 
 :root[data-theme='light'] {
@@ -254,6 +259,7 @@ html:lang(zh-Hant) { --font-ui: var(--font-hant); }
 
 * {
   box-sizing: border-box;
+  font-synthesis: none;
 }
 
 html {
@@ -271,7 +277,12 @@ body {
   background: var(--canvas);
   color: var(--text);
   font-family: var(--font-ui);
+  font-weight: var(--font-weight-regular);
   font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  letter-spacing: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 button,
@@ -279,6 +290,8 @@ input,
 select,
 textarea {
   font: inherit;
+  font-family: var(--font-ui);
+  font-synthesis: none;
 }
 
 button,
@@ -307,6 +320,10 @@ h2,
 h3 {
   letter-spacing: 0;
 }
+
+h1 { font-weight: var(--font-weight-bold); }
+h2,
+h3 { font-weight: var(--font-weight-semibold); }
 
 button:focus-visible,
 a:focus-visible,
@@ -457,6 +474,7 @@ textarea:focus-visible {
 .nav-item.active {
   background: var(--nav-active-bg);
   color: var(--nav-active-fg);
+  font-weight: var(--font-weight-semibold);
 }
 
 .nav-item.active::before {
@@ -552,7 +570,7 @@ textarea:focus-visible {
 }
 .account-popover header { display: grid; gap: 3px; padding: 12px; border-bottom: 1px solid var(--border); }
 .account-popover header strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.account-popover header small { color: var(--muted); font: 10px var(--mono); }
+.account-popover header small { color: var(--muted); font: 11px var(--mono); }
 .account-popover a,
 .account-popover button { display: flex; min-height: 38px; align-items: center; gap: 8px; padding: 0 12px; border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; text-align: left; }
 .account-popover a:hover, .account-popover button:hover { background: var(--surface-hover); color: var(--text); }
@@ -618,18 +636,29 @@ kbd {
 
 .global-status {
   display: flex;
+  min-width: 0;
   align-items: center;
-  gap: 17px;
+  flex-wrap: nowrap;
+  gap: 8px;
   color: var(--muted);
-  font: 13px var(--mono);
+  font: 500 12px/1.2 var(--font-ui);
+  white-space: nowrap;
 }
 
 .global-status a,
 .live-status {
   display: flex;
+  min-width: 0;
   align-items: center;
   gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+
+.global-status > span:not(.sr-only),
+.global-status > a { max-width: 138px; }
+.global-status .market-status-compact { max-width: 152px; }
 
 .live-status i,
 .positive-dot {
@@ -686,12 +715,14 @@ kbd {
   display: flex;
   min-height: var(--status-height);
   align-items: center;
-  gap: 20px;
+  gap: 14px;
+  overflow: hidden;
   padding: 0 18px;
   border-bottom: 1px solid var(--border);
   background: var(--status-strip);
   color: var(--muted);
-  font: 13px var(--mono);
+  font: 500 12px/1.2 var(--font-ui);
+  white-space: nowrap;
 }
 
 .status-strip span {
@@ -703,8 +734,11 @@ kbd {
 
 .status-strip strong {
   margin-left: auto;
+  overflow: hidden;
   color: var(--warning);
   font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mobile-nav,

@@ -13,7 +13,7 @@ const WITHDRAWAL_IDEMPOTENCY_STORAGE_KEY = 'ciclotrade.referralWithdrawalPending
 
 const formatMinor = (value: number, locale: string) => new Intl.NumberFormat(locale, { style: 'currency', currency: 'HKD' }).format(value / 100)
 const formatBps = (value: number) => `${(value / 100).toFixed(2)}%`
-const hkt = (value: string | null, locale: string) => value ? new Intl.DateTimeFormat(locale, { month: '2-digit', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Hong_Kong' }).format(new Date(value)) : '—'
+const hkt = (value: string | null, locale: string) => value ? new Intl.DateTimeFormat(locale, { month: '2-digit', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Hong_Kong' }).format(new Date(value)) : localizeText('时间未提供')
 const funnelRows = (funnel: ReferralPortal['funnel']): Array<[string, number]> => [['访问', funnel.visits_30d], ['注册', funnel.registrations_30d], ['首个有效付费客户', funnel.settled_referrals_30d]]
 const withdrawalLabel = (value: ReferralWithdrawalStatus) => localizeText(({ submitted: '待审核', approved: '已批准', rejected: '已拒绝', paid: '已付款', system_cancelled: '已取消' } as Record<string, string>)[value] ?? `未知状态：${String(value).slice(0, 80)}`)
 const eventLabel = (value: ReferralTimelineType) => localizeText(({ registration: '完成注册', commission_pending: '佣金进入冻结期', commission_withdrawable: '佣金可提现', clawback: '佣金回退', bonus_pending: '人数奖金已入账', bonus_clawback: '人数奖金被追回', withdrawal_submitted: '已提交提现', withdrawal_approved: '提现已批准', withdrawal_rejected: '提现被拒绝', withdrawal_paid: '已人工付款', withdrawal_cancelled: '提现已取消' } as Record<string, string>)[value] ?? `未知审计状态：${String(value).slice(0, 80)}`)

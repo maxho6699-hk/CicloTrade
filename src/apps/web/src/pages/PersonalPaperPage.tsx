@@ -32,6 +32,7 @@ import {
 } from '../api/client'
 import { PageHeader } from '../components/PageHeader'
 import { CicloCore, type CicloCoreState } from '../components/paper/CicloCore'
+import { useCicloTier } from '../api/use-ciclo-tier'
 import {
   DataHealth,
   DecisionSummary,
@@ -134,6 +135,7 @@ function orderTypeLabel(orderType: PersonalPaperOrder['order_type'], locale: key
 }
 
 export function PersonalPaperPage() {
+  const cicloTier = useCicloTier()
   const { locale } = useLocale()
   const copy = COPY[locale]
   const [searchParams, setSearchParams] = useSearchParams()
@@ -326,6 +328,11 @@ export function PersonalPaperPage() {
     {error && <div className="paper-alert error" role="alert"><AlertTriangle size={18} /><span>{localizeError(error, locale)}</span>{seasonId && <button type="button" onClick={() => void loadAccount(seasonId)}>{copy.retry}</button>}</div>}
     {loading && <div className="paper-state" role="status"><LoaderCircle className="spin" /><strong>{copy.loading}</strong></div>}
     {!loading && !account && <section className="paper-onboarding"><BadgeDollarSign size={30} /><div><h2>{copy.startTitle}</h2><p>{copy.startBody}</p></div><button className="button primary" type="button" disabled={starting || !marketSupported} onClick={() => void start()}>{starting ? copy.loading : copy.start}</button></section>}
+    {!loading && !account && <section className="page-assist-grid" aria-label={locale === 'zh-Hant' ? '個人模擬規則摘要' : '个人模拟规则摘要'}>
+      <article><WalletCards size={18} /><div><span>{locale === 'zh-Hant' ? '帳戶說明' : '账户说明'}</span><h2>{locale === 'zh-Hant' ? '獨立 USD 模擬資金域' : '独立 USD 模拟资金域'}</h2><p>{locale === 'zh-Hant' ? '不混入官方驗證或券商實盤資產。' : '不混入官方验证或券商实盘资产。'}</p></div></article>
+      <article><ShieldCheck size={18} /><div><span>{locale === 'zh-Hant' ? '規則摘要' : '规则摘要'}</span><h2>{locale === 'zh-Hant' ? '每筆訂單由你確認' : '每笔订单由你确认'}</h2><p>{locale === 'zh-Hant' ? '先取得報價與風險證明，AI 不會代為提交。' : '先取得报价与风险证明，AI 不会代为提交。'}</p></div></article>
+      <article><BadgeDollarSign size={18} /><div><span>{locale === 'zh-Hant' ? '權益提示' : '权益提示'}</span><h2>{locale === 'zh-Hant' ? '模擬收益不可提現' : '模拟收益不可提现'}</h2><p>{locale === 'zh-Hant' ? '賽季結果只用於練習與復盤，不代表真實投資收益。' : '赛季结果只用于练习与复盘，不代表真实投资收益。'}</p></div></article>
+    </section>}
     {account && <div className="paper-console">
       <aside className="paper-account-rail" aria-label={locale === 'zh-Hant' ? '帳戶與訂單' : '账户与订单'}>
         <section className="paper-tasks"><header><h2>{copy.tasks}</h2><PaperRefreshButton label={copy.refresh} busy={busy === 'refresh'} disabled={workflowLocked} onClick={() => void loadAccount(account.season.id, 'refresh')} /></header><ol>{tasks.map(([label, done], index) => <li key={label} data-complete={done}><span>{done ? <CheckCircle2 size={16} /> : <span>{index + 1}</span>}</span><strong>{label}</strong><small>{done ? 'READY' : copy.awaiting}</small></li>)}</ol></section>
@@ -348,7 +355,7 @@ export function PersonalPaperPage() {
       </section>
 
       <aside className="paper-risk-rail" aria-label={locale === 'zh-Hant' ? '風險與資料健康' : '风险与数据健康'}>
-        <section className="paper-core-panel"><div><small>CICLO RISK CORE</small><h2>{copy.coreTitle}</h2><p>{copy.coreBody}</p></div><CicloCore label={`${copy.coreTitle} · ${coreStateLabel[coreState]}`} state={coreState} /></section>
+        <section className="paper-core-panel"><div><small>CICLO RISK CORE</small><h2>{copy.coreTitle}</h2><p>{copy.coreBody}</p></div><CicloCore label={`${copy.coreTitle} · ${coreStateLabel[coreState]}`} state={coreState} tier={cicloTier} /></section>
         <section className="paper-position-risk"><header><ShieldCheck size={18} /><h2>{copy.risk}</h2></header><p>{copy.riskBody}</p><dl><div><dt>{copy.longPositions}</dt><dd className="positive">{longCount}</dd></div><div><dt>{copy.shortPositions}</dt><dd className="negative">{shortCount}</dd></div></dl></section>
         <DataHealth locale={locale} account={account} riskProof={riskProof} expired={proofExpired} />
         <PositionList copy={copy} positions={positions} />

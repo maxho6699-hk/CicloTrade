@@ -6,6 +6,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { CicloCore } from '../components/paper/CicloCore'
+import { useCicloTier } from '../api/use-ciclo-tier'
 import {
   AI_TASK_STATUSES, AiWorkspaceApiError, aiWorkspaceApi, classifyAiWorkspaceError,
   readAiWorkspaceStructuredMessage, type AiTaskStatus, type AiWorkspaceReadiness,
@@ -32,9 +33,9 @@ const RESPONSE_SECTIONS: Array<{ key: 'support' | 'counter' | 'risks' | 'next_st
 ]
 
 function formatTime(value: string | null | undefined) {
-  if (!value) return '—'
+  if (!value) return '时间未提供'
   const date = new Date(value)
-  return Number.isNaN(date.valueOf()) ? '—' : new Intl.DateTimeFormat('zh-HK', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Hong_Kong' }).format(date)
+  return Number.isNaN(date.valueOf()) ? '时间格式异常' : new Intl.DateTimeFormat('zh-HK', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Hong_Kong' }).format(date)
 }
 function errorMessage(error: unknown, fallback: string) { return error instanceof Error ? error.message : fallback }
 function textOf(value: unknown): string { return Array.isArray(value) ? value.join('；') : typeof value === 'string' ? value : '暂无可公开内容。' }
@@ -67,7 +68,7 @@ function TaskReceipt({ task, events, onCancel, busy }: { task: AiWorkspaceTask; 
   const canCancel = task.status === 'queued' || task.status === 'running' || task.status === 'partial'
   return <section className="ai-task-card" aria-labelledby="ai-task-title">
     <header className="ai-task-header"><div><span>PUBLIC TASK RECEIPT</span><h2 id="ai-task-title">任务公开回执</h2></div><StatusPill status={task.status} /></header>
-    <dl className="ai-task-facts"><div><dt>任务 ID</dt><dd>{task.public_id}</dd></div><div><dt>创建时间</dt><dd>{formatTime(task.created_at)}</dd></div><div><dt>更新时间</dt><dd>{formatTime(task.updated_at)}</dd></div><div><dt>错误码</dt><dd>{task.error_code ?? '—'}</dd></div></dl>
+    <dl className="ai-task-facts"><div><dt>任务 ID</dt><dd>{task.public_id}</dd></div><div><dt>创建时间</dt><dd>{formatTime(task.created_at)}</dd></div><div><dt>更新时间</dt><dd>{formatTime(task.updated_at)}</dd></div><div><dt>错误码</dt><dd>{task.error_code ?? '无错误码'}</dd></div></dl>
     {(task.blocked_reason || task.error_code) && <div className={`ai-task-notice is-${task.status}`} role="status"><LockKeyhole /><div><strong>{task.status === 'blocked' ? '服务不可用，任务已公开阻断' : `任务${STATUS_COPY[task.status]}`}</strong><p>{task.blocked_reason ?? task.error_code ?? '服务端没有返回更多说明。'}；没有生成回答，也没有伪造执行轨迹。</p></div></div>}
     <div className="ai-task-events"><div className="ai-subheading"><span>PUBLIC EVENTS</span><strong>公开事件</strong></div>{events.length ? <ol>{events.map((event) => <li key={`${event.seq}-${event.created_at}`}><i /><div><strong>{STATUS_COPY[event.status]}</strong><time>{formatTime(event.created_at)}</time></div></li>)}</ol> : <p className="ai-muted">服务端尚未返回公开事件。</p>}</div>
     {canCancel && <footer className="ai-task-actions"><button className="ai-button danger" type="button" onClick={onCancel} disabled={busy}><Square />{busy ? '正在取消' : '取消任务'}</button></footer>}
@@ -86,6 +87,7 @@ function SessionMessages({ session }: { session: AiWorkspaceSession }) {
 }
 
 export function AIWorkspacePage() {
+  const cicloTier = useCicloTier()
   const [readiness, setReadiness] = useState<AiWorkspaceReadiness | null>(null)
   const [sessions, setSessions] = useState<AiWorkspaceSessionSummary[]>([])
   const [session, setSession] = useState<AiWorkspaceSession | null>(null)
@@ -166,7 +168,7 @@ export function AIWorkspacePage() {
         <div className="ai-sidebar-foot"><span>{statusSummary}</span><Link to="/research">先看股票研究 <ArrowRight /></Link></div>
       </aside>
       <main className="ai-workspace-main">
-        {!session && <section className="intelligence-panel ai-core-stage"><div className="ai-core-visual"><CicloCore label="Ciclo AI 工作台" state={readiness?.ready ? 'processing' : 'locked'} /></div><div className="ai-core-copy"><span className="ai-core-kicker"><Bot /> CICLO RESEARCH CORE</span><h2>{readiness?.ready ? '从一只股票开始研究' : 'AI 服务暂不可用'}</h2><p>{readiness?.ready ? '创建会话后，AI 只会读取服务端授权的研究上下文，并返回可核验的结构化回答。' : '当前没有可验证的 AI provider；不会生成占位回答、不会伪造回答，也不会展示虚假的执行轨迹。'}</p></div><div className="ai-readiness-note"><LockKeyhole /><div><strong>{readiness?.ready ? '服务 readiness 已通过' : '输入暂时锁定'}</strong><p>{readiness?.ready ? '可创建会话并提交研究问题。' : `服务端尚未返回完整 provider、模型版本与合同证明${readiness?.missing.length ? `（缺少：${readiness.missing.join('、')}）` : ''}。`}</p></div></div></section>}
+        {!session && <section className="intelligence-panel ai-core-stage"><div className="ai-core-visual"><CicloCore label="Ciclo AI 工作台" state={readiness?.ready ? 'processing' : 'locked'} tier={cicloTier} /></div><div className="ai-core-copy"><span className="ai-core-kicker"><Bot /> CICLO RESEARCH CORE</span><h2>{readiness?.ready ? '从一只股票开始研究' : 'AI 服务暂不可用'}</h2><p>{readiness?.ready ? '创建会话后，AI 只会读取服务端授权的研究上下文，并返回可核验的结构化回答。' : '当前没有可验证的 AI provider；不会生成占位回答、不会伪造回答，也不会展示虚假的执行轨迹。'}</p></div><div className="ai-readiness-note"><LockKeyhole /><div><strong>{readiness?.ready ? '服务 readiness 已通过' : '输入暂时锁定'}</strong><p>{readiness?.ready ? '可创建会话并提交研究问题。' : `服务端尚未返回完整 provider、模型版本与合同证明${readiness?.missing.length ? `（缺少：${readiness.missing.join('、')}）` : ''}。`}</p></div></div></section>}
         {session && <section className="intelligence-panel ai-conversation-panel"><header className="ai-conversation-header"><div><span>{session.status === 'archived' ? 'ARCHIVED SESSION' : 'ACTIVE SESSION'}</span><h2>{session.title}</h2><small>{session.public_id} · 创建于 {formatTime(session.created_at)}</small></div><div className="ai-conversation-actions"><button className="ai-button" type="button" onClick={() => void handleSelect(session.public_id)} disabled={Boolean(busy)}><RefreshCw />刷新</button><button className="ai-button danger" type="button" onClick={() => void handleArchive()} disabled={Boolean(busy) || session.status === 'archived'}><Archive />{session.status === 'archived' ? '已归档' : '归档'}</button></div></header><div className="ai-context-strip"><span>股票上下文由服务端读取</span><strong>{session.context_snapshot_public_id ? 'context snapshot 已绑定' : '尚未绑定 context snapshot'}</strong></div><SessionMessages session={session} />{taskResult && <TaskReceipt task={taskResult.task} events={events} onCancel={() => void handleCancel()} busy={busy === 'cancel'} />}{taskResult?.assistant && !session.messages.some((item) => item.role === 'assistant' && readAiWorkspaceStructuredMessage(item.content)) && <AnswerCard structured={taskResult.assistant.structured} createdAt={taskResult.assistant.created_at} />}{error && <p className="ai-inline-error" role="alert">{error}</p>}<div className="ai-composer"><label htmlFor="ai-message">向 Ciclo AI 提问</label><div><textarea id="ai-message" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') void handleSend() }} disabled={session.status === 'archived' || !readiness?.ready || Boolean(busy)} placeholder={session.status === 'archived' ? '已归档的会话不能继续写入' : readiness?.ready ? '例如：这只股票当前最需要核验的反向证据是什么？' : 'AI 服务 readiness 未通过'} /><button className="ai-button primary send-button" type="button" onClick={() => void handleSend()} disabled={session.status === 'archived' || !readiness?.ready || Boolean(busy) || !message.trim()}>{busy === 'send' ? <LoaderCircle /> : <Send />}发送问题</button></div><p><ShieldCheck />只生成研究回答或个人模拟草稿；不提交订单，不启用自动实盘。</p></div></section>}
       </main>
       <aside className="ai-workspace-inspector" aria-label="AI 工作台说明"><section className="intelligence-panel"><header className="intelligence-section-heading"><div><span>RESPONSE CONTRACT</span><h2>结构化回答顺序</h2></div></header><ol className="response-contract-list"><li><span>01</span><strong>结论</strong></li><li><span>02</span><strong>引用与时间</strong></li><li><span>03</span><strong>支持证据</strong></li><li><span>04</span><strong>反向证据</strong></li><li><span>05</span><strong>风险与失效</strong></li><li><span>06</span><strong>下一步</strong></li></ol></section><section className="intelligence-panel"><header className="intelligence-section-heading"><div><span>CAPABILITY BOUNDARY</span><h2>允许的协助范围</h2></div></header><div className="ai-capability-list"><article><FileSearch /><div><strong>研究解释</strong><p>整理真实行情、引用、支持与反向证据。</p></div></article><article><MessageSquareText /><div><strong>安全草稿</strong><p>只能生成个人模拟草稿，不提交订单。</p></div></article><article><ShieldCheck /><div><strong>风险边界</strong><p>显示来源、时间、数据状态、风险和失效条件。</p></div></article></div><p className="intelligence-boundary-note"><ShieldCheck />自然语言 AI 永久没有订单提交、付款审批、权益审批或自动实盘启用权限。</p></section><section className="intelligence-panel ai-status-legend"><header className="intelligence-section-heading"><div><span>PUBLIC STATUS</span><h2>任务状态</h2></div></header><div>{AI_TASK_STATUSES.map((status) => <span key={status}><i className={`is-${status}`} />{STATUS_COPY[status]}</span>)}</div></section></aside>

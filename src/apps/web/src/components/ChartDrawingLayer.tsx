@@ -35,6 +35,7 @@ import {
   drawingScopeToken,
   hasLegacyChartDrawings,
   isCurrentDrawingScope,
+  isValidChartDrawing,
   mergeDrawingTombstoneRevisions,
   readCachedDrawings,
   writeCachedDrawings,
@@ -143,6 +144,10 @@ const TOOL_GROUPS: Array<{ label: string; tools: ToolDefinition[] }> = [
 const TOOLS = TOOL_GROUPS.flatMap((group) => group.tools)
 const QUICK_TOOLS = ['segment', 'horizontal', 'rectangle', 'triangle', 'wave3', 'fib-retracement', 'time-space-ruler']
 
+function validDrawingList(value: unknown): Drawing[] {
+  return Array.isArray(value) ? value.filter(isValidChartDrawing).slice(0, 200) : []
+}
+
 function iconFor(tool: ToolDefinition) {
   if (tool.id === 'horizontal') return <Minus size={17} />
   if (tool.family === 'shape') return tool.id === 'triangle' ? <Triangle size={17} /> : <Square size={17} />
@@ -160,6 +165,7 @@ function DrawingShape({ drawing, width, height, coordinateApi, markerId }: {
   markerId: string
 }) {
   const tool = TOOLS.find((item) => item.id === drawing.tool)
+  if (!Array.isArray(drawing.points)) return null
   const points = drawing.points.map(coordinateApi.pointToCoordinate)
   if (!tool || !points.length || points.some((point) => point === null)) return null
   const visiblePoints = points as ScreenPoint[]
@@ -372,6 +378,7 @@ export function ChartDrawingLayer({
           const batch = operations.slice(0, 100)
           const response = await syncChartDrawings(scope, batch)
           if (currentScopeToken.current !== scopeToken) break
+          if (!Array.isArray(response.items)) { setPersistence('failed'); break }
           lastConflictRetryKey.current = null
           const results = new Map(response.items.map((item) => [drawingOperationKey(item), item]))
           const remoteByKey = new Map(remoteDrawings.current.map((drawing) => {
@@ -420,9 +427,11 @@ export function ChartDrawingLayer({
                 tombstones: refreshedTombstones,
                 tombstones_truncated: tombstonesTruncated,
               } = await getChartDrawings(scope.market, scope.symbol, scope.timeframe, scope.crossTimeframe)
+              const safeItems = validDrawingList(items)
+              const safeTombstones = Array.isArray(refreshedTombstones) ? refreshedTombstones : []
               const refreshedLocalTombstones = mergeDrawingTombstoneRevisions(
                 [...tombstones.current.values()],
-                refreshedTombstones,
+                safeTombstones,
                 latestDrawings.current,
                 scope,
               )
@@ -432,15 +441,15 @@ export function ChartDrawingLayer({
                 capturedRequestGeneration: refreshRequestGeneration,
                 currentRequestGeneration: requestGeneration.current,
                 currentEditGeneration: editGeneration.current,
-                refreshed: items,
+                refreshed: safeItems,
                 latest: latestDrawings.current,
                 fallback: scope,
                 tombstones: refreshedLocalTombstones,
-                refreshedTombstones,
+                refreshedTombstones: safeTombstones,
                 previousRetryKey: lastConflictRetryKey.current,
               })
               if (decision.kind === 'stale') break
-              remoteDrawings.current = items
+              remoteDrawings.current = safeItems
               tombstones.current = new Map(refreshedLocalTombstones.map((tombstone) => [drawingOperationKey(tombstone), tombstone]))
               if (truncated || tombstonesTruncated || decision.kind === 'failed') { setPersistence('failed'); break }
               if (decision.kind === 'retry') {
@@ -450,12 +459,12 @@ export function ChartDrawingLayer({
                 break
               }
               lastConflictRetryKey.current = null
-              latestDrawings.current = items
+              latestDrawings.current = safeItems
               tombstones.current.clear()
-              setDrawings(items)
+              setDrawings(safeItems)
               setUndoStack([])
               setRedoStack([])
-              try { writeCachedDrawings(localStorage, scope, items) } catch { /* refreshed remote data is still displayed */ }
+              try { writeCachedDrawings(localStorage, scope, safeItems) } catch { /* refreshed remote data is still displayed */ }
               setPersistence('synced')
             } catch {
               if (currentScopeToken.current === scopeToken && requestGeneration.current === refreshRequestGeneration) setPersistence('failed')
@@ -504,14 +513,15 @@ export function ChartDrawingLayer({
     const requested = scopeToken
     void getChartDrawings(scope.market, scope.symbol, scope.timeframe, scope.crossTimeframe).then(({ items, truncated, tombstones_truncated: tombstonesTruncated }) => {
       if (!isCurrentDrawingScope(requested, scope) || currentScopeToken.current !== requested || requestGeneration.current !== loadRequestGeneration) return
-      remoteDrawings.current = items
+      const safeItems = validDrawingList(items)
+      remoteDrawings.current = safeItems
       scopeLoaded.current = true
       if (editGeneration.current !== initialEditGeneration) { runSync(); return }
-      latestDrawings.current = items
-      setDrawings(items)
+      latestDrawings.current = safeItems
+      setDrawings(safeItems)
       setUndoStack([])
       setRedoStack([])
-      try { writeCachedDrawings(localStorage, scope, items) } catch { setPersistence('failed'); return }
+      try { writeCachedDrawings(localStorage, scope, safeItems) } catch { setPersistence('failed'); return }
       setPersistence(truncated || tombstonesTruncated ? 'failed' : 'synced')
     }).catch(() => {
       if (currentScopeToken.current === requested && requestGeneration.current === loadRequestGeneration) setPersistence(cached ? 'device-only' : 'failed')
@@ -572,7 +582,9 @@ export function ChartDrawingLayer({
     return () => window.removeEventListener('keydown', cancel)
   }, [active, onToolComplete])
 
-  const candleLevels = useMemo(() => candles.flatMap((item) => [item.open, item.high, item.low, item.close]), [candles])
+  const candleLevels = useMemo(() => (Array.isArray(candles) ? candles : [])
+    .flatMap((item) => [item.open, item.high, item.low, item.close])
+    .filter(Number.isFinite), [candles])
   const size = useMemo(() => ({
     width: Math.max(plotBounds.width, 1),
     height: Math.max(plotBounds.height, 1),
