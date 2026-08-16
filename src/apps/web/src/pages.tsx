@@ -35,6 +35,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { DecisionCard } from './components/DecisionCard'
 import { ChartWorkspace } from './components/ChartWorkspace'
 import { PageHeader } from './components/PageHeader'
+import { MarketOverview as MarketOverviewDashboard } from './components/MarketOverview'
 import { WorkspaceState } from './components/WorkspaceState'
 import { useWorkspace } from './api/workspace-context'
 import { createPriceAlert, deactivatePriceAlert, fetchMarketCandles, fetchMarketQuote, type MarketQuotePayload, type PriceAlert } from './api/client'
@@ -501,19 +502,24 @@ export function MarketsPage() {
     <section className="research-quote-card"><h2><CandlestickChart size={14} />报价与市场</h2><QuoteCompletenessRing quote={marketQuote} /><div className="research-quote-grid"><div><span>Bid</span><strong>{marketQuote?.bid?.toFixed(2) ?? '等待买价'}</strong></div><div><span>Ask</span><strong>{marketQuote?.ask?.toFixed(2) ?? '等待卖价'}</strong></div><div><span>最高</span><strong>{marketQuote?.high?.toFixed(2) ?? '等待区间'}</strong></div><div><span>最低</span><strong>{marketQuote?.low?.toFixed(2) ?? '等待区间'}</strong></div></div><footer><span className={`research-freshness-dot ${freshness.tone}`} />{activeSource}</footer></section>
   </div>
 
-  if (!searchParams.has('symbol')) {
+  if (searchParams.has('symbol') && !/^(?:[A-Z][A-Z0-9.=-]{0,14}|\d{6})$/.test(requestedSymbol)) {
     return <div className="page research-stock-empty">
-      <PageHeader kicker="RESEARCH / STOCK CONTEXT" title="选择一只股票开始研究" description="研究页只承载当前股票的正式 K 线、报价、现有证据与研究状态，不复制发现页的候选池和筛选器。" />
-      <section className="research-stock-empty-panel">
-        <div><span className="research-empty-bot"><Bot size={28} /></span><h2>从已知股票或候选池进入</h2><p>使用顶部股票搜索可直接打开已知股票；如果还没有候选，请到发现页查看覆盖、事件和数据状态。</p></div>
-        <div className="research-empty-market" role="group" aria-label="快捷股票市场">
-          <button className={marketFilter === 'US' ? 'active' : ''} type="button" onClick={() => setMarket('US')}>美股</button>
-          <button className={marketFilter === 'CN' ? 'active' : ''} type="button" onClick={() => setMarket('CN')}>A股</button>
-        </div>
-        {savedInstruments.length > 0 && <div className="research-saved-stocks" aria-label="最近自选股票">{savedInstruments.slice(0, 6).map((instrument) => <button type="button" onClick={() => openInstrument(instrument)} key={instrument.symbol}><strong>{instrument.symbol}</strong><span>{instrument.name}</span></button>)}</div>}
-        <button className="button primary" type="button" onClick={() => navigate('/discover')}>前往发现股票 <ArrowRight size={16} /></button>
-      </section>
+      <PageHeader kicker="MARKET / RESEARCH" title="无法打开这只股票" description="链接中的股票代码为空或格式不受支持，研究页不会猜测或补入演示标的。" />
+      <ResearchEmptyState title="缺少有效股票代码" detail="请从发现页、行情总览或全局搜索选择一只股票。" action="前往发现股票" onAction={() => navigate('/discover')} />
     </div>
+  }
+
+  if (!searchParams.has('symbol')) {
+    return <MarketOverviewDashboard
+      market={marketFilter}
+      watchlist={currentSavedSymbols}
+      marketDataEnabled={marketDataEnabled}
+      authenticated={workspace.mode === 'authenticated'}
+      busySymbol={watchBusy}
+      onMarketChange={setMarket}
+      onOpen={openInstrument}
+      onWatchlist={changeWatchlist}
+    />
   }
 
   return (

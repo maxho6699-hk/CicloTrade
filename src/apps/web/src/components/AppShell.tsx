@@ -51,6 +51,8 @@ import { displayDeliveryDelay, displayFreshness } from '../domain/dataSourcePres
 import { localizeFeature, type FeatureCatalogPayload } from '../domain/featureCatalog'
 import { deriveAutoLiveKillSwitchView, type AutoLiveSnapshotState } from '../domain/autoLiveSafety'
 import { createSessionIdempotencyRegistry } from '../domain/sessionIdempotency'
+import { useCicloTier } from '../api/use-ciclo-tier'
+import { CicloCore } from './paper/CicloCore'
 
 interface AppShellProps {
   children: ReactNode
@@ -179,6 +181,7 @@ export function AppShell({ children }: AppShellProps) {
   const navigate = useNavigate()
   const { pathname } = useLocation()
   const workspace = useWorkspace()
+  const cicloTier = useCicloTier()
   const { locale, setLocale, syncState } = useLocale()
   const visualFamily = visualFamilyForPath(pathname, locale)
   const realData = workspace.mode === 'authenticated'
@@ -191,6 +194,9 @@ export function AppShell({ children }: AppShellProps) {
   const isSuperAdmin = workspace.user?.admin_role === 'super_admin'
   const aiAvailable = workspace.data?.membership.capabilities.includes('ai_workspace') === true
   const navCopy = NAV_COPY[locale]
+  const activePrimaryNav = navItems.find((item) => pathname === item.to || pathname.startsWith(`${item.to}/`))
+  const ActiveRouteIcon = activePrimaryNav?.icon ?? Grid2X2
+  const activeRouteLabel = activePrimaryNav ? navCopy[activePrimaryNav.key] : visualFamily.label
   const aiCopy = AI_COPY[locale]
   const secondaryTools = useMemo(() => {
     if (!featureCatalog) return []
@@ -423,7 +429,11 @@ export function AppShell({ children }: AppShellProps) {
       <div className="shell-content">
         <header className="topbar">
           <div className="topbar-leading">
-            <span className="page-family-label"><i aria-hidden="true" />{visualFamily.label}</span>
+            <div className="page-route-chip" aria-label={`${visualFamily.label} · ${activeRouteLabel}`}>
+              <div className="page-route-core"><CicloCore label={`${activeRouteLabel} 会员机器人`} size="compact" tier={cicloTier} /></div>
+              <ActiveRouteIcon className="page-route-icon" size={18} aria-hidden="true" />
+              <span><small>{visualFamily.label}</small><strong>{activeRouteLabel}</strong></span>
+            </div>
             <button ref={commandTrigger} className="command-search" type="button" aria-haspopup="dialog" aria-controls="command-palette" aria-expanded={commandOpen} onClick={() => setCommandOpen(true)}>
               <Search size={17} />
               <span>搜索股票</span>

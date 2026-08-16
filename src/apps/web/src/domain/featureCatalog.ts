@@ -65,6 +65,15 @@ export interface MorePageCopy {
   kicker: string
   title: string
   description: string
+  hubEyebrow: string
+  hubTitle: string
+  hubDescription: string
+  availableMetric: string
+  categoryMetric: string
+  pinnedMetric: string
+  tierMetric: string
+  deliberationStatus: string
+  safetyNote: string
   searchLabel: string
   searchPlaceholder: string
   loadingTitle: string
@@ -102,6 +111,15 @@ export const MORE_PAGE_COPY: Record<UiLocale, MorePageCopy> = {
     kicker: 'FEATURE DIRECTORY',
     title: '更多功能',
     description: '按任务找到全部工具。固定 3–5 个常用入口后，它们只会出现在桌面次级导航区。',
+    hubEyebrow: '综合功能中心',
+    hubTitle: '研究、提醒与账户服务',
+    hubDescription: '主导航已有页面不重复，只保留独立工具与综合服务。',
+    availableMetric: '可用工具',
+    categoryMetric: '服务分类',
+    pinnedMetric: '固定工具',
+    tierMetric: '会员机器人',
+    deliberationStatus: '牛熊页入口已恢复',
+    safetyNote: 'AI 只提供研究观点，不执行交易',
     searchLabel: '搜索功能',
     searchPlaceholder: '搜索筛选器、期权、风险或复盘',
     loadingTitle: '正在加载功能目录',
@@ -137,6 +155,15 @@ export const MORE_PAGE_COPY: Record<UiLocale, MorePageCopy> = {
     kicker: 'FEATURE DIRECTORY',
     title: '更多功能',
     description: '按任務找到全部工具。固定 3–5 個常用入口後，它們只會出現在桌面次級導覽區。',
+    hubEyebrow: '綜合功能中心',
+    hubTitle: '研究、提醒與帳戶服務',
+    hubDescription: '主導覽已有頁面不重複，只保留獨立工具與綜合服務。',
+    availableMetric: '可用工具',
+    categoryMetric: '服務分類',
+    pinnedMetric: '固定工具',
+    tierMetric: '會員機器人',
+    deliberationStatus: '牛熊頁入口已恢復',
+    safetyNote: 'AI 只提供研究觀點，不執行交易',
     searchLabel: '搜尋功能',
     searchPlaceholder: '搜尋篩選器、期權、風險或複盤',
     loadingTitle: '正在載入功能目錄',

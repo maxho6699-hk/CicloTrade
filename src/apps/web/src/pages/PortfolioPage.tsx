@@ -1,5 +1,5 @@
-import { ArrowDownRight, ArrowUpRight, ChevronDown, Clock3, History, ListChecks, ShieldCheck, WalletCards } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { ArrowDownRight, ArrowRight, ArrowUpRight, ChevronDown, Clock3, History, ListChecks, ShieldCheck, WalletCards } from 'lucide-react'
+import { useMemo, useState, type CSSProperties } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useWorkspace } from '../api/workspace-context'
 import { PageHeader } from '../components/PageHeader'
@@ -7,6 +7,8 @@ import { WorkspaceState } from '../components/WorkspaceState'
 import { apiPositionToPosition, formatTime } from '../data/adapters'
 import { getFormatLocale } from '../i18n/runtime'
 import { useLocale } from '../i18n/useLocale'
+import { useCicloTier } from '../api/use-ciclo-tier'
+import { CicloCore } from '../components/paper/CicloCore'
 import type { Market, Position } from '../types'
 
 const actionLabels = { buy: '买入', hold: '持有', reduce: '减仓', exit: '退出', short: '空头', cover: '回补', wait: '等待' }
@@ -62,6 +64,7 @@ function PositionRow({ position, onResearch }: { position: Position; onResearch:
 
 export function PortfolioPage() {
   const workspace = useWorkspace()
+  const cicloTier = useCicloTier()
   const { formatLocale } = useLocale()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
@@ -171,9 +174,24 @@ export function PortfolioPage() {
     ? accountEmptyText
     : `${marketLabels[market]}暂无已平仓记录。`
   const showGuidance = !accountAvailable || (!marketPositions.length && !timeline.length && !closed.length)
+  const visibleReviewCount = timeline.length + marketPositions.length + closed.length
+  const reviewCoverage = officialRecordCount > 0 ? Math.min(100, Math.round(visibleReviewCount / officialRecordCount * 100)) : 0
 
   return <div className="page operations-page">
     <PageHeader kicker="PORTFOLIO / OFFICIAL VALIDATION" title="官方验证模拟组合与复盘" description="只读取 CicloTrade 官方验证模拟账户；它不是你的个人模拟或券商实盘账户，也不会自动下单。USD、CNY 和 HKD 始终分开查看。" />
+    <section className="portfolio-review-hero" aria-label="组合复盘控制台">
+      <div className="portfolio-review-copy">
+        <header><span><ShieldCheck size={15} /> OFFICIAL REVIEW CORE</span><strong>{marketLabels[market]}组合复盘控制台</strong><small><i className={marketHasOfficialRecords ? 'positive-dot' : 'neutral-dot'} />{marketHasOfficialRecords ? '不可变日志已同步' : '等待官方记录'}</small></header>
+        <div className="portfolio-review-primary"><span>当前复盘范围</span><strong>{requestedSymbol || `${marketLabels[market]}全部记录`}</strong><p>把资金摘要、持仓、执行时间线与已平仓结果放在同一视野内，所有结论都保留来源和账户域边界。</p></div>
+        <div className="portfolio-review-aux"><span><small>官方记录</small><strong>{accountAvailable ? officialRecordCount : accountUnavailableLabel}</strong></span><span><small>当前持仓</small><strong>{accountAvailable ? marketPositions.length : '—'}</strong></span><span><small>首屏时间线</small><strong>{accountAvailable ? timeline.length : '—'}</strong></span><span><small>已平仓组</small><strong>{accountAvailable ? closed.length : '—'}</strong></span></div>
+        <div className="portfolio-review-actions"><button className="button primary" type="button" onClick={() => navigate('/reports')}>打开验证报告 <ArrowRight size={15} /></button><button className="button secondary" type="button" onClick={() => navigate('/deliberation')}>进入牛熊研判</button></div>
+        <footer><span><i />来源 · {portfolio?.mark_source ?? '来源未记录'}</span><small>{capturedAt} · 记录价非实时可成交报价</small></footer>
+      </div>
+      <div className="portfolio-review-core">
+        <CicloCore label="官方验证复盘机器人" size="compact" tier={cicloTier} />
+        <div className="portfolio-review-ring" style={{ '--review-progress': `${reviewCoverage * 3.6}deg` } as CSSProperties}><span><strong>{reviewCoverage}%</strong><small>首屏复盘覆盖</small></span></div>
+      </div>
+    </section>
     <WorkspaceState empty={!hasOfficialRecords} emptyText="当前没有 CicloTrade 官方验证记录；系统不会用个人练习订单或演示订单填充。" />
     <div className="account-source-bar">
       <span><WalletCards size={18} /> CicloTrade 官方验证模拟</span>

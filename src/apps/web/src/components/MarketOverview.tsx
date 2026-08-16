@@ -12,10 +12,6 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { fetchMarketCandles } from "../api/client";
-import {
-  candles as demoCandles,
-  instruments as demoInstruments,
-} from "../data/demo";
 import type { Candle, Instrument, Market } from "../types";
 import { CalendarDays, Grid3X3 } from "lucide-react";
 import { MarketEventCalendar } from "./MarketEventCalendar";
@@ -23,6 +19,8 @@ import { MarketHeatmap } from "./MarketHeatmap";
 import { WatchlistToggle } from "./WatchlistToggle";
 import { SegmentedControl } from "./ui/SegmentedControl";
 import { displayDataSource, displayDeliveryDelay, displayFreshness } from "../domain/dataSourcePresentation";
+import { useCicloTier } from "../api/use-ciclo-tier";
+import { CicloCore } from "./paper/CicloCore";
 
 interface OverviewQuote extends Instrument {
   candles: Candle[];
@@ -36,11 +34,12 @@ interface MarketQuoteCacheEntry {
   status: string;
 }
 
-interface MarketOverviewProps {
+type MarketOverviewMode = { demoMode: boolean };
+
+interface MarketOverviewProps extends Partial<MarketOverviewMode> {
   market: Market;
   watchlist: string[];
   marketDataEnabled: boolean;
-  demoMode: boolean;
   authenticated: boolean;
   busySymbol: string;
   onMarketChange: (market: Market) => void;
@@ -54,7 +53,7 @@ const TABS = [
   "涨幅榜",
   "跌幅榜",
   "波幅榜",
-  "热力图",
+  "板块",
   "事件日历",
 ] as const;
 
@@ -112,6 +111,7 @@ function quoteFromCandles(
 
 function MiniChart({ item }: { item: OverviewQuote }) {
   const values = item.candles.slice(-32).map((candle) => candle.close);
+  if (!values.length) return <div className="overview-mini-chart-empty">等待可验证走势</div>;
   const low = Math.min(...values);
   const high = Math.max(...values);
   const range = Math.max(high - low, 1e-9);
@@ -137,27 +137,6 @@ function MiniChart({ item }: { item: OverviewQuote }) {
         vectorEffect="non-scaling-stroke"
       />
     </svg>
-  );
-}
-
-function demoQuote(symbol: string, name: string, market: Market) {
-  const base = demoInstruments.find((item) => item.symbol === symbol);
-  const price =
-    base?.price ??
-    (market === "CN" ? 42 + symbol.charCodeAt(0) : 80 + symbol.charCodeAt(0));
-  const scale = price / demoCandles.at(-1)!.close;
-  return quoteFromCandles(
-    symbol,
-    name,
-    market,
-    demoCandles.map((item) => ({
-      ...item,
-      open: item.open * scale,
-      high: item.high * scale,
-      low: item.low * scale,
-      close: item.close * scale,
-    })),
-    "界面演示",
   );
 }
 
@@ -191,20 +170,21 @@ export function MarketOverview({
   market,
   watchlist,
   marketDataEnabled,
-  demoMode,
+  demoMode = false,
   authenticated,
   busySymbol,
   onMarketChange,
   onOpen,
   onWatchlist,
 }: MarketOverviewProps) {
+  const cicloTier = useCicloTier();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get("board");
   const tab: (typeof TABS)[number] = TABS.includes(
     requestedTab as (typeof TABS)[number],
   )
     ? (requestedTab as (typeof TABS)[number])
-    : "我的自选";
+    : "热门关注";
   const view: "cards" | "list" =
     searchParams.get("display") === "list" ? "list" : "cards";
   const [quotes, setQuotes] = useState<OverviewQuote[]>([]);
@@ -252,15 +232,9 @@ export function MarketOverview({
     let active = true;
     const sequence = ++requestSequence.current;
     if (!marketDataEnabled) {
-      if (demoMode) {
-      setQuotes(
-        candidates.map((item) => demoQuote(item.symbol, item.name, market)),
-      );
-      setStatus("当前为界面演示；登录后读取可验证行情。");
-      } else {
-        setQuotes([]);
-        setStatus("行情连接未启用，不显示演示行情。");
-      }
+      setQuotes([]);
+      if (demoMode) setStatus("当前为演示界面；行情连接未启用，不显示演示行情。");
+      else setStatus("行情连接未启用，不显示演示行情。");
       return () => {
         active = false;
       };
@@ -320,9 +294,10 @@ export function MarketOverview({
       <header className="market-overview-header">
         <div>
           <span>MARKET DISCOVERY</span>
-          <h1>发现值得进一步查看的股票</h1>
-          <p>先从自选、热门、涨跌幅和波幅中发现机会，再进入完整 K线工作图。</p>
+          <h1>市场行情总览</h1>
+          <p>热门股票、美股与 A 股排行、涨跌幅榜和板块热力图集中在同一页，再进入完整 K 线研究。</p>
         </div>
+        <div className="market-overview-core"><CicloCore label="市场行情会员机器人" size="compact" tier={cicloTier} /><span><i />行情研究中枢</span></div>
         <div className="market-overview-actions">
           <SegmentedControl
             ariaLabel="市场"
@@ -353,24 +328,24 @@ export function MarketOverview({
             <button
               className={tab === item ? "active" : ""}
               type="button"
-              onClick={() => setOverviewParam("board", item, "我的自选")}
+              onClick={() => setOverviewParam("board", item, "热门关注")}
               key={item}
             >
               {item}
             </button>
           ))}
           <button
-            className={tab === "热力图" ? "active" : ""}
+            className={tab === "板块" ? "active" : ""}
             type="button"
-            onClick={() => setOverviewParam("board", "热力图", "我的自选")}
+            onClick={() => setOverviewParam("board", "板块", "热门关注")}
           >
             <Grid3X3 size={15} />
-            热力图
+            板块
           </button>
           <button
             className={tab === "事件日历" ? "active" : ""}
             type="button"
-            onClick={() => setOverviewParam("board", "事件日历", "我的自选")}
+            onClick={() => setOverviewParam("board", "事件日历", "热门关注")}
           >
             <CalendarDays size={15} />
             事件日历
@@ -406,7 +381,7 @@ export function MarketOverview({
           </span>
         </div>
       )}
-      {tab === ("热力图" as typeof tab) ? (
+      {tab === ("板块" as typeof tab) ? (
         <MarketHeatmap
           market={market}
           authenticated={authenticated}
@@ -441,7 +416,7 @@ export function MarketOverview({
                 className="button tertiary"
                 type="button"
                 onClick={() =>
-                  setOverviewParam("board", "热门关注", "我的自选")
+                  setOverviewParam("board", "热门关注", "热门关注")
                 }
               >
                 <Star size={16} /> 查看热门关注
@@ -491,25 +466,12 @@ export function MarketOverview({
                 >
                   <MiniChart item={item} />
                 </button>
-                <footer className="overview-card-footer">
-                  <div className="overview-card-actions">
-                    <button type="button" onClick={() => onOpen(item)}>
-                      <CandlestickChart size={14} /> K线工作图
-                    </button>
-                    {authenticated && (
-                      <WatchlistToggle
-                        variant="label"
-                        className="overview-watch-action"
-                        symbol={item.symbol}
-                        saved={saved}
-                        busy={busySymbol === item.symbol}
-                        onToggle={(remove) => onWatchlist(item, remove)}
-                      />
-                    )}
-                  </div>
-                  <span>#{index + 1}</span>
-                  <span>近20日波幅 {item.volatility.toFixed(2)}%</span>
-                </footer>
+                <div className="overview-card-aux"><span><small>榜单位置</small><strong>#{index + 1}</strong></span><span><small>近 20 日波幅</small><strong>{item.volatility.toFixed(2)}%</strong></span></div>
+                <div className="overview-card-actions">
+                  <button type="button" onClick={() => onOpen(item)}><CandlestickChart size={14} /> K线工作图</button>
+                  {authenticated && <WatchlistToggle variant="label" className="overview-watch-action" symbol={item.symbol} saved={saved} busy={busySymbol === item.symbol} onToggle={(remove) => onWatchlist(item, remove)} />}
+                </div>
+                <footer className="overview-card-footer"><span><i />{item.status}</span><small>{market === "CN" ? "A股" : "美股"} · 研究行情</small></footer>
               </article>
             );
           })}

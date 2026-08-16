@@ -2,13 +2,10 @@ import {
   Activity,
   ArrowRight,
   BellRing,
-  Bot,
   CalendarDays,
   Cpu,
   Filter,
   ListFilter,
-  Maximize2,
-  Minimize2,
   Newspaper,
   Radar,
   RotateCcw,
@@ -26,7 +23,9 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { fetchMarketCandles } from '../api/client'
 import type { BootstrapPayload, MarketCandlePayload, RecommendationItem } from '../api/client'
 import { useWorkspace } from '../api/workspace-context'
+import { useCicloTier } from '../api/use-ciclo-tier'
 import { WatchlistToggle } from '../components/WatchlistToggle'
+import { CicloCore, type CicloCoreTier } from '../components/paper/CicloCore'
 import {
   formatMoney,
   formatTime,
@@ -188,6 +187,7 @@ function DiscoverAIBanner({
   selected,
   filteredCount,
   completeCount,
+  tier,
   source,
   freshness,
   onResearch,
@@ -195,6 +195,7 @@ function DiscoverAIBanner({
   selected: RecommendationItem | null
   filteredCount: number
   completeCount: number
+  tier: CicloCoreTier
   source?: string
   freshness?: string
   onResearch: () => void
@@ -240,14 +241,84 @@ function DiscoverAIBanner({
         <div className="discover-banner-node is-signal"><span><Signal size={14} /> SIGNAL</span><strong>{completeCount} 完整</strong><i className="is-online" /></div>
         <div className="discover-banner-node is-risk"><span><ShieldAlert size={14} /> RISK</span><strong>{riskCount} 待核</strong><i className={riskCount ? 'is-risk' : 'is-online'} /></div>
         <div className="discover-banner-halo" aria-hidden="true"><span /><span /><span /></div>
-        <div className="discover-banner-robot" aria-hidden="true">
-          <span className="discover-banner-antenna"><i /></span>
-          <span className="discover-banner-head"><span><Bot size={50} strokeWidth={1.45} /></span></span>
-          <span className="discover-banner-body"><Activity size={22} /><i className="is-left" /><i className="is-right" /></span>
-        </div>
+        <div className="discover-banner-robot"><CicloCore label="Ciclo AI 发现机器人" size="compact" tier={tier} /></div>
         <div className="discover-banner-platform" aria-hidden="true"><span /><span /><span /></div>
         <div className="discover-banner-particles" aria-hidden="true"><i /><i /><i /><i /><i /><i /></div>
       </div>
+    </V2Card>
+  )
+}
+
+function priorityLabel(item: RecommendationItem, index: number) {
+  if (item.state === 'locked') return { label: 'P3 · 权限', tone: 'is-locked' }
+  if ((item.missing_fields?.length ?? 0) > 0) return { label: 'P1 · 补资料', tone: 'is-high' }
+  if (item.action === 'REDUCE' || item.action === 'EXIT' || item.action === 'SHORT') return { label: 'P1 · 风险', tone: 'is-high' }
+  return index === 0 ? { label: 'P1 · 先研究', tone: 'is-high' } : { label: 'P2 · 跟进', tone: 'is-normal' }
+}
+
+function TodayActionMatrix({ items, authenticated, onSelect, onResearch }: {
+  items: RecommendationItem[]
+  authenticated: boolean
+  onSelect: (item: RecommendationItem) => void
+  onResearch: (item: RecommendationItem) => void
+}) {
+  const actions = items.slice(0, 4)
+  return (
+    <V2Card className="discover-action-matrix">
+      <header className="discover-card-heading">
+        <div><span className="v2-eyebrow">TODAY ACTION MATRIX</span><h2>今日行动矩阵</h2></div>
+        <span className="discover-heading-note"><Activity size={14} />优先级 · 状态 · 下一步</span>
+      </header>
+      {actions.length ? <div className="discover-action-grid">
+        {actions.map((item, index) => {
+          const evidence = evidenceCounts(item)
+          const priority = priorityLabel(item, index)
+          return <article className="discover-action-card" key={item.event_id}>
+            <header><StockTaskBadge symbol={item.symbol} market={marketName(item.market)} /><span className={`discover-priority ${priority.tone}`}>{priority.label}</span></header>
+            <button className="discover-action-main" type="button" onClick={() => onSelect(item)}>
+              <span><small>当前记录价</small><strong>{quoteLabel(item)}</strong></span>
+              <DiscoverSparkline symbol={item.symbol} authenticated={authenticated} />
+            </button>
+            <div className="discover-action-aux">
+              <span><small>研究状态</small><strong>{actionLabel(item)}</strong></span>
+              <span><small>证据完整度</small><strong>{evidence.supplied} / {evidence.supplied + evidence.missing || 1}</strong></span>
+              <span><small>资料缺口</small><strong>{evidence.missing}</strong></span>
+              <span><small>最大风险</small><strong>{item.max_loss == null ? '未提供' : itemMoney(item.max_loss, item.currency)}</strong></span>
+            </div>
+            <div className="discover-action-cta"><button className="v2-button v2-button-primary" type="button" onClick={() => onResearch(item)}>进入研究 <ArrowRight size={14} /></button></div>
+            <footer><span><i className={evidence.missing ? 'is-waiting' : 'is-online'} />{evidence.missing ? '资料待补齐' : '研究资料可继续'}</span><small>{item.available_at ? formatTime(item.available_at) : '新鲜度未提供'}</small></footer>
+          </article>
+        })}
+      </div> : <V2StatePanel state={authenticated ? 'empty' : 'locked'} title={authenticated ? '今日暂无候选行动' : '登录后查看行动矩阵'} detail="这里只整理真实候选的研究优先级，不会替你下单。" />}
+    </V2Card>
+  )
+}
+
+function BeginnerRecommendations({ items, authenticated, onResearch }: {
+  items: RecommendationItem[]
+  authenticated: boolean
+  onResearch: (item: RecommendationItem) => void
+}) {
+  const recommended = [...items]
+    .sort((left, right) => Number(right.contract_status === 'complete') - Number(left.contract_status === 'complete') || evidenceCounts(right).supplied - evidenceCounts(left).supplied)
+    .slice(0, 3)
+  return (
+    <V2Card className="discover-beginner-recommendations">
+      <header className="discover-card-heading"><div><span className="v2-eyebrow">BEGINNER STARTER CARDS</span><h2>0 基础研究起点</h2></div><V2StatusPill state="info">先理解，再决策</V2StatusPill></header>
+      {recommended.length ? <div className="discover-beginner-grid">{recommended.map((item, index) => {
+        const evidence = evidenceCounts(item)
+        const reason = item.contract_status === 'complete'
+          ? '资料字段较完整，适合先学习如何阅读研究证据。'
+          : evidence.supplied > 0 ? `已有 ${evidence.supplied} 项可核对依据，同时保留 ${evidence.missing} 项资料缺口。` : '当前资料有限，适合学习如何识别未知项。'
+        return <article key={item.event_id}>
+          <header><span>新手推荐 {index + 1}</span><V2StatusPill state={item.contract_status === 'complete' ? 'success' : 'warning'}>{item.contract_status === 'complete' ? '资料较完整' : '带缺口'}</V2StatusPill></header>
+          <div className="discover-beginner-symbol"><CandidateLogo item={item} /><span><strong>{item.symbol || '股票代码未提供'}</strong><small>{marketName(item.market)} · {actionLabel(item)}</small></span></div>
+          <p>{reason}</p>
+          <div className="discover-beginner-meter"><span style={{ width: `${Math.min(100, Math.round(evidence.supplied / Math.max(evidence.supplied + evidence.missing, 1) * 100))}%` }} /></div>
+          <button className="v2-button v2-button-secondary" type="button" onClick={() => onResearch(item)}>先看研究证据 <ArrowRight size={14} /></button>
+          <footer><i className={evidence.missing ? 'is-waiting' : 'is-online'} />研究入口，不构成买入建议</footer>
+        </article>
+      })}</div> : <V2StatePanel state={authenticated ? 'empty' : 'locked'} title="暂无可推荐的研究起点" detail="有真实候选资料后再显示，不使用虚构热门股票填充。" />}
     </V2Card>
   )
 }
@@ -601,6 +672,7 @@ function DiscoverStatusBar({ data, authenticated, modelVersion }: { data: Bootst
 
 export function DiscoverV2Page() {
   const workspace = useWorkspace()
+  const cicloTier = useCicloTier()
   const navigate = useNavigate()
   const [inspectorOpen, setInspectorOpen] = useState(() => typeof window === 'undefined' || window.matchMedia('(min-width: 1241px)').matches)
   const [searchParams, setSearchParams] = useSearchParams()
@@ -608,7 +680,6 @@ export function DiscoverV2Page() {
   const [watchMessage, setWatchMessage] = useState('')
   const [aiSymbol, setAiSymbol] = useState('')
   const [aiMessage, setAiMessage] = useState('')
-  const [candidateExpanded, setCandidateExpanded] = useState(false)
   const query = searchParams.get('q') ?? ''
   const marketParam = searchParams.get('market')
   const market: MarketFilter = marketParam === '美股' || marketParam === 'A股' ? marketParam : '全部'
@@ -622,7 +693,7 @@ export function DiscoverV2Page() {
   const selectedId = Number.isSafeInteger(selectedParam) && selectedParam > 0 ? selectedParam : null
   const pageParam = Number(searchParams.get('page'))
   const page = Number.isSafeInteger(pageParam) && pageParam > 0 ? pageParam : 1
-  const pageSize = 20
+  const pageSize = Number.MAX_SAFE_INTEGER
 
   const updateParams = (updates: Record<string, string | null>) => {
     const next = new URLSearchParams(searchParams)
@@ -765,7 +836,7 @@ export function DiscoverV2Page() {
 
   return (
     <div className="v2-page discover-v2-page">
-      <DiscoverAIBanner selected={selected} filteredCount={filtered.length} completeCount={completeCount} source={workspace.data?.recommendations.source} freshness={workspace.data?.market_data.freshness} onResearch={() => research(selected)} />
+      <DiscoverAIBanner selected={selected} filteredCount={filtered.length} completeCount={completeCount} tier={cicloTier} source={workspace.data?.recommendations.source} freshness={workspace.data?.market_data.freshness} onResearch={() => research(selected)} />
 
       <section className="discover-command-strip" aria-label="发现页范围与视图">
         <V2PageContext task="候选股票范围" account="研究域" market={market === '全部' ? '全部市场' : market} freshness={workspace.data?.market_data.freshness} observedAt={workspace.data?.market_data.observed_at} detail={workspace.data?.market_data.detail} />
@@ -776,6 +847,9 @@ export function DiscoverV2Page() {
       </section>
       {watchMessage && <div className="discover-page-feedback" role="status">{watchMessage}</div>}
 
+      <TodayActionMatrix items={view === '候选股票' ? visibleRecords : []} authenticated={isAuth} onSelect={(item) => updateParams({ selected: String(item.event_id) })} onResearch={research} />
+      <BeginnerRecommendations items={view === '候选股票' ? filtered : []} authenticated={isAuth} onResearch={research} />
+
       <div className={`discover-dashboard ${inspectorOpen ? 'has-open-inspector' : ''}`}>
         <aside className="discover-left-rail" aria-label="自选与研究覆盖">
           <WatchlistPanel entries={watchlistEntries} selectedId={selectedId} busyKey={watchBusy} onSelect={(item) => updateParams({ selected: String(item.event_id) })} onToggle={toggleWatchlistEntry} />
@@ -783,14 +857,10 @@ export function DiscoverV2Page() {
         </aside>
 
         <section className="discover-center-column" aria-label="候选股票与近期事件">
-          <V2Card className={`discover-market-card ${candidateExpanded ? 'is-expanded' : ''}`}>
+          <V2Card className="discover-market-card">
             <header className="discover-card-heading discover-market-heading">
               <div><span className="v2-eyebrow">CANDIDATE MATRIX</span><h2>候选股票研究矩阵</h2></div>
               <div className="discover-market-controls">
-                <button className="discover-expand-toggle" type="button" aria-expanded={candidateExpanded} onClick={() => setCandidateExpanded((value) => !value)}>
-                  {candidateExpanded ? <Minimize2 size={13} aria-hidden="true" /> : <Maximize2 size={13} aria-hidden="true" />}
-                  <span>{candidateExpanded ? '收起' : '展开'}</span>
-                </button>
                 <div className="discover-periods" aria-label="Mini K线周期"><button className="is-active" type="button" aria-pressed="true">1D</button><button type="button" disabled>1W</button><button type="button" disabled>1M</button></div>
               </div>
             </header>

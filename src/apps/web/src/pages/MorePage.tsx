@@ -1,7 +1,7 @@
 import {
   AlertTriangle, ArrowRight, BellRing, BookOpenCheck, CalendarClock, ChartCandlestick,
   ClipboardCheck, Gauge, Grid2X2, LifeBuoy, List, ListFilter, LockKeyhole, Pin, RadioTower,
-  Search, ShieldCheck, Sparkles, Target, WalletCards,
+  Search, ShieldCheck, Sparkles, Swords, Target, WalletCards,
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
@@ -25,6 +25,8 @@ import {
   type MorePageCopy,
 } from '../domain/featureCatalog'
 import { useLocale } from '../i18n/useLocale'
+import { useCicloTier } from '../api/use-ciclo-tier'
+import { CicloCore } from '../components/paper/CicloCore'
 import '../styles/more.css'
 
 const FEATURE_ICONS = {
@@ -83,6 +85,7 @@ function FeatureSection({ title, items, pinned, copy, view, onOpen, onTogglePin 
 
 export function MorePage({ catalog, loading = false, error = null, copy: injectedCopy, onRetry, onSavePins, onOpenFeature, onRecordRecent }: MorePageProps) {
   const navigate = useNavigate()
+  const cicloTier = useCicloTier()
   const { locale } = useLocale()
   const copy = injectedCopy ?? MORE_PAGE_COPY[locale]
   const [query, setQuery] = useState('')
@@ -108,11 +111,22 @@ export function MorePage({ catalog, loading = false, error = null, copy: injecte
     setRecentFeedback('')
   }, [catalog])
 
-  const items = useMemo(() => filterFeatureCatalog(catalogSnapshot?.items ?? [], query, locale), [catalogSnapshot?.items, locale, query])
+  const items = useMemo(() => filterFeatureCatalog(catalogSnapshot?.items ?? [], query, locale).filter((item) => !item.primaryNav), [catalogSnapshot?.items, locale, query])
   const pinnedKeys = useMemo(() => new Set(draftPins), [draftPins])
   const byKey = useMemo(() => new Map((catalogSnapshot?.items ?? []).map((item) => [item.key, item])), [catalogSnapshot?.items])
-  const selectKeys = (keys: string[]) => keys.flatMap((key) => byKey.get(key) ?? [])
+  const selectKeys = (keys: string[]) => keys.flatMap((key) => byKey.get(key) ?? []).filter((item) => !item.primaryNav)
   const recommended = items.filter((item) => item.recommendationRank !== null).sort((left, right) => Number(left.recommendationRank) - Number(right.recommendationRank)).slice(0, 4)
+  const pinnedItems = selectKeys(draftPins)
+  const pinnedItemKeys = new Set(pinnedItems.map((item) => item.key))
+  const recentItems = selectKeys(catalogSnapshot?.preferences.recent ?? []).filter((item) => !pinnedItemKeys.has(item.key))
+  const recentItemKeys = new Set(recentItems.map((item) => item.key))
+  const recommendedItems = recommended.filter((item) => !pinnedItemKeys.has(item.key) && !recentItemKeys.has(item.key))
+  const featuredItemKeys = new Set([...pinnedItems, ...recentItems, ...recommendedItems].map((item) => item.key))
+  const directoryItems = query ? items : items.filter((item) => !featuredItemKeys.has(item.key))
+  const availableCount = items.filter((item) => item.availability === 'available').length
+  const categoryCount = new Set(items.map((item) => item.category)).size
+  const deliberationItem = (catalogSnapshot?.items ?? []).find((item) => featureOpenRoute(item) === '/deliberation')
+  const deliberationTitle = deliberationItem ? localizeFeature(deliberationItem, locale).title : copy.categories.research
   const pinsDirty = draftPins.length !== savedPins.length || draftPins.some((key, index) => key !== savedPins[index])
   const pinsValid = isValidPinnedSelection(draftPins)
 
@@ -172,6 +186,16 @@ export function MorePage({ catalog, loading = false, error = null, copy: injecte
   return (
     <div className="page more-page">
       <PageHeader kicker={copy.kicker} title={copy.title} description={copy.description} />
+      <section className="more-hub-hero" aria-label={copy.hubEyebrow}>
+        <div className="more-hub-copy">
+          <header><span><Sparkles size={14} /> CICLO SERVICE HUB</span><strong>{copy.hubEyebrow}</strong><small><i />{copy.deliberationStatus}</small></header>
+          <div className="more-hub-primary"><h2>{copy.hubTitle}</h2><p>{copy.hubDescription}</p></div>
+          <div className="more-hub-metrics"><span><small>{copy.availableMetric}</small><strong>{availableCount}</strong></span><span><small>{copy.categoryMetric}</small><strong>{categoryCount}</strong></span><span><small>{copy.pinnedMetric}</small><strong>{draftPins.length}/5</strong></span><span><small>{copy.tierMetric}</small><strong>{cicloTier.toUpperCase()}</strong></span></div>
+          <div className="more-hub-actions"><Link className="button primary" to="/deliberation"><Swords size={16} />{deliberationTitle}</Link></div>
+          <footer><span><i />{copy.deliberationStatus}</span><small>{copy.safetyNote}</small></footer>
+        </div>
+        <div className="more-hub-core"><CicloCore label={`${copy.hubEyebrow} Ciclo`} size="compact" tier={cicloTier} /></div>
+      </section>
       <span className="sr-only" role="status" aria-live="polite">{recentFeedback}</span>
       <div className="more-tools">
         <label className="more-search"><Search size={18} aria-hidden="true" /><span className="sr-only">{copy.searchLabel}</span><input name="feature-search" autoComplete="off" spellCheck={false} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={copy.searchPlaceholder} /></label>
@@ -190,10 +214,12 @@ export function MorePage({ catalog, loading = false, error = null, copy: injecte
           <button className="button secondary" type="button" disabled={!pinsDirty || !pinsValid || savingPins} onClick={() => void savePins()}>{savingPins ? copy.pinSaving : copy.pinSave}</button>
           <small className={!pinsValid || pinFeedback === copy.pinLimit || pinFeedback === copy.pinSaveError ? 'error' : undefined} role="status">{pinFeedback || (!pinsValid ? copy.pinInvalid : '')}</small>
         </section>}
-        {!query && <FeatureSection title={copy.pinnedSection} items={selectKeys(draftPins)} {...sectionProps} />}
-        {!query && <FeatureSection title={copy.recentSection} items={selectKeys(catalogSnapshot.preferences.recent)} {...sectionProps} />}
-        {!query && <FeatureSection title={copy.recommendedSection} items={recommended} {...sectionProps} />}
-        {items.length ? (Object.keys(copy.categories) as FeatureCategory[]).map((category) => <FeatureSection key={category} title={copy.categories[category]} items={items.filter((item) => item.category === category)} {...sectionProps} />) : <div className="more-state"><Search size={22} aria-hidden="true" /><strong>{copy.noResultsTitle}</strong><span>{copy.noResultsDescription}</span></div>}
+        <div className="more-directory-grid">
+          {!query && <FeatureSection title={copy.pinnedSection} items={pinnedItems} {...sectionProps} />}
+          {!query && <FeatureSection title={copy.recentSection} items={recentItems} {...sectionProps} />}
+          {!query && <FeatureSection title={copy.recommendedSection} items={recommendedItems} {...sectionProps} />}
+          {items.length ? (Object.keys(copy.categories) as FeatureCategory[]).map((category) => <FeatureSection key={category} title={copy.categories[category]} items={directoryItems.filter((item) => item.category === category)} {...sectionProps} />) : <div className="more-state"><Search size={22} aria-hidden="true" /><strong>{copy.noResultsTitle}</strong><span>{copy.noResultsDescription}</span></div>}
+        </div>
       </>}
     </div>
   )
