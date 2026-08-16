@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320" role="img" aria-labelledby="title desc">
+  <title id="title">Ciclo 专业外观</title>
+  <desc id="desc">带石墨外骨骼、受控能量冠与多层审议数据轨的专业级 Ciclo 助手锁定预览。</desc>
+  <defs>
+    <linearGradient id="shell" x1="59" y1="31" x2="258" y2="289" gradientUnits="userSpaceOnUse"><stop stop-color="#fff"/><stop offset=".38" stop-color="#e8edf8"/><stop offset="1" stop-color="#778aa9"/></linearGradient>
+    <linearGradient id="graphite" x1="73" y1="52" x2="247" y2="280"><stop stop-color="#34415a"/><stop offset=".5" stop-color="#141d31"/><stop offset="1" stop-color="#080d18"/></linearGradient>
+    <linearGradient id="edge" x1="54" y1="66" x2="272" y2="257" gradientUnits="userSpaceOnUse"><stop stop-color="#75f3ff"/><stop offset=".48" stop-color="#5576ff"/><stop offset="1" stop-color="#965dff"/></linearGradient>
+    <linearGradient id="visor" x1="102" y1="72" x2="222" y2="153"><stop stop-color="#314a7a"/><stop offset="1" stop-color="#050811"/></linearGradient>
+    <radialGradient id="core"><stop stop-color="#fff"/><stop offset=".15" stop-color="#8df5ff"/><stop offset=".5" stop-color="#5e7bff"/><stop offset="1" stop-color="#8e52ff"/></radialGradient>
+    <filter id="shadow" x="-70%" y="-70%" width="240%" height="250%"><feDropShadow dx="0" dy="19" stdDeviation="16" flood-color="#151e62" flood-opacity=".38"/></filter>
+    <filter id="glow" x="-140%" y="-140%" width="380%" height="380%"><feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <g fill="none" stroke="url(#edge)">
+    <ellipse cx="160" cy="157" rx="148" ry="80" transform="rotate(-12 160 157)" stroke-width="2.2" opacity=".82"/>
+    <ellipse cx="160" cy="157" rx="120" ry="142" transform="rotate(28 160 157)" stroke-width="1.5" opacity=".58"/>
+    <path d="M52 81 89 101m176-22-36 22M34 207l39-7m213 8-39-7" stroke-width="2" opacity=".7"/>
+    <g fill="#82efff" stroke="none" filter="url(#glow)"><circle cx="28" cy="181" r="5"/><circle cx="291" cy="133" r="5"/><circle cx="75" cy="65" r="4"/><circle cx="250" cy="260" r="4"/></g>
+  </g>
+  <g filter="url(#shadow)">
+    <path fill="url(#graphite)" stroke="url(#edge)" stroke-width="3" d="M80 197c11-37 37-57 79-58h4c42 1 69 21 80 58l13 49c5 23-11 39-35 42H101c-24-3-40-19-35-42l14-49Z"/>
+    <path fill="url(#shell)" stroke="#f6f9ff" stroke-width="3" d="m83 190-48 25 5 55 44 17 24-41-6-46-19-10Zm156 0 48 25-5 55-44 17-24-41 6-46 19-10Z"/>
+    <path fill="url(#shell)" stroke="#f6f9ff" stroke-width="3" d="M74 86c8-39 39-64 86-64 49 0 80 26 87 65l-5 47c-5 30-29 50-61 53h-43c-32-3-57-23-61-53l-3-48Z"/>
+    <path fill="url(#visor)" stroke="#8297bd" stroke-width="3" d="M99 84c12-24 33-37 63-37 30 0 52 13 62 38l-4 42c-5 18-21 29-43 32h-32c-22-3-38-14-43-32l-3-43Z"/>
+    <g fill="#86f4ff" filter="url(#glow)"><path d="M120 99c12-12 25-12 37 0-11 17-26 17-37 0Z"/><path d="M169 99c12-12 25-12 37 0-11 17-26 17-37 0Z"/></g>
+    <path fill="url(#graphite)" stroke="url(#edge)" stroke-width="3" d="m71 94-29 24 8 47 31 14 17-35-5-42-22-8Zm178 0 29 24-8 47-31 14-17-35 5-42 22-8Z"/>
+    <path d="m108 190 27-19h53l27 19-8 23h-91l-8-23Z" fill="#edf3fb" stroke="url(#edge)" stroke-width="3"/>
+    <path d="m126 35 13-25 18 17 15-21 16 28" fill="none" stroke="url(#edge)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>
+    <circle cx="161" cy="232" r="34" fill="#080d18" stroke="url(#edge)" stroke-width="4"/><circle cx="161" cy="232" r="19" fill="url(#core)" filter="url(#glow)"/>
+    <path d="M114 273h94" stroke="#eef4ff" stroke-width="5" stroke-linecap="round"/><path d="M130 282h62" stroke="url(#edge)" stroke-width="3" stroke-linecap="round"/>
+  </g>
+</svg>

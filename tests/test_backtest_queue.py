@@ -6,6 +6,7 @@ import math
 import os
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -535,6 +536,23 @@ def test_artifact_orphan_reconcile_preserves_registered_files_and_removes_aged_d
     assert store.reconcile_orphans(
         {registered_key}, minimum_age_seconds=60, now=old + 120
     ) == {"removed": [], "removed_count": 0}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended paths only")
+def test_artifact_orphan_reconcile_handles_windows_extended_root(tmp_path):
+    extended_root = Path("\\\\?\\" + str((tmp_path / "extended-reconcile").resolve()))
+    store = ArtifactStore(extended_root, max_bytes=2048)
+    body = b"orphan"
+    orphan_key, _ = store.write(
+        "orphan-job", "output", "result.json", body, hashlib.sha256(body).hexdigest(), 1,
+    )
+    old = 1_000.0
+    os.utime(store._path(orphan_key), (old, old))
+
+    report = store.reconcile_orphans(set(), minimum_age_seconds=60, now=old + 120)
+
+    assert report == {"removed": [orphan_key], "removed_count": 1}
+    assert not store._path(orphan_key).exists()
 
 
 def test_artifact_disk_full_fails_closed_and_cleans_temporary_file(tmp_path, monkeypatch):

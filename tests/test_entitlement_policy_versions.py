@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sqlite3
+import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -13,11 +15,14 @@ from core.entitlement_policy import (
     capability_contracts,
     create_readiness_review,
     current_policy,
+    current_plan_commerce_decision,
     policy_can,
+    policy_sha256,
     publish_policy,
     runtime_capability_evidence,
     seed_canonical_policy,
     validate_order_policy_snapshot,
+    validate_policy,
 )
 from core.plans import CAPABILITIES, trading_limits
 
@@ -89,7 +94,6 @@ def test_public_policy_has_exactly_three_tiers_and_no_retired_promises():
         "team_collaboration",
         "private_deploy",
         "multi_account",
-        "auto_control_account_1",
         "auto_control_account_5",
         "liquidate_all",
         "option_auto_live",
@@ -101,13 +105,14 @@ def test_live_option_is_an_application_program_not_a_membership_grant():
     conn = _database()
     now = datetime.now(UTC)
     seed_canonical_policy(conn, now=now)
-    assert policy_can(conn, "高级版", "option_live_beta_apply", as_of=now)
+    assert not policy_can(conn, "高级版", "option_live_beta_apply", as_of=now)
+    assert policy_can(conn, "专业版", "option_live_beta_apply", as_of=now)
     assert not policy_can(conn, "高级版", "option_auto_live", as_of=now)
     assert not policy_can(conn, "高级版", "option_auto", as_of=now)
     dynamic = canonical_public_policy()["dynamic_programs"]["option_live_beta"]
     assert dynamic == {
         "application_capability": "option_live_beta_apply",
-        "eligible_plan": "高级版",
+        "eligible_plan": "专业版",
         "states": [
             "planned", "beta_eligible", "approved", "runtime_ready",
             "paused", "revoked",
@@ -152,6 +157,32 @@ def test_policy_versions_are_append_only_idempotent_and_point_in_time():
         conn.execute("UPDATE membership_entitlement_policy_versions SET version=2 WHERE id=1")
     with pytest.raises(sqlite3.IntegrityError, match="append-only"):
         conn.execute("DELETE FROM membership_entitlement_policy_versions WHERE id=1")
+
+
+def test_seed_does_not_supersede_a_newer_reviewed_admin_policy_on_restart():
+    conn = _database()
+    first_at = datetime(2026, 8, 14, tzinfo=UTC)
+    seed_canonical_policy(conn, now=first_at)
+    policy = canonical_public_policy()
+    advanced = next(item for item in policy["plans"] if item["key"] == "高级版")
+    advanced["lifecycle"] = "sales_paused"
+    advanced["commerce"] = {key: False for key in advanced["commerce"]}
+    advanced["readiness"] = None
+    reviewed = _publish(
+        conn,
+        first_at + timedelta(days=1),
+        validate_policy(policy, require_current_contract=False),
+    )
+
+    restarted = seed_canonical_policy(conn, now=first_at + timedelta(days=2))
+
+    assert reviewed.version == restarted.version == 2
+    assert reviewed.policy_sha256 == restarted.policy_sha256
+    assert current_policy(conn, as_of=first_at + timedelta(days=2)).policy["plans"][2]["lifecycle"] == "sales_paused"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM membership_entitlement_policy_versions WHERE policy_key=?",
+        ("public_membership_v1",),
+    ).fetchone()[0] == 2
 
 
 def test_policy_effective_time_is_monotonic_and_timezone_required():
@@ -202,7 +233,7 @@ def test_capability_projection_fails_closed_without_fresh_runtime_evidence():
             "高级版", policy=policy, runtime_evidence=evidence, now=fixed_now,
         )
     }
-    assert states["option_live_beta_apply"]["status"] == "application_required"
+    assert states["auto_control_account_1"]["status"] == "available"
     expired = {
         item["key"]: item
         for item in capability_contracts(
@@ -268,6 +299,71 @@ def test_seed_rejects_a_preexisting_bootstrap_v1_with_different_content():
     )
     with pytest.raises(EntitlementPolicyError):
         seed_canonical_policy(conn)
+
+
+def test_existing_database_policy_is_readable_history_but_cannot_sell_or_apply(tmp_path):
+    source = Path(__file__).parents[1] / "data" / "tradeai.db"
+    if not source.exists():
+        pytest.skip("repository production database fixture is unavailable")
+    database_path = tmp_path / "tradeai-policy-compat.db"
+    shutil.copy2(source, database_path)
+    conn = sqlite3.connect(database_path)
+    conn.row_factory = sqlite3.Row
+
+    old_row = conn.execute(
+        """SELECT * FROM membership_entitlement_policy_versions
+           WHERE policy_key=? AND version=1""",
+        ("public_membership_v1",),
+    ).fetchone()
+    assert old_row is not None
+    old_effective = datetime.fromisoformat(old_row["effective_at"])
+    old_policy = current_policy(conn, as_of=old_effective)
+    assert old_policy is not None
+    assert old_policy.historical_compatibility is True
+    old_states = {
+        item["key"]: item
+        for item in capability_contracts("高级版", policy=old_policy)
+    }
+    assert old_states["option_live_beta_apply"]["status"] == "locked"
+    with pytest.raises(EntitlementPolicyError, match="历史专业会员"):
+        validate_policy(json.loads(old_row["policy_json"]), require_current_contract=False)
+
+    before_versions = [
+        int(item["version"])
+        for item in conn.execute(
+            """SELECT version FROM membership_entitlement_policy_versions
+               WHERE policy_key=? ORDER BY version""",
+            ("public_membership_v1",),
+        )
+    ]
+    before_latest = before_versions[-1]
+    canonical_sha256 = policy_sha256(canonical_public_policy())
+    latest_sha256 = conn.execute(
+        """SELECT policy_sha256 FROM membership_entitlement_policy_versions
+           WHERE policy_key=? ORDER BY version DESC LIMIT 1""",
+        ("public_membership_v1",),
+    ).fetchone()["policy_sha256"]
+    expected_version = before_latest if latest_sha256 == canonical_sha256 else before_latest + 1
+    upgraded = seed_canonical_policy(conn, now=datetime(2026, 8, 16, tzinfo=UTC))
+    assert upgraded.version == expected_version
+    assert upgraded.historical_compatibility is False
+    after_versions = [
+        int(item["version"])
+        for item in conn.execute(
+            """SELECT version FROM membership_entitlement_policy_versions
+               WHERE policy_key=? ORDER BY version""",
+            ("public_membership_v1",),
+        )
+    ]
+    assert len(after_versions) == len(before_versions) + int(expected_version > before_latest)
+    assert current_policy(conn).version == expected_version
+    assert current_plan_commerce_decision(
+        conn, "高级版", "purchase", as_of=old_effective,
+    )[1]["allowed"] is False
+    assert policy_can(
+        conn, "高级版", "option_live_beta_apply", as_of=old_effective,
+    ) is False
+    assert policy_can(conn, "高级版", "tg_stock_signal", as_of=old_effective) is True
 
 
 def test_migration_allows_staged_rollout_but_rejects_partial_or_mutated_snapshot():

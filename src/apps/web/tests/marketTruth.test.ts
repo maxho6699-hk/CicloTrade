@@ -34,11 +34,21 @@ test('offline and demo research paths never supply fixture candles or AAPL', () 
   assert.match(research, /暂无真实行情/)
 })
 
+test('research does not use demo instruments as watchlist identity fallback', () => {
+  assert.doesNotMatch(research, /from '\.\/data\/demo'/)
+  assert.doesNotMatch(research, /const catalog = instruments/)
+  assert.match(research, /name: symbol,\s+market: marketFilter/)
+})
+
 test('personal paper is explicitly US-only and does not invent a stock', () => {
   assert.match(paper, /requestedMarket =/)
+  assert.match(paper, /hasExplicitMarket = searchParams\.has\('market'\)/)
+  assert.match(paper, /if \(hasExplicitMarket\) return/)
+  assert.match(paper, /next\.set\('market', 'US'\)/)
+  assert.match(paper, /setSearchParams\(next, \{ replace: true \}\)/)
   assert.match(paper, /marketSupported = requestedMarket === 'US'/)
   assert.match(paper, /symbol: .*initialSymbol.*: ''/)
-  assert.match(paper, /个人模拟需要明确的 market 参数/)
+  assert.match(paper, /个人模拟当前只支持 US/)
   assert.match(paper, /workflowLocked = !marketSupported/)
 })
 

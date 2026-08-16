@@ -164,7 +164,7 @@ def _cycle_payload(rows: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
     return {
         "cycle_id": f"expanded-research-{dataset_end}", "evaluation_date": dataset_end,
         "evaluated_at": received, "strategy_key": "expanded-equity-research",
-        "strategy_name": "97标的扩容研究", "strategy_version": UNIVERSE_VERSION,
+        "strategy_name": "97股票扩容研究", "strategy_version": UNIVERSE_VERSION,
         "summary": {"long_count": 0, "flat_count": 0, "wait_count": len(rows), "no_data_count": 97 - len(rows)},
         "symbols": symbols,
         "evidence": {"universe_sha256": UNIVERSE_SHA256, "source_snapshot_sha256": _aggregate_hash(row["source_sha256"] for row in rows.values()), "code_bundle_sha256": _aggregate_hash(_code_bundle(row) for row in rows.values()), "result_sha256": _aggregate_hash(rows[symbol]["evidence_sha256"] for symbol in (*TIER_A, *TIER_C) if symbol in rows)},

@@ -44,8 +44,8 @@ test('V2 navigation active state is pure paired color without a rail', () => {
 })
 
 test('Ciclo AI launcher uses the shared theme primitive and opens the bounded-context page', () => {
-  assert.match(appShell, /className="ai-pill"/)
-  assert.match(appShell, /to="\/ai"/)
+  assert.match(appShell, /className=\{`ai-pill \$\{aiAvailable \? '' : 'is-locked'\}`\}/)
+  assert.match(appShell, /to=\{aiAvailable \? '\/ai' : '\/membership'\}/)
   assert.doesNotMatch(appShell, /ai-unavailable-popover|aiPanelOpen/)
   assert.doesNotMatch(appShell, /AI.{0,20}(?:自动下单|一键下单)/)
 })

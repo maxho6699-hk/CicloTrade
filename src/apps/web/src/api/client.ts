@@ -1645,7 +1645,7 @@ export function validPersonalPaperAccount(value: unknown): value is PersonalPape
     'season', 'cash', 'reserved_cash', 'buying_power', 'market_value', 'realized_pnl',
     'unrealized_pnl', 'total_equity', 'as_of', 'quote_state', 'account_version', 'positions',
     'open_orders', 'recent_orders',
-  ]) || !validPersonalPaperSeason(value.season)
+  ])
     || !['fresh', 'delayed', 'stale', 'missing'].includes(value.quote_state as string)
     || !validIsoTimestamp(value.as_of)
     || !finiteNonNegativeInteger(value.account_version)
@@ -1653,6 +1653,8 @@ export function validPersonalPaperAccount(value: unknown): value is PersonalPape
     || !Array.isArray(value.open_orders)
     || !Array.isArray(value.recent_orders)
     || value.recent_orders.length > 50) return false
+  const season = value.season
+  if (!validPersonalPaperSeason(season)) return false
   if (![value.cash, value.reserved_cash, value.buying_power, value.market_value, value.realized_pnl, value.unrealized_pnl, value.total_equity].every(validFiniteNumber)) return false
   const validPosition = (position: unknown) => exactKeys(position, ['market', 'symbol', 'quantity'])
     && position.market === 'US'
@@ -1662,9 +1664,9 @@ export function validPersonalPaperAccount(value: unknown): value is PersonalPape
     && position.quantity !== 0
   return value.positions.every(validPosition)
     && value.open_orders.every((order) => validPersonalPaperOrder(order)
-      && order.season_id === value.season.id && order.status === 'PENDING' && order.cancel_eligible
+      && order.season_id === season.id && order.status === 'PENDING' && order.cancel_eligible
       && order.cancel_account_version === value.account_version)
-    && value.recent_orders.every((order) => validPersonalPaperOrder(order) && order.season_id === value.season.id)
+    && value.recent_orders.every((order) => validPersonalPaperOrder(order) && order.season_id === season.id)
 }
 
 export function validPersonalPaperQuoteProof(value: unknown): value is PersonalPaperQuoteProof {
@@ -1676,7 +1678,9 @@ export function validPersonalPaperQuoteProof(value: unknown): value is PersonalP
     && value.market === 'US'
     && typeof value.symbol === 'string'
     && /^[A-Z][A-Z0-9.-]{0,15}$/.test(value.symbol)
-    && [value.bid_minor, value.ask_minor, value.last_minor].every((price) => finiteNonNegativeInteger(price) && price > 0)
+    && finiteNonNegativeInteger(value.bid_minor) && value.bid_minor > 0
+    && finiteNonNegativeInteger(value.ask_minor) && value.ask_minor > 0
+    && finiteNonNegativeInteger(value.last_minor) && value.last_minor > 0
     && value.ask_minor >= value.bid_minor
     && validIsoTimestamp(value.quote_at)
     && validIsoTimestamp(value.observed_at)

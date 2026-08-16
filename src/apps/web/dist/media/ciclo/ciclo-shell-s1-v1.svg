@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320" role="img" aria-labelledby="title desc">
+  <title id="title">Ciclo 标准外观</title>
+  <desc id="desc">带肩部数据模块、青蓝环形状态轨与增强胸前核心的 Ciclo 助手。</desc>
+  <defs>
+    <linearGradient id="shell" x1="65" y1="38" x2="250" y2="283" gradientUnits="userSpaceOnUse"><stop stop-color="#fff"/><stop offset=".45" stop-color="#e0e9f6"/><stop offset="1" stop-color="#8ea4c1"/></linearGradient>
+    <linearGradient id="edge" x1="84" y1="54" x2="236" y2="265" gradientUnits="userSpaceOnUse"><stop stop-color="#7eeeff"/><stop offset="1" stop-color="#5267ff"/></linearGradient>
+    <linearGradient id="visor" x1="108" y1="76" x2="216" y2="148"><stop stop-color="#263a5e"/><stop offset="1" stop-color="#080d19"/></linearGradient>
+    <radialGradient id="core"><stop stop-color="#f3feff"/><stop offset=".28" stop-color="#63e8ff"/><stop offset="1" stop-color="#5461ff"/></radialGradient>
+    <filter id="shadow" x="-50%" y="-50%" width="200%" height="210%"><feDropShadow dx="0" dy="17" stdDeviation="14" flood-color="#1a2e66" flood-opacity=".3"/></filter>
+    <filter id="glow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <g opacity=".72" fill="none" stroke="url(#edge)" stroke-width="2">
+    <ellipse cx="160" cy="161" rx="128" ry="72" transform="rotate(-13 160 161)"/>
+    <circle cx="48" cy="188" r="5" fill="#72e9ff" filter="url(#glow)"/><circle cx="267" cy="118" r="5" fill="#6475ff" filter="url(#glow)"/>
+  </g>
+  <g filter="url(#shadow)">
+    <path fill="url(#shell)" stroke="#f0f6ff" stroke-width="3" d="M88 198c10-34 33-52 70-54h8c36 2 59 20 68 54l10 48c3 20-10 34-30 37H108c-20-3-33-17-29-37l9-48Z"/>
+    <path fill="#3f5575" stroke="#91e4ff" stroke-width="2" d="m92 196-31 20 4 41 31 14 15-32-3-34-16-9Zm140 0 31 20-4 41-31 14-15-32 3-34 16-9Z"/>
+    <path fill="url(#shell)" stroke="#f0f6ff" stroke-width="3" d="M83 90c6-35 34-59 77-59 44 0 72 24 77 60l-4 42c-4 27-25 45-53 48h-40c-29-3-50-21-53-48l-4-43Z"/>
+    <path fill="url(#visor)" stroke="#6a83a8" stroke-width="3" d="M107 88c11-21 29-32 55-32 27 0 46 12 55 34l-4 37c-4 16-18 26-37 29h-29c-20-3-34-13-38-29l-2-39Z"/>
+    <g fill="#76eeff" filter="url(#glow)"><path d="M127 103c10-10 21-10 31 0-9 15-22 15-31 0Z"/><path d="M166 103c10-10 21-10 31 0-9 15-22 15-31 0Z"/></g>
+    <path fill="#c4d1e2" stroke="#f7fbff" stroke-width="3" d="m79 99-24 20 7 40 26 12 14-30-4-36-19-6Zm162 0 24 20-7 40-26 12-14-30 4-36 19-6Z"/>
+    <path d="M116 194c11-14 26-21 45-21s35 7 46 21" fill="none" stroke="url(#edge)" stroke-width="5" stroke-linecap="round" opacity=".75"/>
+    <circle cx="161" cy="225" r="26" fill="#17233c" stroke="#82dff7" stroke-width="3"/><circle cx="161" cy="225" r="14" fill="url(#core)" filter="url(#glow)"/>
+    <path d="M125 266h72" stroke="#dce8f7" stroke-width="4" stroke-linecap="round"/><path d="M137 274h48" stroke="#74dff8" stroke-width="2" stroke-linecap="round"/>
+  </g>
+</svg>

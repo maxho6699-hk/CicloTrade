@@ -66,7 +66,7 @@ def _scope(payload: dict[str, Any]) -> tuple[str, str, str, int]:
     if not isinstance(market, str) or market not in MARKETS:
         raise ChartDrawingError("画线市场必须是 US 或 CN。")
     if not isinstance(symbol, str) or not SYMBOL_RE.fullmatch(symbol.upper()):
-        raise ChartDrawingError("画线标的代码无效。")
+        raise ChartDrawingError("画线股票代码无效。")
     if not isinstance(timeframe, str) or not TIMEFRAME_RE.fullmatch(timeframe):
         raise ChartDrawingError("画线周期无效。")
     if not isinstance(cross, bool):
@@ -217,7 +217,7 @@ class ChartDrawingService:
         if not isinstance(market, str) or market not in MARKETS:
             raise ChartDrawingError("画线市场必须是 US 或 CN。")
         if not isinstance(symbol, str) or not SYMBOL_RE.fullmatch(symbol.upper()):
-            raise ChartDrawingError("画线标的代码无效。")
+            raise ChartDrawingError("画线股票代码无效。")
         symbol = symbol.upper()
         operations = payload["operations"]
         if not isinstance(operations, list) or not operations or len(operations) > 100:

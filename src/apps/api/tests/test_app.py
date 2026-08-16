@@ -2,11 +2,14 @@ import asyncio
 import builtins
 import importlib
 import json
+from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
 from data.datasource import DataSourceError
 from src.apps.api.app import capabilities, health
+from src.apps.api.read_model import BrowserIdentity
 
 
 api_module = importlib.import_module("src.apps.api.app")
@@ -65,3 +68,39 @@ def test_market_search_state_prunes_expired_cache_and_rate_entries():
 
         assert api_module._MARKET_SEARCH_CACHE == {}
         assert api_module._MARKET_SEARCH_RATE == {}
+
+
+def test_lab_stress_route_uses_authenticated_server_owned_official_snapshot(monkeypatch):
+    identity = BrowserIdentity(7, "Owner", "advanced", None)
+
+    class Repository:
+        def portfolio(self, current):
+            assert current is identity
+            return {
+                "account_mode": "official",
+                "accounts": {"US": {"status": "recorded", "captured_at": datetime.now(timezone.utc).isoformat()}},
+                "positions": [
+                    {"market": "US", "currency": "USD", "instrument_type": "stock", "symbol": "AAPL", "quantity": 2, "last_trade_price": 100},
+                    {"market": "HK", "currency": "HKD", "instrument_type": "stock", "symbol": "0700", "quantity": 1, "last_trade_price": 500},
+                    {"market": "US", "currency": "USD", "instrument_type": "option", "symbol": "AAPL", "quantity": 1, "last_trade_price": 5},
+                ],
+            }
+
+    class Request:
+        app = SimpleNamespace(state=SimpleNamespace(repository=Repository()))
+
+        async def json(self):
+            return {"scenario_key": "market_drawdown"}
+
+    monkeypatch.setattr(api_module, "_identity", lambda _request: identity)
+    response = asyncio.run(api_module.lab_stress(Request()))
+    payload = response_json(response)
+
+    assert payload["account_mode"] == "official"
+    assert payload["currency"] == "USD"
+    assert [item["symbol"] for item in payload["positions"]] == ["AAPL"]
+    assert payload["is_prediction"] is False
+    assert payload["execution_eligible"] is False
+    matching = [route for route in api_module.routes if route.path == api_module.LAB_STRESS_PATH]
+    assert len(matching) == 1
+    assert matching[0].methods == {"POST"}

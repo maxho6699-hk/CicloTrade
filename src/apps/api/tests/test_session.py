@@ -435,9 +435,97 @@ def test_super_admin_manual_claim_list_and_review_are_redacted_and_reauthenticat
     ))))
     assert reviewed["status"] == "rejected"
     assert reviewed["notification_queued"] is False
+    assert reviewed["website_notification_delivered"] is True
     assert "settlement_reference" not in reviewed
     persisted = database.fetch_one("SELECT status FROM manual_payment_claims WHERE id=1")
     assert persisted["status"] == "rejected"
+    replayed = _payload(asyncio.run(admin_manual_claim_review(review_request(
+        {"decision": "reject", "password": "StrongPass123", "rejection_reason": "未核对到账"}
+    ))))
+    assert replayed["website_notification_delivered"] is True
+    item = database.fetch_one(
+        "SELECT public_id,kind,severity,target_kind FROM notification_items "
+        "WHERE owner_id=? AND source_kind='manual_payment_review'",
+        (claimant["id"],),
+    )
+    assert item == {
+        "public_id": item["public_id"],
+        "kind": "payment_proof_rejected",
+        "severity": "warning",
+        "target_kind": "membership",
+    }
+    delivery = database.fetch_one(
+        "SELECT public_id,channel FROM notification_deliveries "
+        "WHERE owner_id=? AND item_public_id=?",
+        (claimant["id"], item["public_id"]),
+    )
+    assert delivery["channel"] == "website"
+    assert database.fetch_one(
+        "SELECT COUNT(*) count FROM notification_items "
+        "WHERE owner_id=? AND source_kind='manual_payment_review'",
+        (claimant["id"],),
+    )["count"] == 1
+    assert database.fetch_one(
+        "SELECT COUNT(*) count FROM notification_deliveries "
+        "WHERE owner_id=? AND item_public_id=?",
+        (claimant["id"], item["public_id"]),
+    )["count"] == 1
+    assert database.fetch_one(
+        "SELECT COUNT(*) count FROM notification_delivery_events "
+        "WHERE owner_id=? AND delivery_public_id=? AND status='delivered'",
+        (claimant["id"], delivery["public_id"]),
+    )["count"] == 1
+
+
+def test_super_admin_approved_claim_publishes_one_owner_scoped_website_notification(browser_api, monkeypatch):
+    token = _super_admin_token(browser_api)
+    database = browser_api["database"]
+    monkeypatch.setenv("FPS_PAYMENT_INSTRUCTIONS", "Test FPS receiver")
+    claimant = browser_api["auth"].register(
+        "approved-claimant@example.com", "StrongPass456", "Approved Claimant", True
+    )
+    orders = OrderService(database)
+    order = orders.create_order(
+        claimant["id"], "标准版", "monthly", "fps", terms_accepted=True, source="telegram"
+    )
+    claim = orders.submit_manual_payment_claim(
+        claimant["id"],
+        order["order_no"],
+        evidence_file_id="file-proof",
+        evidence_file_unique_id="unique-proof",
+        evidence_message_id=456,
+    )
+    path = f"/api/rewrite/v1/admin/payments/manual-claims/{claim['id']}/review"
+
+    def review_request():
+        request = _request(
+            path,
+            method="POST",
+            authorization=f"Bearer {token}",
+            payload={
+                "decision": "approve",
+                "password": "StrongPass123",
+                "settlement_reference": "APPROVE-123",
+            },
+        )
+        request.scope["path_params"] = {"claim_id": str(claim["id"])}
+        return request
+
+    reviewed = _payload(asyncio.run(admin_manual_claim_review(review_request())))
+    replayed = _payload(asyncio.run(admin_manual_claim_review(review_request())))
+    assert reviewed["status"] == replayed["status"] == "approved"
+    assert reviewed["website_notification_delivered"] is True
+    assert replayed["website_notification_delivered"] is True
+    items = database.fetch_all(
+        "SELECT kind,severity,target_kind FROM notification_items "
+        "WHERE owner_id=? AND source_kind='manual_payment_review'",
+        (claimant["id"],),
+    )
+    assert items == [{
+        "kind": "payment_proof_approved",
+        "severity": "success",
+        "target_kind": "membership",
+    }]
 
 
 def test_super_admin_proof_download_fails_closed_on_missing_or_invalid_sha(browser_api):
@@ -1015,35 +1103,32 @@ def test_opening_pause_requires_reauthentication_exact_body_and_is_idempotent(br
         "SELECT control_value FROM platform_controls WHERE control_key='opening_paused'"
     )["control_value"] == before_platform
 
-    with pytest.raises(ApiError) as incorrect_password:
+    with pytest.raises(ApiError) as retired_wrong_password:
         asyncio.run(opening_pause(_request(
             "/api/rewrite/v1/settings/opening-pause", method="PUT", payload={**valid, "password": "wrong"},
             authorization=authorization,
         )))
-    assert incorrect_password.value.status == 403
+    assert retired_wrong_password.value.status == 409
     assert database.fetch_one(
         "SELECT opening_paused FROM user_controls WHERE user_id=?", (user_id,)
     )["opening_paused"] == 1
 
-    restored = asyncio.run(opening_pause(_request(
-        "/api/rewrite/v1/settings/opening-pause", method="PUT", payload=valid, authorization=authorization,
-    )))
-    repeated = asyncio.run(opening_pause(_request(
-        "/api/rewrite/v1/settings/opening-pause", method="PUT", payload=valid, authorization=authorization,
-    )))
-
-    assert _payload(restored)["resumed"] is True
-    assert _payload(repeated)["resumed"] is False
+    with pytest.raises(ApiError) as retired:
+        asyncio.run(opening_pause(_request(
+            "/api/rewrite/v1/settings/opening-pause", method="PUT", payload=valid, authorization=authorization,
+        )))
+    assert retired.value.status == 409
+    assert "/trade" in str(retired.value)
     assert database.fetch_one(
         "SELECT opening_paused FROM user_controls WHERE user_id=?", (user_id,)
-    )["opening_paused"] == 0
+    )["opening_paused"] == 1
     assert database.fetch_one(
         "SELECT control_value FROM platform_controls WHERE control_key='opening_paused'"
     )["control_value"] == "1"
     assert database.fetch_one(
         "SELECT COUNT(*) count FROM user_action_logs WHERE user_id=? AND action_type='USER_RESUME_OPENING'",
         (user_id,),
-    )["count"] == 1
+    )["count"] == 0
 
 
 def test_bootstrap_execution_accounts_are_user_scoped_redacted_and_display_only(browser_api, monkeypatch):
@@ -1122,8 +1207,8 @@ def test_bootstrap_execution_accounts_are_user_scoped_redacted_and_display_only(
     assert primary["execution_control"]["has_authorized_broker_account"] is True
     assert primary["execution_control"]["can_increase_exposure"] is False
     assert primary["execution_control"]["can_reduce_exposure"] is True
-    assert primary["execution_control"]["account_limit"] == 0
-    assert "当前会员没有自动交易控制账号名额" in primary["execution_control"]["block_reasons"]
+    assert primary["execution_control"]["account_limit"] == 5
+    assert "请在自动实盘控制台完成 mandate 与全部安全门验证" in primary["execution_control"]["block_reasons"]
     assert primary["membership"]["brokerage"]["accounts"] == accounts
     allowed_account_fields = {"id", "provider", "alias", "mode", "status", "authorized", "active", "last_checked"}
     assert all(set(account) == allowed_account_fields for account in accounts)

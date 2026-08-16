@@ -432,7 +432,7 @@ def run_system_quant_cycle(
             metadata={
                 "reason": (
                     f"{cycle_label}對全部啟用策略進行真實歷史樣本外評分；本期最佳正股策略為"
-                    f"{definition['name']}，按每个市场最多 3 个标的、单标的初始资金 20% 建立模拟目标仓位。"
+                    f"{definition['name']}，按每个市场最多 3 只股票、单只股票初始资金 20% 建立模拟目标仓位。"
                 ),
                 "cycle_slot": slot or "daily",
                 "risk_level": definition["risk"],

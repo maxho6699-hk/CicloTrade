@@ -43,6 +43,30 @@ from src.apps.api.feature_catalog_adapter import FeatureCatalogAdapter
 from src.apps.api.stock_screener_adapter import ApiStockScreenerAdapter
 from src.apps.api.market_stream import RealtimeCandleTracker
 from src.apps.api.personal_paper import PersonalPaperApi, build_personal_paper_api
+from src.apps.api.account_center import (
+    ACCOUNT_CENTER_ROUTES,
+    AccountCenterApiError,
+    account_center_error_handler,
+)
+from src.apps.api.account_notifications import publish_website_notification
+from src.apps.api.auto_live import AUTO_LIVE_ROUTES, AutoLiveApiError, auto_live_error_handler
+from src.apps.api.ai_workspace import (
+    AI_WORKSPACE_ROUTES,
+    AIWorkspaceApiError,
+    ai_workspace_error_handler,
+)
+from src.apps.api.deliberation import (
+    DELIBERATION_ROUTES,
+    DeliberationApiError,
+    deliberation_error_handler,
+)
+from src.apps.api.workflows import WORKFLOW_ROUTES, WorkflowApiError, workflow_error_handler
+from src.apps.api.signal_imports import (
+    SIGNAL_IMPORT_ROUTES,
+    SignalImportsApiError,
+    signal_import_error_handler,
+)
+from src.apps.api.lab_stress import LAB_STRESS_CATALOG_PATH, LAB_STRESS_PATH, LabStressError, lab_stress_catalog as run_lab_stress_catalog, lab_stress as run_lab_stress
 from src.apps.api.backtest_jobs import (
     backtest_artifact, backtest_cancel, backtest_item, backtests, worker_claim,
     worker_complete, worker_fail, worker_heartbeat, worker_input, worker_output,
@@ -116,6 +140,12 @@ from core.broker_access_applications import (
     BrokerAccessApplicationService,
 )
 from core.database import DatabaseManager
+from core.account_center import AccountCenterService
+from core.auto_live_control import AutoLiveControlPlane
+from core.ai_workspace import AIWorkspaceService
+from core.deliberation import DeliberationService
+from core.workflow_registry import WorkflowRegistry
+from core.signal_import_portal import SignalImportPortalService
 from core.feature_catalog import FeatureCatalogConflict, FeatureCatalogValidationError
 from core.stock_screener import (
     StockScreenerAccessError,
@@ -130,7 +160,7 @@ from core.official_option_sim_journal import OfficialOptionSimulationJournal
 from core.auth import AuthError, AuthService, email_verification_required
 from core.compat import UTC
 from core.entitlement_consumer import policy_market_data_delay, verified_can
-from core.plans import effective_plan, plan_display_name
+from core.plans import csv_import_limit, effective_plan, plan_display_name
 from notification.email_sender import send_email, smtp_configured
 from notification.telegram_billing import queue_manual_payment_review_notice
 from notification.telegram_referrals import (
@@ -476,6 +506,282 @@ def _identity_has_capability(identity: BrowserIdentity, capability: str) -> bool
             return verified_can(connection, identity.effective_plan, capability)
     except Exception:
         return False
+
+
+def _account_appearance_entitlement(
+    database: DatabaseManager,
+    owner_id: int,
+    skin_id: str,
+    asset_version: str,
+    manifest_sha256: str,
+) -> dict[str, Any]:
+    """Resolve appearance independently from AI level and live-trading rights."""
+    row = database.fetch_one(
+        "SELECT plan_type,subscription_expire FROM users WHERE id=? AND is_active=1",
+        (owner_id,),
+    )
+    if not row or not isinstance(asset_version, str) or not re.fullmatch(r"[0-9a-f]{64}", manifest_sha256):
+        return {"allowed": False, "rank": -1}
+    plan = effective_plan(dict(row))
+    plan_rank = {"免费版": 0, "标准版": 1, "高级版": 2, "专业版": 3, "定制版": 3}.get(plan, -1)
+    skin_rank = {
+        "free": 0, "shell-f0": 0,
+        "standard": 1, "shell-s1": 1,
+        "advanced": 2, "shell-a2": 2,
+        "professional": 3, "shell-p3": 3,
+    }.get(str(skin_id).casefold(), -1)
+    return {"allowed": skin_rank >= 0 and plan_rank >= skin_rank, "rank": skin_rank}
+
+
+def _account_center_service(request: Request) -> AccountCenterService:
+    database = _auth_service(request).db
+    return AccountCenterService(
+        database,
+        appearance_entitlement_resolver=lambda owner_id, skin_id, asset_version, manifest_sha256: (
+            _account_appearance_entitlement(
+                database, owner_id, skin_id, asset_version, manifest_sha256
+            )
+        ),
+    )
+
+
+def _auto_live_service(request: Request) -> AutoLiveControlPlane:
+    return AutoLiveControlPlane(_auth_service(request).db)
+
+
+def _canonical_digest(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _matching_recommendation(
+    request: Request,
+    identity: BrowserIdentity,
+    selectors: dict[str, Any],
+) -> dict[str, Any] | None:
+    market = str(selectors.get("market") or "").strip().upper()
+    symbol = str(selectors.get("symbol") or "").strip().upper()
+    source_event_id = str(selectors.get("source_event_id") or "").strip()
+    if not symbol:
+        return None
+    payload = _repository(request).recommendations(identity, limit=100)
+    for item in payload.get("items", []):
+        if item.get("state") != "official" or item.get("instrument_type") != "stock":
+            continue
+        item_market = str(item.get("market") or "").strip().upper()
+        item_symbol = str(item.get("symbol") or "").strip().upper()
+        if item_symbol != symbol or (market and item_market != market):
+            continue
+        if source_event_id and source_event_id not in {
+            str(item.get("event_id") or ""),
+            f"qevt_{item.get('event_id')}",
+        }:
+            continue
+        return dict(item)
+    return None
+
+
+def _ai_context_loader(
+    request: Request,
+    identity: BrowserIdentity,
+    owner_id: int,
+    selectors: dict[str, Any],
+) -> dict[str, Any] | None:
+    if owner_id != identity.id:
+        return None
+    authorization = _account_center_service(request).authorization_status(owner_id, "research")
+    if not authorization.get("authorized"):
+        return None
+    item = _matching_recommendation(request, identity, selectors)
+    if item is None:
+        return None
+    event_id = int(item["event_id"])
+    return {
+        "page_context": {
+            "route": str(selectors.get("route") or "/ai"),
+            "market": str(item.get("market") or ""),
+            "symbol": str(item.get("symbol") or ""),
+            "timeframe": str(selectors.get("timeframe") or "1d"),
+            "account_domain": "research",
+        },
+        "citations": [{
+            "citation_id": f"recommendation_{event_id}",
+            "source_kind": "immutable_quant_event",
+            "source_public_id": f"recommendation_{event_id}",
+            "source_version": 1,
+            "title": f"{item.get('symbol')} · {item.get('strategy_name')}",
+            "observed_at": item.get("occurred_at"),
+            "available_at": item.get("available_at") or item.get("recorded_at"),
+            "quote_at": item.get("quote_at"),
+        }],
+    }
+
+
+def _ai_workspace_service(request: Request) -> AIWorkspaceService:
+    identity = _identity(request)
+    return AIWorkspaceService(
+        _auth_service(request).db,
+        context_loader=lambda owner_id, selectors: _ai_context_loader(
+            request, identity, owner_id, dict(selectors)
+        ),
+    )
+
+
+def _ai_workspace_authorize(request: Request, owner_id: int) -> bool:
+    identity = _identity(request)
+    if owner_id != identity.id:
+        return False
+    with _auth_service(request).db.transaction() as connection:
+        return verified_can(connection, identity.effective_plan, "ai_workspace")
+
+
+def _deliberation_source(
+    request: Request,
+    identity: BrowserIdentity,
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    item = _matching_recommendation(request, identity, payload)
+    if item is None:
+        return None
+    material = {
+        key: item.get(key)
+        for key in (
+            "event_id", "action", "position_action", "market", "symbol",
+            "reference_price", "current_price", "quote_at", "stop_price",
+            "target_price", "max_loss", "rationale", "strategy_name",
+            "strategy_version", "occurred_at", "recorded_at", "available_at",
+            "contract_status", "missing_fields",
+        )
+    }
+    binding = {
+        "source_event_id": f"qevt_{item['event_id']}",
+        "source_event_version": 1,
+        "source_event_sha256": _canonical_digest(material),
+    }
+    return binding, material
+
+
+def _deliberation_binding_loader(
+    request: Request,
+    owner_id: int,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    identity = _identity(request)
+    if identity.id != owner_id:
+        raise ApiError("审议来源不存在。", 404)
+    source = _deliberation_source(request, identity, payload)
+    if source is None:
+        raise ApiError("当前股票没有可核验的量化事件，无法建立审议。", 409)
+    binding, _ = source
+    for key, value in binding.items():
+        supplied = payload.get(key)
+        if supplied is not None and supplied != value:
+            raise ApiError("审议来源绑定已变化，请刷新后重试。", 409)
+    return {**payload, **binding}
+
+
+def _deliberation_evidence_loader(
+    request: Request,
+    identity: BrowserIdentity,
+    owner_id: int,
+    binding: dict[str, Any],
+) -> dict[str, Any] | None:
+    if identity.id != owner_id:
+        return None
+    source = _deliberation_source(request, identity, binding)
+    if source is None:
+        return None
+    expected, item = source
+    if any(binding.get(key) != value for key, value in expected.items()):
+        return None
+    contract_complete = item.get("contract_status") == "complete"
+    missing_fields = item.get("missing_fields") if isinstance(item.get("missing_fields"), list) else []
+    risk_coverage = max(0.0, 1.0 - min(len(missing_fields), 5) / 5)
+    seats = {
+        "market_structure": {
+            "coverage": 0.6,
+            "source": "immutable_quant_journal",
+            "citation": expected["source_event_id"],
+        },
+        "risk": {
+            "coverage": risk_coverage,
+            "source": "action_contract_validation",
+            "citation": expected["source_event_id"],
+            "invalidated_reason": None if contract_complete else "action_contract_incomplete",
+        },
+    }
+    snapshot = {
+        "snapshot_public_id": f"evidence_{item['event_id']}",
+        "snapshot_version": 1,
+        "source_event_id": expected["source_event_id"],
+        "source_event_version": expected["source_event_version"],
+        "source_event_sha256": expected["source_event_sha256"],
+        "market": item.get("market"),
+        "symbol": item.get("symbol"),
+        "timeframe": str(binding.get("timeframe") or "1d"),
+        "evidence_version": "recommendation-evidence.v1",
+        "research_version": str(item.get("strategy_version") or "unknown"),
+        "observed_at": item.get("occurred_at"),
+        "available_at": item.get("available_at") or item.get("recorded_at"),
+        "as_of": item.get("available_at") or item.get("recorded_at") or item.get("occurred_at"),
+        "calculated_at": item.get("available_at") or item.get("recorded_at") or item.get("occurred_at"),
+        "seats": seats,
+    }
+    snapshot["snapshot_sha256"] = _canonical_digest(snapshot)
+    return snapshot
+
+
+def _deliberation_service(request: Request) -> DeliberationService:
+    identity = _identity(request)
+    database = _auth_service(request).db
+
+    def authorize(owner_id: int, capability: str) -> bool:
+        if owner_id != identity.id or capability != "multi_agent_deliberation":
+            return False
+        with database.transaction() as connection:
+            return verified_can(connection, identity.effective_plan, capability)
+
+    return DeliberationService(
+        database,
+        authorize=authorize,
+        evidence_loader=lambda owner_id, binding: _deliberation_evidence_loader(
+            request, identity, owner_id, dict(binding)
+        ),
+        workflow_registry=WorkflowRegistry(database),
+    )
+
+
+def _workflow_service(request: Request) -> WorkflowRegistry:
+    return WorkflowRegistry(_auth_service(request).db)
+
+
+def _signal_import_service(request: Request) -> SignalImportPortalService:
+    identity = _identity(request)
+    database = _auth_service(request).db
+
+    def authorize(owner_id: int, capability: str) -> bool:
+        if owner_id != identity.id or capability != "csv_import":
+            return False
+        with database.transaction() as connection:
+            return verified_can(connection, identity.effective_plan, capability)
+
+    def quota(owner_id: int) -> int | None:
+        if owner_id != identity.id:
+            return 0
+        return csv_import_limit(identity.effective_plan)
+
+    return SignalImportPortalService(
+        database,
+        authorize=authorize,
+        quota_resolver=quota,
+    )
 
 
 def _market_data_delay(request: Request, identity: BrowserIdentity, instrument_type: str = "stock") -> int:
@@ -1408,6 +1714,35 @@ async def admin_manual_claim_review(request: Request) -> JSONResponse:
             type(exc).__name__,
         )
         notification_queued = False
+    approved = str(reviewed.get("status") or "") == "approved"
+    try:
+        rejection_reason = str(reviewed.get("rejection_reason") or "未能核对到账").strip()
+        await run_in_threadpool(
+            publish_website_notification,
+            _account_center_service(request),
+            owner_id=int(reviewed["user_id"]),
+            source_kind="manual_payment_review",
+            source_public_id="review_" + hashlib.sha256(
+                f"{reviewed['user_id']}:{reviewed['id']}:{reviewed['attempt']}".encode()
+            ).hexdigest()[:24],
+            source_version=1,
+            kind="payment_proof_approved" if approved else "payment_proof_rejected",
+            title="付款凭证审核已通过" if approved else "付款凭证审核未通过",
+            body=(
+                "付款凭证审核已通过；会员权益已按订单处理，请在会员页核对方案与有效期。"
+                if approved
+                else f"付款凭证审核未通过：{rejection_reason}。请在会员页核对订单并重新提交。"
+            ),
+            severity="success" if approved else "warning",
+            target_kind="membership",
+        )
+        website_notification_delivered = True
+    except Exception as exc:  # The financial decision and Telegram outbox are independent.
+        logger.warning(
+            "Manual payment review website notification was not recorded (error_type=%s)",
+            type(exc).__name__,
+        )
+        website_notification_delivered = False
     item = _admin_claim_projection({
         **reviewed,
         "user_email": "",
@@ -1418,6 +1753,7 @@ async def admin_manual_claim_review(request: Request) -> JSONResponse:
         "pay_method": "",
     })
     item["notification_queued"] = notification_queued
+    item["website_notification_delivered"] = website_notification_delivered
     return JSONResponse(item, headers=_admin_headers())
 
 
@@ -1598,6 +1934,14 @@ async def broker_access_applications(request: Request) -> JSONResponse:
     )
 
 
+async def broker_access_readiness(request: Request) -> JSONResponse:
+    identity = _identity(request)
+    return JSONResponse(
+        _broker_access_service(request).readiness(identity.id),
+        headers=_admin_headers(),
+    )
+
+
 async def broker_access_application_withdraw(request: Request) -> JSONResponse:
     identity = _identity(request)
     try:
@@ -1668,6 +2012,50 @@ async def portfolio(request: Request) -> JSONResponse:
     return JSONResponse(_repository(request).portfolio(identity))
 
 
+def _lab_stress_snapshot(request: Request, identity: BrowserIdentity) -> dict[str, Any]:
+    """Build an authenticated, server-owned official portfolio snapshot."""
+    portfolio_payload = _repository(request).portfolio(identity)
+    accounts = portfolio_payload.get("accounts")
+    us_account = accounts.get("US") if isinstance(accounts, dict) else None
+    captured_at = us_account.get("captured_at") if isinstance(us_account, dict) else None
+    status = us_account.get("status") if isinstance(us_account, dict) else None
+    positions = portfolio_payload.get("positions")
+    safe_positions = []
+    if isinstance(positions, list):
+        for position in positions:
+            if not isinstance(position, dict):
+                continue
+            if position.get("market") != "US" or position.get("currency") != "USD" or position.get("instrument_type") != "stock":
+                continue
+            safe_positions.append({
+                "symbol": position.get("symbol"),
+                "instrument_type": "stock",
+                "currency": "USD",
+                "quantity": position.get("quantity"),
+                "last_trade_price": position.get("last_trade_price"),
+            })
+    return {
+        "account_mode": "official",
+        "currency": "USD",
+        "as_of": captured_at,
+        "data_status": "recorded" if status == "recorded" else "missing",
+        "positions": safe_positions,
+    }
+
+
+async def lab_stress(request: Request) -> JSONResponse:
+    identity = _identity(request)
+    return await run_lab_stress(
+        request,
+        snapshot_provider=lambda current: _lab_stress_snapshot(current, identity),
+    )
+
+
+async def lab_stress_catalog(request: Request) -> JSONResponse:
+    _identity(request)
+    return await run_lab_stress_catalog(request)
+
+
 async def personal_paper_create_season(request: Request) -> Response:
     _identity(request)
     return await _personal_paper_api(request).create_season(request)
@@ -1710,12 +2098,104 @@ def _feature_catalog_response(payload: dict[str, Any]) -> JSONResponse:
     )
 
 
+def _option_lab_runtime_status(
+    upstream: dict[str, object], verified_at: str
+) -> dict[str, object]:
+    """Project the real OpenD capability probe without claiming quote freshness."""
+    if not upstream.get("connected"):
+        return {
+            "data_state": "missing",
+            "health": "unavailable",
+            "verified_at": verified_at,
+            "reason": "期权研究上游连接未验证；具体股票期权链不会使用伪造健康状态。",
+        }
+    if not (
+        upstream.get("configuration_allows_realtime")
+        and upstream.get("option_realtime_entitled")
+    ):
+        return {
+            "data_state": "delayed",
+            "health": "degraded",
+            "verified_at": verified_at,
+            "reason": "期权研究服务已连接，但实时期权权限未完整验证；具体股票仍需在页面内核验报价状态。",
+        }
+    return {
+        "data_state": "ready",
+        "health": "healthy",
+        "verified_at": verified_at,
+        "reason": None,
+    }
+
+
+def _earnings_forecast_runtime_status(
+    api: EarningsForecastApi | None, verified_at: str
+) -> dict[str, object]:
+    """Verify the configured PIT read model without exposing forecast content."""
+    if not isinstance(api, EarningsForecastApi):
+        return {
+            "data_state": "missing",
+            "health": "unavailable",
+            "verified_at": verified_at,
+            "reason": "业绩预测研究服务尚未配置。",
+        }
+    try:
+        payload = api.read_model.overview(
+            has_capability=True,
+            as_of=api.clock(),
+            window_days=7,
+            limit=1,
+            has_option_capability=False,
+        )
+    except Exception:
+        return {
+            "data_state": "missing",
+            "health": "unavailable",
+            "verified_at": verified_at,
+            "reason": "业绩预测研究的真实只读模型未通过健康检查。",
+        }
+    if not isinstance(payload, dict) or payload.get("state") != "research":
+        return {
+            "data_state": "missing",
+            "health": "unavailable",
+            "verified_at": verified_at,
+            "reason": "业绩预测研究返回了无法验证的运行状态。",
+        }
+    data_state = payload.get("data_state")
+    if data_state not in {"ready", "no_data"}:
+        return {
+            "data_state": "stale" if data_state == "stale" else "missing",
+            "health": "degraded" if data_state == "stale" else "unavailable",
+            "verified_at": verified_at,
+            "reason": "业绩预测研究数据尚未达到可用门限。",
+        }
+    return {
+        "data_state": "ready",
+        "health": "healthy",
+        "verified_at": verified_at,
+        "reason": (
+            "业绩预测研究服务可用，未来 7 日暂无已确认事件。"
+            if data_state == "no_data"
+            else None
+        ),
+    }
+
+
 async def _feature_catalog_runtime(request: Request, identity: BrowserIdentity) -> dict[str, object]:
+    verified_at = datetime.now(UTC).isoformat()
     model = _expanded_research_read_model(request)
-    status = (
-        await run_in_threadpool(model.status, identity)
+    research_status_task = (
+        run_in_threadpool(model.status, identity)
         if model is not None
-        else ExpandedResearchReadModel.unavailable_status()
+        else asyncio.sleep(0, result=ExpandedResearchReadModel.unavailable_status())
+    )
+    status, upstream, earnings_runtime = await asyncio.gather(
+        research_status_task,
+        run_in_threadpool(_upstream_market_status),
+        run_in_threadpool(
+            _earnings_forecast_runtime_status,
+            getattr(request.app.state, "earnings_forecast_api", None),
+            verified_at,
+        ),
     )
     available = status.get("available") is True
     state = status.get("state")
@@ -1743,9 +2223,13 @@ async def _feature_catalog_runtime(request: Request, identity: BrowserIdentity) 
         "strategy-research": {
             "data_state": data_state,
             "health": health,
-            "verified_at": datetime.now(UTC).isoformat(),
+            "verified_at": verified_at,
             "reason": reason,
         },
+        "option-lab": {
+            **_option_lab_runtime_status(upstream, verified_at),
+        },
+        "earnings-forecast": earnings_runtime,
     }
 
 
@@ -2415,7 +2899,7 @@ def _prune_market_search_state_locked(now: float) -> None:
 def _market_symbol(request: Request) -> str:
     symbol = request.query_params.get("symbol", "").strip().upper()
     if not re.fullmatch(r"(?:[A-Z][A-Z0-9.-]{0,11}|\d{6})", symbol):
-        raise ApiError("标的代码无效。")
+        raise ApiError("股票代码无效。")
     return symbol
 
 
@@ -2437,7 +2921,7 @@ def _option_contract_code(request: Request) -> str:
 def _option_chain_symbol(request: Request) -> str:
     symbol = _market_symbol(request)
     if symbol.isdigit():
-        raise ApiError("OpenD 期权链仅支持美股标的。")
+        raise ApiError("OpenD 期权链仅支持美股股票。")
     return symbol
 
 
@@ -3250,7 +3734,7 @@ async def locale_preference(request: Request) -> JSONResponse:
 
 
 async def opening_pause(request: Request) -> JSONResponse:
-    identity = _identity(request)
+    _identity(request)
     payload = await _json_body(request)
     if set(payload) != {"paused", "confirmation", "password"}:
         raise ApiError("恢复新开仓请求字段不完整或包含未知字段。")
@@ -3261,17 +3745,10 @@ async def opening_pause(request: Request) -> JSONResponse:
     password = payload.get("password")
     if not isinstance(password, str):
         raise ApiError("请输入当前账户密码。")
-    client_ip = request.client.host if request.client else "unknown"
-    try:
-        _auth_service(request).verify_password(identity.id, password, client_ip)
-        resumed = _write_service(request).resume_opening(identity)
-    except AuthError as exc:
-        raise ApiError(str(exc), 403) from exc
-    return JSONResponse({
-        "execution_control": _repository(request).execution_control(identity),
-        # Repeating a re-authenticated request is deliberately idempotent.
-        "resumed": resumed,
-    })
+    raise ApiError(
+        "此旧恢复入口已停用；请在 /trade 重新核对全部自动实盘门控。",
+        409,
+    )
 
 
 async def alerts(request: Request) -> JSONResponse:
@@ -3311,6 +3788,24 @@ async def membership_orders(request: Request) -> JSONResponse:
         raise ApiError(str(exc), 409) from exc
     except (PermissionError, ValueError) as exc:
         raise ApiError(str(exc)) from exc
+    try:
+        await run_in_threadpool(
+            publish_website_notification,
+            _account_center_service(request),
+            owner_id=identity.id,
+            source_kind="membership_order",
+            source_public_id="order_" + hashlib.sha256(
+                f"{identity.id}:{order['order_no']}".encode()
+            ).hexdigest()[:24],
+            source_version=1,
+            kind="membership_order_created",
+            title="会员订单已建立",
+            body=f"{plan_display_name(str(order['plan_type']))}订单已建立；请核对最终金额并按页面指示完成付款。",
+            severity="info",
+            target_kind="membership",
+        )
+    except Exception as exc:
+        logger.warning("Membership order inbox event was not recorded (error_type=%s)", type(exc).__name__)
     return JSONResponse(order, status_code=201)
 
 
@@ -3365,6 +3860,24 @@ async def membership_order_proof(request: Request) -> JSONResponse:
         raise ApiError(str(exc), 409) from exc
     except (PermissionError, ValueError) as exc:
         raise ApiError(str(exc)) from exc
+    try:
+        await run_in_threadpool(
+            publish_website_notification,
+            _account_center_service(request),
+            owner_id=identity.id,
+            source_kind="manual_payment_claim",
+            source_public_id="claim_" + hashlib.sha256(
+                f"{identity.id}:{order_no}:{claim['claim_id']}:{claim['attempt']}".encode()
+            ).hexdigest()[:24],
+            source_version=1,
+            kind="payment_proof_submitted",
+            title="付款凭证已提交",
+            body="付款凭证已进入人工审核队列；审核结果会继续写入真实通知收件箱。",
+            severity="success",
+            target_kind="membership",
+        )
+    except Exception as exc:
+        logger.warning("Payment proof inbox event was not recorded (error_type=%s)", type(exc).__name__)
     return JSONResponse(claim, status_code=201)
 
 
@@ -3413,6 +3926,16 @@ async def backtest_queue_error_handler(request: Request, exc: BacktestQueueError
         code="backtest_request_failed",
         message="回测服务暂时无法处理请求。",
         status=exc.status,
+    )
+
+
+async def lab_stress_error_handler(request: Request, exc: LabStressError) -> JSONResponse:
+    return _public_error_response(
+        request,
+        code=exc.code,
+        message=str(exc),
+        status=exc.status,
+        headers={"Cache-Control": "private, no-store", "Pragma": "no-cache"},
     )
 
 
@@ -3478,9 +4001,16 @@ routes = [
     Route("/api/rewrite/v1/admin/broker-access-applications/{application_id:str}/review", admin_broker_access_application_review, methods=["POST"]),
     Route("/api/rewrite/v1/admin/audit", admin_audit, methods=["GET"]),
     Route("/api/rewrite/v1/admin/user-auto-trading", admin_user_auto_trading, methods=["GET", "PUT"]),
+    *ACCOUNT_CENTER_ROUTES,
+    *AUTO_LIVE_ROUTES,
+    *AI_WORKSPACE_ROUTES,
+    *DELIBERATION_ROUTES,
+    *WORKFLOW_ROUTES,
+    *SIGNAL_IMPORT_ROUTES,
     Route("/api/rewrite/v1/bootstrap", bootstrap, methods=["GET"]),
     Route("/api/rewrite/v1/feedback", feedback, methods=["GET", "POST"]),
     Route("/api/rewrite/v1/broker-access-applications", broker_access_applications, methods=["GET", "POST"]),
+    Route("/api/rewrite/v1/broker-access-applications/readiness", broker_access_readiness, methods=["GET"]),
     Route("/api/rewrite/v1/broker-access-applications/{application_id:str}/withdraw", broker_access_application_withdraw, methods=["POST"]),
     Route("/api/rewrite/v1/recommendations", recommendations, methods=["GET"]),
     Route("/api/rewrite/v1/stock-screener/query", stock_screener_query, methods=["POST"]),
@@ -3488,6 +4018,8 @@ routes = [
     Route("/api/rewrite/v1/quant/timeline", quant_timeline, methods=["GET"]),
     Route("/api/rewrite/v1/quant/performance", quant_performance, methods=["GET"]),
     Route("/api/rewrite/v1/portfolio", portfolio, methods=["GET"]),
+    Route(LAB_STRESS_PATH, lab_stress, methods=["POST"]),
+    Route(LAB_STRESS_CATALOG_PATH, lab_stress_catalog, methods=["GET"]),
     Route("/api/rewrite/v1/personal-paper/seasons", personal_paper_create_season, methods=["POST"]),
     Route("/api/rewrite/v1/personal-paper/seasons/{season_id:str}", personal_paper_account, methods=["GET"]),
     Route("/api/rewrite/v1/personal-paper/quotes", personal_paper_quote, methods=["POST"]),
@@ -3558,6 +4090,7 @@ app = Starlette(
         ApiError: api_error_handler,
         ReadModelError: read_model_error_handler,
         BacktestQueueError: backtest_queue_error_handler,
+        LabStressError: lab_stress_error_handler,
         EarningsForecastUnavailable: earnings_forecast_unavailable_handler,
         OfficialOptionSimulationUnavailable: official_option_sim_unavailable_handler,
         OfficialOptionSimulationReceiverError: official_option_sim_receiver_error,
@@ -3565,10 +4098,30 @@ app = Starlette(
         ExpandedResearchReceiverError: expanded_research_receiver_error,
         ComputeEvidenceHttpError: compute_evidence_error_handler,
         ComputeEvidenceReceiverError: compute_evidence_error_handler,
+        AccountCenterApiError: account_center_error_handler,
+        AutoLiveApiError: auto_live_error_handler,
+        AIWorkspaceApiError: ai_workspace_error_handler,
+        DeliberationApiError: deliberation_error_handler,
+        WorkflowApiError: workflow_error_handler,
+        SignalImportsApiError: signal_import_error_handler,
         Exception: unexpected_error_handler,
     },
 )
 app.state.repository = ReadOnlyLegacyRepository()
+app.state.account_center_authenticate = _identity
+app.state.account_center_service_factory = _account_center_service
+app.state.auto_live_authenticate = _identity
+app.state.auto_live_service_factory = _auto_live_service
+app.state.ai_workspace_authenticate = _identity
+app.state.ai_workspace_service_factory = _ai_workspace_service
+app.state.ai_workspace_authorize = _ai_workspace_authorize
+app.state.deliberation_authenticate = _identity
+app.state.deliberation_service_factory = _deliberation_service
+app.state.deliberation_binding_loader = _deliberation_binding_loader
+app.state.workflow_authenticate = _identity
+app.state.workflow_service_factory = _workflow_service
+app.state.signal_import_authenticate = _identity
+app.state.signal_import_service_factory = _signal_import_service
 app.state.personal_paper_api = _build_personal_paper_http_api()
 app.state.feature_catalog_adapter = _build_feature_catalog_http_adapter()
 app.state.earnings_forecast_api = _build_earnings_forecast_api()

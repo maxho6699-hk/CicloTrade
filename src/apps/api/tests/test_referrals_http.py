@@ -58,7 +58,7 @@ def test_portal_and_visit_contract_use_public_fields_hkt_and_no_raw_fingerprint(
     token = _login(browser_api)
     response = asyncio.run(referral_portal(_request("/api/rewrite/v1/referrals/portal", token=token)))
     payload = _payload(response)
-    assert set(payload) == {"program", "invite", "balances", "trends", "funnel", "referrals", "commissions", "withdrawals", "timeline"}
+    assert set(payload) == {"program", "invite", "balances", "withdrawal_eligibility", "trends", "funnel", "referrals", "commissions", "withdrawals", "timeline"}
     assert payload["program"]["currency"] == "HKD"
     assert payload["program"]["minimum_withdrawal_minor"] > 0
     assert payload["program"]["enabled"] is False

@@ -7,7 +7,7 @@ import {
   classifyBacktestError,
   createBacktestApi,
   decodeBacktestList,
-  type BacktestCreateRequest,
+  type BacktestPrepareRequest,
 } from '../src/api/backtests.ts'
 
 const inputHash = 'a'.repeat(64)
@@ -21,6 +21,7 @@ const manifest = {
   code_bundle_sha256: codeHash,
   inputs: [{ artifact_key: 'prices.csv', sha256: inputHash, dataset_end: '2026-08-14' }],
   experiment_budget: { runs: 1, folds: 1 },
+  template_key: 'equity.trend.long_flat.v1',
   parameters: { symbol: 'AAPL', lookback_years: 1 },
 } as const
 
@@ -38,12 +39,15 @@ function job(status = 'completed', extra: Record<string, unknown> = {}) {
     created_at: '2026-08-15T08:00:00Z',
     updated_at: '2026-08-15T08:01:00Z',
     completed_at: status === 'completed' ? '2026-08-15T08:01:00Z' : null,
+    artifacts: [],
+    failure: null,
   }
   return { ...base, ...extra }
 }
 
 function completedJob(outputHash = 'd'.repeat(64)) {
   return job('completed', {
+    artifacts: [{ artifact_key: 'report.json', sha256: outputHash, bytes: 17, verified: true }],
     result: {
       job_id: '1234567890abcdef1234567890abcdef',
       manifest_sha256: manifestHash,
@@ -64,7 +68,7 @@ test('strict decoder maps backend lifecycle and exposes only verified public art
   const [decoded] = decodeBacktestList({ items: [completedJob()] })
   assert.equal(decoded.status, 'succeeded')
   assert.equal(decoded.manifestSha256, manifestHash)
-  assert.deepEqual(decoded.artifacts, [{ artifactKey: 'report.json', sha256: 'd'.repeat(64), verified: true }])
+  assert.deepEqual(decoded.artifacts, [{ artifactKey: 'report.json', sha256: 'd'.repeat(64), verified: true, bytes: 17 }])
   assert.deepEqual(decoded.evidence?.metrics, { total_return_pct: 4.2, max_drawdown_pct: -2.1 })
   assert.equal('fencing_epoch' in decoded, false)
 
@@ -79,7 +83,7 @@ test('decoder fails closed on internal fields, unsafe statuses, or unverified re
   assert.throws(() => decodeBacktestList({ items: [job('completed')] }), BacktestApiError)
 })
 
-test('client uses exact list, detail, create, and cancel contracts', async () => {
+test('client uses exact list, detail, prepare, and cancel contracts', async () => {
   const calls: Array<{ path: string; init?: RequestInit }> = []
   const api = createBacktestApi(async (path, init) => {
     calls.push({ path, init })
@@ -88,10 +92,18 @@ test('client uses exact list, detail, create, and cancel contracts', async () =>
     if (path === '/api/rewrite/v1/backtests') return { items: [job('queued')] }
     return job('queued')
   })
-  const request: BacktestCreateRequest = { type: 'backtest.run.v1', manifest: structuredClone(manifest) }
+  const request: BacktestPrepareRequest = {
+    schema_version: 1,
+    type: 'backtest.run.v1',
+    template_key: 'equity.trend.long_flat.v1',
+    symbol: 'AAPL',
+    timeframe: '1d',
+    sample_years: 1,
+    lookback: 20,
+  }
   await api.listJobs()
   await api.getJob('1234567890abcdef1234567890abcdef')
-  await api.createJob(request, 'stable-key-1234')
+  await api.prepareJob(request, 'stable-key-1234')
   const cancelled = await api.cancelJob('1234567890abcdef1234567890abcdef')
   assert.equal(cancelled.cancelRequested, true)
   assert.deepEqual(calls.map((call) => [call.path, call.init?.method]), [

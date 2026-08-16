@@ -104,6 +104,9 @@ test('personal paper quote and order metadata remain fail-closed at the browser 
   assert.equal(validPersonalPaperQuoteProof({ ...quote, freshness: 'missing' }), false)
   assert.equal(validPersonalPaperQuoteProof({ ...quote, source: null }), false)
   assert.equal(validPersonalPaperQuoteProof({ ...quote, expires_at: null }), false)
+  assert.equal(validPersonalPaperQuoteProof({ ...quote, bid_minor: 19999.5 }), false)
+  assert.equal(validPersonalPaperQuoteProof({ ...quote, ask_minor: 19998 }), false)
+  assert.equal(validPersonalPaperQuoteProof({ ...quote, last_minor: Number.NaN }), false)
   const order = {
     id: 'ppo_1234567890', season_id: 'pps_1234567890', market: 'US', symbol: 'AAPL', side: 'BUY',
     order_type: 'MARKET', quantity: 10, status: 'PENDING', created_at: '2026-08-14T00:00:00+00:00',

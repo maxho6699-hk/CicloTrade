@@ -83,24 +83,8 @@ class BrowserWriteService:
         return locale
 
     def resume_opening(self, identity: BrowserIdentity) -> bool:
-        """Clear only the user's pause flag and return whether it changed."""
-        now = datetime.now(UTC).isoformat(timespec="seconds")
-        with self.db.transaction() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT opening_paused FROM user_controls WHERE user_id=?", (identity.id,)
-            ).fetchone()
-            changed = bool(row and int(row["opening_paused"]))
-            if changed:
-                connection.execute(
-                    "UPDATE user_controls SET opening_paused=0,updated_at=? WHERE user_id=?",
-                    (now, identity.id),
-                )
-                connection.execute(
-                    "INSERT INTO user_action_logs (user_id,action_type,details,created_at) VALUES (?,?,?,?)",
-                    (identity.id, "USER_RESUME_OPENING", "账户页重新认证后清除个人新开仓暂停", now),
-                )
-        return changed
+        """Retired unsafe shortcut; all resumes belong to the governed /trade flow."""
+        raise PermissionError("旧恢复入口已停用；请在交易控制台重新核对全部自动实盘门控。")
 
     def update_watchlist(
         self, identity: BrowserIdentity, payload: dict[str, Any], *, remove: bool = False
@@ -130,7 +114,7 @@ class BrowserWriteService:
                 pins[key] = [item for item in pins[key] if item != symbol]
             elif symbol not in values:
                 if len(values) >= WATCHLIST_LIMIT:
-                    raise ValueError(f"每个市场最多保存 {WATCHLIST_LIMIT} 个自选标的。")
+                    raise ValueError(f"每个市场最多保存 {WATCHLIST_LIMIT} 个自选股票。")
                 values.append(symbol)
             watchlists[key] = values
             stored["watchlists"] = watchlists
@@ -172,7 +156,7 @@ class BrowserWriteService:
             pins = normalize_watchlist_pins(stored, watchlists)
             key = WATCHLIST_MARKETS[market]
             if symbol not in watchlists[key]:
-                raise ValueError("该标的尚未加入自选，请先添加。")
+                raise ValueError("该股票尚未加入自选，请先添加。")
             if payload["pinned"] and symbol not in pins[key]:
                 pins[key].append(symbol)
             elif not payload["pinned"]:
@@ -204,9 +188,9 @@ class BrowserWriteService:
                 raise ValueError(f"{key} 超出允许范围。")
             normalized[key] = int(numeric) if key in {"cooldown_minutes", "consecutive_loss_limit"} else numeric
         if normalized["max_position_per_symbol"] > normalized["max_total_position"]:
-            raise ValueError("美股单标的上限不能超过账户总仓位上限。")
+            raise ValueError("美股单股票上限不能超过账户总仓位上限。")
         if normalized["max_position_per_symbol_cny"] > normalized["max_total_position_cny"]:
-            raise ValueError("A股单标的上限不能超过账户总仓位上限。")
+            raise ValueError("A股单股票上限不能超过账户总仓位上限。")
         merge_user_settings(identity.id, {"risk": normalized}, self.db)
         return normalized
 

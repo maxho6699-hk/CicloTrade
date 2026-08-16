@@ -429,7 +429,7 @@ def validate_postmortem(payload: Any) -> dict[str, Any]:
     required = {
         "event_revision_id", "model_id", "model_version", "stage", "completed_at",
         "forecast_snapshot_set_sha256", "outcome_set_sha256", "direction_correct",
-        "interval_covered", "paper_pnl_net", "paper_max_drawdown", "analysis",
+        "interval_covered", "paper_performance", "analysis",
         "candidate_ref", "supersedes_postmortem_id",
     }
     _strict_fields(value, required, set(), "postmortem")
@@ -446,10 +446,21 @@ def validate_postmortem(payload: Any) -> dict[str, Any]:
     for name in ("direction_correct", "interval_covered"):
         if not isinstance(value[name], bool):
             raise EarningsContractError(f"{name} must be boolean")
-    value["paper_pnl_net"] = _number(value["paper_pnl_net"], "paper_pnl_net")
-    value["paper_max_drawdown"] = _number(
-        value["paper_max_drawdown"], "paper_max_drawdown", minimum=0
+    paper = _object(value["paper_performance"], "paper_performance")
+    _strict_fields(
+        paper,
+        {"state", "pnl_net", "max_drawdown", "ledger_snapshot_sha256"},
+        set(),
+        "paper_performance",
     )
+    if paper["state"] != "unavailable" or any(
+        paper[name] is not None
+        for name in ("pnl_net", "max_drawdown", "ledger_snapshot_sha256")
+    ):
+        raise EarningsContractError(
+            "paper performance is unavailable without a sealed paper ledger"
+        )
+    value["paper_performance"] = paper
     analysis = _object(value["analysis"], "analysis")
     sections = {"correct", "incorrect", "error_categories", "lessons", "candidate_hypotheses"}
     _strict_fields(analysis, sections, set(), "analysis")

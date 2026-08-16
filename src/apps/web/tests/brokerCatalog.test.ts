@@ -11,8 +11,8 @@ test('broker catalog consumes the authoritative five-provider bootstrap contract
   assert.match(clientSource, /connection_available: false/)
   assert.match(tradePageSource, /membership\.brokerage\.capability_catalog/)
   assert.match(tradePageSource, /brokerCatalog\.map/)
-  assert.match(tradePageSource, /当前 5 家均不可由用户绑定/)
-  assert.match(tradePageSource, /暂不可申请或绑定/)
+  assert.match(tradePageSource, /逐家显示 source-bound catalog \/ connection/)
+  assert.match(tradePageSource, /locked\/disconnected/)
 })
 
 test('launch page does not advertise deferred or fallback providers', () => {

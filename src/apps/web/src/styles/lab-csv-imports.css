@@ -1,0 +1,50 @@
+.lab-csv-import-panel { overflow: hidden; }
+.lab-csv-import-heading { align-items: flex-start; }
+.lab-csv-import-heading h2 { margin-bottom: 4px; }
+.lab-csv-import-heading p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.lab-csv-import-heading-actions { display: flex; align-items: center; gap: 8px; }
+.lab-csv-upload-row { display: flex; min-height: 76px; align-items: center; gap: 10px; padding: 13px 16px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--surface-subtle) 76%, transparent); }
+.lab-csv-upload-copy { display: flex; min-width: 0; flex: 1; align-items: center; gap: 10px; color: var(--accent); }
+.lab-csv-upload-copy > span { display: grid; min-width: 0; gap: 3px; }
+.lab-csv-upload-copy strong { color: var(--text); font-size: 13px; }
+.lab-csv-upload-copy small { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.lab-csv-file-input { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.lab-csv-state { display: flex; min-height: 76px; align-items: center; justify-content: center; gap: 8px; margin: 0; padding: 16px; color: var(--muted); font-size: 13px; line-height: 1.55; text-align: center; }
+.lab-csv-state.is-error { justify-content: space-between; color: var(--negative); text-align: left; }
+.lab-csv-state.is-forbidden { justify-content: flex-start; color: var(--warning); text-align: left; }
+.lab-csv-state.is-error .button { flex: 0 0 auto; }
+.lab-csv-feedback { margin: 0; padding: 9px 16px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 12px; line-height: 1.5; }
+.lab-csv-feedback.is-success { color: var(--positive); }
+.lab-csv-feedback.is-replay { color: var(--accent); }
+.lab-csv-feedback.is-error, .lab-csv-feedback.is-forbidden, .lab-csv-feedback.is-quota { color: var(--negative); }
+.lab-csv-history { display: grid; }
+.lab-csv-job { border-top: 1px solid var(--border); }
+.lab-csv-job-row { display: grid; min-height: 57px; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 7px 16px; }
+.lab-csv-job-toggle { display: flex; min-width: 0; align-items: center; gap: 8px; border: 0; background: transparent; color: var(--accent); cursor: pointer; text-align: left; }
+.lab-csv-job-toggle > span { display: grid; min-width: 0; gap: 3px; }
+.lab-csv-job-toggle strong { overflow: hidden; color: var(--text); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.lab-csv-job-toggle small { color: var(--muted); font-size: 11px; }
+.lab-csv-job-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.lab-csv-detail { padding: 0 16px 14px 46px; }
+.lab-csv-provenance { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 10px 0; color: var(--muted); font-size: 11px; }
+.lab-csv-provenance code { color: var(--text); font: 10px var(--mono); }
+.lab-csv-signal-table { overflow-x: auto; border: 1px solid var(--border); }
+.lab-csv-signal-table table { width: 100%; border-collapse: collapse; min-width: 560px; }
+.lab-csv-signal-table th, .lab-csv-signal-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 11px; text-align: left; }
+.lab-csv-signal-table th { color: var(--muted-2); font: 10px var(--mono); letter-spacing: .04em; }
+.lab-csv-signal-table td:first-child, .lab-csv-signal-table td:nth-child(2) { color: var(--text); font-weight: 600; }
+.lab-csv-signal-table tr:last-child td { border-bottom: 0; }
+.lab-csv-spin { animation: lab-csv-spin .9s linear infinite; }
+@keyframes lab-csv-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) { .lab-csv-spin { animation: none; } }
+@media (max-width: 640px) {
+  .lab-csv-upload-row { align-items: stretch; flex-wrap: wrap; }
+  .lab-csv-upload-copy { flex-basis: 100%; }
+  .lab-csv-upload-row .button { flex: 1; }
+  .lab-csv-job-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .lab-csv-job-row > .status-chip { grid-column: 1; grid-row: 2; justify-self: start; }
+  .lab-csv-job-row > .icon-button { grid-column: 2; grid-row: 1 / span 2; }
+  .lab-csv-detail { padding-left: 16px; }
+  .lab-csv-provenance { display: grid; gap: 5px; }
+}

@@ -4,7 +4,7 @@ import {
   Search, ShieldCheck, Sparkles, Target, WalletCards,
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { PageHeader } from '../components/PageHeader'
 import {
   filterFeatureCatalog,
@@ -50,13 +50,18 @@ function FeatureCard({ item, pinned, copy, view, onOpen, onTogglePin }: { item: 
   const Icon = FEATURE_ICONS[item.icon]
   const disabled = featureOpenRoute(item) === null
   const pinLabel = pinned ? copy.unpin : copy.pin
+  const cardContent = <>
+    <span className="feature-card-icon"><Icon size={19} aria-hidden="true" /></span>
+    <span className="feature-card-copy"><strong>{featureCopy.title}</strong><small>{featureCopy.description}</small></span>
+    <ArrowRight size={16} aria-hidden="true" />
+  </>
   return (
     <article className={`feature-card feature-card--${view} ${item.availability}`}>
-      <button className="feature-card-main" type="button" disabled={disabled} onClick={onOpen} aria-describedby={item.reason ? `feature-reason-${item.key}` : undefined}>
-        <span className="feature-card-icon"><Icon size={19} aria-hidden="true" /></span>
-        <span className="feature-card-copy"><strong>{featureCopy.title}</strong><small>{featureCopy.description}</small></span>
-        <ArrowRight size={16} aria-hidden="true" />
-      </button>
+      {disabled ? (
+        <button className="feature-card-main" type="button" disabled aria-describedby={item.reason ? `feature-reason-${item.key}` : undefined}>{cardContent}</button>
+      ) : (
+        <Link className="feature-card-main" to={featureOpenRoute(item)!} onClick={onOpen} aria-describedby={item.reason ? `feature-reason-${item.key}` : undefined}>{cardContent}</Link>
+      )}
       <footer>
         <span className={`feature-state ${item.availability}`}>{copy.availability[item.availability]}</span>
         {localizedReason && <small id={`feature-reason-${item.key}`}>{localizedReason}</small>}
@@ -111,21 +116,22 @@ export function MorePage({ catalog, loading = false, error = null, copy: injecte
   const pinsDirty = draftPins.length !== savedPins.length || draftPins.some((key, index) => key !== savedPins[index])
   const pinsValid = isValidPinnedSelection(draftPins)
 
-  const open = async (item: FeatureCatalogItem) => {
+  const open = (item: FeatureCatalogItem) => {
     const route = featureOpenRoute(item)
     if (!route) return
     if (item.availability === 'available') {
       if (onRecordRecent && catalogSnapshot) {
-        try {
-          const updated = await onRecordRecent(item.key, catalogSnapshot.preferences.version)
-          setCatalogSnapshot(updated)
-          setRecentFeedback('')
-        } catch {
-          setRecentFeedback(copy.recentSaveError)
-        }
+        // Do not prevent the Link, wait for the response, or force same-tab
+        // navigation. Recent tracking is advisory and may finish after the
+        // destination has mounted.
+        void Promise.resolve()
+          .then(() => onRecordRecent(item.key, catalogSnapshot.preferences.version))
+          .then((updated) => { setCatalogSnapshot(updated); setRecentFeedback('') })
+          .catch(() => setRecentFeedback(copy.recentSaveError))
       }
-      if (onOpenFeature) onOpenFeature(item)
-      else navigate(route)
+      if (onOpenFeature) {
+        try { onOpenFeature(item) } catch { /* custom analytics must not block Link navigation */ }
+      }
     } else navigate(route)
   }
 

@@ -1,5 +1,5 @@
 import { ArrowRight, Bot, Check, CircleAlert, Clock3, Database, LockKeyhole, Search, Sparkles, X } from 'lucide-react'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { Candle } from '../../types'
 import { fetchMarketCandles } from '../../api/client'
 import { getFormatLocale } from '../../i18n/runtime'
@@ -185,5 +185,17 @@ export function BotMark() {
 }
 
 export function InspectorToggle({ open, onClick, label = '打开信息面板' }: { open: boolean; onClick: () => void; label?: string }) {
-  return <button className="v2-inspector-toggle v2-button v2-button-secondary" type="button" onClick={onClick} aria-expanded={open} aria-label={open ? '关闭信息面板' : label}>{open ? <X size={15} aria-hidden="true" /> : <Search size={15} aria-hidden="true" />}{open ? '关闭面板' : label}</button>
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      onClick()
+      window.requestAnimationFrame(() => buttonRef.current?.focus())
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [onClick, open])
+  return <button ref={buttonRef} className="v2-inspector-toggle v2-button v2-button-secondary" type="button" onClick={onClick} aria-expanded={open} aria-label={open ? '关闭信息面板' : label}>{open ? <X size={15} aria-hidden="true" /> : <Search size={15} aria-hidden="true" />}{open ? '关闭面板' : label}</button>
 }

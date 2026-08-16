@@ -156,7 +156,11 @@ def postmortem_binding(connection, value: Mapping[str, Any]) -> dict[str, Any]:
             <= float(next_close["observed_price"])
             <= float(headline["price_p90"])
         ),
-        # P0 has no bound paper execution ledger, so non-zero P&L cannot be claimed.
-        "paper_pnl_net": 0.0,
-        "paper_max_drawdown": 0.0,
+        # No sealed paper execution ledger is bound in the current release.
+        "paper_performance": {
+            "state": "unavailable",
+            "pnl_net": None,
+            "max_drawdown": None,
+            "ledger_snapshot_sha256": None,
+        },
     }

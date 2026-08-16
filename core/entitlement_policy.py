@@ -6,7 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Mapping
 
 from core.compat import UTC
@@ -47,6 +47,7 @@ class PublishedPolicy:
     effective_at: str
     created_at: str
     policy: dict[str, Any]
+    historical_compatibility: bool = False
 
 
 def _iso(value: datetime | None = None) -> str:
@@ -136,7 +137,7 @@ def canonical_public_policy() -> dict[str, Any]:
         "dynamic_programs": {
             "option_live_beta": {
                 "application_capability": "option_live_beta_apply",
-                "eligible_plan": "高级版",
+                "eligible_plan": "专业版",
                 "states": list(OPTION_LIVE_BETA_STATES),
                 "membership_grants_runtime": False,
                 "telegram_binding_required": True,
@@ -171,6 +172,11 @@ def capability_contracts(
         else canonical_public_policy()["plans"]
     )
     included = policy_capabilities(policy, plan) if policy is not None else set()
+    if policy is not None and policy.historical_compatibility:
+        included = {
+            capability for capability in included
+            if not capability.endswith("_apply")
+        }
     return _project_capability_contracts(
         plan,
         source_plans=source_plans,
@@ -183,6 +189,7 @@ def capability_contracts(
 
 def validate_policy(
     value: Mapping[str, Any], *, require_current_contract: bool = True,
+    allow_historical_contract: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise EntitlementPolicyError("会员策略必须是对象。")
@@ -214,8 +221,11 @@ def validate_policy(
         raise EntitlementPolicyError("真实期权 Beta 字段不完整或包含未知字段。")
     if dynamic.get("application_capability") != "option_live_beta_apply":
         raise EntitlementPolicyError("真实期权 Beta 申请能力无效。")
-    if dynamic.get("eligible_plan") != "高级版":
-        raise EntitlementPolicyError("真实期权项目申请入口仅允许高级会员使用。")
+    eligible_plan = dynamic.get("eligible_plan")
+    if eligible_plan != "专业版" and not (
+        allow_historical_contract and eligible_plan == "高级版"
+    ):
+        raise EntitlementPolicyError("真实期权项目申请入口仅允许历史专业会员使用。")
     if dynamic.get("membership_grants_runtime") is not False:
         raise EntitlementPolicyError("会员身份不得直接授予真实期权运行权限。")
     if tuple(dynamic.get("states") or ()) != OPTION_LIVE_BETA_STATES:
@@ -243,8 +253,6 @@ def validate_policy(
         "team_collaboration",
         "private_deploy",
         "multi_account",
-        "auto_control_account_1",
-        "auto_control_account_5",
         "liquidate_all",
         "option_auto_live",
         "real_trade",
@@ -259,6 +267,14 @@ def validate_policy(
     leaked = sorted(forbidden & published)
     if leaked:
         raise EntitlementPolicyError(f"公开会员含有禁止能力：{','.join(leaked)}")
+    for item in plans:
+        if (
+            "auto_control_account_5" in item.get("capabilities", [])
+            and item.get("key") not in {"专业版", "定制版"}
+        ):
+            raise EntitlementPolicyError(
+                "5 账号受控自动实盘资格仅允许经 readiness 审查的专业或定制方案。"
+            )
     return policy
 
 
@@ -303,7 +319,8 @@ def seed_canonical_policy(conn: Any, *, now: datetime | None = None) -> Publishe
     """Install the reviewed bootstrap contract from trusted DB initialization.
 
     This is deliberately separate from customer order creation and from the
-    administrator publisher. It only acts when no policy row exists.
+    administrator publisher. Existing canonical rows are reused, while an
+    older historical row receives one appended current-contract version.
     """
     moment = now or datetime.now(UTC)
     policy = validate_policy(canonical_public_policy())
@@ -323,25 +340,107 @@ def seed_canonical_policy(conn: Any, *, now: datetime | None = None) -> Publishe
     ).fetchone()
     if row is None:
         raise EntitlementPolicyError("bootstrap v1 会员策略无法建立。")
-    published = _published(row)
-    if published.policy_sha256 != digest or published.policy != policy:
-        raise EntitlementPolicyError("bootstrap v1 会员策略与审查合同不一致。")
-    conn.execute(
-        """INSERT OR IGNORE INTO membership_entitlement_readiness_receipts(
-               candidate_sha256,evidence_ref,reviewer_id,valid_until,idempotency_key,request_sha256,created_at)
-           VALUES (?,?,NULL,?,?,?,?)""",
-        (digest, "bootstrap-contract-review-20260814", "9999-12-31T23:59:59+00:00",
-         "bootstrap-contract-review-20260814", digest, effective_text),
-    )
+    latest_row = conn.execute(
+        """SELECT * FROM membership_entitlement_policy_versions
+           WHERE policy_key=? ORDER BY version DESC LIMIT 1""",
+        (POLICY_KEY,),
+    ).fetchone()
+    if latest_row is None:
+        raise EntitlementPolicyError("已发布会员策略无法读取。")
+    if str(latest_row["policy_sha256"]) == digest:
+        published = _published(latest_row)
+        if published.policy != policy:
+            raise EntitlementPolicyError("当前会员策略与审查合同不一致。")
+    else:
+        latest_published = _published(latest_row)
+        if not latest_published.historical_compatibility:
+            # A newer reviewed policy may intentionally differ from the
+            # bootstrap contract. Startup must never supersede it.
+            return latest_published
+        published = _published(row)
+        if not published.historical_compatibility:
+            raise EntitlementPolicyError("bootstrap v1 会员策略与审查合同不一致。")
+        # Keep the old snapshot for historical orders/readers, then append the
+        # reviewed contract so current commerce cannot use the retired rules.
+        previous_effective = _aware_datetime(
+            str(latest_row["effective_at"]), "已发布会员策略生效时间",
+        )
+        effective_at = max(moment.astimezone(UTC), previous_effective)
+        if effective_at <= previous_effective:
+            effective_at = previous_effective + timedelta(seconds=1)
+        effective_text = _iso(effective_at)
+        next_version = int(
+            conn.execute(
+                """SELECT COALESCE(MAX(version), 0) AS version
+                   FROM membership_entitlement_policy_versions
+                   WHERE policy_key=?""",
+                (POLICY_KEY,),
+            ).fetchone()["version"]
+        ) + 1
+        conn.execute(
+            """INSERT INTO membership_entitlement_policy_versions
+               (policy_key,version,policy_json,policy_sha256,effective_at,created_by,created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (
+                POLICY_KEY, next_version, serialized, digest, effective_text,
+                None, effective_text,
+            ),
+        )
+        row = conn.execute(
+            """SELECT * FROM membership_entitlement_policy_versions
+               WHERE policy_key=? AND version=?""",
+            (POLICY_KEY, next_version),
+        ).fetchone()
+        if row is None:
+            raise EntitlementPolicyError("当前会员策略无法建立。")
+        published = _published(row)
+    evidence_ref = "bootstrap-contract-review-20260814"
+    review = conn.execute(
+        """SELECT 1 FROM membership_entitlement_readiness_reviews
+           WHERE evidence_ref=? AND policy_key=? AND policy_version=? AND policy_sha256=?
+           LIMIT 1""",
+        (evidence_ref, published.policy_key, published.version, published.policy_sha256),
+    ).fetchone()
+    if review is not None:
+        return published
     receipt = conn.execute(
-        """SELECT id FROM membership_entitlement_readiness_receipts
-           WHERE idempotency_key='bootstrap-contract-review-20260814'""",
+        """SELECT id FROM membership_entitlement_readiness_receipts AS receipt
+           WHERE receipt.candidate_sha256=? AND receipt.evidence_ref=?
+             AND datetime(receipt.valid_until) >= datetime(?)
+             AND NOT EXISTS (
+                 SELECT 1 FROM membership_entitlement_readiness_reviews AS review
+                 WHERE review.receipt_id=receipt.id
+             )
+           ORDER BY receipt.id LIMIT 1""",
+        (published.policy_sha256, evidence_ref, _iso(moment)),
+    ).fetchone()
+    if receipt is None:
+        idempotency_key = evidence_ref if published.version == 1 else f"{evidence_ref}-v{published.version}"
+        conn.execute(
+            """INSERT INTO membership_entitlement_readiness_receipts(
+                   candidate_sha256,evidence_ref,reviewer_id,valid_until,idempotency_key,request_sha256,created_at)
+               VALUES (?,?,NULL,?,?,?,?)""",
+            (published.policy_sha256, evidence_ref, "9999-12-31T23:59:59+00:00",
+             idempotency_key, published.policy_sha256, _iso(moment)),
+        )
+        receipt = conn.execute(
+            """SELECT id FROM membership_entitlement_readiness_receipts
+               WHERE candidate_sha256=? AND evidence_ref=? AND idempotency_key=?
+               ORDER BY id DESC LIMIT 1""",
+            (published.policy_sha256, evidence_ref, idempotency_key),
+        ).fetchone()
+    if receipt is None:
+        raise EntitlementPolicyError("会员策略 readiness 回执无法建立。")
+    receipt = conn.execute(
+        """SELECT id FROM membership_entitlement_readiness_receipts WHERE id=?""",
+        (receipt["id"],),
     ).fetchone()
     conn.execute(
-        """INSERT OR IGNORE INTO membership_entitlement_readiness_reviews(
+        """INSERT INTO membership_entitlement_readiness_reviews(
                receipt_id,evidence_ref,policy_key,policy_version,policy_sha256,reviewer_id,reviewed_at)
            VALUES (?,?,?,?,?,NULL,?)""",
-        (receipt["id"], "bootstrap-contract-review-20260814", POLICY_KEY, 1, digest, effective_text),
+        (receipt["id"], evidence_ref, published.policy_key, published.version,
+         published.policy_sha256, _iso(moment)),
     )
     return published
 
@@ -454,6 +553,12 @@ def published_plan_commerce_decision(
     *,
     as_of: datetime | None = None,
 ) -> dict[str, Any]:
+    if policy.historical_compatibility:
+        return {
+            "allowed": False,
+            "reason": "historical_policy",
+            "lifecycle": None,
+        }
     from core.entitlement_access import commerce_decision
 
     return commerce_decision(conn, policy, plan, action, as_of=as_of)
@@ -469,6 +574,18 @@ def policy_capabilities(policy: PublishedPolicy, plan: str) -> set[str]:
 def policy_can(
     conn: Any, plan: str, capability: str, *, as_of: datetime | None = None
 ) -> bool:
+    policy = current_policy(conn, as_of=as_of)
+    if policy is None:
+        return False
+    from core.plans import CAPABILITY_ALIASES
+
+    canonical = {
+        **CAPABILITY_ALIASES,
+        "option_auto": "option_auto_paper_official",
+        "option_live_beta": "option_live_beta_apply",
+    }.get(capability, capability)
+    if policy.historical_compatibility and canonical.endswith("_apply"):
+        return False
     from core.entitlement_access import can
 
     return can(conn, plan, capability, as_of=as_of, current=current_policy, retired=RETIRED_PLAN_KEYS)
@@ -478,6 +595,7 @@ def _published(row: Any) -> PublishedPolicy:
     value = dict(row)
     policy = validate_policy(
         json.loads(str(value["policy_json"])), require_current_contract=False,
+        allow_historical_contract=True,
     )
     actual_sha256 = policy_sha256(policy)
     if actual_sha256 != str(value["policy_sha256"]):
@@ -489,6 +607,10 @@ def _published(row: Any) -> PublishedPolicy:
         effective_at=str(value["effective_at"]),
         created_at=str(value["created_at"]),
         policy=policy,
+        historical_compatibility=(
+            policy["dynamic_programs"]["option_live_beta"]["eligible_plan"]
+            == "高级版"
+        ),
     )
 
 

@@ -33,4 +33,20 @@ def test_metrics_are_empty_safe():
 
     assert metrics.sample_size == 0
     assert metrics.direction_accuracy == 0
-    assert metrics.paper_max_drawdown == 0
+    assert metrics.paper_total_pnl is None
+    assert metrics.paper_max_drawdown is None
+
+
+def test_metrics_mark_paper_performance_unavailable_when_equity_inputs_are_missing():
+    observation = ForecastMetricObservation(
+        p_up=0.6, p_down=0.2, p_flat=0.2,
+        actual_return_pct=2.0, flat_band_pct=1.0,
+        price_p10=95.0, price_p90=110.0, actual_price=105.0,
+        paper_pnl_net=None,
+    )
+
+    metrics = compute_forecast_metrics([observation], starting_equity=1_000.0)
+
+    assert metrics.sample_size == 1
+    assert metrics.paper_total_pnl is None
+    assert metrics.paper_max_drawdown is None

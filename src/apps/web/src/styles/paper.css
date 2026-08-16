@@ -22,6 +22,7 @@
   max-width: 1760px;
   gap: 14px;
   isolation: isolate;
+  overflow-x: clip;
   color: var(--paper-text);
 }
 .app-shell .personal-paper-page::before { position: absolute; z-index: -1; inset: -28px -26px auto; height: 310px; background: radial-gradient(circle at 52% -18%, color-mix(in srgb, var(--paper-ai-blue) 14%, transparent), transparent 58%); content: ''; pointer-events: none; }

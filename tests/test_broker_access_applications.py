@@ -62,13 +62,24 @@ def _super_admin(database, admin):
 def test_only_canonical_five_us_providers_and_eligible_membership_with_telegram(context):
     database, service, user, _ = context
     assert CANONICAL_PROVIDERS == {"futu_moomoo", "tiger", "ibkr", "webull", "longbridge"}
+    blocked = service.readiness(user["id"])
+    assert blocked["can_apply"] is False
+    assert blocked["membership_eligible"] is False
+    assert blocked["providers"] == sorted(CANONICAL_PROVIDERS)
+    assert blocked["broker_account_created"] is blocked["execution_enabled"] is False
     with pytest.raises(BrokerAccessApplicationError, match="会员策略"):
         service.create(user["id"], {"provider": "ibkr"}, "broker-key-01")
     _eligible(database, user)
+    ready = service.readiness(user["id"])
+    assert ready["can_apply"] is ready["membership_eligible"] is ready["telegram_ready"] is True
+    assert ready["reason"] is None
     for provider in ("alpaca", "qmt", "ptrade", "a_stock"):
         with pytest.raises(BrokerAccessApplicationError, match="五家美股"):
             service.create(user["id"], {"provider": provider}, f"blocked-{provider}")
     database.execute("UPDATE telegram_accounts SET is_active=0 WHERE user_id=?", (user["id"],))
+    telegram_blocked = service.readiness(user["id"])
+    assert telegram_blocked["membership_eligible"] is True
+    assert telegram_blocked["telegram_ready"] is telegram_blocked["can_apply"] is False
     with pytest.raises(BrokerAccessApplicationError, match="Telegram"):
         service.create(user["id"], {"provider": "ibkr"}, "broker-key-02")
 

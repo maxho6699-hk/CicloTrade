@@ -16,7 +16,7 @@ import { LoginPage } from './pages/LoginPage'
 import { HelpPage } from './pages/HelpPage'
 import { ProfessionalLabPage } from './pages/ProfessionalLabPage'
 import { WelcomePage } from './pages/WelcomePage'
-import { OpportunitiesPage } from './pages/OpportunitiesPage'
+import { StockScreenerRoute } from './pages/StockScreenerRoute'
 import { EarningsForecastPage } from './pages/EarningsForecastPage'
 import { FeedbackPage } from './pages/FeedbackPage'
 import { AdminPage } from './pages/AdminPage'
@@ -58,7 +58,7 @@ function LegacyRedirect({ to }: { to: string }) {
 
 function DiscoverRoute() {
   const [searchParams] = useSearchParams()
-  return searchParams.get('tool') === 'screener' ? <OpportunitiesPage /> : <DiscoverV2Page />
+  return searchParams.get('tool') === 'screener' ? <StockScreenerRoute /> : <DiscoverV2Page />
 }
 
 export default function App() {
@@ -99,6 +99,7 @@ export default function App() {
     <Route path="/promotion" element={<PromotionCenterPage />} />
     <Route path="/mystic" element={<MysticPage />} />
     <Route path="/ai" element={<AIWorkspacePage />} />
+    <Route path="/workflow" element={<WorkflowTaskPage />} />
     <Route path="/workflow/:taskId" element={<WorkflowTaskPage />} />
     <Route path="/deliberation" element={<DeliberationPage />} />
     <Route path="/opportunities/*" element={<LegacyRedirect to="/discover" />} />

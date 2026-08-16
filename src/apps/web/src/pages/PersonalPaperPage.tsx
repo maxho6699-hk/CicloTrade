@@ -136,9 +136,10 @@ function orderTypeLabel(orderType: PersonalPaperOrder['order_type'], locale: key
 export function PersonalPaperPage() {
   const { locale } = useLocale()
   const copy = COPY[locale]
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const initialSymbol = (searchParams.get('symbol') ?? '').toUpperCase()
-  const requestedMarket = (searchParams.get('market') ?? '').trim().toUpperCase()
+  const hasExplicitMarket = searchParams.has('market')
+  const requestedMarket = (hasExplicitMarket ? (searchParams.get('market') ?? '') : 'US').trim().toUpperCase()
   const marketSupported = requestedMarket === 'US'
   const sourceParam = searchParams.get('source')
   const sourceKind: PaperDraftValues['sourceKind'] = ['recommendation', 'chart', 'screener'].includes(sourceParam ?? '') ? sourceParam as PaperDraftValues['sourceKind'] : 'manual'
@@ -167,6 +168,13 @@ export function PersonalPaperPage() {
   const [reviewedWarnings, setReviewedWarnings] = useState<Record<number, boolean>>({})
   const submitInFlightRef = useRef(false)
   const [, setClock] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (hasExplicitMarket) return
+    const next = new URLSearchParams(searchParams)
+    next.set('market', 'US')
+    setSearchParams(next, { replace: true })
+  }, [hasExplicitMarket, searchParams, setSearchParams])
 
   const resetProofs = () => {
     setQuote(null); setRiskProof(null); setKey(''); setFeedback(''); setReceipt(null); setPendingRequest(null); setSubmitState('idle'); setReviewedWarnings({})

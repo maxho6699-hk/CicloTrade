@@ -13,6 +13,7 @@ const portal: ReferralPortal = {
   referrals: [{ referral_id: 'RFR8A1F3', user_masked: 'm***@e***.com', joined_at: '2026-08-12T12:00:00+08:00', settled_orders: 1, last_settled_at: null }],
   commissions: [{ commission_id: 'COM3C9E2', recharge_id: 'RCH7V4P8', commission_type: 'initial_purchase', gross_amount_minor: 100, rate_bps: 1000, earned_amount_minor: 10, clawed_back_minor: 0, net_amount_minor: 10, status: 'pending', settled_at: '2026-08-12T12:00:00+08:00', available_at: '2026-08-26T12:00:00+08:00' }],
   withdrawals: [], timeline: [{ event_id: 'AUD4F9C2', event_type: 'registration', public_reference: 'RFR8A1F3', amount_minor: null, occurred_at: '2026-08-12T12:00:00+08:00' }],
+  withdrawal_eligibility: { status: 'eligible', reason_code: 'eligible', reason: '当前提现条件已满足。', min_minor: 10000, max_minor: 500000, available_minor: 10000, next_eligible_at: null, evaluated_at: '2026-08-12T12:00:00+08:00' },
 }
 
 test('referral portal decoder accepts the exact canonical HKT/minor contract', () => {
@@ -20,7 +21,7 @@ test('referral portal decoder accepts the exact canonical HKT/minor contract', (
   assert.throws(() => decodeReferralPortal({ ...portal, provider: 'private' }), /响应格式无效/)
   assert.throws(() => decodeReferralPortal({ ...portal, balances: { ...portal.balances, withdrawable_minor: 1.2 } }), /结算字段无效/)
   assert.throws(() => decodeReferralPortal({ ...portal, referrals: [{ ...portal.referrals[0], joined_at: '2026-08-12T12:00:00Z' }] }), /邀请字段无效/)
-  assert.throws(() => decodeReferralPortal({ ...portal, program: { ...portal.program, bonus_progress: { ...portal.program.bonus_progress, status: 'paid' } } }), /推广计划字段无效/)
+  assert.throws(() => decodeReferralPortal({ ...portal, program: { ...portal.program, bonus_progress: { ...portal.program.bonus_progress, status: '' } } }), /推广计划字段无效/)
 })
 
 test('withdrawal client sends only HKD integer minor units and idempotency key', async () => {

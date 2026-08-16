@@ -11,8 +11,10 @@ import json
 from typing import Any, Mapping
 
 from core.database import DatabaseManager, get_database
+from core.entitlement_policy_catalog import (
+    SEALED_LEGACY_CAPABILITIES,
+)
 from core.user_settings import load_user_settings
-from core.plans import can
 
 
 CATEGORIES = frozenset({"discover", "research", "simulate", "review", "automation", "account"})
@@ -27,14 +29,27 @@ ICON_ALLOWLIST = frozenset({
     "Sparkles", "Target", "WalletCards",
 })
 ROUTE_PREFIX_ALLOWLIST = (
-    "/account", "/discover", "/earnings", "/feedback", "/more", "/notifications", "/paper",
-    "/portfolio", "/reports", "/research", "/today", "/trade",
+    "/account", "/admin", "/ai", "/deliberation", "/discover", "/earnings", "/feedback", "/help",
+    "/lab", "/legal", "/membership", "/more", "/notifications", "/paper", "/portfolio", "/promotion",
+    "/reports", "/research", "/today", "/trade", "/workflow",
 )
 PRIMARY_NAV_ROUTES = frozenset({"/today", "/discover", "/research", "/paper", "/portfolio", "/more"})
 PREFERENCE_KEY = "feature_catalog_preferences_v1"
 MAX_RECENT = 8
 RUNTIME_EVIDENCE_TTL = timedelta(minutes=5)
 RUNTIME_EVIDENCE_FUTURE_SKEW = timedelta(seconds=30)
+_LEGACY_ONLY_CAPABILITIES = frozenset(
+    capability
+    for capabilities in SEALED_LEGACY_CAPABILITIES.values()
+    for capability in capabilities
+) - frozenset({
+    "ai_workspace",
+    "expanded_research_full",
+    "broker_access_apply",
+    "multi_agent_deliberation",
+    "csv_import",
+    "strategy_tracking",
+})
 
 
 class FeatureCatalogError(ValueError):
@@ -67,6 +82,7 @@ class FeatureDefinition:
     requires_runtime: bool = False
     placements: tuple[str, ...] = ("more",)
     actions: Mapping[str, object] | None = None
+    admin_only: bool = False
 
 
 FEATURES = (
@@ -78,16 +94,31 @@ FEATURES = (
     FeatureDefinition("portfolio", ("/portfolio",), "review", "feature.portfolio.title", "feature.portfolio.description", "ClipboardCheck", None, False, True, 50, placements=("more", "dashboard_card")),
     FeatureDefinition("more", ("/more",), "account", "feature.more.title", "feature.more.description", "Sparkles", None, False, True, 60, placements=("more",)),
     FeatureDefinition("stock-screener", ("/discover?tool=screener",), "discover", "feature.stock_screener.title", "feature.stock_screener.description", "ListFilter", "strategy_all", True, False, 100, recommendation_rank=10, placements=("more", "secondary_nav", "dashboard_card"), actions={"research_url": "/discover?tool=screener"}),
-    FeatureDefinition("market-heatmap", ("/discover?tool=heatmap",), "discover", "feature.market_heatmap.title", "feature.market_heatmap.description", "Grid2X2", "dashboard", True, False, 110, recommendation_rank=20, requires_runtime=True, placements=("more", "secondary_nav", "dashboard_card"), actions={"research_url": "/discover?tool=heatmap"}),
-    FeatureDefinition("earnings-calendar", ("/discover?tool=calendar",), "discover", "feature.earnings_calendar.title", "feature.earnings_calendar.description", "CalendarClock", "dashboard", True, False, 120, requires_runtime=True, placements=("more", "secondary_nav", "dashboard_card")),
-    FeatureDefinition("price-alerts", ("/research?tool=alerts",), "research", "feature.price_alerts.title", "feature.price_alerts.description", "BellRing", "alert_basic", True, False, 210, placements=("more", "secondary_nav", "inspector", "drawer"), actions={"alert_prefill": {"market": "US"}}),
-    FeatureDefinition("option-lab", ("/research?workspace=options",), "research", "feature.option_lab.title", "feature.option_lab.description", "Gauge", "option_strategy", True, False, 220, requires_runtime=True, placements=("more", "secondary_nav", "inspector")),
+    # These two UI components still contain preview-only data and have no real API.
+    # Keep them visible as planned, but deliberately without an actionable route.
+    FeatureDefinition("market-heatmap", ("/discover",), "discover", "feature.market_heatmap.title", "feature.market_heatmap.description", "Grid2X2", "dashboard", False, False, 110, planned=True, placements=("more", "secondary_nav", "dashboard_card")),
+    FeatureDefinition("earnings-calendar", ("/discover",), "discover", "feature.earnings_calendar.title", "feature.earnings_calendar.description", "CalendarClock", "dashboard", False, False, 120, planned=True, placements=("more", "secondary_nav", "dashboard_card")),
+    FeatureDefinition("price-alerts", ("/research?panel=预警",), "research", "feature.price_alerts.title", "feature.price_alerts.description", "BellRing", "alert_basic", True, False, 210, placements=("more", "secondary_nav", "inspector", "drawer"), actions={"alert_prefill": {"market": "US"}}),
+    FeatureDefinition("option-lab", ("/lab",), "research", "feature.option_lab.title", "feature.option_lab.description", "Gauge", "option_strategy", True, False, 220, requires_runtime=True, placements=("more", "secondary_nav", "inspector")),
     FeatureDefinition("earnings-forecast", ("/earnings",), "research", "feature.earnings_forecast.title", "feature.earnings_forecast.description", "Sparkles", "earnings_forecast", True, False, 230, requires_runtime=True, placements=("more", "secondary_nav", "dashboard_card")),
-    FeatureDefinition("strategy-research", ("/reports?view=影子策略研究&research_scope=expanded",), "research", "feature.strategy_research.title", "feature.strategy_research.description", "BookOpenCheck", None, True, False, 240, recommendation_rank=15, requires_runtime=True, placements=("more", "secondary_nav", "dashboard_card"), actions={"research_url": "/reports?view=影子策略研究&research_scope=expanded"}),
-    FeatureDefinition("risk-calculator", ("/paper?tool=risk",), "simulate", "feature.risk_calculator.title", "feature.risk_calculator.description", "ShieldCheck", None, True, False, 300, safety_critical=True, recommendation_rank=5, placements=("more", "secondary_nav", "drawer"), actions={"paper_prefill": {"market": "US", "side": "BUY"}}),
+    FeatureDefinition("strategy-research", ("/reports?view=影子策略研究&research_scope=expanded",), "research", "feature.strategy_research.title", "feature.strategy_research.description", "BookOpenCheck", "expanded_research_full", True, False, 240, recommendation_rank=15, requires_runtime=True, placements=("more", "secondary_nav", "dashboard_card"), actions={"research_url": "/reports?view=影子策略研究&research_scope=expanded"}),
+    FeatureDefinition("ai-workspace", ("/ai",), "research", "feature.ai_workspace.title", "feature.ai_workspace.description", "Sparkles", "ai_workspace", True, False, 250, recommendation_rank=8, placements=("more", "secondary_nav", "dashboard_card", "inspector")),
+    FeatureDefinition("multi-agent-deliberation", ("/deliberation",), "research", "feature.multi_agent_deliberation.title", "feature.multi_agent_deliberation.description", "ShieldCheck", "multi_agent_deliberation", True, False, 260, recommendation_rank=9, placements=("more", "secondary_nav", "dashboard_card", "inspector")),
+    FeatureDefinition("csv-signal-import", ("/lab?tab=csv-import",), "research", "feature.csv_signal_import.title", "feature.csv_signal_import.description", "ClipboardCheck", "csv_import", True, False, 270, recommendation_rank=18, placements=("more", "secondary_nav", "dashboard_card")),
+    FeatureDefinition("workflow-tasks", ("/workflow",), "research", "feature.workflow_tasks.title", "feature.workflow_tasks.description", "ClipboardCheck", None, True, False, 280, recommendation_rank=11, placements=("more", "secondary_nav", "dashboard_card", "drawer")),
+    FeatureDefinition("risk-calculator", ("/paper",), "simulate", "feature.risk_calculator.title", "feature.risk_calculator.description", "ShieldCheck", None, True, False, 300, safety_critical=True, recommendation_rank=5, placements=("more", "secondary_nav", "drawer"), actions={"paper_prefill": {"market": "US", "side": "BUY"}}),
     FeatureDefinition("research-reports", ("/reports",), "review", "feature.research_reports.title", "feature.research_reports.description", "BookOpenCheck", "reports", True, False, 410, placements=("more", "secondary_nav", "dashboard_card")),
-    FeatureDefinition("data-status", ("/account?section=data",), "account", "feature.data_status.title", "feature.data_status.description", "RadioTower", None, True, False, 500, safety_critical=True, placements=("more", "secondary_nav", "drawer")),
+    # Keep the historical key so pinned/recent preferences remain compatible, but
+    # expose the real /account host as the single profile and account center entry.
+    FeatureDefinition("data-status", ("/account",), "account", "feature.account_center.title", "feature.account_center.description", "RadioTower", None, True, False, 500, safety_critical=True, placements=("more", "secondary_nav", "drawer")),
     FeatureDefinition("feedback", ("/feedback",), "account", "feature.feedback.title", "feature.feedback.description", "LifeBuoy", None, True, False, 510, placements=("more", "secondary_nav", "dialog")),
+    FeatureDefinition("notifications", ("/notifications",), "account", "feature.notifications.title", "feature.notifications.description", "BellRing", None, True, False, 520, placements=("more", "secondary_nav", "drawer")),
+    FeatureDefinition("trade-control", ("/trade",), "automation", "feature.trade_control.title", "feature.trade_control.description", "ShieldCheck", None, True, False, 530, safety_critical=True, placements=("more", "secondary_nav", "dashboard_card")),
+    FeatureDefinition("membership", ("/membership",), "account", "feature.membership.title", "feature.membership.description", "WalletCards", None, True, False, 540, placements=("more", "secondary_nav")),
+    FeatureDefinition("promotion", ("/promotion",), "account", "feature.promotion.title", "feature.promotion.description", "WalletCards", None, True, False, 550, placements=("more", "secondary_nav")),
+    FeatureDefinition("help", ("/help",), "account", "feature.help.title", "feature.help.description", "LifeBuoy", None, True, False, 560, placements=("more", "secondary_nav", "dialog")),
+    FeatureDefinition("legal", ("/legal",), "account", "feature.legal.title", "feature.legal.description", "ShieldCheck", None, True, False, 570, placements=("more", "secondary_nav", "dialog")),
+    FeatureDefinition("admin", ("/admin",), "account", "feature.admin.title", "feature.admin.description", "ShieldCheck", None, False, False, 580, safety_critical=True, placements=("more",), admin_only=True),
     FeatureDefinition("option-live-automation", ("/trade?mode=options",), "automation", "feature.option_live_automation.title", "feature.option_live_automation.description", "Target", "option_auto_live", False, False, 900, planned=True, placements=("more",)),
 )
 
@@ -99,7 +130,7 @@ for _feature in FEATURES:  # pragma: no cover - import-time invariants
         raise RuntimeError(f"unsafe feature definition: {_feature.key}")
     if not set(_feature.placements).issubset(PLACEMENTS):
         raise RuntimeError(f"unsafe feature placement: {_feature.key}")
-    if _feature.primary_nav != (_feature.routes[0] in PRIMARY_NAV_ROUTES):
+    if _feature.primary_nav and _feature.routes[0] not in PRIMARY_NAV_ROUTES:
         raise RuntimeError(f"primary navigation route mismatch: {_feature.key}")
     if _feature.primary_nav and _feature.pin_allowed:
         raise RuntimeError(f"primary navigation cannot be pinned: {_feature.key}")
@@ -201,22 +232,32 @@ def resolve_feature_catalog(
     plan: str,
     runtime: Mapping[str, object] | None = None,
     *,
+    capabilities: frozenset[str] | set[str] | None = None,
+    is_super_admin: bool = False,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Resolve membership and runtime state without hiding safety information."""
     runtime = runtime or {}
+    verified = frozenset(capabilities or ())
     resolved_now = now or datetime.now(UTC)
     if resolved_now.tzinfo is None or resolved_now.utcoffset() is None:
         raise FeatureCatalogValidationError("now must include a timezone")
     resolved_now = resolved_now.astimezone(UTC)
     items: list[dict[str, Any]] = []
     for definition in sorted(FEATURES, key=lambda item: (item.sort_order, item.key)):
-        if definition.planned:
+        if definition.admin_only and not is_super_admin:
+            continue
+        if definition.capability in _LEGACY_ONLY_CAPABILITIES and definition.capability not in verified:
+            availability, access = "locked", "wait"
+            reason = "sales_unavailable: 该能力仅保留历史有效权益，当前不公开新购或升级。"
+            data_state = "not_applicable"
+            health = "not_applicable"
+        elif definition.planned:
             availability, access = "planned", "wait"
             reason = "该能力仍在独立开发与验收中，当前会员不包含此功能。"
             data_state = "not_applicable"
             health = "not_applicable"
-        elif definition.safety_critical or definition.capability is None or can(plan, definition.capability):
+        elif definition.safety_critical or definition.capability is None or definition.capability in verified:
             availability, data_state, health, reason = _runtime_state(
                 runtime.get(definition.key), required=definition.requires_runtime, now=resolved_now,
             )
@@ -339,29 +380,55 @@ class FeaturePreferenceStore:
         expected_version: int,
         pinned: list[str],
         recent: list[str],
+        connection: Any | None = None,
     ) -> dict[str, Any]:
         if not isinstance(expected_version, int) or isinstance(expected_version, bool) or expected_version < 0:
             raise FeatureCatalogValidationError("expected_version must be a non-negative integer")
         normalized_pins, normalized_recent = _validate_requested(pinned, recent)
+        if connection is not None:
+            return self._replace_in_transaction(
+                connection,
+                user_id,
+                expected_version=expected_version,
+                pinned=normalized_pins,
+                recent=normalized_recent,
+            )
         with self.db.transaction() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute("SELECT settings_json FROM user_settings WHERE user_id=?", (user_id,)).fetchone()
-            settings = _decode_settings(row["settings_json"] if row else None)
-            current = _clean_preferences(settings.get(PREFERENCE_KEY))
-            if current["version"] != expected_version:
-                raise FeatureCatalogConflict("feature preferences changed; reload before saving")
-            updated = {
-                "pinned": normalized_pins,
-                "recent": normalized_recent,
-                "version": expected_version + 1,
-            }
-            settings[PREFERENCE_KEY] = updated
-            connection.execute(
-                """INSERT INTO user_settings(user_id,settings_json,updated_at) VALUES (?,?,?)
-                   ON CONFLICT(user_id) DO UPDATE SET
-                     settings_json=excluded.settings_json,updated_at=excluded.updated_at""",
-                (user_id, json.dumps(settings, ensure_ascii=False), datetime.now(UTC).isoformat(timespec="seconds")),
+            return self._replace_in_transaction(
+                connection,
+                user_id,
+                expected_version=expected_version,
+                pinned=normalized_pins,
+                recent=normalized_recent,
             )
+
+    @staticmethod
+    def _replace_in_transaction(
+        connection: Any,
+        user_id: int,
+        *,
+        expected_version: int,
+        pinned: list[str],
+        recent: list[str],
+    ) -> dict[str, Any]:
+        row = connection.execute("SELECT settings_json FROM user_settings WHERE user_id=?", (user_id,)).fetchone()
+        settings = _decode_settings(row["settings_json"] if row else None)
+        current = _clean_preferences(settings.get(PREFERENCE_KEY))
+        if current["version"] != expected_version:
+            raise FeatureCatalogConflict("feature preferences changed; reload before saving")
+        updated = {
+            "pinned": pinned,
+            "recent": recent,
+            "version": expected_version + 1,
+        }
+        settings[PREFERENCE_KEY] = updated
+        connection.execute(
+            """INSERT INTO user_settings(user_id,settings_json,updated_at) VALUES (?,?,?)
+               ON CONFLICT(user_id) DO UPDATE SET
+                 settings_json=excluded.settings_json,updated_at=excluded.updated_at""",
+            (user_id, json.dumps(settings, ensure_ascii=False), datetime.now(UTC).isoformat(timespec="seconds")),
+        )
         return updated
 
     def record_recent(
@@ -370,30 +437,47 @@ class FeaturePreferenceStore:
         *,
         expected_version: int,
         key: str,
+        connection: Any | None = None,
     ) -> dict[str, Any]:
         if not isinstance(expected_version, int) or isinstance(expected_version, bool) or expected_version < 0:
             raise FeatureCatalogValidationError("expected_version must be a non-negative integer")
         if not isinstance(key, str) or key not in _BY_KEY:
             raise FeatureCatalogValidationError("recent feature is unknown")
+        if connection is not None:
+            return self._record_recent_in_transaction(
+                connection, user_id, expected_version=expected_version, key=key,
+            )
         with self.db.transaction() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute("SELECT settings_json FROM user_settings WHERE user_id=?", (user_id,)).fetchone()
-            settings = _decode_settings(row["settings_json"] if row else None)
-            current = _clean_preferences(settings.get(PREFERENCE_KEY))
-            if current["version"] != expected_version:
-                raise FeatureCatalogConflict("feature preferences changed; reload before saving")
-            updated = {
-                "pinned": current["pinned"],
-                "recent": [key, *(candidate for candidate in current["recent"] if candidate != key)][:MAX_RECENT],
-                "version": expected_version + 1,
-            }
-            settings[PREFERENCE_KEY] = updated
-            connection.execute(
-                """INSERT INTO user_settings(user_id,settings_json,updated_at) VALUES (?,?,?)
-                   ON CONFLICT(user_id) DO UPDATE SET
-                     settings_json=excluded.settings_json,updated_at=excluded.updated_at""",
-                (user_id, json.dumps(settings, ensure_ascii=False), datetime.now(UTC).isoformat(timespec="seconds")),
+            return self._record_recent_in_transaction(
+                connection, user_id, expected_version=expected_version, key=key,
             )
+
+    @staticmethod
+    def _record_recent_in_transaction(
+        connection: Any,
+        user_id: int,
+        *,
+        expected_version: int,
+        key: str,
+    ) -> dict[str, Any]:
+        row = connection.execute("SELECT settings_json FROM user_settings WHERE user_id=?", (user_id,)).fetchone()
+        settings = _decode_settings(row["settings_json"] if row else None)
+        current = _clean_preferences(settings.get(PREFERENCE_KEY))
+        if current["version"] != expected_version:
+            raise FeatureCatalogConflict("feature preferences changed; reload before saving")
+        updated = {
+            "pinned": current["pinned"],
+            "recent": [key, *(candidate for candidate in current["recent"] if candidate != key)][:MAX_RECENT],
+            "version": expected_version + 1,
+        }
+        settings[PREFERENCE_KEY] = updated
+        connection.execute(
+            """INSERT INTO user_settings(user_id,settings_json,updated_at) VALUES (?,?,?)
+               ON CONFLICT(user_id) DO UPDATE SET
+                 settings_json=excluded.settings_json,updated_at=excluded.updated_at""",
+            (user_id, json.dumps(settings, ensure_ascii=False), datetime.now(UTC).isoformat(timespec="seconds")),
+        )
         return updated
 
 

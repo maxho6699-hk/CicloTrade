@@ -11,6 +11,7 @@ from src.apps.api.app import app, routes
 
 
 USER_PATH = "/api/rewrite/v1/broker-access-applications"
+READINESS_PATH = f"{USER_PATH}/readiness"
 ADMIN_PATH = "/api/rewrite/v1/admin/broker-access-applications"
 
 
@@ -69,6 +70,7 @@ def _eligible(browser_api, user):
 def test_routes_registered_and_unauthenticated_requests_fail(browser_api):
     paths = {route.path for route in routes}
     assert USER_PATH in paths
+    assert READINESS_PATH in paths
     assert f"{USER_PATH}/{{application_id:str}}/withdraw" in paths
     assert ADMIN_PATH in paths
     assert f"{ADMIN_PATH}/{{application_id:str}}/review" in paths
@@ -79,6 +81,14 @@ def test_routes_registered_and_unauthenticated_requests_fail(browser_api):
 def test_http_submit_replay_withdraw_and_admin_review_are_sanitized(browser_api):
     user, authorization = _authorize(browser_api)
     _eligible(browser_api, user)
+    status, readiness_headers, readiness = asyncio.run(
+        _asgi(READINESS_PATH, headers=(("authorization", authorization),))
+    )
+    assert status == 200 and readiness["can_apply"] is True
+    assert readiness["providers"] == ["futu_moomoo", "ibkr", "longbridge", "tiger", "webull"]
+    assert readiness_headers["cache-control"] == "private, no-store"
+    assert readiness["eligibility_only"] is True
+    assert readiness["broker_account_created"] is readiness["execution_enabled"] is False
     headers = (("authorization", authorization), ("idempotency-key", "broker-http-key-01"))
     body = {"provider": "ibkr", "request_reason": "需要美股及期权资格"}
     status, response_headers, created = asyncio.run(

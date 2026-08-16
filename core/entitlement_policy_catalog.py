@@ -8,10 +8,12 @@ PUBLIC_PLAN_DISPLAY_NAMES = {
     "定制版": "定制會員（歷史）",
 }
 PUBLIC_PLAN_CAPABILITY_REMOVALS = {
-    "高级版": frozenset({"auto_control_account_1"}),
+    # The reviewed public contract retains the one-stock-account product
+    # qualification. Runtime operation still requires independent gates.
 }
 PUBLIC_PLAN_CAPABILITY_ADDITIONS = {
-    "高级版": frozenset({"broker_access_apply", "option_live_beta_apply"}),
+    "标准版": frozenset({"ai_workspace", "expanded_research_full"}),
+    "高级版": frozenset({"broker_access_apply", "multi_agent_deliberation"}),
 }
 OPTION_LIVE_BETA_STATES = (
     "planned", "beta_eligible", "approved", "runtime_ready", "paused", "revoked",
@@ -42,7 +44,7 @@ PUBLIC_PLAN_COPY = {
             "一句话策略每日 10 次", "近 10 年历史样本范围与参数草稿",
             "CSV 导入与策略绩效追踪", "Telegram 即时正股建议",
             "美股多空策略研究与官方验证",
-            "真实期权自动交易项目申请入口（不保证审批、权限或运行）",
+            "1 个股票账号的受控自动实盘产品资格（需 Telegram、券商授权、账户与环境、mandate、策略与风险、数据健康及 kill-switch 独立门）",
         ),
     },
 }
@@ -52,12 +54,16 @@ SEALED_LEGACY_CAPABILITIES = {
         "earnings_forecast", "earnings_option_defined_risk", "option_auto_paper_official",
         "option_chain", "option_greeks", "option_iv", "option_quote_chart",
         "option_strategy", "option_strategy_multi_leg", "reports", "short_research",
-        "tg_option_signal",
+        "tg_option_signal", "auto_control_account_5", "broker_access_apply",
+        "option_live_beta_apply", "ai_workspace", "expanded_research_full",
+        "multi_agent_deliberation", "csv_import", "strategy_tracking",
     ),
     "定制版": (
         "earnings_forecast", "earnings_option_defined_risk", "option_auto_paper_official",
         "option_chain", "option_greeks", "option_iv", "option_quote_chart",
         "option_strategy", "option_strategy_multi_leg", "reports", "short_research",
-        "tg_option_signal",
+        "tg_option_signal", "auto_control_account_5", "broker_access_apply",
+        "option_live_beta_apply", "ai_workspace", "expanded_research_full",
+        "multi_agent_deliberation", "csv_import", "strategy_tracking",
     ),
 }

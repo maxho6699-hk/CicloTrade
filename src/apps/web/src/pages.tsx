@@ -32,8 +32,8 @@ import { useWorkspace } from './api/workspace-context'
 import { createPriceAlert, deactivatePriceAlert, fetchMarketCandles, fetchMarketQuote, fetchSystemCycleResearchStatus, type MarketQuotePayload, type PriceAlert, type SystemCycleResearchStatus } from './api/client'
 import { subscribeMarketStream } from './api/marketStream'
 import { fetchStrategyResearch97Aggregate, type StrategyResearch97AggregateLoad } from './api/strategyResearch97'
+import { deliberationBindingFromRecommendation } from './api/deliberation'
 import { recommendationToDecision } from './data/adapters'
-import { instruments } from './data/demo'
 import type { Candle, Decision, Instrument, Market } from './types'
 import { getFormatLocale } from './i18n/runtime'
 import { useLocale } from './i18n/useLocale'
@@ -138,6 +138,7 @@ export function MarketsPage() {
   const [stableResearchStatus, setStableResearchStatus] = useState<SystemCycleResearchStatus | null>(null)
   const [expandedResearchLoad, setExpandedResearchLoad] = useState<StrategyResearch97AggregateLoad | null>(null)
   const [researchChainStatus, setResearchChainStatus] = useState('')
+  const [deliberationEntryStatus, setDeliberationEntryStatus] = useState('')
   const requestedSymbol = (searchParams.get('symbol') ?? '').toUpperCase()
   const requestedMarket = searchParams.get('market')
   const timeframe = searchParams.get('timeframe') ?? '日线'
@@ -148,18 +149,16 @@ export function MarketsPage() {
   const marketDataEnabled = workspace.mode === 'authenticated' && Boolean(workspace.data?.market_data) && workspace.data?.market_data.freshness !== '已停用'
   const watchlists = workspace.data?.settings.watchlists ?? { us: [], a_share: [] }
   const currentSavedSymbols = marketFilter === 'CN' ? watchlists.a_share : watchlists.us
-  const catalog = instruments
   const savedInstruments = useMemo<Instrument[]>(() => currentSavedSymbols.map((symbol) => {
-    const catalogItem = catalog.find((item) => item.symbol === symbol)
     return {
       symbol,
-      name: catalogItem?.name ?? symbol,
-      market: catalogItem?.market ?? marketFilter,
+      name: symbol,
+      market: marketFilter,
       price: 0,
       changePct: 0,
-      currency: catalogItem?.currency ?? (marketFilter === 'CN' ? 'CNY' : 'USD'),
+      currency: marketFilter === 'CN' ? 'CNY' : 'USD',
     }
-  }), [catalog, currentSavedSymbols, marketFilter])
+  }), [currentSavedSymbols, marketFilter])
   const allInstruments = savedInstruments
   const selectedBase = useMemo<Instrument>(() => allInstruments.find((item) => item.symbol === requestedSymbol) ?? ({
     symbol: requestedSymbol,
@@ -312,7 +311,7 @@ export function MarketsPage() {
   }
 
   const changeChartWatchlist = async (market: Instrument['market'], symbol: string, remove: boolean) => {
-    const instrument = instruments.find((item) => item.market === market && item.symbol === symbol) ?? {
+    const instrument = {
       symbol, name: symbol, market, price: 0, changePct: 0, currency: market === 'CN' ? 'CNY' as const : 'USD' as const,
     }
     await changeWatchlist(instrument, remove)
@@ -358,6 +357,21 @@ export function MarketsPage() {
       : undefined
     return recommendationToDecision(item, 0, formatLocale, quoteOverride)
   }, [formatLocale, hasExplicitMarket, marketQuote, searchParams, selected.market, selected.symbol, workspace.data])
+  const officialRecommendation = useMemo(() => {
+    if (!officialDecision?.officialEventId) return null
+    return workspace.data?.recommendations.items.find((item) => item.event_id === officialDecision.officialEventId && item.instrument_type === 'stock') ?? null
+  }, [officialDecision?.officialEventId, workspace.data?.recommendations.items])
+  const openDeliberation = async () => {
+    if (!officialRecommendation) return
+    setDeliberationEntryStatus('正在绑定真实量化事件…')
+    try {
+      const binding = await deliberationBindingFromRecommendation(officialRecommendation)
+      const query = new URLSearchParams({ market: binding.market, symbol: binding.symbol, timeframe: binding.timeframe, question: binding.question, source_event_id: binding.source_event_id, source_event_version: String(binding.source_event_version), source_event_sha256: binding.source_event_sha256 })
+      navigate(`/deliberation?${query.toString()}`)
+    } catch (caught) {
+      setDeliberationEntryStatus(caught instanceof Error ? caught.message : '无法绑定真实量化事件。')
+    }
+  }
   const alerts = useMemo(() => localAlerts ?? workspace.data?.alerts.items ?? [], [localAlerts, workspace.data?.alerts.items])
   const alertPricesForInstrument = useCallback((market: Market, symbol: string) => alerts
     .filter((item) => isAlertForInstrument(item, market, symbol) && item.is_active !== false && (item.id === undefined || !hiddenAlertIds.includes(item.id)))
@@ -456,6 +470,7 @@ export function MarketsPage() {
     currentPrice: '未核对',
     quantityHint: '0 股（现在不买、不卖）',
     quoteUpdatedAt: '没有可验证的当前报价时间',
+    updatedAt: '没有正式事件',
     quoteFreshness: 'missing',
     actionBlockReason: '没有可验证的正式事件',
   }
@@ -483,6 +498,8 @@ export function MarketsPage() {
           <div><dt>最大风险</dt><dd>{inspectorDecision.maxLoss}</dd></div>
         </dl>
         <button className="button tertiary wide" type="button" onClick={() => navigate(`/portfolio?market=${selected.market}&symbol=${encodeURIComponent(selected.symbol)}&event_id=${officialDecision?.officialEventId ?? ''}`)}><CircleDollarSign size={16} /> 查看官方验证复盘</button>
+        <button className="button secondary wide" type="button" onClick={() => void openDeliberation()} disabled={!officialRecommendation || Boolean(deliberationEntryStatus.startsWith('正在'))}><Bot size={16} /> 多智能体证据审议</button>
+        {deliberationEntryStatus && <p className="form-status" role="status" aria-live="polite">{deliberationEntryStatus}</p>}
         <button className="button primary wide" type="button" onClick={() => setParam('tab', '信号时间线')}>查看现有证据</button>
         <footer><span>{inspectorDecision.modelVersion}</span><span>{inspectorDecision.eventId}</span></footer>
       </div>}

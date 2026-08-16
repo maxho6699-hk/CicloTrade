@@ -114,9 +114,9 @@ class EarningsForecastReadModel:
             "required_capability": "earnings_forecast",
             "window_days": window_days,
             "confirmed_event_count": self._confirmed_count(as_of, window_days),
-            "reason_code": "capability_required",
-            "description": "未来 7 天业绩预测、历史轨迹与复盘仅向具备权限的会员开放。",
-            "upgrade_path": "/membership",
+            "reason_code": "legacy_entitlement_required",
+            "description": "未来 7 天业绩预测、历史轨迹与复盘仅对历史有效专业权益开放；当前不公开新购或升级。",
+            "upgrade_path": None,
         }
 
     @staticmethod
@@ -239,8 +239,8 @@ class EarningsForecastReadModel:
                 "state": "locked",
                 "feature": "earnings_option_research",
                 "required_capability": "earnings_option_defined_risk",
-                "reason_code": "capability_required",
-                "upgrade_path": "/membership",
+                "reason_code": "legacy_entitlement_required",
+                "upgrade_path": None,
             }
         sql = """SELECT id,structure_type FROM earnings_option_research_snapshots
                  WHERE forecast_snapshot_id=?"""
@@ -434,8 +434,12 @@ class EarningsForecastReadModel:
                 "stage": row["stage"], "completed_at": row["completed_at"],
                 "direction_correct": bool(row["direction_correct"]),
                 "interval_covered": bool(row["interval_covered"]),
-                "paper_pnl_net": row["paper_pnl_net"],
-                "paper_max_drawdown": row["paper_max_drawdown"],
+                "paper_performance": {
+                    "state": row["paper_performance_state"],
+                    "pnl_net": row["paper_pnl_net_v2"],
+                    "max_drawdown": row["paper_max_drawdown_v2"],
+                    "ledger_snapshot_sha256": row["paper_ledger_snapshot_sha256"],
+                },
                 "analysis": self._redact(
                     json.loads(row["analysis_json"]),
                     (*postmortem_secrets, row["model_id"]),
@@ -515,7 +519,7 @@ class EarningsForecastReadModel:
             p_up=row["p_up"], p_down=row["p_down"], p_flat=row["p_flat"],
             actual_return_pct=row["actual_return_pct"], flat_band_pct=row["flat_band_pct"],
             price_p10=row["price_p10"], price_p90=row["price_p90"],
-            actual_price=row["actual_price"], paper_pnl_net=0.0,
+            actual_price=row["actual_price"], paper_pnl_net=None,
         ) for row in rows]
         metrics = compute_forecast_metrics(observations, starting_equity=100_000.0)
         return {"state": "research", "metrics": asdict(metrics)}
@@ -531,7 +535,7 @@ class EarningsForecastReadModel:
             return {
                 "state": "locked", "feature": "earnings_option_research",
                 "required_capability": "earnings_option_defined_risk",
-                "reason_code": "capability_required", "upgrade_path": "/membership",
+                "reason_code": "legacy_entitlement_required", "upgrade_path": None,
             }
         event_id = self.codec.decode("event", opaque_event_id)
         option_id = self.codec.decode("option", opaque_option_id)

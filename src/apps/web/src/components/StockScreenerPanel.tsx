@@ -35,9 +35,9 @@ const DEFAULT_SORT = { field: 'updated_at' as const, direction: 'desc' as const 
 const COPY = {
   'zh-Hans': {
     kicker: 'STOCK SCREENER / RESEARCH ONLY', title: '行动型选股器', description: '只呈现通过服务端合同验证的研究候选，不提供实时报价或自动交易。',
-    states: { pending: ['正在读取选股数据', '等待服务端返回可验证结果。'], success: ['数据已准备', '候选、状态与下一步由服务端提供。'], empty: ['暂无符合条件的候选', '不会用示例标的填补空白。'], stale: ['数据并非最新', '保留研究记录，但不可作为即时依据。'], offline: ['数据服务离线', '没有可展示的结果或操作。'], unknown: ['选股数据暂不可用', '服务端未连接或返回的合同未通过验证。'] },
+    states: { pending: ['正在读取选股数据', '等待服务端返回可验证结果。'], success: ['数据已准备', '候选、状态与下一步由服务端提供。'], empty: ['暂无符合条件的候选', '不会用示例股票填补空白。'], stale: ['数据并非最新', '保留研究记录，但不可作为即时依据。'], offline: ['数据服务离线', '没有可展示的结果或操作。'], unknown: ['选股数据暂不可用', '服务端未连接或返回的合同未通过验证。'] },
     dataTime: '香港时间', serverPreset: '服务器筛选', presetName: '预设名称', defaultPresetName: '我的筛选', save: '保存当前筛选', saving: '正在保存…', draft: '已保留未同步草稿', saved: '已保存到服务器', conflict: '服务器版本已变化；请刷新后再保存。', failed: '无法保存；未同步草稿仍保留在此浏览器。',
-    results: '条结果', page: '第', of: '页 / 共', previous: '上一页', next: '下一页', symbol: '标的代码', action: '行动', price: '参考价', change: '变动', score: '评分', status: '数据状态', updated: '香港时间', nextStep: '下一步', research: '进入研究', alert: '预填预警', paper: '预填个人模拟', blocked: '不可模拟：', disclosure: '研究、预警和个人模拟都只打开服务端允许的页面或预填草稿；不会提交交易。',
+    results: '条结果', page: '第', of: '页 / 共', previous: '上一页', next: '下一页', symbol: '股票代码', action: '行动', price: '参考价', change: '变动', score: '评分', status: '数据状态', updated: '香港时间', nextStep: '下一步', research: '进入研究', alert: '预填预警', paper: '预填个人模拟', blocked: '不可模拟：', disclosure: '研究、预警和个人模拟都只打开服务端允许的页面或预填草稿；不会提交交易。',
     minPrice: '最低价格', maxPrice: '最高价格', minScore: '最低评分', sort: '排序', apply: '套用筛选', reset: '重置',
     presets: { all: '全部', momentum: '动量', pullback: '回调', risk_first: '风险优先' },
     actions: { buy: '看多', short: '看空', wait: '等待', hold: '持有', reduce: '减仓', exit: '退出' },
@@ -48,9 +48,9 @@ const COPY = {
   },
   'zh-Hant': {
     kicker: 'STOCK SCREENER / RESEARCH ONLY', title: '行動型選股器', description: '只呈現通過服務端合約驗證的研究候選，不提供即時報價或自動交易。',
-    states: { pending: ['正在讀取選股資料', '等待服務端回傳可驗證結果。'], success: ['資料已準備', '候選、狀態與下一步由服務端提供。'], empty: ['暫無符合條件的候選', '不會用示例標的填補空白。'], stale: ['資料並非最新', '保留研究記錄，但不可作為即時依據。'], offline: ['資料服務離線', '沒有可展示的結果或操作。'], unknown: ['選股資料暫不可用', '伺服器未連接或回傳的合約未通過驗證。'] },
+    states: { pending: ['正在讀取選股資料', '等待服務端回傳可驗證結果。'], success: ['資料已準備', '候選、狀態與下一步由服務端提供。'], empty: ['暫無符合條件的候選', '不會用示例股票填補空白。'], stale: ['資料並非最新', '保留研究記錄，但不可作為即時依據。'], offline: ['資料服務離線', '沒有可展示的結果或操作。'], unknown: ['選股資料暫不可用', '伺服器未連接或回傳的合約未通過驗證。'] },
     dataTime: '香港時間', serverPreset: '伺服器篩選', presetName: '預設名稱', defaultPresetName: '我的篩選', save: '儲存目前篩選', saving: '正在儲存…', draft: '已保留未同步草稿', saved: '已儲存到伺服器', conflict: '伺服器版本已變更；請重新整理後再儲存。', failed: '無法儲存；未同步草稿仍保留在此瀏覽器。',
-    results: '筆結果', page: '第', of: '頁 / 共', previous: '上一頁', next: '下一頁', symbol: '標的代碼', action: '行動', price: '參考價', change: '變動', score: '評分', status: '資料狀態', updated: '香港時間', nextStep: '下一步', research: '進入研究', alert: '預填預警', paper: '預填個人模擬', blocked: '不可模擬：', disclosure: '研究、預警和個人模擬都只開啟伺服器允許的頁面或預填草稿；不會提交交易。',
+    results: '筆結果', page: '第', of: '頁 / 共', previous: '上一頁', next: '下一頁', symbol: '股票代碼', action: '行動', price: '參考價', change: '變動', score: '評分', status: '資料狀態', updated: '香港時間', nextStep: '下一步', research: '進入研究', alert: '預填預警', paper: '預填個人模擬', blocked: '不可模擬：', disclosure: '研究、預警和個人模擬都只開啟伺服器允許的頁面或預填草稿；不會提交交易。',
     minPrice: '最低價格', maxPrice: '最高價格', minScore: '最低評分', sort: '排序', apply: '套用篩選', reset: '重設',
     presets: { all: '全部', momentum: '動量', pullback: '回調', risk_first: '風險優先' },
     actions: { buy: '看多', short: '看空', wait: '等待', hold: '持有', reduce: '減倉', exit: '退出' },

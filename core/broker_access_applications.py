@@ -103,16 +103,29 @@ class BrokerAccessApplicationService:
         self.db = database or get_database()
 
     @staticmethod
-    def _eligible_user(conn: Any, user_id: int) -> dict[str, Any]:
+    def _readiness(conn: Any, user_id: int) -> dict[str, Any]:
         row = conn.execute(
             "SELECT id,plan_type,subscription_expire,is_active FROM users WHERE id=?",
             (int(user_id),),
         ).fetchone()
         if not row or not bool(row["is_active"]):
-            raise BrokerAccessApplicationError("账户不可用。", 403)
+            return {
+                "can_apply": False,
+                "membership_eligible": False,
+                "telegram_ready": False,
+                "requires_telegram": True,
+                "providers": sorted(CANONICAL_PROVIDERS),
+                "reason": "账户不可用。",
+                "eligibility_only": True,
+                "broker_account_created": False,
+                "execution_enabled": False,
+            }
         membership = authoritative_membership_row(conn, row)
-        if not verified_can(conn, str(membership.get("plan_type") or "免费版"), "broker_access_apply"):
-            raise BrokerAccessApplicationError("当前会员策略不允许申请实盘券商资格。", 403)
+        membership_eligible = verified_can(
+            conn,
+            str(membership.get("plan_type") or "免费版"),
+            "broker_access_apply",
+        )
         telegram = conn.execute(
             """SELECT 1
                FROM telegram_accounts t
@@ -124,9 +137,33 @@ class BrokerAccessApplicationService:
                  AND json_extract(s.settings_json,'$.telegram.consent')=1""",
             (int(user_id),),
         ).fetchone()
-        if not telegram:
-            raise BrokerAccessApplicationError("申请前必须绑定、验证并同意通知的 Telegram 账户。", 403)
-        return membership
+        telegram_ready = bool(telegram)
+        reason = None
+        if not membership_eligible:
+            reason = "当前会员策略不允许申请实盘券商资格。"
+        elif not telegram_ready:
+            reason = "申请前必须绑定、验证并同意通知的 Telegram 账户。"
+        return {
+            "can_apply": membership_eligible and telegram_ready,
+            "membership_eligible": membership_eligible,
+            "telegram_ready": telegram_ready,
+            "requires_telegram": True,
+            "providers": sorted(CANONICAL_PROVIDERS),
+            "reason": reason,
+            "eligibility_only": True,
+            "broker_account_created": False,
+            "execution_enabled": False,
+        }
+
+    @staticmethod
+    def _eligible_user(conn: Any, user_id: int) -> None:
+        readiness = BrokerAccessApplicationService._readiness(conn, user_id)
+        if not readiness["can_apply"]:
+            raise BrokerAccessApplicationError(str(readiness["reason"]), 403)
+
+    def readiness(self, user_id: int) -> dict[str, Any]:
+        with self.db.transaction() as conn:
+            return self._readiness(conn, user_id)
 
     def create(self, user_id: int, payload: Any, idempotency_key: Any) -> tuple[dict[str, Any], bool]:
         if not isinstance(payload, dict) or set(payload) - {"provider", "request_reason"} or "provider" not in payload:

@@ -30,21 +30,21 @@ def test_consumer_uses_published_policy_not_mutable_legacy_capabilities(tmp_path
         before = verified_capabilities(connection, "高级版")
         CAPABILITIES["高级版"].add("option_auto_live")
         try:
-            assert verified_can(connection, "高级版", "option_live_beta_apply") is True
+            assert verified_can(connection, "高级版", "auto_control_account_1") is True
             assert verified_can(connection, "高级版", "option_auto_live") is False
             assert verified_capabilities(connection, "高级版") == before
         finally:
             CAPABILITIES["高级版"].discard("option_auto_live")
 
 
-def test_advanced_has_application_only_and_no_runtime_or_account_control(tmp_path):
+def test_advanced_has_one_stock_account_and_no_option_runtime_or_application(tmp_path):
     database = _db(tmp_path)
     with database.transaction() as connection:
-        assert verified_can(connection, "高级版", "option_live_beta_apply") is True
+        assert verified_can(connection, "高级版", "option_live_beta_apply") is False
         assert verified_can(connection, "高级版", "option_auto_live") is False
         assert verified_can(connection, "高级版", "broker_access_apply") is True
-        assert policy_account_limit(connection, "高级版") == 0
-        assert policy_trading_limits(connection, "高级版")["broker_accounts"] == 0
+        assert policy_account_limit(connection, "高级版") == 1
+        assert policy_trading_limits(connection, "高级版")["broker_accounts"] == 1
         assert policy_trading_limits(connection, "高级版")["instruments"] == ("stock",)
 
 
@@ -76,7 +76,8 @@ def test_retired_plans_keep_compatibility_reads_but_no_commerce(tmp_path):
     with database.transaction() as connection:
         assert verified_can(connection, "专业版", "option_chain") is True
         assert verified_can(connection, "专业版", "option_auto_live") is False
-        assert policy_account_limit(connection, "专业版") == 0
+        assert policy_account_limit(connection, "专业版") == 5
+        assert verified_can(connection, "专业版", "option_live_beta_apply") is True
         assert commerce_decision(connection, "专业版", "purchase")["allowed"] is False
         assert commerce_decision(connection, "专业版", "renew")["allowed"] is False
         assert commerce_decision(connection, "专业版", "admin_grant")["allowed"] is False
@@ -93,7 +94,7 @@ def test_policy_hash_or_readiness_failure_fails_closed(tmp_path):
             "UPDATE membership_entitlement_policy_versions SET policy_sha256=? WHERE id=?",
             ("0" * 64, row["id"]),
         )
-        assert verified_can(connection, "高级版", "option_live_beta_apply") is False
+        assert verified_can(connection, "高级版", "auto_control_account_1") is False
         assert commerce_decision(connection, "高级版", "purchase")["allowed"] is False
 
 
@@ -101,7 +102,7 @@ def test_missing_readiness_review_fails_closed(tmp_path):
     database = _db(tmp_path)
     with database.transaction() as connection:
         connection.execute("DELETE FROM membership_entitlement_readiness_reviews")
-        assert verified_can(connection, "高级版", "option_live_beta_apply") is False
+        assert verified_can(connection, "高级版", "auto_control_account_1") is False
         assert commerce_decision(connection, "高级版", "purchase")["allowed"] is False
 
 
@@ -115,7 +116,7 @@ def test_expired_readiness_receipt_fails_closed_at_as_of(tmp_path):
             ((checked_at - timedelta(seconds=1)).isoformat(),),
         )
         assert verified_capabilities(connection, "高级版", as_of=checked_at) == set()
-        assert verified_can(connection, "高级版", "option_live_beta_apply", as_of=checked_at) is False
+        assert verified_can(connection, "高级版", "auto_control_account_1", as_of=checked_at) is False
 
 
 def test_future_as_of_keeps_future_valid_receipt_and_later_expiry_fails(tmp_path):
@@ -127,9 +128,9 @@ def test_future_as_of_keeps_future_valid_receipt_and_later_expiry_fails(tmp_path
             "UPDATE membership_entitlement_readiness_receipts SET valid_until=?",
             ((checked_at + timedelta(days=1)).isoformat(),),
         )
-        assert verified_can(connection, "高级版", "option_live_beta_apply", as_of=checked_at) is True
+        assert verified_can(connection, "高级版", "auto_control_account_1", as_of=checked_at) is True
         assert verified_can(
-            connection, "高级版", "option_live_beta_apply", as_of=checked_at + timedelta(days=2),
+            connection, "高级版", "auto_control_account_1", as_of=checked_at + timedelta(days=2),
         ) is False
 
 
@@ -144,5 +145,5 @@ def test_retired_legacy_read_does_not_require_readiness_receipt(tmp_path):
 def test_missing_policy_fails_closed():
     connection = sqlite3.connect(":memory:")
     connection.row_factory = sqlite3.Row
-    assert verified_can(connection, "高级版", "option_live_beta_apply") is False
+    assert verified_can(connection, "高级版", "auto_control_account_1") is False
     assert commerce_decision(connection, "高级版", "purchase")["reason"] == "policy_unavailable"

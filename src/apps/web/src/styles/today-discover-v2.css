@@ -5,3 +5,17 @@
 .v2-inspector-toggle{display:none}.v2-pagination{display:flex;align-items:center;justify-content:center;gap:10px;padding:10px 12px;color:var(--v2-muted);font-size:11px}.v2-mini-retry{min-height:44px;border:0;background:transparent;color:var(--v2-link);font-size:11px;text-decoration:underline}.v2-button-small{min-height:44px}.v2-view-tabs button{min-height:44px}.v2-icon-button{width:44px;height:44px}
 @media (min-width:701px) and (max-width:1070px){.v2-inspector-toggle{display:inline-flex}.v2-inspector{position:fixed;z-index:70;top:calc(var(--topbar-height,54px) + 12px);right:12px;width:min(360px,calc(100vw - 24px));max-height:calc(100vh - var(--topbar-height,54px) - 24px);overflow:auto;transform:translateX(calc(100% + 24px));transition:transform 180ms ease;box-shadow:var(--shadow-overlay,0 18px 48px rgba(0,0,0,.25))}.v2-inspector.is-open{transform:translateX(0)}}
 @media (max-width:700px){.v2-inspector-toggle{display:inline-flex}.v2-inspector{position:fixed;z-index:70;left:0;right:0;bottom:0;width:100%;max-height:72vh;overflow:auto;padding:12px 12px calc(76px + env(safe-area-inset-bottom));background:var(--v2-canvas);border-radius:14px 14px 0 0;transform:translateY(calc(100% + 24px));transition:transform 180ms ease;box-shadow:0 -18px 48px color-mix(in srgb,var(--v2-text) 15%,transparent)}.v2-inspector.is-open{transform:translateY(0)}.v2-page-top-meta{width:100%;justify-content:flex-start}.v2-page-top-meta .v2-inspector-toggle{margin-left:auto}.v2-pagination{padding-bottom:16px}}
+
+/* Touch target contract: keep the desktop V2 geometry intact and lift only
+   the mobile/tablet interaction surfaces to the 44px minimum. */
+@media (max-width:1070px){
+  .v2-search-field,
+  .v2-search-field input,
+  .v2-filter-select,
+  .v2-inspector-toggle,
+  .v2-button,
+  .v2-button-tertiary,
+  .v2-symbol-button{min-height:44px}
+  .v2-symbol-button{display:inline-flex;align-items:center}
+  .topbar .ai-pill{min-height:44px}
+}

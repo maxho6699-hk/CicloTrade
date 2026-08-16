@@ -29,7 +29,8 @@ test('Today owns priority work and delegates full workflows', () => {
 test('V2 routes are reachable while the real stock screener deep link remains intact', () => {
   assert.match(app, /path="\/today" element=\{<TodayV2Page \/>\}/)
   assert.match(app, /path="\/discover" element=\{<DiscoverRoute \/>\}/)
-  assert.match(app, /searchParams\.get\('tool'\) === 'screener' \? <OpportunitiesPage \/> : <DiscoverV2Page \/>/)
+  assert.match(app, /searchParams\.get\('tool'\) === 'screener' \? <StockScreenerRoute \/> : <DiscoverV2Page \/>/)
+  assert.doesNotMatch(app, /import \{ OpportunitiesPage \}/)
   assert.match(app, /<LegacyRedirect to="\/discover" \/>/)
 })
 
@@ -120,4 +121,6 @@ test('Finish gate includes mobile drawer/sheet and touch-safe controls', () => {
   assert.match(css, /@media \(min-width:701px\) and \(max-width:1070px\)/)
   assert.match(css, /@media \(max-width:700px\)/)
   assert.match(css, /min-height:44px/)
+  assert.match(primitives, /event\.key !== 'Escape'/)
+  assert.match(primitives, /buttonRef\.current\?\.focus\(\)/)
 })

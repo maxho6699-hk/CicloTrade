@@ -312,7 +312,7 @@ def test_retired_plan_callbacks_fail_closed_without_creating_an_order(db, legacy
     assert db.fetch_one("SELECT COUNT(*) count FROM subscription_orders")["count"] == 0
 
 
-def test_advanced_member_sees_only_beta_application_entry_without_execution_claims(db):
+def test_advanced_member_sees_stock_auto_live_qualification_without_option_beta_claims(db):
     user = _bound_user(db, "advanced-beta", "810098")
     db.execute(
         "UPDATE users SET plan_type='高级版',subscription_expire='2099-01-01T00:00:00+00:00' WHERE id=?",
@@ -322,8 +322,10 @@ def test_advanced_member_sees_only_beta_application_entry_without_execution_clai
     response = telegram_desk_response(db, "810098", "desk:membership", callback=True)
     urls = [button.get("url", "") for row in response.keyboard for button in row]
 
-    assert any("program=option_live_beta" in url for url in urls)
-    assert "不保證審批、運行、券商連接或下單" in response.message
+    assert not any("program=option_live_beta" in url for url in urls)
+    assert any(url.endswith("/trade") for url in urls)
+    assert "1 個股票帳號的受控自動實盤產品資格" in response.message
+    assert "不會自動啟用或下單" in response.message
 
 
 @pytest.mark.parametrize(("method", "chat_id"), [("alipay", "820001"), ("wechat", "820002")])

@@ -29,7 +29,7 @@ export function recommendationToDecision(
     action,
     instrument: {
       symbol: item.symbol,
-      name: item.instrument_type === 'option' ? '期权量化事件' : '量化日志标的',
+      name: item.instrument_type === 'option' ? '期权量化事件' : '量化日志股票',
       market: normalizeMarket(item.market),
       price: Number(item.reference_price ?? 0),
       changePct: 0,

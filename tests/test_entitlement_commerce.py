@@ -107,17 +107,18 @@ def test_readiness_receipt_is_consumed_once_but_publish_replay_is_safe():
 def test_readiness_receipt_requires_reviewer_and_rolls_back_outer_transaction():
     conn = _database()
     policy = canonical_public_policy()
+    valid_until = datetime.now(UTC) + timedelta(days=1)
     with pytest.raises(PermissionError, match="审查授权"):
         create_readiness_review(
             conn, policy, reviewer_id=1, evidence_ref="review-813",
-            valid_until=NOW + timedelta(days=1), idempotency_key="bad-review-001",
+            valid_until=valid_until, idempotency_key="bad-review-001",
         )
     assert conn.execute("SELECT COUNT(*) FROM membership_entitlement_readiness_receipts").fetchone()[0] == 0
     conn.commit()
     conn.execute("BEGIN")
     receipt = create_readiness_review(
         conn, policy, reviewer_id=2, evidence_ref="review-813",
-        valid_until=NOW + timedelta(days=1), idempotency_key="review-tx-001",
+        valid_until=valid_until, idempotency_key="review-tx-001",
     )
     assert receipt > 0 and conn.in_transaction
     conn.rollback()
@@ -165,3 +166,17 @@ def test_professional_can_be_restored_by_new_reviewed_policy_without_schema_chan
     assert created and published.version == 2
     assert current_policy(conn, as_of=NOW + timedelta(days=1)).policy["public_plan_order"][-1] == "专业版"
     assert deepcopy(_plan(canonical_public_policy(), "专业版")["compatibility_capabilities"])
+
+
+def test_five_account_auto_live_eligibility_cannot_leak_into_lower_public_plans():
+    policy = canonical_public_policy()
+    standard = _plan(policy, "标准版")
+    standard["capabilities"].append("auto_control_account_5")
+    standard["readiness"] = readiness_proof(
+        "标准版",
+        "active_public",
+        standard["capabilities"],
+        evidence_ref="invalid-lower-plan-review",
+    )
+    with pytest.raises(EntitlementPolicyError, match="仅允许.*专业或定制"):
+        validate_policy(policy, require_current_contract=False)

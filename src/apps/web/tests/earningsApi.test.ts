@@ -8,6 +8,7 @@ import {
 } from '../src/api/earnings.ts'
 import {
   decodeEarningsDetail,
+  decodeEarningsStatistics,
   EarningsDecodeError,
 } from '../src/domain/earningsForecast.ts'
 
@@ -21,9 +22,9 @@ const LOCKED_OVERVIEW = {
   required_capability: 'earnings_forecast',
   window_days: 7,
   confirmed_event_count: 1,
-  reason_code: 'capability_required',
+  reason_code: 'legacy_entitlement_required',
   description: '会员权限不足。',
-  upgrade_path: '/membership',
+  upgrade_path: null,
 }
 
 function forecast(optionResearch: unknown = {
@@ -149,6 +150,30 @@ test('earnings browser transport reuses the in-memory Bearer session without exp
   }
 })
 
+test('earnings statistics preserve unavailable paper performance instead of fake zeroes', () => {
+  const decoded = decodeEarningsStatistics({
+    state: 'research',
+    metrics: {
+      sample_size: 3,
+      direction_accuracy: 0.5,
+      multiclass_brier_score: 0.4,
+      log_loss: 0.8,
+      expected_calibration_error: 0.1,
+      average_confidence_gap: 0.05,
+      interval_coverage: 0.7,
+      average_interval_width: 12,
+      overconfidence_rate: 0.2,
+      high_confidence_sample_size: 1,
+      paper_total_pnl: null,
+      paper_max_drawdown: null,
+    },
+  })
+  assert.equal(decoded.state, 'research')
+  if (decoded.state !== 'research') return
+  assert.equal(decoded.metrics.paper_total_pnl, null)
+  assert.equal(decoded.metrics.paper_max_drawdown, null)
+})
+
 test('earnings transport preserves an authoritative 401 error', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = async () => new Response(
@@ -175,8 +200,8 @@ test('opaque option references are decoded and mapped to the existing detail end
       state: 'locked',
       feature: 'earnings_option_research',
       required_capability: 'earnings_option_defined_risk',
-      reason_code: 'capability_required',
-      upgrade_path: '/membership',
+      reason_code: 'legacy_entitlement_required',
+      upgrade_path: null,
     }
   })
   const response = await api.fetchOptionDetail(EVENT_ID, OPTION_ID)

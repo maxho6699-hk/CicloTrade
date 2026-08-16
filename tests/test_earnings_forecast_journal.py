@@ -147,8 +147,12 @@ def _postmortem_payload(journal, event: dict, forecast: dict, *, completed_at: s
         ),
         "direction_correct": True,
         "interval_covered": True,
-        "paper_pnl_net": 0.0,
-        "paper_max_drawdown": 0.0,
+        "paper_performance": {
+            "state": "unavailable",
+            "pnl_net": None,
+            "max_drawdown": None,
+            "ledger_snapshot_sha256": None,
+        },
         "analysis": {
             "correct": ["direction"],
             "incorrect": ["magnitude"],
@@ -509,8 +513,11 @@ def test_outcome_corrections_and_final_postmortem_are_append_only(journal):
                 (postmortem["id"],),
             )
 
-    forged = {**postmortem_payload, "paper_pnl_net": 999_999.0}
-    with pytest.raises(EarningsContractError, match="paper_pnl_net"):
+    forged = {**postmortem_payload, "paper_performance": {
+        "state": "unavailable", "pnl_net": 999_999.0,
+        "max_drawdown": None, "ledger_snapshot_sha256": None,
+    }}
+    with pytest.raises(EarningsContractError, match="paper performance"):
         journal.record_postmortem(forged, idempotency_key="postmortem-forged-pnl")
     forged = {**postmortem_payload, "forecast_snapshot_set_sha256": "f" * 64}
     with pytest.raises(EarningsContractError, match="forecast_snapshot_set_sha256"):

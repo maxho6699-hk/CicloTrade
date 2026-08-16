@@ -332,7 +332,8 @@ def _membership_card(database, account: dict[str, Any] | None) -> tuple[str, Tel
         channel = TELEGRAM_CHANNEL_NAMES["advanced"]
         access = (
             "即時正股建議\n"
-            "期權 Beta 僅可申請，不保證審批、運行、券商連接或下單。"
+            "1 個股票帳號的受控自動實盤產品資格；仍須通過 Telegram、券商授權、"
+            "mandate、風險與資料健康門，不會自動啟用或下單。"
         )
     else:
         channel = TELEGRAM_CHANNEL_NAMES["daily"]
@@ -342,6 +343,10 @@ def _membership_card(database, account: dict[str, Any] | None) -> tuple[str, Tel
         [{"text": "💎 會員方案", "callback_data": "desk:plans"}],
         [{"text": "🧾 我的訂單", "callback_data": "desk:orders"}],
     ]
+    if policy_allows(database, account, "auto_control_account_1") or policy_allows(
+        database, account, "auto_control_account_5"
+    ):
+        buttons.append([{"text": "🛡️ 查看受控自動實盤資格", "url": _app_url("trade")}])
     if policy_allows(database, account, "option_live_beta_apply"):
         buttons.append([{"text": "🧪 申請期權 Beta 資格", "url": _app_url("account?program=option_live_beta")}])
     buttons.append(_home_row())

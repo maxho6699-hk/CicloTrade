@@ -1,0 +1,7 @@
+.lab-stress-result { display: grid; gap: 8px; margin-top: 14px; padding: 14px; border-radius: var(--radius-control); background: var(--surface-raised); box-shadow: var(--shadow-panel); }
+.lab-stress-result.is-error { color: var(--negative); }
+.lab-stress-result.is-success { color: var(--text); }
+.lab-stress-result small { color: var(--muted); font: 11px/1.45 var(--mono); overflow-wrap: anywhere; }
+.lab-stress-result strong { font-size: 14px; }
+.lab-stress-result p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.lab-stress-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }

@@ -10,6 +10,7 @@ import pytest
 
 from core.backtest_queue_database import BacktestQueueDatabase
 from core.compat import UTC
+from core.entitlement_policy import seed_canonical_policy
 from core.expanded_research_contracts import AUTHORITY, UNIVERSE_SHA256, canonical_json, receiver_signature
 from core.expanded_research_store import ExpandedResearchStore
 from src.apps.api.expanded_research_read_model import ExpandedResearchReadModel
@@ -121,7 +122,13 @@ def expanded_receiver(tmp_path, monkeypatch):
 @pytest.fixture
 def feature_catalog_adapter(browser_api, monkeypatch):
     module = importlib.import_module("src.apps.api.app")
-    adapter = FeatureCatalogAdapter(browser_api["database"])
+    database = browser_api["database"]
+    database.execute(
+        "UPDATE users SET plan_type='标准版',subscription_expire='2099-08-14T00:00:00+00:00' WHERE email='browser@example.com'"
+    )
+    with database.transaction() as connection:
+        seed_canonical_policy(connection)
+    adapter = FeatureCatalogAdapter(database)
     previous = getattr(module.app.state, "feature_catalog_adapter", None)
     monkeypatch.setattr(module.app.state, "feature_catalog_adapter", adapter)
     try:

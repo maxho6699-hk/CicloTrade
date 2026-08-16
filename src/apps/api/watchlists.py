@@ -12,13 +12,13 @@ WATCHLIST_MARKETS = {"US": "us", "CN": "a_share"}
 
 def normalize_watchlist_symbol(value: Any, market: str) -> str:
     if not isinstance(value, str):
-        raise ValueError("自选标的代码必须是字符串。")
+        raise ValueError("自选股票代码必须是字符串。")
     symbol = value.strip().upper()
     if market == "CN" and symbol.endswith((".SS", ".SZ")):
         symbol = symbol[:-3]
     pattern = r"\d{6}" if market == "CN" else r"[A-Z][A-Z0-9.-]{0,11}"
     if not re.fullmatch(pattern, symbol):
-        raise ValueError("自选标的代码无效。")
+        raise ValueError("自选股票代码无效。")
     return symbol
 
 

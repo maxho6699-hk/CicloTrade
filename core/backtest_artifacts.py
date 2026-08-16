@@ -54,6 +54,16 @@ class ArtifactStore:
             raise ArtifactError(f"{label} 无效。")
         return value
 
+    @staticmethod
+    def _without_extended_prefix(path: Path) -> Path:
+        """Normalize Windows extended paths before containment checks."""
+        value = str(path)
+        if value.startswith("\\\\?\\UNC\\"):
+            value = "\\\\" + value[8:]
+        elif value.startswith("\\\\?\\"):
+            value = value[4:]
+        return Path(value)
+
     def storage_key(self, job_id: str, direction: str, artifact_key: str, attempt_no: int = 0) -> str:
         job = self._part(str(job_id), "任务标识")
         key = self._part(str(artifact_key), "artifact_key")
@@ -73,8 +83,9 @@ class ArtifactStore:
         if direction not in {"input", "output"} or not re.fullmatch(r"a[0-9]+--[A-Za-z0-9][A-Za-z0-9._-]{0,127}", stored_name):
             raise ArtifactError("存储键无效。")
         safe = f"{job}/{direction}/{stored_name}"
-        path = (self.root / safe).resolve()
-        if self.root != path and self.root not in path.parents:
+        path = self._without_extended_prefix((self.root / safe).resolve())
+        root = self._without_extended_prefix(self.root.resolve())
+        if root != path and root not in path.parents:
             raise ArtifactError("artifact 路径越界。")
         return path
 
@@ -238,7 +249,9 @@ class ArtifactStore:
             valid_artifact = False
             if not temporary:
                 try:
-                    valid_artifact = self._path(relative) == path.resolve()
+                    valid_artifact = self._path(relative) == self._without_extended_prefix(
+                        path.resolve()
+                    )
                 except ArtifactError:
                     continue
             if not temporary and (not valid_artifact or relative in registered):

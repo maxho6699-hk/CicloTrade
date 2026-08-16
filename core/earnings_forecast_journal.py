@@ -434,9 +434,10 @@ class EarningsForecastJournal:
             ):
                 if value[name] != binding[name]:
                     raise EarningsContractError(f"postmortem {name} does not match sealed evidence")
-            for name in ("paper_pnl_net", "paper_max_drawdown"):
-                if not math.isclose(float(value[name]), float(binding[name]), abs_tol=1e-9):
-                    raise EarningsContractError(f"postmortem {name} does not match sealed evidence")
+            if value["paper_performance"] != binding["paper_performance"]:
+                raise EarningsContractError(
+                    "postmortem paper_performance does not match sealed evidence"
+                )
             checkpoints = {str(row["checkpoint"]) for row in outcomes}
             if value["stage"] == "FINAL" and "D5_CLOSE" not in checkpoints:
                 raise IdempotencyConflict("FINAL postmortem requires D5_CLOSE outcome")
@@ -490,16 +491,23 @@ class EarningsForecastJournal:
                    (idempotency_key,event_revision_id,model_id,model_version,stage,completed_at,
                     forecast_snapshot_set_sha256,outcome_set_sha256,direction_correct,
                     interval_covered,paper_pnl_net,paper_max_drawdown,analysis_json,
-                    candidate_ref,supersedes_postmortem_id,publication_state,payload_sha256)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    candidate_ref,supersedes_postmortem_id,publication_state,payload_sha256,
+                    paper_performance_state,paper_pnl_net_v2,paper_max_drawdown_v2,
+                    paper_ledger_snapshot_sha256)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     idempotency_key, value["event_revision_id"], value["model_id"],
                     value["model_version"], value["stage"], value["completed_at"],
                     value["forecast_snapshot_set_sha256"], value["outcome_set_sha256"],
                     int(value["direction_correct"]), int(value["interval_covered"]),
-                    value["paper_pnl_net"], value["paper_max_drawdown"],
+                    # Legacy NOT NULL compatibility columns are not authoritative.
+                    0.0, 0.0,
                     canonical_json(value["analysis"]), value["candidate_ref"], supersedes,
                     "research", value["payload_sha256"],
+                    value["paper_performance"]["state"],
+                    value["paper_performance"]["pnl_net"],
+                    value["paper_performance"]["max_drawdown"],
+                    value["paper_performance"]["ledger_snapshot_sha256"],
                 ),
             )
             return dict(connection.execute(

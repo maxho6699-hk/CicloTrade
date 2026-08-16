@@ -54,7 +54,7 @@ export interface FeatureCatalogPayload {
 
 export function featureOpenRoute(item: FeatureCatalogItem): string | null {
   if (item.availability === 'available') return item.route
-  if (item.availability === 'locked') return '/membership'
+  if (item.availability === 'locked' && item.access === 'upgrade') return '/membership'
   if ((item.availability === 'degraded' || item.availability === 'unavailable') && item.actions.researchUrl) {
     return item.actions.researchUrl
   }
@@ -131,7 +131,7 @@ export const MORE_PAGE_COPY: Record<UiLocale, MorePageCopy> = {
     listView: '列表',
     iconView: '图标',
     categories: { discover: '发现机会', research: '研究工具', simulate: '模拟与风险', review: '组合与复盘', automation: '自动化', account: '账户服务' },
-    availability: { available: '可用', locked: '升级后开放', planned: '开发中', degraded: '服务降级', unavailable: '暂不可用' },
+    availability: { available: '可用', locked: '当前未开放', planned: '开发中', degraded: '服务降级', unavailable: '暂不可用' },
   },
   'zh-Hant': {
     kicker: 'FEATURE DIRECTORY',
@@ -166,7 +166,7 @@ export const MORE_PAGE_COPY: Record<UiLocale, MorePageCopy> = {
     listView: '列表',
     iconView: '圖示',
     categories: { discover: '發現機會', research: '研究工具', simulate: '模擬與風險', review: '組合與複盤', automation: '自動化', account: '帳戶服務' },
-    availability: { available: '可用', locked: '升級後開放', planned: '開發中', degraded: '服務降級', unavailable: '暫不可用' },
+    availability: { available: '可用', locked: '目前未開放', planned: '開發中', degraded: '服務降級', unavailable: '暫不可用' },
   },
 }
 
@@ -200,7 +200,7 @@ export const FEATURE_ICON_NAMES = new Set<FeatureIconName>([
   'Gauge', 'Grid2X2', 'LifeBuoy', 'ListFilter', 'RadioTower', 'ShieldCheck', 'Sparkles', 'Target', 'WalletCards',
 ])
 
-const ROUTE_ALLOWLIST = /^\/(?:account|discover|earnings|feedback|more|notifications|paper|portfolio|reports|research|today|trade)(?:[/?#].*)?$/
+const ROUTE_ALLOWLIST = /^\/(?:account|admin|ai|deliberation|discover|earnings|feedback|help|lab|legal|membership|more|notifications|paper|portfolio|promotion|reports|research|today|trade|workflow)(?:[/?#].*)?$/
 const CATEGORIES = new Set<FeatureCategory>(['discover', 'research', 'simulate', 'review', 'automation', 'account'])
 const AVAILABILITIES = new Set<FeatureAvailability>(['available', 'locked', 'planned', 'degraded', 'unavailable'])
 const ACCESS = new Set<FeatureAccess>(['open', 'upgrade', 'wait', 'retry'])
@@ -236,7 +236,15 @@ const COPY: Record<string, { hans: string; hant: string }> = {
   'feature.earnings_forecast.title': { hans: '业绩预测', hant: '業績預測' },
   'feature.earnings_forecast.description': { hans: '追踪七日观点变化、区间预测与事后复盘。', hant: '追蹤七日觀點變化、區間預測與事後復盤。' },
   'feature.strategy_research.title': { hans: '策略研究覆盖', hant: '策略研究覆蓋' },
-  'feature.strategy_research.description': { hans: '查看 13 股稳定链与 97 标的扩容链的研究证据和覆盖状态。', hant: '查看 13 股穩定鏈與 97 標的擴容鏈的研究證據和覆蓋狀態。' },
+  'feature.strategy_research.description': { hans: '查看 13 股稳定链与 97 只股票扩容链的研究证据和覆盖状态。', hant: '查看 13 股穩定鏈與 97 隻股票擴容鏈的研究證據和覆蓋狀態。' },
+  'feature.ai_workspace.title': { hans: 'AI 研究工作台', hant: 'AI 研究工作台' },
+  'feature.ai_workspace.description': { hans: '在服务端证据、可控记忆与公开任务轨迹上继续结构化研究。', hant: '在服務端證據、可控記憶與公開任務軌跡上繼續結構化研究。' },
+  'feature.multi_agent_deliberation.title': { hans: '多智能体审议', hant: '多智能體審議' },
+  'feature.multi_agent_deliberation.description': { hans: '由四个研究席核对支持、反向、风险与未知信息，并保留证据版本。', hant: '由四個研究席核對支持、反向、風險與未知資訊，並保留證據版本。' },
+  'feature.csv_signal_import.title': { hans: 'CSV 股票记录导入', hant: 'CSV 股票記錄匯入' },
+  'feature.csv_signal_import.description': { hans: '把受控 CSV 股票记录导入专业实验室，校验后保留来源与审计。', hant: '把受控 CSV 股票記錄匯入專業實驗室，校驗後保留來源與稽核。' },
+  'feature.workflow_tasks.title': { hans: 'Workflow 任务', hant: 'Workflow 任務' },
+  'feature.workflow_tasks.description': { hans: '查看真实任务状态、公开事件、来源版本与结果收据。', hant: '查看真實任務狀態、公開事件、來源版本與結果收據。' },
   'feature.risk_calculator.title': { hans: '风险与仓位计算器', hant: '風險與倉位計算器' },
   'feature.risk_calculator.description': { hans: '在行动前计算仓位、最大亏损与购买力影响。', hant: '在行動前計算倉位、最大虧損與購買力影響。' },
   'feature.personal_paper.title': { hans: '个人模拟交易', hant: '個人模擬交易' },
@@ -245,10 +253,24 @@ const COPY: Record<string, { hans: string; hant: string }> = {
   'feature.portfolio_review.description': { hans: '检查持仓、集中度、计划偏差和交易结果。', hant: '檢查持倉、集中度、計劃偏差和交易結果。' },
   'feature.research_reports.title': { hans: '研究报告', hant: '研究報告' },
   'feature.research_reports.description': { hans: '查看可核验的研究记录、解释和绩效摘要。', hant: '查看可核驗的研究記錄、解釋和績效摘要。' },
-  'feature.data_status.title': { hans: '数据状态', hant: '數據狀態' },
-  'feature.data_status.description': { hans: '确认真实数据来源的新鲜度、延迟与连接状态。', hant: '確認真實數據來源的新鮮度、延遲與連接狀態。' },
+  'feature.account_center.title': { hans: '个人资料与账户中心', hant: '個人資料與帳戶中心' },
+  'feature.account_center.description': { hans: '管理个人资料、外观、授权、会话、安全与数据状态；这里不会重复提供交易入口。', hant: '管理個人資料、外觀、授權、工作階段、安全與資料狀態；這裡不會重複提供交易入口。' },
   'feature.feedback.title': { hans: '反馈与建议', hant: '反饋與建議' },
   'feature.feedback.description': { hans: '提交产品反馈，并在账户内查看处理状态。', hant: '提交產品反饋，並在帳戶內查看處理狀態。' },
+  'feature.notifications.title': { hans: '通知中心', hant: '通知中心' },
+  'feature.notifications.description': { hans: '查看真实站内通知、Telegram 状态与已验证投递结果。', hant: '查看真實站內通知、Telegram 狀態與已驗證投遞結果。' },
+  'feature.trade_control.title': { hans: '券商与自动实盘控制', hant: '券商與自動實盤控制' },
+  'feature.trade_control.description': { hans: '管理资格申请、mandate、独立门控、暂停与不可变控制收据。', hant: '管理資格申請、mandate、獨立門控、暫停與不可變控制收據。' },
+  'feature.membership.title': { hans: '会员方案', hant: '會員方案' },
+  'feature.membership.description': { hans: '查看公开三档方案、当前权益、历史订单与权威价格拆分。', hant: '查看公開三檔方案、目前權益、歷史訂單與權威價格拆分。' },
+  'feature.promotion.title': { hans: '推广与资金账本', hant: '推廣與資金帳本' },
+  'feature.promotion.description': { hans: '查看推荐归因、佣金、奖金、债务、提现资格与审计记录。', hant: '查看推薦歸因、佣金、獎金、債務、提現資格與稽核記錄。' },
+  'feature.help.title': { hans: '帮助中心', hant: '幫助中心' },
+  'feature.help.description': { hans: '按业务链路查找账户域、研究、模拟、券商和数据状态说明。', hant: '按業務鏈路查找帳戶域、研究、模擬、券商和資料狀態說明。' },
+  'feature.legal.title': { hans: '法律与政策', hant: '法律與政策' },
+  'feature.legal.description': { hans: '查看隐私、风险、账户隔离与版本化同意政策入口。', hant: '查看隱私、風險、帳戶隔離與版本化同意政策入口。' },
+  'feature.admin.title': { hans: '超级管理员后台', hant: '超級管理員後台' },
+  'feature.admin.description': { hans: '仅超级管理员查看审核、政策、运行状态和审计控制。', hant: '僅超級管理員查看審核、政策、執行狀態和稽核控制。' },
   'feature.option_live_automation.title': { hans: '受控期权自动交易', hant: '受控期權自動交易' },
   'feature.option_live_automation.description': { hans: '申请制、逐策略确认的有限风险实盘路线。', hant: '申請制、逐策略確認的有限風險實盤路線。' },
 }
@@ -266,6 +288,7 @@ const FEATURE_REASON_COPY: Readonly<Record<string, string>> = {
   '研究覆盖尚未完整或服务正在降级；可查看只读状态，但不能固定为常用工具。': '研究覆蓋尚未完整或服務正在降級；可檢視只讀狀態，但不能固定為常用工具。',
   '该能力仍在独立开发与验收中，当前会员不包含此功能。': '該功能仍在獨立開發與驗收中，目前會員不包含此功能。',
   '当前会员未包含此研究深度；风险与数据状态仍永久免费可见。': '目前會員未包含此研究深度；風險與資料狀態仍可永久免費查看。',
+  'sales_unavailable: 该能力仅保留历史有效权益，当前不公开新购或升级。': 'sales_unavailable：該功能僅保留歷史有效權益，目前不公開新購或升級。',
 }
 
 function record(value: unknown, message: string): Record<string, unknown> {
@@ -331,6 +354,7 @@ export function decodeFeatureCatalog(value: unknown): FeatureCatalogPayload {
       throw new Error('feature state requires a reason')
     }
     if (typeof item.pin_allowed !== 'boolean' || typeof item.primary_nav !== 'boolean') throw new Error('invalid feature flags')
+    if (availability === 'planned' && item.pin_allowed) throw new Error('planned feature cannot be pinned')
     if (!Array.isArray(item.placements) || !item.placements.length || item.placements.some((placement) => typeof placement !== 'string' || !PLACEMENTS.has(placement as FeaturePlacement))) throw new Error('invalid feature placements')
     if (!Number.isSafeInteger(item.sort_order)) throw new Error('invalid feature sort order')
     if (item.recommendation_rank !== null && !Number.isSafeInteger(item.recommendation_rank)) throw new Error('invalid recommendation rank')

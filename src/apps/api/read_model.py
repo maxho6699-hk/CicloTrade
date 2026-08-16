@@ -408,12 +408,13 @@ class ReadOnlyLegacyRepository:
         can_register_broker_account = (
             auto_trading_service_enabled and account_limit > 0 and accounts_used < account_limit
         )
-        can_increase_exposure = (
-            account_limit > 0
-            and auto_trading_service_enabled
-            and has_authorized_broker_account
-            and not effective_opening_paused
-        )
+        # This compatibility projection is display-only.  A paid entitlement,
+        # an authorized broker row, and the legacy pause switches are not
+        # sufficient authority to increase live exposure.  The versioned
+        # auto-live mandate endpoint owns that decision together with its
+        # strategy/risk versions, runtime heartbeat, fencing epoch and
+        # kill-switch checks.
+        can_increase_exposure = False
         can_reduce_exposure = has_authorized_broker_account
         block_reasons: list[str] = []
         if account_limit <= 0:
@@ -426,6 +427,8 @@ class ReadOnlyLegacyRepository:
             block_reasons.append("平台已暂停全部新开仓")
         if user_opening_paused:
             block_reasons.append("当前账户已暂停新开仓")
+        if account_limit > 0 and auto_trading_service_enabled and has_authorized_broker_account and not effective_opening_paused:
+            block_reasons.append("请在自动实盘控制台完成 mandate 与全部安全门验证")
         return {
             "global_opening_paused": global_opening_paused,
             "user_opening_paused": user_opening_paused,

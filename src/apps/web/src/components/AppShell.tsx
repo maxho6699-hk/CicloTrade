@@ -34,6 +34,7 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react'
+import { autoLiveApi, type AutoLivePauseResult, type AutoLiveSnapshot } from '../api/autoLive'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   FEATURE_CATALOG_UPDATED_EVENT,
@@ -49,6 +50,8 @@ import type { Market } from '../types'
 import { applyTheme, readStoredTheme, type Theme } from '../theme'
 import { displayDeliveryDelay, displayFreshness } from '../domain/dataSourcePresentation'
 import { localizeFeature, type FeatureCatalogPayload } from '../domain/featureCatalog'
+import { deriveAutoLiveKillSwitchView, type AutoLiveSnapshotState } from '../domain/autoLiveSafety'
+import { createSessionIdempotencyRegistry } from '../domain/sessionIdempotency'
 
 interface AppShellProps {
   children: ReactNode
@@ -105,6 +108,29 @@ interface CommandItem extends CommandHistoryItem {
   symbol?: string
 }
 
+function GlobalAutoLiveKillSwitch({ snapshot, snapshotState }: { snapshot: AutoLiveSnapshot | null; snapshotState: AutoLiveSnapshotState }) {
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<AutoLivePauseResult | null>(null)
+  const [pauseUnknown, setPauseUnknown] = useState(false)
+  const idempotency = useRef(createSessionIdempotencyRegistry('ciclotrade.autoLivePending.v1'))
+  const view = deriveAutoLiveKillSwitchView(snapshot, snapshotState, result, pauseUnknown)
+  if (!view.visible) return null
+  const pauseAll = async () => {
+    if (busy) return
+    setBusy(true)
+    const fingerprint = JSON.stringify({ scope: 'aggregate' })
+    const key = idempotency.current.key('pause-aggregate', fingerprint)
+    try {
+      const next = await autoLiveApi.pause({ scope: 'aggregate' }, key)
+      setResult(next)
+      setPauseUnknown(false)
+      idempotency.current.clear('pause-aggregate', fingerprint)
+    } catch { setPauseUnknown(true) }
+    finally { setBusy(false) }
+  }
+  return <button className={`global-auto-live-kill-switch is-${view.tone}`} type="button" onClick={() => void pauseAll()} disabled={busy} aria-label={view.label}><ShieldCheck size={15} /><span role="status" aria-live="polite">{busy ? '正在暂停…' : view.label}</span></button>
+}
+
 function storedSearchHistory(): CommandHistoryItem[] {
   try {
     const parsed: unknown = JSON.parse(window.localStorage.getItem(SEARCH_HISTORY_STORAGE_KEY) ?? '[]')
@@ -128,7 +154,13 @@ export function AppShell({ children }: AppShellProps) {
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const [recentSearches, setRecentSearches] = useState<CommandHistoryItem[]>(storedSearchHistory)
   const [featureCatalog, setFeatureCatalog] = useState<FeatureCatalogPayload | null>(null)
+  const [autoLiveSnapshot, setAutoLiveSnapshot] = useState<AutoLiveSnapshot | null>(null)
+  const [autoLiveSnapshotState, setAutoLiveSnapshotState] = useState<AutoLiveSnapshotState>('idle')
   const commandInput = useRef<HTMLInputElement>(null)
+  const commandTrigger = useRef<HTMLButtonElement>(null)
+  const commandPalette = useRef<HTMLElement>(null)
+  const userMenuTrigger = useRef<HTMLButtonElement>(null)
+  const accountPopover = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
   const { pathname } = useLocation()
   const workspace = useWorkspace()
@@ -141,6 +173,7 @@ export function AppShell({ children }: AppShellProps) {
   const telegramReady = Boolean(workspace.data?.telegram.bound && workspace.data?.telegram.verified && workspace.data?.telegram.consented)
   const hasModelSnapshots = Boolean(workspace.data?.performance.items.length)
   const isSuperAdmin = workspace.user?.admin_role === 'super_admin'
+  const aiAvailable = workspace.data?.membership.capabilities.includes('ai_workspace') === true
   const navCopy = NAV_COPY[locale]
   const aiCopy = AI_COPY[locale]
   const secondaryTools = useMemo(() => {
@@ -156,6 +189,24 @@ export function AppShell({ children }: AppShellProps) {
   const marketStatusLabel = !realData
     ? workspace.mode === 'offline' ? '离线演示' : '界面演示'
     : marketDisconnected ? '未连接' : marketDelay || (marketFreshness === '状态未记录' && marketStatus?.is_realtime ? '实时权限已验证' : marketFreshness)
+
+  useEffect(() => {
+    let active = true
+    const refreshAutoLive = () => {
+      if (!realData) { setAutoLiveSnapshot(null); setAutoLiveSnapshotState('idle'); return }
+      setAutoLiveSnapshotState('loading')
+      void autoLiveApi.snapshot().then((payload) => {
+        if (!active) return
+        setAutoLiveSnapshot(payload)
+        setAutoLiveSnapshotState('fresh')
+      }).catch(() => {
+        if (active) setAutoLiveSnapshotState('stale')
+      })
+    }
+    refreshAutoLive()
+    const timer = window.setInterval(refreshAutoLive, 15_000)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [realData])
 
   useEffect(() => {
     applyTheme(theme, true)
@@ -189,13 +240,56 @@ export function AppShell({ children }: AppShellProps) {
 
   useEffect(() => {
     if (!commandOpen) return
+    const previousOverflow = document.body.style.overflow
+    const trigger = commandTrigger.current
+    document.body.style.overflow = 'hidden'
     commandInput.current?.focus()
+    const closeOnEscapeAndTrapFocus = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setCommandOpen(false)
+        return
+      }
+      if (event.key !== 'Tab') return
+      const focusable = Array.from(commandPalette.current?.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), [href], select:not([disabled]), textarea:not([disabled])') ?? [])
+      if (!focusable.length) {
+        event.preventDefault()
+        return
+      }
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', closeOnEscapeAndTrapFocus)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      document.removeEventListener('keydown', closeOnEscapeAndTrapFocus)
+      trigger?.focus()
+    }
+  }, [commandOpen])
+
+  useEffect(() => {
+    if (!userMenuOpen) return
+    const trigger = userMenuTrigger.current
+    const firstItem = accountPopover.current?.querySelector<HTMLElement>('[role="menuitem"]')
+    firstItem?.focus()
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setCommandOpen(false)
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      setUserMenuOpen(false)
     }
     document.addEventListener('keydown', closeOnEscape)
-    return () => document.removeEventListener('keydown', closeOnEscape)
-  }, [commandOpen])
+    return () => {
+      document.removeEventListener('keydown', closeOnEscape)
+      trigger?.focus()
+    }
+  }, [userMenuOpen])
 
   useEffect(() => {
     let active = true
@@ -285,7 +379,7 @@ export function AppShell({ children }: AppShellProps) {
       <a className="skip-link" href="#main-content">跳到主要内容</a>
       <aside className="sidebar" aria-label="主要导航">
         <NavLink className="brand" to="/today" aria-label="CicloTrade 今日工作台">
-          <img src="/brand/ciclotrade-logo.jpg" alt="" />
+          <img src="/brand/ciclotrade-logo.jpg" alt="" width="32" height="32" />
           <span><strong>CicloTrade</strong><small>DECISION TERMINAL</small></span>
         </NavLink>
         <nav>
@@ -312,19 +406,20 @@ export function AppShell({ children }: AppShellProps) {
 
       <div className="shell-content">
         <header className="topbar">
-          <button className="command-search" type="button" aria-haspopup="dialog" onClick={() => setCommandOpen(true)}>
+          <button ref={commandTrigger} className="command-search" type="button" aria-haspopup="dialog" aria-controls="command-palette" aria-expanded={commandOpen} onClick={() => setCommandOpen(true)}>
             <Search size={17} />
             <span>搜索股票</span>
             <kbd>Ctrl K</kbd>
           </button>
           <div className="global-status" aria-label="系统状态">
             <div className="ai-launcher">
-              <NavLink className="ai-pill" to="/ai" onClick={() => setUserMenuOpen(false)}>
+              <NavLink className={`ai-pill ${aiAvailable ? '' : 'is-locked'}`} to={aiAvailable ? '/ai' : '/membership'} aria-label={aiAvailable ? aiCopy.label : `${aiCopy.label} · 当前会员未解锁`} onClick={() => setUserMenuOpen(false)}>
                 <Bot aria-hidden="true" />
-                <span>{aiCopy.label}</span>
+                <span>{aiAvailable ? aiCopy.label : `${aiCopy.label} · 未解锁`}</span>
               </NavLink>
             </div>
             <span className="live-status"><i /> {realData ? marketDisconnected ? '行情未连接' : marketStatusLabel : '界面演示'}</span>
+            <GlobalAutoLiveKillSwitch snapshot={autoLiveSnapshot} snapshotState={realData && autoLiveSnapshotState === 'idle' ? 'loading' : autoLiveSnapshotState} />
             <span>行情 · {marketStatusLabel}</span>
             <NavLink to="/notifications"><Bot size={16} /> TG {telegramReady ? '已验证' : realData ? '未连接' : '演示'}</NavLink>
             <button className="locale-button" type="button" title={locale === 'zh-Hant' ? '切换为简体中文' : '切换为繁体中文'} aria-label={locale === 'zh-Hant' ? '切换为简体中文' : '切换为繁体中文'} onClick={() => void setLocale(locale === 'zh-Hant' ? 'zh-Hans' : 'zh-Hant')}><Languages size={17} /><span>{locale === 'zh-Hant' ? '繁' : '简'}</span></button>
@@ -332,18 +427,18 @@ export function AppShell({ children }: AppShellProps) {
               {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
             </button>
             <span className="sr-only" role="status" aria-live="polite">{syncState === 'saving' ? '正在同步语言偏好' : syncState === 'saved' ? '语言偏好已保存' : syncState === 'error' ? '账户同步失败，语言偏好已保存在本机' : ''}</span>
-            <button className="user-menu" type="button" aria-label="打开账户菜单" aria-expanded={userMenuOpen} onClick={() => setUserMenuOpen((current) => !current)}><UserRound size={17} /></button>
-            {userMenuOpen && <div className="account-popover">
-              <header><strong>{workspace.user?.display_name ?? 'CicloTrade 用户'}</strong><small>{workspace.user?.plan_display_name ?? '账户'}</small></header>
-              <a href="/" onClick={() => setUserMenuOpen(false)}><House size={16} /> 返回欢迎页</a>
-              <NavLink to="/notifications" onClick={() => setUserMenuOpen(false)}><BellRing size={16} /> 消息通知</NavLink>
-              <NavLink to="/account" onClick={() => setUserMenuOpen(false)}><Settings size={16} /> 用户设定</NavLink>
-              <NavLink to="/membership" onClick={() => setUserMenuOpen(false)}><ShieldCheck size={16} /> 订阅会员</NavLink>
-              <NavLink to={promotionItem.to} onClick={() => setUserMenuOpen(false)}><Target size={16} /> {promotionItem.label}</NavLink>
-              <NavLink to="/help" onClick={() => setUserMenuOpen(false)}><HelpCircle size={16} /> 帮助与支持</NavLink>
-              <NavLink to="/feedback" onClick={() => setUserMenuOpen(false)}><MessageSquareText size={16} /> 反馈建议</NavLink>
-              {isSuperAdmin && <NavLink to="/admin" onClick={() => setUserMenuOpen(false)}><ShieldCheck size={16} /> 超级管理</NavLink>}
-              <button type="button" onClick={() => void workspace.logout().then(() => navigate('/'))}><LogOut size={16} /> 登出账户</button>
+            <button ref={userMenuTrigger} className="user-menu" type="button" aria-label="打开账户菜单" aria-haspopup="menu" aria-controls="account-menu" aria-expanded={userMenuOpen} onClick={() => setUserMenuOpen((current) => !current)}><UserRound size={17} /></button>
+            {userMenuOpen && <div ref={accountPopover} id="account-menu" className="account-popover" role="menu" aria-label="账户菜单">
+              <header role="presentation"><strong>{workspace.user?.display_name ?? 'CicloTrade 用户'}</strong><small>{workspace.user?.plan_display_name ?? '账户'}</small></header>
+              <a role="menuitem" href="/" onClick={() => setUserMenuOpen(false)}><House size={16} /> 返回欢迎页</a>
+              <NavLink role="menuitem" to="/notifications" onClick={() => setUserMenuOpen(false)}><BellRing size={16} /> 消息通知</NavLink>
+              <NavLink role="menuitem" to="/account" onClick={() => setUserMenuOpen(false)}><Settings size={16} /> 用户设定</NavLink>
+              <NavLink role="menuitem" to="/membership" onClick={() => setUserMenuOpen(false)}><ShieldCheck size={16} /> 订阅会员</NavLink>
+              <NavLink role="menuitem" to={promotionItem.to} onClick={() => setUserMenuOpen(false)}><Target size={16} /> {promotionItem.label}</NavLink>
+              <NavLink role="menuitem" to="/help" onClick={() => setUserMenuOpen(false)}><HelpCircle size={16} /> 帮助与支持</NavLink>
+              <NavLink role="menuitem" to="/feedback" onClick={() => setUserMenuOpen(false)}><MessageSquareText size={16} /> 反馈建议</NavLink>
+              {isSuperAdmin && <NavLink role="menuitem" to="/admin" onClick={() => setUserMenuOpen(false)}><ShieldCheck size={16} /> 超级管理</NavLink>}
+              <button role="menuitem" type="button" onClick={() => { setUserMenuOpen(false); void workspace.logout().then(() => navigate('/')) }}><LogOut size={16} /> 登出账户</button>
             </div>}
           </div>
         </header>
@@ -358,6 +453,8 @@ export function AppShell({ children }: AppShellProps) {
         <main id="main-content">{children}</main>
       </div>
 
+      <div className="global-auto-live-mobile-bar"><GlobalAutoLiveKillSwitch snapshot={autoLiveSnapshot} snapshotState={realData && autoLiveSnapshotState === 'idle' ? 'loading' : autoLiveSnapshotState} /></div>
+
       <nav className="mobile-nav" aria-label="移动端主要导航">
         {mobileNavItems.map(({ to, key, icon: Icon }) => (
           <NavLink key={to} className={({ isActive }) => isActive ? 'active' : ''} to={to}>
@@ -368,7 +465,7 @@ export function AppShell({ children }: AppShellProps) {
 
       {commandOpen && (
         <div className="command-backdrop" role="presentation" onClick={() => setCommandOpen(false)}>
-          <section className="command-palette stock-picker" role="dialog" aria-modal="true" aria-label="搜索股票" onClick={(event) => event.stopPropagation()}>
+          <section ref={commandPalette} id="command-palette" className="command-palette stock-picker" role="dialog" aria-modal="true" aria-label="搜索股票" onClick={(event) => event.stopPropagation()}>
             <header><Search size={19} /><input ref={commandInput} aria-label="搜索股票代码或名称" placeholder="输入股票代码或名称" value={commandQuery} onChange={(event) => setCommandQuery(event.target.value)} /><button className="icon-button" type="button" aria-label="关闭股票搜索" onClick={() => setCommandOpen(false)}><X size={19} /></button></header>
             <div className="command-results">
               {!commandQuery.trim() && recentSearches.length > 0 && (

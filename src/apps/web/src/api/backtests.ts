@@ -36,18 +36,30 @@ export interface BacktestManifest {
   code_bundle_sha256: string
   inputs: BacktestInput[]
   experiment_budget: Partial<Record<'runs' | 'candidates' | 'folds', number>>
+  template_key?: string
   parameters?: Record<string, Exclude<JsonScalar, null>>
 }
 
-export interface BacktestCreateRequest {
-  type: 'backtest.run.v1' | 'backtest.optimize.v1'
-  manifest: BacktestManifest
+export type BacktestTemplateKey =
+  | 'equity.trend.long_flat.v1'
+  | 'equity.mean_reversion.long_flat.v1'
+  | 'equity.breakout.long_flat.v1'
+
+export interface BacktestPrepareRequest {
+  schema_version: 1
+  type: 'backtest.run.v1'
+  template_key: BacktestTemplateKey
+  symbol: string
+  timeframe: '1d'
+  sample_years: 1 | 3 | 10
+  lookback: number
 }
 
 export interface BacktestArtifact {
   artifactKey: string
   sha256: string
   verified: true
+  bytes?: number
 }
 
 export interface BacktestEvidence {
@@ -56,9 +68,15 @@ export interface BacktestEvidence {
   limitations: string[]
 }
 
+export interface BacktestFailure {
+  errorCode: string
+  summary: string
+  retryable: boolean
+}
+
 export interface BacktestJob {
   id: string
-  jobType: BacktestCreateRequest['type']
+  jobType: BacktestPrepareRequest['type']
   status: BacktestStatus
   progress: number | null
   progressStage: BacktestProgressStage
@@ -72,6 +90,7 @@ export interface BacktestJob {
   manifestSha256: string | null
   evidence: BacktestEvidence | null
   artifacts: BacktestArtifact[]
+  failure: BacktestFailure | null
 }
 
 export class BacktestApiError extends Error {
@@ -107,7 +126,7 @@ export type BacktestBinaryTransport = (path: string, init?: RequestInit) => Prom
 export interface BacktestApi {
   listJobs: (signal?: AbortSignal) => Promise<BacktestJob[]>
   getJob: (jobId: string, signal?: AbortSignal) => Promise<BacktestJob>
-  createJob: (request: BacktestCreateRequest, idempotencyKey: string, signal?: AbortSignal) => Promise<{ created: boolean; job: BacktestJob }>
+  prepareJob: (request: BacktestPrepareRequest, idempotencyKey: string, signal?: AbortSignal) => Promise<{ created: boolean; job: BacktestJob }>
   cancelJob: (jobId: string, signal?: AbortSignal) => Promise<BacktestJob>
   downloadArtifact: (jobId: string, artifact: BacktestArtifact, signal?: AbortSignal) => Promise<Blob>
 }
@@ -212,6 +231,7 @@ function decodeManifest(value: unknown): BacktestManifest {
     code_bundle_sha256: value.code_bundle_sha256,
     inputs,
     experiment_budget: value.experiment_budget as BacktestManifest['experiment_budget'],
+    ...(typeof value.template_key === 'string' ? { template_key: value.template_key } : {}),
     ...(parameters ? { parameters } : {}),
   }
 }
@@ -236,11 +256,38 @@ function decodeEvidence(value: unknown): BacktestEvidence {
   return { kind: value.kind as BacktestEvidence['kind'], metrics, limitations }
 }
 
+function decodeFailure(value: unknown): BacktestFailure | null {
+  if (value === null) return null
+  if (!isRecord(value) || !exactKeys(value, ['error_code', 'summary', 'retryable'])
+    || typeof value.error_code !== 'string' || !/^[A-Z0-9_]{1,64}$/.test(value.error_code)
+    || typeof value.summary !== 'string' || value.summary.length > 500
+    || typeof value.retryable !== 'boolean') {
+    throw new BacktestApiError('回测失败信息格式无效。', 502)
+  }
+  return { errorCode: value.error_code, summary: value.summary, retryable: value.retryable }
+}
+
+function decodeArtifacts(value: unknown): BacktestArtifact[] {
+  if (!Array.isArray(value) || value.length > 100) {
+    throw new BacktestApiError('回测制品列表格式无效。', 502)
+  }
+  return value.map((item) => {
+    if (!isRecord(item) || !exactKeys(item, ['artifact_key', 'sha256', 'bytes', 'verified'])
+      || typeof item.artifact_key !== 'string' || !SAFE_ARTIFACT.test(item.artifact_key)
+      || typeof item.sha256 !== 'string' || !SHA256.test(item.sha256)
+      || !safeInteger(item.bytes, 0) || item.verified !== true) {
+      throw new BacktestApiError('回测制品证明无效。', 502)
+    }
+    return { artifactKey: item.artifact_key, sha256: item.sha256, verified: true as const, bytes: item.bytes }
+  })
+}
+
 function decodeJob(value: unknown): BacktestJob {
   if (!isRecord(value)) throw new BacktestApiError('回测任务响应格式无效。', 502)
   const baseKeys = [
     'id', 'job_type', 'status', 'manifest', 'attempt_count', 'max_attempts', 'progress',
     'progress_stage', 'cancel_requested', 'created_at', 'updated_at', 'completed_at',
+    'artifacts', 'failure',
   ]
   const expected = value.result === undefined ? baseKeys : [...baseKeys, 'result']
   if (!exactKeys(value, expected) || typeof value.id !== 'string' || !SAFE_ID.test(value.id)
@@ -262,7 +309,12 @@ function decodeJob(value: unknown): BacktestJob {
   const manifest = decodeManifest(value.manifest)
   let manifestSha256: string | null = null
   let evidence: BacktestEvidence | null = null
-  let artifacts: BacktestArtifact[] = []
+  const artifacts = decodeArtifacts(value.artifacts)
+  const failure = decodeFailure(value.failure)
+  if ((artifacts.length > 0 && status !== 'succeeded') || (failure !== null && status !== 'failed')) {
+    throw new BacktestApiError('回测任务状态与公开结果不匹配。', 502)
+  }
+  let resultArtifacts: BacktestArtifact[] = []
   if (value.result !== undefined) {
     if (!isRecord(value.result) || !exactKeys(value.result, [
       'job_id', 'manifest_sha256', 'fencing_epoch', 'input_hashes', 'output_hashes',
@@ -288,12 +340,15 @@ function decodeJob(value: unknown): BacktestJob {
       || inputKeys.some((key) => result.input_hashes[key] !== expectedInputs[key])) {
       throw new BacktestApiError('回测结果输入哈希不匹配。', 502)
     }
-    artifacts = Object.entries(result.output_hashes).map(([artifactKey, digest]) => {
+    resultArtifacts = Object.entries(result.output_hashes).map(([artifactKey, digest]) => {
       if (!SAFE_ARTIFACT.test(artifactKey) || typeof digest !== 'string' || !SHA256.test(digest)) {
         throw new BacktestApiError('回测制品哈希无效。', 502)
       }
       return { artifactKey, sha256: digest, verified: true as const }
     })
+    if (artifacts.length > 0 && artifacts.some((item) => !resultArtifacts.some((resultItem) => resultItem.artifactKey === item.artifactKey && resultItem.sha256 === item.sha256))) {
+      throw new BacktestApiError('回测制品列表与结果绑定不匹配。', 502)
+    }
     if (status !== 'succeeded') throw new BacktestApiError('未完成任务不得包含成功制品。', 502)
     manifestSha256 = result.manifest_sha256
     evidence = decodeEvidence(result.evidence)
@@ -315,7 +370,8 @@ function decodeJob(value: unknown): BacktestJob {
     manifest,
     manifestSha256,
     evidence,
-    artifacts,
+    artifacts: artifacts.length > 0 ? artifacts : resultArtifacts,
+    failure,
   }
 }
 
@@ -360,13 +416,16 @@ export function createBacktestApi(
     async getJob(jobId, signal) {
       return decodeJob(await transport(`${BASE}/${safePath(jobId, '回测任务')}`, { method: 'GET', cache: 'no-store', signal }))
     },
-    async createJob(request, idempotencyKey, signal) {
-      if (!isRecord(request) || !exactKeys(request, ['type', 'manifest'])
-        || !['backtest.run.v1', 'backtest.optimize.v1'].includes(request.type)
+    async prepareJob(request, idempotencyKey, signal) {
+      if (!isRecord(request) || !exactKeys(request, ['schema_version', 'type', 'template_key', 'symbol', 'timeframe', 'sample_years', 'lookback'])
+        || request.schema_version !== 1 || request.type !== 'backtest.run.v1'
+        || !['equity.trend.long_flat.v1', 'equity.mean_reversion.long_flat.v1', 'equity.breakout.long_flat.v1'].includes(String(request.template_key))
+        || typeof request.symbol !== 'string' || !/^[A-Z][A-Z0-9]{0,14}(?:[.-][A-Z0-9]{1,4})?$/.test(request.symbol)
+        || request.timeframe !== '1d' || ![1, 3, 10].includes(Number(request.sample_years))
+        || !safeInteger(request.lookback, 2, 250)
         || !/^[A-Za-z0-9._:-]{8,128}$/.test(idempotencyKey)) {
         throw new BacktestApiError('回测提交字段无效。', 400)
       }
-      decodeManifest(request.manifest)
       const value = await transport(BASE, {
         method: 'POST',
         headers: { 'Idempotency-Key': idempotencyKey },

@@ -82,7 +82,7 @@ def test_risk_settings_reject_unknown_or_inverted_limits(write_context):
         service.update_risk(identity, inverted)
 
 
-def test_resume_opening_is_user_scoped_idempotent_and_audited(write_context):
+def test_legacy_resume_opening_is_fail_closed(write_context):
     database, identity, service = write_context
     database.execute("UPDATE user_controls SET opening_paused=1 WHERE user_id=?", (identity.id,))
     database.execute(
@@ -91,16 +91,16 @@ def test_resume_opening_is_user_scoped_idempotent_and_audited(write_context):
            ON CONFLICT(control_key) DO UPDATE SET control_value='1',updated_at=datetime('now')"""
     )
 
-    assert service.resume_opening(identity) is True
-    assert service.resume_opening(identity) is False
-    assert database.fetch_one("SELECT opening_paused FROM user_controls WHERE user_id=?", (identity.id,))["opening_paused"] == 0
+    with pytest.raises(PermissionError, match="交易控制台"):
+        service.resume_opening(identity)
+    assert database.fetch_one("SELECT opening_paused FROM user_controls WHERE user_id=?", (identity.id,))["opening_paused"] == 1
     assert database.fetch_one(
         "SELECT control_value FROM platform_controls WHERE control_key='opening_paused'"
     )["control_value"] == "1"
     assert database.fetch_one(
         "SELECT COUNT(*) count FROM user_action_logs WHERE user_id=? AND action_type='USER_RESUME_OPENING'",
         (identity.id,),
-    )["count"] == 1
+    )["count"] == 0
 
 
 def test_telegram_preferences_enforce_membership_entitlements(write_context):

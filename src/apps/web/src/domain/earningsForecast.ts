@@ -21,9 +21,9 @@ export interface EarningsLockedOverview {
   required_capability: 'earnings_forecast'
   window_days: number
   confirmed_event_count: number
-  reason_code: 'capability_required'
+  reason_code: 'legacy_entitlement_required'
   description: string
-  upgrade_path: '/membership'
+  upgrade_path: '/membership' | null
 }
 
 export interface EarningsNarrative {
@@ -68,8 +68,8 @@ export interface EarningsOptionLocked {
   state: 'locked'
   feature: 'earnings_option_research'
   required_capability: 'earnings_option_defined_risk'
-  reason_code: 'capability_required'
-  upgrade_path: '/membership'
+  reason_code: 'legacy_entitlement_required'
+  upgrade_path: '/membership' | null
 }
 
 export type EarningsOptionReference = EarningsOptionLocked | {
@@ -161,8 +161,12 @@ export interface EarningsPostmortem {
   completed_at: string
   direction_correct: boolean
   interval_covered: boolean
-  paper_pnl_net: number
-  paper_max_drawdown: number
+  paper_performance: {
+    state: 'unavailable'
+    pnl_net: null
+    max_drawdown: null
+    ledger_snapshot_sha256: null
+  }
   analysis: Record<'correct' | 'incorrect' | 'error_categories' | 'lessons' | 'candidate_hypotheses', string[]>
 }
 
@@ -194,8 +198,8 @@ export interface EarningsMetrics {
   average_interval_width: number
   overconfidence_rate: number
   high_confidence_sample_size: number
-  paper_total_pnl: number
-  paper_max_drawdown: number
+  paper_total_pnl: number | null
+  paper_max_drawdown: number | null
 }
 
 export type EarningsStatistics = EarningsLockedOverview | { state: 'research'; metrics: EarningsMetrics }
@@ -373,8 +377,8 @@ function decodeOptionReference(value: unknown): EarningsOptionReference {
       state: enumeration(item.state, ['locked'] as const, 'option_research.state'),
       feature: enumeration(item.feature, ['earnings_option_research'] as const, 'option_research.feature'),
       required_capability: enumeration(item.required_capability, ['earnings_option_defined_risk'] as const, 'option_research.required_capability'),
-      reason_code: enumeration(item.reason_code, ['capability_required'] as const, 'option_research.reason_code'),
-      upgrade_path: enumeration(item.upgrade_path, ['/membership'] as const, 'option_research.upgrade_path'),
+      reason_code: enumeration(item.reason_code, ['legacy_entitlement_required'] as const, 'option_research.reason_code'),
+      upgrade_path: item.upgrade_path === null ? null : enumeration(item.upgrade_path, ['/membership'] as const, 'option_research.upgrade_path'),
     }
   }
   exact(item, ['state', 'items'], 'option_research')
@@ -404,9 +408,9 @@ function decodeLocked(value: JsonObject): EarningsLockedOverview {
     required_capability: enumeration(value.required_capability, ['earnings_forecast'] as const, 'required_capability'),
     window_days: integer(value.window_days, 'window_days', 1, 30),
     confirmed_event_count: integer(value.confirmed_event_count, 'confirmed_event_count', 0, 1_000_000),
-    reason_code: enumeration(value.reason_code, ['capability_required'] as const, 'reason_code'),
+    reason_code: enumeration(value.reason_code, ['legacy_entitlement_required'] as const, 'reason_code'),
     description: string(value.description, 'description', 500),
-    upgrade_path: enumeration(value.upgrade_path, ['/membership'] as const, 'upgrade_path'),
+    upgrade_path: value.upgrade_path === null ? null : enumeration(value.upgrade_path, ['/membership'] as const, 'upgrade_path'),
   }
 }
 
@@ -469,9 +473,11 @@ function decodeOutcome(value: unknown, index: number): EarningsOutcome {
 }
 
 function decodePostmortem(value: unknown, index: number): EarningsPostmortem {
-  const item = object(value, `postmortems[${index}]`); exact(item, ['stage', 'completed_at', 'direction_correct', 'interval_covered', 'paper_pnl_net', 'paper_max_drawdown', 'analysis'], `postmortems[${index}]`)
+  const item = object(value, `postmortems[${index}]`); exact(item, ['stage', 'completed_at', 'direction_correct', 'interval_covered', 'paper_performance', 'analysis'], `postmortems[${index}]`)
+  const paper = object(item.paper_performance, 'paper_performance'); exact(paper, ['state', 'pnl_net', 'max_drawdown', 'ledger_snapshot_sha256'], 'paper_performance')
+  if (paper.state !== 'unavailable' || paper.pnl_net !== null || paper.max_drawdown !== null || paper.ledger_snapshot_sha256 !== null) throw new EarningsDecodeError('纸上表现缺少封存账本，必须保持不可用。')
   const analysis = object(item.analysis, 'analysis'); const keys = ['correct', 'incorrect', 'error_categories', 'lessons', 'candidate_hypotheses'] as const; exact(analysis, keys, 'analysis')
-  return { stage: enumeration(item.stage, ['PRELIMINARY', 'FINAL', 'CORRECTION'] as const, 'stage'), completed_at: timestamp(item.completed_at, 'completed_at'), direction_correct: boolean(item.direction_correct, 'direction_correct'), interval_covered: boolean(item.interval_covered, 'interval_covered'), paper_pnl_net: finite(item.paper_pnl_net, 'paper_pnl_net'), paper_max_drawdown: finite(item.paper_max_drawdown, 'paper_max_drawdown', 0), analysis: { correct: stringList(analysis.correct, 'correct'), incorrect: stringList(analysis.incorrect, 'incorrect'), error_categories: stringList(analysis.error_categories, 'error_categories'), lessons: stringList(analysis.lessons, 'lessons'), candidate_hypotheses: stringList(analysis.candidate_hypotheses, 'candidate_hypotheses') } }
+  return { stage: enumeration(item.stage, ['PRELIMINARY', 'FINAL', 'CORRECTION'] as const, 'stage'), completed_at: timestamp(item.completed_at, 'completed_at'), direction_correct: boolean(item.direction_correct, 'direction_correct'), interval_covered: boolean(item.interval_covered, 'interval_covered'), paper_performance: { state: 'unavailable', pnl_net: null, max_drawdown: null, ledger_snapshot_sha256: null }, analysis: { correct: stringList(analysis.correct, 'correct'), incorrect: stringList(analysis.incorrect, 'incorrect'), error_categories: stringList(analysis.error_categories, 'error_categories'), lessons: stringList(analysis.lessons, 'lessons'), candidate_hypotheses: stringList(analysis.candidate_hypotheses, 'candidate_hypotheses') } }
 }
 
 export function decodeEarningsDetail(value: unknown): EarningsDetail {
@@ -490,7 +496,7 @@ export function decodeEarningsHistory(value: unknown): EarningsHistory {
 export function decodeEarningsStatistics(value: unknown): EarningsStatistics {
   const root = object(value, 'statistics'); if (root.state === 'locked') return decodeLocked(root)
   exact(root, ['state', 'metrics'], 'statistics'); const metrics = object(root.metrics, 'metrics'); exact(metrics, ['sample_size', 'direction_accuracy', 'multiclass_brier_score', 'log_loss', 'expected_calibration_error', 'average_confidence_gap', 'interval_coverage', 'average_interval_width', 'overconfidence_rate', 'high_confidence_sample_size', 'paper_total_pnl', 'paper_max_drawdown'], 'metrics')
-  return { state: enumeration(root.state, ['research'] as const, 'state'), metrics: { sample_size: integer(metrics.sample_size, 'sample_size', 0), direction_accuracy: finite(metrics.direction_accuracy, 'direction_accuracy', 0, 1), multiclass_brier_score: finite(metrics.multiclass_brier_score, 'multiclass_brier_score', 0), log_loss: finite(metrics.log_loss, 'log_loss', 0), expected_calibration_error: finite(metrics.expected_calibration_error, 'expected_calibration_error', 0, 1), average_confidence_gap: finite(metrics.average_confidence_gap, 'average_confidence_gap', -1, 1), interval_coverage: finite(metrics.interval_coverage, 'interval_coverage', 0, 1), average_interval_width: finite(metrics.average_interval_width, 'average_interval_width', 0), overconfidence_rate: finite(metrics.overconfidence_rate, 'overconfidence_rate', 0, 1), high_confidence_sample_size: integer(metrics.high_confidence_sample_size, 'high_confidence_sample_size', 0), paper_total_pnl: finite(metrics.paper_total_pnl, 'paper_total_pnl'), paper_max_drawdown: finite(metrics.paper_max_drawdown, 'paper_max_drawdown', 0, 1) } }
+  return { state: enumeration(root.state, ['research'] as const, 'state'), metrics: { sample_size: integer(metrics.sample_size, 'sample_size', 0), direction_accuracy: finite(metrics.direction_accuracy, 'direction_accuracy', 0, 1), multiclass_brier_score: finite(metrics.multiclass_brier_score, 'multiclass_brier_score', 0), log_loss: finite(metrics.log_loss, 'log_loss', 0), expected_calibration_error: finite(metrics.expected_calibration_error, 'expected_calibration_error', 0, 1), average_confidence_gap: finite(metrics.average_confidence_gap, 'average_confidence_gap', -1, 1), interval_coverage: finite(metrics.interval_coverage, 'interval_coverage', 0, 1), average_interval_width: finite(metrics.average_interval_width, 'average_interval_width', 0), overconfidence_rate: finite(metrics.overconfidence_rate, 'overconfidence_rate', 0, 1), high_confidence_sample_size: integer(metrics.high_confidence_sample_size, 'high_confidence_sample_size', 0), paper_total_pnl: nullableNumber(metrics.paper_total_pnl, 'paper_total_pnl'), paper_max_drawdown: metrics.paper_max_drawdown === null ? null : finite(metrics.paper_max_drawdown, 'paper_max_drawdown', 0, 1) } }
 }
 
 function decodeCoverage(value: unknown, label: string): EarningsOneLegCoverage | null {
@@ -521,7 +527,7 @@ export function decodeEarningsOptionDetail(value: unknown): EarningsOptionDetail
   if (root.state === 'locked') {
     if (root.feature === 'earnings_forecast') return decodeLocked(root)
     exact(root, ['state', 'feature', 'required_capability', 'reason_code', 'upgrade_path'], 'option.locked')
-    return { state: 'locked', feature: enumeration(root.feature, ['earnings_option_research'] as const, 'feature'), required_capability: enumeration(root.required_capability, ['earnings_option_defined_risk'] as const, 'required_capability'), reason_code: enumeration(root.reason_code, ['capability_required'] as const, 'reason_code'), upgrade_path: enumeration(root.upgrade_path, ['/membership'] as const, 'upgrade_path') }
+    return { state: 'locked', feature: enumeration(root.feature, ['earnings_option_research'] as const, 'feature'), required_capability: enumeration(root.required_capability, ['earnings_option_defined_risk'] as const, 'required_capability'), reason_code: enumeration(root.reason_code, ['legacy_entitlement_required'] as const, 'reason_code'), upgrade_path: root.upgrade_path === null ? null : enumeration(root.upgrade_path, ['/membership'] as const, 'upgrade_path') }
   }
   exact(root, ['state', 'structure_type', 'evidence_mode', 'historical_oos_validated', 'research_only', 'execution_eligible', 'automatic_ordering', 'legs', 'total_premium', 'commission_cost', 'spread_cost', 'slippage_cost', 'max_loss', 'lower_breakeven', 'upper_breakeven', 'required_move_pct', 'model_expected_move_pct', 'iv_implied_move_pct', 'probability_outside_breakeven', 'expected_value_net_costs', 'call_zero_coverage', 'put_zero_coverage', 'terminal_sample_size', 'iv_crush_scenarios', 'decision_at', 'action_contract'], 'option')
   const structures = ['LONG_CALL', 'LONG_PUT', 'LONG_STRADDLE', 'LONG_STRANGLE'] as const

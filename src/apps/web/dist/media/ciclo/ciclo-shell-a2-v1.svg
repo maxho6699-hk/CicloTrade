@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320" role="img" aria-labelledby="title desc">
+  <title id="title">Ciclo 高级外观</title>
+  <desc id="desc">带双层研究数据环、装甲肩翼与蓝紫能量核心的高级 Ciclo 助手。</desc>
+  <defs>
+    <linearGradient id="shell" x1="60" y1="34" x2="254" y2="286" gradientUnits="userSpaceOnUse"><stop stop-color="#fff"/><stop offset=".42" stop-color="#e5ebf8"/><stop offset="1" stop-color="#8195b4"/></linearGradient>
+    <linearGradient id="edge" x1="55" y1="76" x2="266" y2="245" gradientUnits="userSpaceOnUse"><stop stop-color="#66eeff"/><stop offset=".55" stop-color="#6177ff"/><stop offset="1" stop-color="#8a61ff"/></linearGradient>
+    <linearGradient id="visor" x1="105" y1="75" x2="221" y2="151"><stop stop-color="#293e67"/><stop offset="1" stop-color="#070b16"/></linearGradient>
+    <radialGradient id="core"><stop stop-color="#fff"/><stop offset=".2" stop-color="#74ecff"/><stop offset=".62" stop-color="#586fff"/><stop offset="1" stop-color="#824eff"/></radialGradient>
+    <filter id="shadow" x="-60%" y="-60%" width="220%" height="230%"><feDropShadow dx="0" dy="18" stdDeviation="15" flood-color="#19276a" flood-opacity=".34"/></filter>
+    <filter id="glow" x="-120%" y="-120%" width="340%" height="340%"><feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <g fill="none" stroke="url(#edge)" opacity=".78">
+    <ellipse cx="160" cy="156" rx="142" ry="78" transform="rotate(-14 160 156)" stroke-width="2"/>
+    <ellipse cx="160" cy="155" rx="112" ry="126" transform="rotate(24 160 155)" stroke-width="1.5" opacity=".6"/>
+    <path d="M31 170h28m201-30h29M84 49l17 24m120 187 18 25" stroke-width="2" stroke-linecap="round"/>
+    <g fill="#75eaff" stroke="none" filter="url(#glow)"><circle cx="29" cy="171" r="5"/><circle cx="289" cy="140" r="5"/><circle cx="91" cy="58" r="4"/><circle cx="231" cy="271" r="4"/></g>
+  </g>
+  <g filter="url(#shadow)">
+    <path fill="url(#shell)" stroke="#f4f8ff" stroke-width="3" d="M85 197c10-35 35-54 74-55h5c39 1 64 20 74 55l12 49c4 21-10 36-32 39H104c-22-3-36-18-32-39l13-49Z"/>
+    <path fill="#293d60" stroke="url(#edge)" stroke-width="3" d="m88 189-43 25 5 51 39 16 20-38-5-43-16-11Zm148 0 43 25-5 51-39 16-20-38 5-43 16-11Z"/>
+    <path fill="url(#shell)" stroke="#f4f8ff" stroke-width="3" d="M78 88c7-37 36-61 82-61 47 0 77 25 83 62l-5 45c-4 28-28 47-57 50h-42c-31-3-54-22-58-50l-3-46Z"/>
+    <path fill="url(#visor)" stroke="#7b8fb3" stroke-width="3" d="M103 86c11-23 31-35 59-35 29 0 49 13 59 36l-4 40c-5 17-19 28-40 31h-31c-21-3-36-14-40-31l-3-41Z"/>
+    <g fill="#7af0ff" filter="url(#glow)"><path d="M124 101c11-11 23-11 34 0-10 16-24 16-34 0Z"/><path d="M168 101c11-11 23-11 34 0-10 16-24 16-34 0Z"/></g>
+    <path fill="#bdc9dd" stroke="#f7fbff" stroke-width="3" d="m75 96-27 22 7 44 29 13 16-33-5-39-20-7Zm170 0 27 22-7 44-29 13-16-33 5-39 20-7Z"/>
+    <path d="m107 191 25-17h59l25 18-9 19h-91l-9-20Z" fill="#20314f" stroke="url(#edge)" stroke-width="2"/>
+    <circle cx="161" cy="229" r="30" fill="#121d34" stroke="url(#edge)" stroke-width="4"/><circle cx="161" cy="229" r="17" fill="url(#core)" filter="url(#glow)"/>
+    <path d="M119 270h84" stroke="#e5edf9" stroke-width="5" stroke-linecap="round"/><path d="M133 279h56" stroke="url(#edge)" stroke-width="3" stroke-linecap="round"/>
+  </g>
+</svg>

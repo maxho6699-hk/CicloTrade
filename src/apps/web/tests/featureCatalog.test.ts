@@ -96,7 +96,7 @@ test('simplified and traditional copy share searchable terms', () => {
   assert.equal(filterFeatureCatalog(decoded.items, '篩選', 'zh-Hant').filter((item) => item.key === 'stock-screener').length, 1)
   const strategyResearch = { ...screener, titleKey: 'feature.strategy_research.title', descriptionKey: 'feature.strategy_research.description' }
   assert.equal(localizeFeature(strategyResearch, 'zh-Hant').title, '策略研究覆蓋')
-  assert.match(localizeFeature(strategyResearch, 'zh-Hans').description, /97 标的扩容链/)
+  assert.match(localizeFeature(strategyResearch, 'zh-Hans').description, /97 只股票扩容链/)
 })
 
 test('fixed server reasons are localized while unknown operational detail remains untouched', () => {
@@ -128,6 +128,96 @@ test('planned entries remain visible but never actionable or pinnable', () => {
   assert.equal(planned.availability, 'planned')
   assert.equal(planned.access, 'wait')
   assert.equal(planned.pinAllowed, false)
+  assert.equal(featureOpenRoute(planned), null)
+  assert.throws(() => decodeFeatureCatalog({
+    ...payload,
+    items: payload.items.map((item) => item.key === 'option-live-automation' ? { ...item, pin_allowed: true } : item),
+  }), /planned feature cannot be pinned/)
+})
+
+test('legacy locked entries wait without a membership CTA', () => {
+  const decoded = decodeFeatureCatalog({
+    ...payload,
+    items: [...payload.items, {
+      key: 'legacy-option', route: '/lab', routes: ['/lab'], category: 'research',
+      title_key: 'feature.option_lab.title', description_key: 'feature.option_lab.description',
+      icon: 'Gauge', capability: 'option_strategy', availability: 'locked', access: 'wait',
+      reason: 'sales_unavailable: 该能力仅保留历史有效权益，当前不公开新购或升级。',
+      data_state: 'not_applicable', health: 'not_applicable', placements: ['more'], actions: {},
+      pin_allowed: false, primary_nav: false, sort_order: 221, recommendation_rank: null,
+    }],
+  })
+  const item = decoded.items.find((entry) => entry.key === 'legacy-option')!
+  assert.equal(featureOpenRoute(item), null)
+  assert.equal(MORE_PAGE_COPY['zh-Hans'].availability.locked, '当前未开放')
+  assert.equal(MORE_PAGE_COPY['zh-Hant'].availability.locked, '目前未開放')
+})
+
+test('catalog entries use real hosts and retain no retired fake query routes', () => {
+  const source = readFileSync(new URL('../src/domain/featureCatalog.ts', import.meta.url), 'utf8')
+  assert.match(source, /account\|admin\|ai\|deliberation\|discover\|earnings\|feedback\|help\|lab\|legal\|membership/)
+  for (const retired of ['tool=heatmap', 'tool=calendar', 'workspace=options', 'tool=risk', 'section=data', 'tool=alerts']) {
+    assert.doesNotMatch(source, new RegExp(retired.replace(/[?=]/g, '\\$&')))
+  }
+})
+
+test('secondary operational routes keep complete bilingual directory copy', () => {
+  const decoded = decodeFeatureCatalog({
+    ...payload,
+    items: [...payload.items, ...[
+      ['workflow-tasks', '/workflow', 'feature.workflow_tasks.title', 'feature.workflow_tasks.description', 'ClipboardCheck'],
+      ['notifications', '/notifications', 'feature.notifications.title', 'feature.notifications.description', 'BellRing'],
+      ['trade-control', '/trade', 'feature.trade_control.title', 'feature.trade_control.description', 'ShieldCheck'],
+      ['membership', '/membership', 'feature.membership.title', 'feature.membership.description', 'WalletCards'],
+      ['promotion', '/promotion', 'feature.promotion.title', 'feature.promotion.description', 'WalletCards'],
+      ['help', '/help', 'feature.help.title', 'feature.help.description', 'LifeBuoy'],
+      ['legal', '/legal', 'feature.legal.title', 'feature.legal.description', 'ShieldCheck'],
+      ['admin', '/admin', 'feature.admin.title', 'feature.admin.description', 'ShieldCheck'],
+    ].map(([key, route, title_key, description_key, icon], index) => ({
+      key, route, routes: [route], category: key === 'trade-control' ? 'automation' : 'account', title_key, description_key, icon,
+      capability: null, availability: 'available', access: 'open', reason: null,
+      data_state: 'not_applicable', health: 'not_applicable', placements: ['more'], actions: {},
+      pin_allowed: key !== 'admin', primary_nav: false, sort_order: 500 + index * 10, recommendation_rank: null,
+    }))],
+  })
+  for (const key of ['workflow-tasks', 'notifications', 'trade-control', 'membership', 'promotion', 'help', 'legal', 'admin']) {
+    const item = decoded.items.find((entry) => entry.key === key)!
+    assert.notEqual(localizeFeature(item, 'zh-Hans').title, item.titleKey)
+    assert.notEqual(localizeFeature(item, 'zh-Hant').description, item.descriptionKey)
+    assert.equal(featureOpenRoute(item), item.route)
+  }
+})
+
+test('account center keeps the historical data-status key without duplicating the /account entry', () => {
+  const decoded = decodeFeatureCatalog(payload)
+  const source = readFileSync(new URL('../src/domain/featureCatalog.ts', import.meta.url), 'utf8')
+  const accountEntries = decoded.items.filter((item) => item.route === '/account')
+  assert.equal(accountEntries.length, 0)
+  assert.match(source, /feature\.account_center\.title/)
+  assert.match(source, /个人资料与账户中心/)
+  assert.match(source, /個人資料與帳戶中心/)
+})
+
+test('new bounded contexts have safe routes and complete Simplified and Traditional copy', () => {
+  const decoded = decodeFeatureCatalog({
+    ...payload,
+    items: [...payload.items, ...[
+      ['ai-workspace', '/ai', 'feature.ai_workspace.title', 'feature.ai_workspace.description', 'Sparkles'],
+      ['multi-agent-deliberation', '/deliberation', 'feature.multi_agent_deliberation.title', 'feature.multi_agent_deliberation.description', 'ShieldCheck'],
+      ['csv-signal-import', '/lab?tab=csv-import', 'feature.csv_signal_import.title', 'feature.csv_signal_import.description', 'ClipboardCheck'],
+    ].map(([key, route, title_key, description_key, icon], index) => ({
+      key, route, routes: [route], category: 'research', title_key, description_key, icon,
+      capability: key, availability: 'available', access: 'open', reason: null,
+      data_state: 'ready', health: 'healthy', placements: ['more', 'secondary_nav'], actions: {},
+      pin_allowed: true, primary_nav: false, sort_order: 250 + index * 10, recommendation_rank: index + 1,
+    }))],
+  })
+  for (const key of ['ai-workspace', 'multi-agent-deliberation', 'csv-signal-import']) {
+    const item = decoded.items.find((entry) => entry.key === key)!
+    assert.notEqual(localizeFeature(item, 'zh-Hans').title, item.titleKey)
+    assert.notEqual(localizeFeature(item, 'zh-Hant').description, item.descriptionKey)
+    assert.equal(featureOpenRoute(item), item.route)
+  }
 })
 
 test('status-bearing research entries remain readable while degraded but never pinnable', () => {
@@ -171,7 +261,10 @@ test('More page copy is injectable and complete for Simplified and Traditional C
   assert.match(source, /copy\?: MorePageCopy/)
   assert.match(source, /onSavePins\?: \(pinned: string\[\], recent: string\[\], expectedVersion: number\) => FeatureCatalogPayload/)
   assert.match(source, /\.\.\.catalogSnapshot\.preferences\.recent/)
-  assert.match(source, /await onRecordRecent\(item\.key, catalogSnapshot\.preferences\.version\)/)
+  assert.match(source, /Promise\.resolve\(\)\s*\.then\(\(\) => onRecordRecent\(item\.key, catalogSnapshot\.preferences\.version\)\)/)
+  assert.match(source, /<Link className="feature-card-main"/)
+  assert.match(source, /<button className="feature-card-main" type="button" disabled/)
+  assert.doesNotMatch(source, /preventDefault\(/)
   assert.match(source, /name="feature-search" autoComplete="off" spellCheck=\{false\}/)
   assert.match(source, /localizeFeatureReason\(item\.reason, locale\)/)
   assert.doesNotMatch(source, /等待主管/)

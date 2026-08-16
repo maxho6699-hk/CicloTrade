@@ -13,6 +13,18 @@ test('Account reads the server account limit and routes brokerage actions to Tra
   assert.match(source, /机器人外观|设备与会话|mandate|外观.*锁定|session.*锁定/i)
 })
 
+test('Account fails closed when an authorization policy or complete risk DTO is absent', () => {
+  const source = read('AccountPage.tsx')
+  assert.match(source, /disabled=\{!configured \|\| authorizationBusy !== null\}/)
+  assert.match(source, /ai_memory: \['account', 'research', 'ai'\]/)
+  assert.doesNotMatch(source, /resumeOpeningPause|验证并恢复/)
+  assert.match(source, /to="\/trade">前往交易控制台核验/)
+  assert.match(source, /const hasVerifiedRisk =/)
+  assert.match(source, /disabled=\{!hasVerifiedRisk\}/)
+  assert.match(source, /服务端未返回完整风控设置/)
+  assert.doesNotMatch(source, /\{ \.\.\.riskSettings, \.\.\.workspace\.data\.settings\.risk \}/)
+})
+
 test('Notifications gates preferences by server capabilities and does not fabricate deliveries', () => {
   const source = read('NotificationsPage.tsx')
   assert.match(source, /capabilities/)

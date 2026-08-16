@@ -21,6 +21,7 @@ import {
   type MembershipQuote,
 } from "../api/client";
 import { useWorkspace } from "../api/workspace-context";
+import { accountCenterApi, type AppearancePayload } from "../api/accountCenter";
 import { PageHeader } from "../components/PageHeader";
 import { SegmentedControl } from "../components/ui/SegmentedControl";
 import { WorkspaceState } from "../components/WorkspaceState";
@@ -42,13 +43,13 @@ const goalGuides: Array<{
   {
     key: "alerts",
     title: "我想收到提醒",
-    detail: "高级版开放正股 Telegram，并提供真实期权自动交易项目申请入口。",
+    detail: "高级版开放正股 Telegram，并提供 1 个股票账号的受控自动实盘产品资格；仍需独立授权与安全门。",
     plan: "高级版",
   },
   {
     key: "research",
     title: "我想研究期权或写策略",
-    detail: "高级版提供深度研究与受控项目申请；申请不等于获批或自动启用。",
+    detail: "高级版提供股票深度研究与 1 个股票账号的受控自动实盘产品资格；不包含期权自动实盘申请。",
     plan: "高级版",
   },
 ];
@@ -324,6 +325,8 @@ function PaymentProofPanel({
               {qrUrl ? (
                 <img
                   src={qrUrl}
+                  width={280}
+                  height={280}
                   alt={`${paymentMethodLabels[order.method]} 收款二维码`}
                 />
               ) : (
@@ -392,6 +395,8 @@ export function MembershipPage() {
   const [quotedInputFingerprint, setQuotedInputFingerprint] = useState("");
   const [quoteBusy, setQuoteBusy] = useState(false);
   const [quoteError, setQuoteError] = useState("");
+  const [appearance, setAppearance] = useState<AppearancePayload | null>(null);
+  const [appearanceState, setAppearanceState] = useState("正在读取外观权益…");
   const membershipOrderIdempotency = useRef<{
     fingerprint: string;
     key: string;
@@ -412,6 +417,19 @@ export function MembershipPage() {
     brokerage?.subscription_auto_connects_broker ?? false;
   const noCicloTradeShortApproval =
     brokerage?.us_short?.requires_ciclotrade_manual_approval === false;
+
+  useEffect(() => {
+    if (workspace.mode !== "authenticated") return;
+    let active = true;
+    void accountCenterApi.appearance().then((payload) => {
+      if (!active) return;
+      setAppearance(payload);
+      setAppearanceState(payload.items.length ? "外观权益由服务端 manifest 验证。" : "外观 manifest 尚未发布。");
+    }).catch(() => {
+      if (active) setAppearanceState("外观权益接口暂不可用；不会按方案名称猜测解锁状态。");
+    });
+    return () => { active = false; };
+  }, [workspace.mode]);
 
   function resetOrderStatus() {
     setOrderStatus(null);
@@ -547,12 +565,12 @@ export function MembershipPage() {
             </button>
           ))}
         </div>
-        <section className="membership-skin-preview" aria-label="Ciclo 外观预览">
-          <LockKeyhole size={18} />
-          <div><strong>Ciclo 机器人外观</strong><p>外观 entitlement 由服务端返回并与生效版本绑定；当前会员响应未提供可验证的 skin_id 与 asset_version，因此这里只显示锁定预览，不按方案名称猜测外观。</p></div>
+        <section className="membership-skin-preview" aria-label="Ciclo 外观进化">
+          <header><div><strong>Ciclo 机器人外观进化</strong><p>会员负责解锁，账户页负责选择；外观不代表 AI 等级、收益能力或自动实盘权限。</p></div><span>{appearanceState}</span></header>
+          {appearance?.items.length ? <div className="membership-skin-grid">{appearance.items.map((item) => { const preview = typeof item.assets.preview === 'string' && /^\/media\/ciclo\/[a-z0-9-]+\.svg$/.test(item.assets.preview) ? item.assets.preview : null; const alt = typeof item.assets.alt === 'string' ? item.assets.alt : item.skin_id; const plan = typeof item.assets.unlock_plan === 'string' ? item.assets.unlock_plan : '对应会员'; const current = appearance.current.public_id === item.public_id; return <article className={`${item.entitled ? 'is-entitled' : 'is-locked'} ${current ? 'is-current' : ''}`} key={item.public_id}>{preview ? <img src={preview} width={320} height={320} alt={alt} /> : <span className="membership-skin-missing"><LockKeyhole size={22} /></span>}<div><strong>{alt}</strong><small>{plan} · {item.asset_version}</small><span>{current ? '当前使用' : item.entitled ? '已解锁，可在账户页选择' : plan === '专业版' ? '专业版恢复销售前仅锁定预览' : '升级后解锁'}</span></div>{!item.entitled && <LockKeyhole aria-label="锁定" size={16} />}</article> })}</div> : <div className="inline-empty">服务端没有返回外观 manifest；不会显示虚构等级素材。</div>}
         </section>
         <p>
-          会员付款只开通研究、提醒、数据、历史样本范围与回测参数权限。当前环境尚未接入回测计算引擎，不会生成收益、胜率或回撤成绩。订阅
+          会员付款只开通研究、提醒、数据、历史样本范围与回测参数权限。回测任务已接入真实队列，结果仍依赖服务端计算引擎与数据，不承诺收益、胜率或回撤成绩。订阅
           {subscriptionAutoConnectsBroker ? "会" : "不会"}
           自动连接券商，实盘服务由用户主动连接个人券商。
           {noCicloTradeShortApproval
@@ -564,12 +582,12 @@ export function MembershipPage() {
         <div className="inline-warning membership-live-trade-note">
           <ShieldCheck size={17} />
           <span>
-            需要实盘连接？打开账户与安全查看券商状态。这里不会把实盘或做空伪装成会员自动权益，也不要求先购买套餐才能查看条件。
+            需要实盘连接？打开交易控制台查看券商资格、mandate 与独立门控状态。这里不会把实盘或做空伪装成会员自动权益，也不要求先购买套餐才能查看条件。
           </span>
           <button
             className="button tertiary"
             type="button"
-            onClick={() => navigate("/account")}
+            onClick={() => navigate("/trade")}
           >
             查看券商状态
           </button>
@@ -586,7 +604,7 @@ export function MembershipPage() {
         </span>
         <div>
           <span>CURRENT PLAN</span>
-          <h2>{workspace.user?.plan_display_name ?? "演示模式"}</h2>
+          <h2>{workspace.user?.plan_display_name ?? "未登录"}</h2>
           <p>
             <Clock3 size={15} />{" "}
             {workspace.user?.subscription_expire
@@ -599,7 +617,7 @@ export function MembershipPage() {
         <span
           className={`status-chip ${workspace.user ? "official" : "research"}`}
         >
-          <ShieldCheck size={14} /> {workspace.user ? "权益正常" : "演示数据"}
+          <ShieldCheck size={14} /> {workspace.user ? "权益正常" : "安全只读"}
         </span>
         <button
           className="button secondary"

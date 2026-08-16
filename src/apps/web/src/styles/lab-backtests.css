@@ -9,6 +9,7 @@
   border-left: 1px solid var(--border);
   background: var(--surface-subtle);
 }
+.lab-result-zone.is-stale .lab-queue-heading { background: color-mix(in srgb, var(--warning) 7%, var(--surface-subtle)); }
 
 .lab-submit-gate {
   display: grid;
@@ -23,6 +24,9 @@
 }
 
 .lab-submit-gate > svg { color: var(--warning); }
+.lab-submit-gate.is-ready { background: color-mix(in srgb, var(--accent) 8%, var(--surface-raised)); }
+.lab-submit-gate.is-ready > svg { color: var(--accent); }
+.lab-submit-gate.is-locked > svg { color: var(--muted); }
 .lab-submit-gate > span { display: grid; gap: 4px; }
 .lab-submit-gate > span small,
 .lab-submit-gate > p { color: var(--muted); font-size: 12px; line-height: 1.5; }
@@ -109,6 +113,25 @@
 .lab-job-detail > header .button { min-height: 44px; }
 .lab-job-detail > p { margin: 0; padding: 0 13px 11px; color: var(--muted); font-size: 12px; line-height: 1.55; }
 
+.lab-job-failure { display: flex; align-items: flex-start; gap: 8px; margin: 0 13px 12px; padding: 10px; color: var(--negative); background: color-mix(in srgb, var(--negative) 8%, var(--surface-raised)); }
+.lab-job-failure > span { display: grid; gap: 3px; }
+.lab-job-failure small { color: var(--muted); font-size: 11px; }
+
+.lab-field-help { grid-column: 1 / -1; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.lab-template-summary { align-items: stretch; }
+.lab-template-summary > div { display: grid; gap: 4px; padding: 12px; background: var(--surface-raised); box-shadow: var(--shadow-panel); }
+.lab-template-summary span { color: var(--muted); font-size: 11px; }
+.lab-template-summary strong { font-size: 14px; }
+.lab-template-summary small { color: var(--muted); font-size: 11px; line-height: 1.45; }
+.strategy-template-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 14px 0; }
+.strategy-template-grid button { display: grid; gap: 5px; min-height: 72px; padding: 12px; border: 0; border-radius: var(--radius-control); background: var(--surface-raised); color: var(--text); text-align: left; box-shadow: var(--shadow-panel); cursor: pointer; }
+.strategy-template-grid button:hover,
+.strategy-template-grid button:focus-visible,
+.strategy-template-grid button.active { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.strategy-template-grid small { color: var(--muted); font-size: 11px; }
+.lab-template-note { display: flex; align-items: flex-start; gap: 7px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.lab-template-note svg { flex: 0 0 auto; color: var(--positive); }
+
 .lab-job-facts {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -155,6 +178,7 @@
 }
 
 @media (max-width: 640px) {
+  .strategy-template-grid { grid-template-columns: 1fr; }
   .lab-submit-gate { grid-template-columns: 24px minmax(0, 1fr); }
   .lab-submit-gate .button { grid-column: 1 / -1; width: 100%; }
   .lab-submit-gate > p { grid-column: 1 / -1; }

@@ -1,5 +1,4 @@
 import {
-  ArrowRight,
   BarChart3,
   CalendarClock,
   CheckCircle2,
@@ -15,7 +14,7 @@ import {
   Target,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
 import { earningsApi, EarningsApiError, loadEarningsInitialState } from '../api/earnings.ts'
 import { EarningsForecastTimeline } from '../components/EarningsForecastTimeline.tsx'
 import { EarningsOptionStructure } from '../components/EarningsOptionStructure.tsx'
@@ -83,8 +82,8 @@ function EarningsLockedView({ locked }: { locked: EarningsLockedOverview }) {
   return <section className="earnings-lock-shell" aria-labelledby="earnings-lock-title">
     <header>
       <span className="earnings-lock-icon"><LockKeyhole /></span>
-      <div><span>PROFESSIONAL FORECAST</span><h2 id="earnings-lock-title">完整业绩预测需要专业会员权限</h2><p>{locked.description}</p></div>
-      <Link className="button primary" to={locked.upgrade_path}>查看升级方案 <ArrowRight size={16} /></Link>
+      <div><span>LEGACY FORECAST</span><h2 id="earnings-lock-title">完整业绩预测需要历史有效权益</h2><p>{locked.description}</p></div>
+      <button className="button secondary" type="button" disabled>当前不开放新购</button>
     </header>
     <div className="earnings-lock-summary">
       <span><strong>{locked.window_days} 天</strong><small>未来事件窗口</small></span>
@@ -174,7 +173,7 @@ function FutureWorkspace({
   onSelectOption: (optionId: string) => void
   optionLoading: boolean
 }) {
-  if (overview.data_state === 'no_data') return <div className="earnings-state"><CalendarClock /><strong>未来 7 天没有已确认事件</strong><span>页面不会用演示公司、历史财报或推测日期填充空白。</span></div>
+  if (overview.data_state === 'no_data') return <div className="earnings-state"><CalendarClock /><strong>未来 7 天没有已确认事件</strong><span>页面不会用虚构公司、历史财报或推测日期填充空白。</span></div>
   const research = detail?.state === 'research' ? detail : null
   const forecast = research?.timeline.find((item) => item.countdown_day === selectedDay) ?? nearestForecast(research)
 
@@ -234,8 +233,8 @@ function EarningsStatisticsView({ statistics }: { statistics: EarningsStatistics
     ['校准误差', percent(metrics.expected_calibration_error, true), '概率与实际偏差'],
     ['区间覆盖率', percent(metrics.interval_coverage, true), '实际价格落入 P10—P90'],
     ['过度自信率', percent(metrics.overconfidence_rate, true), `高置信样本 ${metrics.high_confidence_sample_size}`],
-    ['纸上总损益', metrics.paper_total_pnl.toFixed(2), '研究记录，不是账户收益'],
-    ['纸上最大回撤', percent(metrics.paper_max_drawdown), '按封存规则统计'],
+    ['纸上总损益', metrics.paper_total_pnl === null ? '不可用' : metrics.paper_total_pnl.toFixed(2), metrics.paper_total_pnl === null ? '缺少真实封存净值，不展示伪零' : '研究记录，不是账户收益'],
+    ['纸上最大回撤', metrics.paper_max_drawdown === null ? '不可用' : percent(metrics.paper_max_drawdown), metrics.paper_max_drawdown === null ? '缺少真实封存净值，不展示伪零' : '按封存规则统计'],
   ]
   return <section className="earnings-statistics"><header className="earnings-section-heading"><div><span>LONG-RUN / CALIBRATION</span><h2>长期预测统计</h2></div><span className="earnings-boundary-chip"><CheckCircle2 size={14} /> 只读结果</span></header><div className="earnings-stat-grid">{items.map(([label, value, note]) => <article key={label}><span>{label}</span><strong>{value}</strong><small>{note}</small></article>)}</div><p className="earnings-safety-note"><ShieldCheck size={15} /> 统计只使用按时间可用的 D-1 快照与事后结果；不会回写预测，也不会冒充个人账户收益。</p></section>
 }

@@ -67,7 +67,11 @@ export function EarningsOptionStructure({
           <LockKeyhole />
           <strong>该研究需要期权专业权限</strong>
           <span>锁定状态不会读取合约腿、报价、成本或模型细节。</span>
-          <Link className="button primary" to={option.upgrade_path}>查看会员方案 <ArrowUpRight size={15} /></Link>
+          {option.upgrade_path ? (
+            <Link className="button primary" to={option.upgrade_path}>查看会员方案 <ArrowUpRight size={15} /></Link>
+          ) : (
+            <button className="button secondary" type="button" disabled>当前不开放新购</button>
+          )}
         </div>
       </section>
     )

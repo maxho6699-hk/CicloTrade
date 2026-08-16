@@ -439,14 +439,15 @@ def test_membership_plan_contract_projects_the_canonical_plan_matrix(compatibili
     assert by_key["免费版"]["can_purchase"] is False
     assert by_key["标准版"]["purchase_action"] == "upgrade"
     assert by_key["标准版"]["can_purchase"] is True
-    assert "真实期权自动交易项目申请入口（不保证审批、权限或运行）" in by_key["高级版"]["features"]
+    assert "1 个股票账号的受控自动实盘产品资格（需 Telegram、券商授权、账户与环境、mandate、策略与风险、数据健康及 kill-switch 独立门）" in by_key["高级版"]["features"]
+    assert not any("期权自动交易" in feature for feature in by_key["高级版"]["features"])
 
     expiry = (datetime.now(UTC) + timedelta(days=30)).isoformat()
     database.execute(
         "UPDATE users SET plan_type='高级版',subscription_expire=? WHERE id=?", (expiry, user["id"])
     )
     advanced = repository.membership(repository.authenticate(login.access_token))
-    assert advanced["brokerage"]["auto_control_account_limit"] == 0
+    assert advanced["brokerage"]["auto_control_account_limit"] == 1
     advanced_by_key = {item["key"]: item for item in advanced["plans"]}
     assert advanced_by_key["标准版"]["purchase_action"] == "covered"
     assert advanced_by_key["标准版"]["can_purchase"] is False
@@ -457,7 +458,7 @@ def test_membership_plan_contract_projects_the_canonical_plan_matrix(compatibili
         "UPDATE users SET plan_type='专业版',subscription_expire=? WHERE id=?", (expiry, user["id"])
     )
     professional = repository.membership(repository.authenticate(login.access_token))
-    assert professional["brokerage"]["auto_control_account_limit"] == 0
+    assert professional["brokerage"]["auto_control_account_limit"] == 5
 
 
 def test_membership_annual_bonus_uses_the_platform_control(compatibility):

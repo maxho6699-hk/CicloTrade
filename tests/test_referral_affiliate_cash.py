@@ -434,12 +434,14 @@ def test_fresh_database_applies_0025_profile_schema_and_portal_serializes_hkt(tm
     assert len(profile["public_id"]) == 27
     portal = ReferralService(database).portal(user["id"], base_url="https://ciclotrade.example")
     assert set(portal) == {
-        "program", "invite", "balances", "trends", "funnel", "referrals",
+        "program", "invite", "balances", "withdrawal_eligibility", "trends", "funnel", "referrals",
         "commissions", "withdrawals", "timeline",
     }
     assert portal["invite"]["invite_link"].startswith("https://ciclotrade.example/login?ref=")
     assert portal["program"]["enabled"] is False
     assert portal["program"]["cutover_at"] is None
+    assert portal["withdrawal_eligibility"]["status"] == "ineligible"
+    assert portal["withdrawal_eligibility"]["reason_code"] == "ineligible"
 
 
 def test_portal_all_emitted_timestamps_are_hong_kong_iso(db):
@@ -504,19 +506,60 @@ def test_journal_reconciles_batches_platform_and_open_withdrawals(db):
     assert db.fetch_one(
         "SELECT COALESCE(SUM(amount_minor),0) net FROM referral_ledger_entries"
     )["net"] == 0
+
+
+def test_withdrawal_eligibility_is_server_authoritative_and_exposes_bounds(db):
+    auth = AuthService(db)
+    user = _user(auth, "eligibility")
+    wallet = ReferralWalletService(db)
+    now = datetime(2026, 8, 16, 12, tzinfo=UTC)
+    with db.transaction() as conn:
+        below = wallet.withdrawal_eligibility_in_transaction(
+            conn, user["id"], now=now, amount_minor=19_999,
+        )
+        above = wallet.withdrawal_eligibility_in_transaction(
+            conn, user["id"], now=now, amount_minor=500_001,
+        )
+        eligible = wallet.withdrawal_eligibility_in_transaction(
+            conn, user["id"], now=now, amount_minor=None,
+        )
+    assert below["status"] == "below_min"
+    assert above["status"] == "above_max"
+    assert eligible["status"] == "below_min"
+    for item in (below, above, eligible):
+        assert item["min_minor"] == 20_000
+        assert item["max_minor"] == 500_000
+        assert item["available_minor"] == 0
+        assert item["evaluated_at"].endswith("+00:00")
+
+
+def test_withdrawal_eligibility_reuses_request_gates_without_mutating_state(db):
+    auth = AuthService(db)
+    user = _user(auth, "eligibility-gates")
+    with db.transaction() as conn:
+        _ledger_batch(
+            conn, user_id=user["id"], legs=[("available", 30_000)], entry_type="test",
+            group_key="eligibility-gates", reference_type="test", reference_id="eligibility-gates",
+            batch_key="eligibility-gates", now=datetime(2026, 8, 16, 12, tzinfo=UTC),
+        )
+        result = ReferralWalletService(db).withdrawal_eligibility_in_transaction(
+            conn, user["id"], now=datetime(2026, 8, 16, 12, tzinfo=UTC), amount_minor=20_000,
+        )
+    assert result["status"] == "eligible"
+    assert db.fetch_one("SELECT COUNT(*) count FROM referral_withdrawal_requests")["count"] == 0
     reserved = db.fetch_one(
         """SELECT COALESCE(SUM(l.amount_minor),0) amount FROM referral_ledger_entries l
            JOIN referral_journal_batches b ON b.id=l.batch_id
            WHERE l.account_kind='user' AND b.status='finalized' AND l.user_id=?
              AND l.bucket='reserved'""",
-        (referrer["id"],),
+        (user["id"],),
     )["amount"]
     open_requests = db.fetch_one(
         """SELECT COALESCE(SUM(amount_minor),0) amount FROM referral_withdrawal_requests
            WHERE user_id=? AND status IN ('submitted','approved')""",
-        (referrer["id"],),
+        (user["id"],),
     )["amount"]
-    assert reserved == open_requests == 20_000
+    assert reserved == open_requests == 0
 
 
 def test_partial_commission_reversal_is_proportional(db):

@@ -115,6 +115,11 @@
 .promotion-status.clawed_back, .promotion-status.partially_clawed_back, .promotion-status.withdrawal-rejected, .promotion-status.withdrawal-system_cancelled { color: var(--negative); }
 .promotion-empty-cell { margin: 0; padding: 20px; color: var(--muted); text-align: center; }
 .promotion-withdrawal-panel { padding-bottom: 14px; }
+.promotion-withdrawal-eligibility { display: grid; gap: 4px; margin: 14px 17px 0; padding: 10px 12px; border: 1px solid var(--border-subtle); border-radius: 10px; background: var(--surface-muted); }
+.promotion-withdrawal-eligibility strong { font-size: 13px; }
+.promotion-withdrawal-eligibility small { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.promotion-withdrawal-eligibility.eligible { border-color: color-mix(in srgb, var(--positive) 45%, var(--border-subtle)); }
+.promotion-withdrawal-eligibility.unknown, .promotion-withdrawal-eligibility.paused, .promotion-withdrawal-eligibility.cooldown, .promotion-withdrawal-eligibility.debt, .promotion-withdrawal-eligibility.open_limit, .promotion-withdrawal-eligibility.daily_limit, .promotion-withdrawal-eligibility.monthly_limit { border-color: color-mix(in srgb, var(--warning) 50%, var(--border-subtle)); }
 .promotion-withdrawal-panel > label { display: grid; gap: 6px; padding: 15px 17px 9px; }
 .promotion-withdrawal-panel > label span { color: var(--muted); font-size: 12px; }
 .promotion-withdrawal-panel > label input { width: 100%; min-height: 44px; }

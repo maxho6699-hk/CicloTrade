@@ -10,17 +10,20 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useWorkspace } from "../api/workspace-context";
 import { BrowserApiError, saveTelegramEvents } from "../api/client";
+import { notificationsApi, type NotificationItem } from "../api/notifications";
 import { PageHeader } from "../components/PageHeader";
 import { WorkspaceState } from "../components/WorkspaceState";
 import { getFormatLocale } from "../i18n/runtime";
 import "../styles/secondary-pages.css";
+import "../styles/account-center.css";
 
 const defaultEvents = [
   {
     key: "stock_signal",
-    label: "正股买卖建议",
+    label: "股票买卖建议",
     note: "买入、加仓、持有、减仓与退出",
     enabled: false,
   },
@@ -57,16 +60,61 @@ const EVENT_CAPABILITIES: Partial<Record<(typeof defaultEvents)[number]["key"], 
 
 export function NotificationsPage() {
   const workspace = useWorkspace();
+  const navigate = useNavigate();
   const [events, setEvents] = useState(defaultEvents);
   const [eventStatus, setEventStatus] = useState("");
   const [connectionStatus, setConnectionStatus] = useState("");
   const [pendingEventKey, setPendingEventKey] = useState<string | null>(null);
+  const [inbox, setInbox] = useState<NotificationItem[]>([]);
+  const [inboxState, setInboxState] = useState("");
   const telegram = workspace.data?.telegram;
   const telegramReady = Boolean(
     telegram?.bound && telegram?.verified && telegram?.consented,
   );
-  const capabilities = workspace.data?.membership.capabilities ?? [];
-  const capabilityListKnown = Array.isArray(workspace.data?.membership.capabilities);
+  const capabilities = workspace.data?.membership.capabilities;
+  const capabilityListKnown = Array.isArray(capabilities);
+
+  useEffect(() => {
+    if (workspace.mode !== "authenticated") return;
+    let active = true;
+    setInboxState("正在读取真实通知…");
+    void notificationsApi.list().then((payload) => {
+      if (!active) return;
+      setInbox(payload.items);
+      setInboxState(payload.items.length ? "通知来自服务端真实收件箱。" : "当前没有服务端返回的通知。")
+    }).catch(() => {
+      if (active) setInboxState("通知收件箱接口尚未配置；不会展示演示消息。")
+    });
+    return () => { active = false };
+  }, [workspace.mode]);
+
+  const openNotification = async (item: NotificationItem) => {
+    if (!item.read) {
+      try {
+        await notificationsApi.markRead(item.public_id);
+        setInbox((items) => items.map((entry) => entry.public_id === item.public_id ? { ...entry, read: true } : entry));
+      } catch {
+        setInboxState("通知已打开，但服务端尚未确认已读。")
+      }
+    }
+    if (!item.target) return;
+    try {
+      const resolved = await notificationsApi.resolve(item.public_id);
+      if (resolved.stale || !resolved.locator) {
+        setInboxState("这条通知的行动链接已失效，已保留在通知收件箱。")
+        return
+      }
+      const allowedRoutes = new Set(["/account", "/membership", "/notifications", "/today", "/discover", "/research", "/paper", "/portfolio", "/reports", "/trade"])
+      if (!allowedRoutes.has(resolved.route)) {
+        setInboxState("通知行动链接返回了不受支持的页面；为安全起见没有跳转。")
+        return
+      }
+      const params = new URLSearchParams({ notification_kind: resolved.locator.kind, notification_public_id: resolved.locator.public_id, notification_version: String(resolved.locator.version) })
+      navigate(`${resolved.route}?${params.toString()}`);
+    } catch {
+      setInboxState("通知行动链接暂时无法验证；为安全起见没有跳转。")
+    }
+  };
 
   useEffect(() => {
     const stored = workspace.data?.telegram.events;
@@ -76,7 +124,7 @@ export function NotificationsPage() {
         if (!(item.key in stored)) return item;
         const requiredCapability = EVENT_CAPABILITIES[item.key];
         const allowed = telegramReady
-          && (!requiredCapability || (capabilityListKnown && capabilities.includes(requiredCapability)));
+          && (!requiredCapability || (capabilityListKnown && capabilities?.includes(requiredCapability) === true));
         return { ...item, enabled: allowed && stored[item.key] };
       }),
     );
@@ -87,7 +135,7 @@ export function NotificationsPage() {
       <PageHeader
         kicker="DELIVERY / TELEGRAM"
         title="消息通知"
-        description="查看 Telegram 绑定与通知偏好；真实投递日志接口开放后，才会显示发送结果与失败原因。"
+        description="查看真实站内收件箱、网站投递回执与 Telegram 绑定偏好；未接入的外部投递不会用演示记录补位。"
       />
       <WorkspaceState />
       <div className="notification-dashboard-grid">
@@ -208,7 +256,7 @@ export function NotificationsPage() {
             {events.map((event) => {
               const requiredCapability = EVENT_CAPABILITIES[event.key];
               const capabilityLocked = Boolean(requiredCapability)
-                && (!capabilityListKnown || !capabilities.includes(requiredCapability));
+                && (!capabilityListKnown || (requiredCapability ? !capabilities?.includes(requiredCapability) : false));
               const locked = !telegramReady || capabilityLocked;
               const entitlementLabel = !telegramReady
                 ? "Telegram 授权未完成 · 已锁定"
@@ -281,19 +329,30 @@ export function NotificationsPage() {
           </p>
         </section>
 
+        <section className="data-panel notification-inbox">
+          <header className="panel-heading">
+            <div>
+              <span>CANONICAL INBOX</span>
+              <h2>通知收件箱</h2>
+            </div>
+            <BellRing size={20} />
+          </header>
+          <p className="setting-status" role="status">{inboxState}</p>
+          {inbox.length ? <div className="notification-inbox-list">{inbox.map((item) => <article className={item.read ? "is-read" : "is-unread"} key={item.public_id}><div className="notification-inbox-copy"><span className={`status-chip ${item.severity === "error" || item.severity === "warning" ? "research" : "official"}`}>{item.kind}</span><strong>{item.title}</strong><p>{item.body}</p><small>{new Date(item.created_at).toLocaleString(getFormatLocale(), { hour12: false })} · {item.delivery.length ? item.delivery.map((delivery) => `${delivery.channel} ${delivery.status}`).join(" · ") : "尚无投递记录"}</small></div><button className="button tertiary" type="button" onClick={() => void openNotification(item)}>{item.target ? "查看行动" : item.read ? "已读" : "标记已读"}</button></article>)}</div> : <div className="inline-empty notification-inbox-empty">服务端没有返回任何真实投递结果；不会展示演示送达记录、占位消息或伪造投递状态。</div>}
+        </section>
+
         <section className="data-panel notification-deliveries">
           <header className="panel-heading">
             <div>
               <span>RECENT DELIVERIES</span>
-              <h2>投递记录 · 尚未接入</h2>
+              <h2>外部投递历史 · 尚未接入</h2>
             </div>
             <AlertTriangle size={20} />
           </header>
           <div className="inline-warning">
             <AlertTriangle size={17} />
             <span>
-              当前 API
-              只提供绑定、验证、授权和通知偏好，没有返回任何真实投递结果。接口接入前不会展示演示送达记录，也不会宣称消息已经发送成功。
+              当前 canonical inbox 已提供网站渠道投递回执；Telegram 独立 outbox 尚未投影到本页面。接入前不会把站内 delivered 冒充 Telegram 已送达。
             </span>
           </div>
           <div className="inline-empty">

@@ -239,6 +239,27 @@ class ReferralService:
                 ]
             minimum = int(policy.get("withdrawal_min_minor", 20_000))
             hold_days = int(policy.get("hold_days", 30))
+            try:
+                from core.referral_wallet import ReferralWalletService
+
+                withdrawal_eligibility = ReferralWalletService.withdrawal_eligibility_in_transaction(
+                    conn, int(user_id), now=moment, policy=policy,
+                )
+                withdrawal_eligibility = {
+                    **withdrawal_eligibility,
+                    "next_eligible_at": _hkt(withdrawal_eligibility["next_eligible_at"]),
+                    "evaluated_at": _hkt(withdrawal_eligibility["evaluated_at"]),
+                }
+            except Exception:
+                withdrawal_eligibility = {
+                    "status": "unknown", "reason_code": "unknown",
+                    "reason": "提现资格暂时无法核验，请以服务端重新校验结果为准。",
+                    "min_minor": minimum,
+                    "max_minor": int(policy.get("withdrawal_max_minor", 500_000)),
+                    "available_minor": max(0, int(buckets["available"])),
+                    "next_eligible_at": None,
+                    "evaluated_at": _hkt(_iso(moment)),
+                }
             raw_commissions = [dict(row) for row in conn.execute(
                 """SELECT public_id,recharge_public_id,order_kind,gross_amount_minor,rate_bps,
                           commission_amount_minor,clawed_back_minor,currency,settled_at,available_at
@@ -372,7 +393,7 @@ class ReferralService:
                     "WITHDRAWAL_APPROVED": "withdrawal_approved", "WITHDRAWAL_REJECTED": "withdrawal_rejected",
                     "WITHDRAWAL_PAID": "withdrawal_paid", "BONUS_AWARDED": "bonus_pending",
                     "BONUS_CLAWBACK": "bonus_clawback",
-                }.get(row["action"], "withdrawal_cancelled"),
+                }.get(row["action"], "unknown"),
                 "public_reference": row["entity_public_id"], "amount_minor": None,
                 "occurred_at": _hkt(row["created_at"]),
             } for row in conn.execute(
@@ -403,6 +424,7 @@ class ReferralService:
                          "reserved_minor": buckets["reserved"], "paid_minor": buckets["paid"],
                          "clawed_back_total_minor": clawed_total,
                          "debt_minor": max(0, -buckets["available"])},
+            "withdrawal_eligibility": withdrawal_eligibility,
             "trends": {"windows": windows},
             "funnel": {"visits_30d": thirty["visits"], "registrations_30d": thirty["registrations"],
                        "settled_referrals_30d": settled_referrals_30d,

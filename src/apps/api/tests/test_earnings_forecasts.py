@@ -247,9 +247,9 @@ def test_locked_dto_reads_count_only_and_has_an_exact_safe_shape(seeded):
         "required_capability": "earnings_forecast",
         "window_days": 7,
         "confirmed_event_count": 1,
-        "reason_code": "capability_required",
-        "description": "未来 7 天业绩预测、历史轨迹与复盘仅向具备权限的会员开放。",
-        "upgrade_path": "/membership",
+        "reason_code": "legacy_entitlement_required",
+        "description": "未来 7 天业绩预测、历史轨迹与复盘仅对历史有效专业权益开放；当前不公开新购或升级。",
+        "upgrade_path": None,
     }
     assert not ({"items", "symbols", "probabilities", "history"} & set(payload))
 
@@ -330,8 +330,8 @@ def test_detail_discovers_only_capability_safe_opaque_option_references(seeded):
         "state": "locked",
         "feature": "earnings_option_research",
         "required_capability": "earnings_option_defined_risk",
-        "reason_code": "capability_required",
-        "upgrade_path": "/membership",
+        "reason_code": "legacy_entitlement_required",
+        "upgrade_path": None,
     }
 
     available = seeded["model"].detail(
@@ -400,6 +400,8 @@ def test_history_statistics_and_no_data_paths_do_not_fabricate_predictions(seede
     assert history["state"] == "research"
     assert len(history["items"]) == 1
     assert statistics["metrics"]["sample_size"] == 1
+    assert statistics["metrics"]["paper_total_pnl"] is None
+    assert statistics["metrics"]["paper_max_drawdown"] is None
 
     empty_db = DatabaseManager(str(tmp_path / "empty-earnings.db"))
     empty = EarningsForecastReadModel(

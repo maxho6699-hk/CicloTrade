@@ -34,6 +34,106 @@ class ReferralWalletService:
         ReferralCommissionService(self.db).release_due(int(user_id))
 
     @staticmethod
+    def withdrawal_eligibility_in_transaction(
+        conn: Any,
+        user_id: int,
+        *,
+        now: datetime,
+        amount_minor: int | None = None,
+        policy: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Project withdrawal gates without reserving funds or creating rows."""
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("提现资格检查时间必须包含时区。")
+        from core.referral_coupon import ReferralCouponService
+
+        active_policy = policy or ReferralCouponService._policy(conn)[1]
+        minimum = int(active_policy.get("withdrawal_min_minor", 20_000))
+        maximum = int(active_policy.get("withdrawal_max_minor", 500_000))
+        moment = now.astimezone(UTC)
+        evaluated_at = _iso(moment)
+        balances = _balance_rows(conn, int(user_id))
+        available = int(balances["available"])
+
+        def result(status: str, reason: str, next_eligible_at: str | None = None) -> dict[str, Any]:
+            return {
+                "status": status,
+                "reason_code": status,
+                "reason": reason,
+                "min_minor": minimum,
+                "max_minor": maximum,
+                "available_minor": max(0, available),
+                "next_eligible_at": next_eligible_at,
+                "evaluated_at": evaluated_at,
+            }
+
+        if not _enabled(conn):
+            return result("ineligible", "推广现金计划尚未启用。")
+        user = conn.execute("SELECT is_active FROM users WHERE id=?", (int(user_id),)).fetchone()
+        if not user or not user["is_active"]:
+            return result("ineligible", "账户不存在或已停用。")
+        if bool(active_policy.get("withdrawal_paused", False)):
+            return result("paused", "推广提款目前已暂停。")
+        if available < 0:
+            return result("debt", "账户存在待抵扣负余额，暂不可提现。")
+
+        daily_limit = int(active_policy.get("withdrawal_daily_limit", 3))
+        recent_rows = conn.execute(
+            """SELECT submitted_at FROM referral_withdrawal_requests
+               WHERE user_id=? AND datetime(submitted_at)>=datetime(?)
+               ORDER BY datetime(submitted_at),id""",
+            (int(user_id), _iso(moment - timedelta(days=1))),
+        ).fetchall()
+        if len(recent_rows) >= daily_limit:
+            next_at = datetime.fromisoformat(str(recent_rows[0]["submitted_at"])) + timedelta(days=1)
+            return result("daily_limit", "24 小时内的提现申请次数已达上限。", _iso(next_at.astimezone(UTC)))
+
+        monthly_limit = int(active_policy.get("withdrawal_monthly_limit", 2))
+        monthly_rows = conn.execute(
+            """SELECT submitted_at FROM referral_withdrawal_requests
+               WHERE user_id=? AND strftime('%Y-%m',submitted_at)=strftime('%Y-%m',?)
+               ORDER BY datetime(submitted_at),id""",
+            (int(user_id), _iso(moment)),
+        ).fetchall()
+        if len(monthly_rows) >= monthly_limit:
+            next_month = (moment.replace(day=28) + timedelta(days=4)).replace(day=1)
+            return result("monthly_limit", "本自然月提现次数已达上限。", _iso(next_month))
+
+        open_limit = int(active_policy.get("withdrawal_open_limit", 1))
+        open_count = int(conn.execute(
+            "SELECT COUNT(*) FROM referral_withdrawal_requests WHERE user_id=? AND status IN ('submitted','approved')",
+            (int(user_id),),
+        ).fetchone()[0])
+        if open_count >= open_limit:
+            return result("open_limit", "已有待处理提现申请。")
+
+        cooldown_days = int(active_policy.get("withdrawal_cooldown_days", 0))
+        if cooldown_days:
+            previous = conn.execute(
+                """SELECT submitted_at FROM referral_withdrawal_requests WHERE user_id=?
+                   ORDER BY datetime(submitted_at) DESC,id DESC LIMIT 1""",
+                (int(user_id),),
+            ).fetchone()
+            if previous:
+                submitted_at = datetime.fromisoformat(str(previous["submitted_at"])).astimezone(UTC)
+                next_at = submitted_at + timedelta(days=cooldown_days)
+                if next_at > moment:
+                    return result("cooldown", "提现冷却期尚未结束。", _iso(next_at))
+
+        if amount_minor is not None:
+            if not isinstance(amount_minor, int) or isinstance(amount_minor, bool) or amount_minor < 1:
+                return result("ineligible", "提现金额必须使用正整数分。")
+            if amount_minor < minimum:
+                return result("below_min", f"最低提现金额为 {minimum} 分。")
+            if amount_minor > maximum:
+                return result("above_max", f"单笔提现最高金额为 {maximum} 分。")
+            if amount_minor > available:
+                return result("ineligible", "可提现余额不足。")
+        elif available < minimum:
+            return result("below_min", f"当前可提现余额低于最低提现金额 {minimum} 分。")
+        return result("eligible", "当前提现条件已满足。")
+
+    @staticmethod
     def _admin_action_receipt(
         conn: Any,
         *,
@@ -126,49 +226,28 @@ class ReferralWalletService:
                 if existing["request_fingerprint"] != fingerprint:
                     raise ValueError("提款幂等键已用于不同请求。")
                 return dict(existing)
-            if bool(policy.get("withdrawal_paused", False)):
-                raise PermissionError("推广提款目前已暂停。")
             user = conn.execute("SELECT is_active FROM users WHERE id=?", (int(user_id),)).fetchone()
             if not user or not user["is_active"]:
                 raise PermissionError("账户不存在或已停用。")
-            recent = int(conn.execute(
-                """SELECT COUNT(*) FROM referral_withdrawal_requests
-                   WHERE user_id=? AND datetime(submitted_at)>=datetime(?)""",
-                (int(user_id), _iso(now - timedelta(days=1))),
-            ).fetchone()[0])
-            if recent >= int(policy.get("withdrawal_daily_limit", 3)):
-                raise ValueError("提款申请过于频繁，请稍后再试。")
-            monthly = int(conn.execute(
-                """SELECT COUNT(*) FROM referral_withdrawal_requests
-                   WHERE user_id=? AND strftime('%Y-%m',submitted_at)=strftime('%Y-%m',?)""",
-                (int(user_id), _iso(now)),
-            ).fetchone()[0])
-            if monthly >= int(policy.get("withdrawal_monthly_limit", 2)):
-                raise ValueError("本自然月提款次数已达上限。")
-            open_count = int(conn.execute(
-                "SELECT COUNT(*) FROM referral_withdrawal_requests WHERE user_id=? AND status IN ('submitted','approved')",
-                (int(user_id),),
-            ).fetchone()[0])
-            if open_count >= int(policy.get("withdrawal_open_limit", 1)):
-                raise ValueError("已有待处理提款申请。")
-            cooldown_days = int(policy.get("withdrawal_cooldown_days", 0))
-            if cooldown_days:
-                previous = conn.execute(
-                    """SELECT submitted_at FROM referral_withdrawal_requests WHERE user_id=?
-                       ORDER BY datetime(submitted_at) DESC,id DESC LIMIT 1""",
-                    (int(user_id),),
-                ).fetchone()
-                if previous and datetime.fromisoformat(str(previous["submitted_at"])).astimezone(UTC) > now - timedelta(days=cooldown_days):
-                    raise ValueError("提款冷却期尚未结束。")
             ReferralCommissionService.release_due_in_transaction(conn, int(user_id), now)
-            minimum = int(policy.get("withdrawal_min_minor", 20_000))
-            maximum = int(policy.get("withdrawal_max_minor", 500_000))
-            available = _balance_rows(conn, int(user_id))["available"]
-            if amount_minor < minimum:
-                raise ValueError(f"最低提款金额为 {minimum} 分。")
-            if amount_minor > maximum:
-                raise ValueError(f"单笔提款最高金额为 {maximum} 分。")
-            if available < amount_minor:
+            eligibility = self.withdrawal_eligibility_in_transaction(
+                conn, int(user_id), now=now, amount_minor=amount_minor, policy=policy,
+            )
+            if eligibility["status"] == "paused":
+                raise PermissionError("推广提款目前已暂停。")
+            if eligibility["status"] == "daily_limit":
+                raise ValueError("提款申请过于频繁，请稍后再试。")
+            if eligibility["status"] == "monthly_limit":
+                raise ValueError("本自然月提款次数已达上限。")
+            if eligibility["status"] == "open_limit":
+                raise ValueError("已有待处理提款申请。")
+            if eligibility["status"] == "cooldown":
+                raise ValueError("提款冷却期尚未结束。")
+            if eligibility["status"] == "below_min":
+                raise ValueError(f"最低提款金额为 {eligibility['min_minor']} 分。")
+            if eligibility["status"] == "above_max":
+                raise ValueError(f"单笔提款最高金额为 {eligibility['max_minor']} 分。")
+            if eligibility["status"] == "debt" or eligibility["status"] != "eligible":
                 raise ValueError("可提款余额不足。")
             public_id = _public_id("WDR")
             enhanced_review = int(amount_minor >= int(policy.get("automatic_payout_review_threshold_minor", 100_000_000)))

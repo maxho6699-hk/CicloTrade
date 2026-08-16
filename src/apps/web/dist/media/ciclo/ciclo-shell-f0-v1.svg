@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320" role="img" aria-labelledby="title desc">
+  <title id="title">Ciclo 基础外观</title>
+  <desc id="desc">白色紧凑型 AI 助手，蓝色视觉核心与基础胸前数据核心。</desc>
+  <defs>
+    <linearGradient id="shell" x1="62" y1="44" x2="249" y2="278" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fff"/><stop offset=".48" stop-color="#dce5f2"/><stop offset="1" stop-color="#98a9c1"/>
+    </linearGradient>
+    <linearGradient id="visor" x1="112" y1="84" x2="217" y2="145" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#213150"/><stop offset="1" stop-color="#080d18"/>
+    </linearGradient>
+    <radialGradient id="core"><stop stop-color="#dffaff"/><stop offset=".35" stop-color="#62dfff"/><stop offset="1" stop-color="#4467ff"/></radialGradient>
+    <filter id="shadow" x="-40%" y="-40%" width="180%" height="190%"><feDropShadow dx="0" dy="16" stdDeviation="13" flood-color="#14284f" flood-opacity=".28"/></filter>
+    <filter id="glow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <g filter="url(#shadow)">
+    <path fill="url(#shell)" stroke="#eef5ff" stroke-width="3" d="M92 198c9-32 30-49 62-52h15c31 3 52 20 60 52l9 49c3 18-8 31-26 34H108c-18-3-29-16-26-34l10-49Z"/>
+    <path fill="#65758d" d="M115 205c8-19 23-29 45-29s38 10 46 29l8 49H106l9-49Z" opacity=".56"/>
+    <path fill="url(#shell)" stroke="#eef5ff" stroke-width="3" d="M87 91c5-34 31-57 72-57 43 0 69 24 74 59l-4 39c-3 25-24 43-50 46h-38c-27-3-47-21-50-46l-4-41Z"/>
+    <path fill="url(#visor)" stroke="#667996" stroke-width="3" d="M111 91c10-20 27-30 51-30 25 0 43 11 51 32l-4 35c-4 15-17 24-35 27h-27c-19-3-31-12-35-27l-1-37Z"/>
+    <g filter="url(#glow)" fill="#72e9ff">
+      <path d="M129 105c9-9 19-9 28 0-8 14-20 14-28 0Z"/>
+      <path d="M166 105c9-9 19-9 28 0-8 14-20 14-28 0Z"/>
+    </g>
+    <path fill="#b7c5d8" stroke="#f4f8ff" stroke-width="3" d="m83 103-20 17 7 35 22 11 12-27-4-31-17-5Zm151 0 21 17-7 35-22 11-12-27 4-31 16-5Z"/>
+    <circle cx="160" cy="223" r="22" fill="#182540" stroke="#91a4c2" stroke-width="3"/>
+    <circle cx="160" cy="223" r="12" fill="url(#core)" filter="url(#glow)"/>
+    <path d="M132 263h56" stroke="#dce8f7" stroke-width="4" stroke-linecap="round" opacity=".74"/>
+  </g>
+</svg>

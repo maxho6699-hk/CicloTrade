@@ -11,11 +11,13 @@ const login = read('pages/LoginPage.tsx')
 const ai = read('pages/AIWorkspacePage.tsx')
 const workflow = read('pages/WorkflowTaskPage.tsx')
 const deliberation = read('pages/DeliberationPage.tsx')
+const welcome = read('pages/WelcomePage.tsx')
 const intelligencePrimitives = read('components/intelligence/IntelligencePrimitives.tsx')
 const workflowStatus = read('components/intelligence/workflowStatus.ts')
 
 test('canonical console and public routes are wired without changing the six primary modules', () => {
   assert.match(app, /path="\/ai" element=\{<AIWorkspacePage \/>\}/)
+  assert.match(app, /path="\/workflow" element=\{<WorkflowTaskPage \/>\}/)
   assert.match(app, /path="\/workflow\/:taskId" element=\{<WorkflowTaskPage \/>\}/)
   assert.match(app, /path="\/deliberation" element=\{<DeliberationPage \/>\}/)
   assert.match(app, /path="\/legal" element=\{<LegalPage \/>\}/)
@@ -24,8 +26,9 @@ test('canonical console and public routes are wired without changing the six pri
 })
 
 test('Ciclo AI launcher navigates directly to the bounded-context page', () => {
-  assert.match(shell, /className="ai-pill"/)
-  assert.match(shell, /to="\/ai"/)
+  assert.match(shell, /className=\{`ai-pill/)
+  assert.match(shell, /membership\.capabilities\.includes\('ai_workspace'\)/)
+  assert.match(shell, /to=\{aiAvailable \? '\/ai' : '\/membership'\}/)
   assert.doesNotMatch(shell, /ai-unavailable-popover|aiPanelOpen/)
 })
 
@@ -52,13 +55,16 @@ test('AI page fails closed when no provider is available and exposes no order-su
   assert.doesNotMatch(ai, /mock|假回答|示例回答/)
 })
 
-test('Workflow reads the real backtest task projection and covers the public lifecycle', () => {
-  assert.match(workflow, /backtestApi\.getJob/)
+test('Workflow uses the owner-scoped registry for real index and detail projections', () => {
+  assert.match(workflow, /workflowApi\.list/)
+  assert.match(workflow, /workflowApi\.get/)
+  assert.match(workflow, /WORKFLOW REGISTRY \/ PUBLIC TASKS/)
+  assert.match(workflow, /Workflow 任务详情/)
   for (const status of ['queued', 'running', 'partial', 'succeeded', 'failed', 'cancelled', 'blocked', 'timed_out']) {
     assert.match(workflowStatus, new RegExp(`${status}:`))
     assert.match(intelligencePrimitives, new RegExp(`'${status}'`))
   }
-  assert.match(workflow, /任务服务没有返回/)
+  assert.match(workflow, /Workflow Registry 尚未返回当前账户可见的真实任务。不会展示演示记录。/)
   assert.doesNotMatch(workflow, /伪造日志|demoLog|mockTask/)
 })
 
@@ -82,14 +88,31 @@ test('Directional strength is ready only with authoritative score binding metada
     /calculatedAt/,
     /Date\.parse/,
   ]) assert.match(intelligencePrimitives, binding)
-  assert.match(deliberation, /status=\{null\}/)
-  assert.match(deliberation, /coverage=\{null\}/)
-  assert.match(deliberation, /methodVersion=\{null\}/)
+  assert.match(deliberation, /status=\{evidenceStatus\}/)
+  assert.match(deliberation, /coverage=\{result\?\.coverage \?\? null\}/)
+  assert.match(deliberation, /methodVersion=\{result\?\.method_version \?\? null\}/)
+})
+
+test('Deliberation only links to Workflow after the server returns the connected task id', () => {
+  assert.doesNotMatch(deliberation, /SAFE_TASK_ID/)
+  assert.doesNotMatch(deliberation, /requestedTaskId|searchParams\.get\(['"]taskId['"]\)|const taskId =/)
+  assert.match(deliberation, /result\?\.task_public_id && <Link[^>]*to=\{`\/workflow\//)
+  assert.match(deliberation, /workflowApi\.get\(data\.task_public_id|workflowApi\.get\(created\.task_public_id/)
+  assert.match(deliberation, /审议服务没有返回/)
+})
+
+test('Welcome keeps public content generic and does not sell locked professional execution', () => {
+  for (const forbidden of ['AAPL', 'NVDA', 'TSLA', 'HKD 2,980', '最多 5 个', '自动交易控制账号名额', '期权链、期权报价 K 线', 'API 和券商连接']) {
+    assert.doesNotMatch(welcome, new RegExp(forbidden))
+  }
+  assert.doesNotMatch(welcome, /分批买入|不要追高|Buy|Sell|\+2\.93%/)
+  assert.match(welcome, /专业能力按真实权限逐步开放/)
 })
 
 test('Deliberation keeps the fixed four-seat, Ciclo, bull-bear and real-timeline structure', () => {
   assert.match(deliberation, /deliberation-researchers/)
-  assert.equal((deliberation.match(/className="deliberation-seat/g) ?? []).length, 4)
+  for (const seat of ['market_structure', 'fundamentals', 'news_macro', 'risk']) assert.match(deliberation, new RegExp(`key: '${seat}'`))
+  assert.match(deliberation, /SEATS\.map/)
   assert.match(deliberation, /deliberation-core/)
   assert.match(deliberation, /deliberation-evidence/)
   assert.match(deliberation, /deliberation-timeline/)

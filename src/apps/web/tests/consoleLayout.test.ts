@@ -220,7 +220,7 @@ test('authenticated market pages fail closed and chart timestamps use the fixed 
   assert.doesNotMatch(marketStyles, /min-height: 66px; grid-template-columns/)
   assert.match(marketChartSource, /rightPriceScale: \{ borderColor: chartBorder, minimumWidth: 62 \}/)
   assert.match(responsiveStyles, /@media \(max-width: 600px\) \{[\s\S]*?\.chart-frame \{ height: max\(64dvh, 480px\); min-height: max\(50dvh, 480px\); max-height: none; \}/)
-  assert.match(responsiveStyles, /\.multi-chart-grid:has\(\.mobile-chart-tabs\) \{ grid-template-rows: 31px minmax\(0, 1fr\)/)
+  assert.match(responsiveStyles, /\.multi-chart-grid:has\(\.mobile-chart-tabs\) \{ grid-template-rows: 44px minmax\(0, 1fr\)/)
   assert.match(responsiveStyles, /\.multi-chart-utility-actions \{ display: none; \}/)
   assert.match(responsiveStyles, /\.multi-chart-layout-picker \{ display: none; \}/)
   assert.match(responsiveStyles, /\.chart-slot-toolbar \.chart-focus-control, \.chart-slot-toolbar \.chart-view-menu \{ display: none; \}/)

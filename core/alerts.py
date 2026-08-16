@@ -29,7 +29,7 @@ _CN_SYMBOL = re.compile(r"\d{6}")
 def normalize_alert_instrument(symbol: Any, market: Any = None) -> tuple[str, str]:
     """Return the canonical (market, symbol) pair for persisted alerts."""
     if not isinstance(symbol, str):
-        raise ValueError("预警标的代码必须是字符串。")
+        raise ValueError("预警股票代码必须是字符串。")
     normalized_symbol = symbol.strip().upper()
     if market is None:
         normalized_market = "CN" if _CN_SYMBOL.fullmatch(normalized_symbol) else "US"
@@ -44,7 +44,7 @@ def normalize_alert_instrument(symbol: Any, market: Any = None) -> tuple[str, st
     pattern = _CN_SYMBOL if normalized_market == "CN" else _US_SYMBOL
     if not pattern.fullmatch(normalized_symbol):
         expected = "6 位数字" if normalized_market == "CN" else "美股 ticker"
-        raise ValueError(f"{normalized_market} 市场标的代码无效，应为{expected}。")
+        raise ValueError(f"{normalized_market} 市场股票代码无效，应为{expected}。")
     return normalized_market, normalized_symbol
 
 

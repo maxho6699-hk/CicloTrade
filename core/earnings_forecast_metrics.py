@@ -22,7 +22,7 @@ class ForecastMetricObservation:
     price_p10: float
     price_p90: float
     actual_price: float
-    paper_pnl_net: float
+    paper_pnl_net: float | None
 
 
 @dataclass(frozen=True)
@@ -37,8 +37,8 @@ class ForecastMetrics:
     average_interval_width: float
     overconfidence_rate: float
     high_confidence_sample_size: int
-    paper_total_pnl: float
-    paper_max_drawdown: float
+    paper_total_pnl: float | None
+    paper_max_drawdown: float | None
 
 
 def _finite(value: float, label: str) -> float:
@@ -68,7 +68,7 @@ def _validate(item: ForecastMetricObservation) -> ForecastMetricObservation:
         p10,
         p90,
         actual_price,
-        _finite(item.paper_pnl_net, "paper_pnl_net"),
+        None if item.paper_pnl_net is None else _finite(item.paper_pnl_net, "paper_pnl_net"),
     )
 
 
@@ -137,7 +137,7 @@ def compute_forecast_metrics(
         raise EarningsContractError("overconfidence_threshold must be between zero and one")
     items = [_validate(item) for item in observations]
     if not items:
-        return ForecastMetrics(0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0.0)
+        return ForecastMetrics(0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, None, None)
 
     correctness: list[int] = []
     confidences: list[float] = []
@@ -147,7 +147,7 @@ def compute_forecast_metrics(
     interval_width = 0.0
     high_confidence_wrong = 0
     high_confidence_count = 0
-    pnls: list[float] = []
+    pnls: list[float] | None = []
     for item in items:
         probabilities = (item.p_up, item.p_down, item.p_flat)
         actual = _actual_direction(item)
@@ -166,7 +166,10 @@ def compute_forecast_metrics(
         if confidence >= overconfidence_threshold:
             high_confidence_count += 1
             high_confidence_wrong += 1 - correct
-        pnls.append(item.paper_pnl_net)
+        if item.paper_pnl_net is None:
+            pnls = None
+        elif pnls is not None:
+            pnls.append(item.paper_pnl_net)
 
     count = len(items)
     return ForecastMetrics(
@@ -184,6 +187,6 @@ def compute_forecast_metrics(
             high_confidence_wrong / high_confidence_count if high_confidence_count else 0.0
         ),
         high_confidence_sample_size=high_confidence_count,
-        paper_total_pnl=sum(pnls),
-        paper_max_drawdown=_max_drawdown(pnls, starting_equity),
+        paper_total_pnl=None if pnls is None else sum(pnls),
+        paper_max_drawdown=None if pnls is None else _max_drawdown(pnls, starting_equity),
     )

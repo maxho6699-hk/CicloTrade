@@ -1,0 +1,107 @@
+.account-center-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.account-center-grid > .data-panel,
+.account-center-memory,
+.account-center-content,
+.notification-inbox {
+  border: 0;
+  box-shadow: var(--shadow-panel);
+}
+
+.account-center-grid > .data-panel,
+.account-center-memory,
+.account-center-content,
+.notification-inbox { min-width: 0; padding: 18px; }
+.account-center-summary { display: grid; gap: 4px; padding: 15px 0; }
+.account-center-summary strong { font-size: 20px; }
+.account-center-summary span { color: var(--accent); font: 12px var(--mono); }
+.account-center-summary small,
+.account-center-note,
+.account-center-status { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.account-center-note { margin: 0 0 14px; }
+.account-center-status { min-height: 18px; margin: 10px 0 0; }
+
+.agent-level-list,
+.authorization-list,
+.appearance-list,
+.memory-list,
+.notification-inbox-list { display: grid; gap: 1px; background: var(--border); }
+.agent-level-list > div,
+.authorization-list > div,
+.appearance-option,
+.memory-list article,
+.notification-inbox-list article { min-width: 0; padding: 12px; background: var(--surface); }
+.agent-level-list > div,
+.authorization-list > div,
+.memory-list article,
+.notification-inbox-list article { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.agent-level-list strong { min-width: 28px; font: 12px var(--mono); }
+.agent-level-list span,
+.authorization-list small,
+.memory-list small,
+.notification-inbox small { color: var(--muted); font-size: 11px; }
+.agent-level-list .is-locked span { color: var(--warning); }
+.agent-level-list .is-ready span { color: var(--positive); }
+
+.appearance-list { margin-top: 12px; }
+.appearance-option { display: grid; width: 100%; grid-template-columns: 74px minmax(0,1fr) auto; align-items: center; gap: 12px; border: 0; color: var(--text); text-align: left; cursor: pointer; }
+.appearance-option:disabled { color: var(--muted); cursor: not-allowed; opacity: .72; }
+.appearance-option.is-selected { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+.appearance-option img,
+.appearance-image-missing { width: 70px; height: 70px; object-fit: contain; border-radius: 12px; background: var(--surface-subtle); }
+.appearance-image-missing { display: grid; place-items: center; color: var(--warning); }
+.appearance-option span:first-child,
+.authorization-list span,
+.memory-list article > div { display: grid; gap: 4px; min-width: 0; }
+.appearance-option > span:last-child { color: var(--accent); font: 11px var(--mono); }
+
+.account-center-empty { display: flex; align-items: flex-start; gap: 9px; padding: 14px; background: var(--surface-subtle); color: var(--muted); font-size: 12px; line-height: 1.6; }
+.account-center-empty svg { flex: 0 0 auto; color: var(--warning); }
+.memory-create-form { display: grid; grid-template-columns: minmax(150px,.7fr) minmax(220px,1.3fr) auto; gap: 10px; align-items: end; margin-top: 12px; padding: 12px; border-radius: 10px; background: var(--surface-subtle); }
+.memory-create-form label { display: grid; gap: 6px; min-width: 0; color: var(--muted); font-size: 11px; }
+.memory-create-form input { min-width: 0; min-height: 42px; border: 0; border-radius: 8px; padding: 0 11px; background: var(--surface); color: var(--text); box-shadow: inset 0 0 0 1px color-mix(in srgb,var(--muted) 15%,transparent); }
+.memory-create-form input:focus-visible { outline: 2px solid var(--info-strong); outline-offset: 2px; }
+.account-center-memory,
+.account-center-content { margin-top: 12px; }
+.memory-list { margin-top: 12px; }
+.memory-list article > div { overflow: hidden; }
+.memory-list strong,
+.notification-inbox strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-center-links { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 12px; }
+.account-center-links a { color: var(--info-strong); font-size: 12px; text-decoration: underline; text-underline-offset: 3px; }
+.content-index-list { display: grid; gap: 1px; background: var(--border); }
+.content-index-list details { min-width: 0; background: var(--surface); }
+.content-index-list summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 54px; padding: 12px; cursor: pointer; }
+.content-index-list summary > span:first-child { display: grid; gap: 4px; min-width: 0; }
+.content-index-list summary > span:last-child { color: var(--info-strong); font-size: 11px; }
+.content-index-list small { color: var(--muted); font-size: 11px; }
+.content-index-list pre { max-height: 260px; margin: 0; overflow: auto; padding: 12px; background: var(--surface-subtle); color: var(--text); font: 11px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.notification-inbox { grid-column: 1 / -1; }
+.notification-inbox-empty { margin-top: 10px; }
+.notification-inbox-list { margin-top: 10px; }
+.notification-inbox-list article { align-items: flex-start; }
+.notification-inbox-copy { display: grid; min-width: 0; gap: 6px; }
+.notification-inbox-copy p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.notification-inbox-copy .status-chip { width: max-content; }
+.notification-inbox-list article.is-unread { box-shadow: inset 3px 0 0 var(--accent); }
+.notification-inbox-list article.is-read { opacity: .82; }
+.notification-target-match { outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent); outline-offset: 3px; }
+.notification-target-match:focus-visible { outline-color: var(--accent); }
+
+@media (max-width: 760px) {
+  .account-center-grid { grid-template-columns: 1fr; }
+  .notification-inbox { grid-column: auto; }
+  .notification-inbox-list article { flex-direction: column; }
+  .notification-inbox-list article .button { width: 100%; }
+  .memory-create-form { grid-template-columns: 1fr; }
+  .memory-create-form .button { width: 100%; }
+  .appearance-option { grid-template-columns: 62px minmax(0,1fr); }
+  .appearance-option > span:last-child { grid-column: 2; }
+  .appearance-option img,
+  .appearance-image-missing { width: 58px; height: 58px; }
+}

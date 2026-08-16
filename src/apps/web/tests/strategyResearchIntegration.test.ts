@@ -27,5 +27,5 @@ test('more catalog exposes a pinable expanded strategy research entry', () => {
   assert.match(catalog, /FeatureDefinition\("strategy-research"/)
   assert.match(catalog, /\/reports\?view=影子策略研究&research_scope=expanded/)
   assert.match(copy, /feature\.strategy_research\.title/)
-  assert.match(copy, /97 标的扩容链/)
+  assert.match(copy, /97 只股票扩容链/)
 })

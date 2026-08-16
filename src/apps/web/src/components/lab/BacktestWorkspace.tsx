@@ -1,13 +1,13 @@
 import {
   AlertTriangle,
   Ban,
-  BarChart3,
   CheckCircle2,
   Clock3,
   Download,
   FileCheck2,
   LoaderCircle,
   LockKeyhole,
+  Play,
   RefreshCw,
   ShieldCheck,
   Square,
@@ -20,6 +20,7 @@ import {
   type BacktestArtifact,
   type BacktestErrorKind,
   type BacktestJob,
+  type BacktestPrepareRequest,
   type BacktestStatus,
 } from '../../api/backtests.ts'
 import { localizeText } from '../../i18n/runtime.ts'
@@ -31,17 +32,13 @@ interface BacktestWorkspaceProps {
   authenticated: boolean
   maxBacktestYears: number
   symbol: string
-  timeframe: string
+  templateKey: BacktestPrepareRequest['template_key']
+  sampleYears: number
   lookback: string
-  commission: string
-  slippage: string
-  profitTarget: string
-  draftNotice: string
   onSymbolChange: (value: string) => void
+  onTemplateChange: (value: BacktestPrepareRequest['template_key']) => void
+  onSampleYearsChange: (value: string) => void
   onLookbackChange: (value: string) => void
-  onCommissionChange: (value: string) => void
-  onSlippageChange: (value: string) => void
-  onProfitTargetChange: (value: string) => void
 }
 
 type QueuePhase = 'loading' | 'ready' | 'signed-out' | BacktestErrorKind
@@ -70,6 +67,12 @@ const metricLabels: Record<string, string> = {
   oos_return_pct: 'OOS 收益',
   walk_forward_score: 'Walk-forward 分数',
   cost_adjusted_return_pct: '计费后收益',
+}
+
+const templateLabels: Record<BacktestPrepareRequest['template_key'], { label: string; detail: string }> = {
+  'equity.trend.long_flat.v1': { label: '趋势跟随', detail: '美股日线，做多或空仓。' },
+  'equity.mean_reversion.long_flat.v1': { label: '均值回归', detail: '美股日线，做多或空仓。' },
+  'equity.breakout.long_flat.v1': { label: '突破确认', detail: '美股日线，做多或空仓。' },
 }
 
 function displayTime(value: string | null, formatLocale: string) {
@@ -124,10 +127,13 @@ export function BacktestWorkspace(props: BacktestWorkspaceProps) {
   const [selected, setSelected] = useState<BacktestJob | null>(null)
   const [phase, setPhase] = useState<QueuePhase>(props.authenticated ? 'loading' : 'signed-out')
   const [notice, setNotice] = useState('')
+  const [stale, setStale] = useState(false)
   const [cancelBusy, setCancelBusy] = useState(false)
   const [downloadBusy, setDownloadBusy] = useState<string | null>(null)
   const hasJobs = useRef(false)
-  const lookbackYears = Number.parseInt(props.lookback, 10)
+  const lookback = Number.parseInt(props.lookback, 10)
+  const [prepareBusy, setPrepareBusy] = useState(false)
+  const idempotency = useRef<{ fingerprint: string; key: string } | null>(null)
 
   const activeJobs = useMemo(
     () => jobs.some((job) => job.status === 'queued' || job.status === 'running'),
@@ -152,12 +158,14 @@ export function BacktestWorkspace(props: BacktestWorkspaceProps) {
       setJobs(items)
       setSelected((current) => items.find((item) => item.id === current?.id) ?? items[0] ?? null)
       setPhase('ready')
+      setStale(false)
     } catch (error) {
       if (signal?.aborted) return
       const status = error instanceof BacktestApiError ? error.status : 0
       if (hasJobs.current) {
         setPhase('ready')
-        setNotice(localizeText('最新状态读取失败；继续显示上次已确认的任务，稍后自动重试。'))
+        setStale(true)
+        setNotice(localizeText('最新状态读取失败；继续显示上次已确认的任务，数据可能已过期，稍后自动重试。'))
       } else {
         setPhase(classifyBacktestError(status, 'list'))
         setNotice(error instanceof Error ? localizeText(error.message) : localizeText('回测队列暂时不可用。'))
@@ -232,54 +240,80 @@ export function BacktestWorkspace(props: BacktestWorkspaceProps) {
     }
   }
 
+  const prepare = async () => {
+    if (!props.authenticated || prepareBusy || props.maxBacktestYears < props.sampleYears || !Number.isInteger(lookback)) return
+    const request: BacktestPrepareRequest = {
+      schema_version: 1,
+      type: 'backtest.run.v1',
+      template_key: props.templateKey,
+      symbol: props.symbol.trim().toUpperCase(),
+      timeframe: '1d',
+      sample_years: props.sampleYears as BacktestPrepareRequest['sample_years'],
+      lookback,
+    }
+    const fingerprint = JSON.stringify(request)
+    if (idempotency.current?.fingerprint !== fingerprint) {
+      idempotency.current = { fingerprint, key: crypto.randomUUID().replaceAll('-', '') }
+    }
+    setPrepareBusy(true)
+    setNotice('')
+    try {
+      const result = await backtestApi.prepareJob(request, idempotency.current.key)
+      hasJobs.current = true
+      setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 50))
+      setSelected(result.job)
+      setPhase('ready')
+      setNotice(localizeText(result.created ? '回测准备完成，任务已进入真实队列。' : '已复用相同幂等请求对应的真实任务。'))
+    } catch (error) {
+      const status = error instanceof BacktestApiError ? error.status : 0
+      setPhase(classifyBacktestError(status, 'write'))
+      setNotice(error instanceof Error ? localizeText(error.message) : localizeText('回测准备失败；未创建新的任务。'))
+    } finally {
+      setPrepareBusy(false)
+    }
+  }
+
   return (
     <div className="lab-backtest-workbench">
       <div className="lab-config-zone">
         <div className="backtest-form">
           <label>
             股票
-            <input value={props.symbol} onChange={(event) => props.onSymbolChange(event.target.value.toUpperCase())} />
+            <input value={props.symbol} onChange={(event) => props.onSymbolChange(event.target.value.toUpperCase())} aria-describedby="lab-symbol-help" />
           </label>
-          <SelectField label="样本期" value={props.lookback} onValueChange={props.onLookbackChange} options={[1, 3, 5, 10].map((years) => ({ value: `${years} 年`, label: `${years} 年`, disabled: props.maxBacktestYears < years }))} />
+          <small id="lab-symbol-help" className="lab-field-help">仅接受服务端允许的美股代码；历史数据由服务端冻结。</small>
+          <SelectField label="策略模板" value={props.templateKey} onValueChange={(value) => props.onTemplateChange(value as BacktestPrepareRequest['template_key'])} options={Object.entries(templateLabels).map(([value, item]) => ({ value, label: item.label }))} />
+          <SelectField label="历史样本" value={`${props.sampleYears} 年`} onValueChange={(value) => props.onSampleYearsChange(value.replace(' 年', ''))} options={[1, 3, 10].map((years) => ({ value: `${years} 年`, label: `${years} 年`, disabled: props.maxBacktestYears < years }))} />
           <label>
-            手续费（%）
-            <input inputMode="decimal" value={props.commission} onChange={(event) => props.onCommissionChange(event.target.value)} />
-          </label>
-          <label>
-            滑点（%）
-            <input inputMode="decimal" value={props.slippage} onChange={(event) => props.onSlippageChange(event.target.value)} />
+            信号回看（日）
+            <input type="number" inputMode="numeric" min="2" max="250" value={props.lookback} onChange={(event) => props.onLookbackChange(event.target.value)} />
           </label>
         </div>
-        <div className="parameter-grid">
-          <label>RSI 周期<input type="number" defaultValue="14" min="2" max="100" /></label>
-          <label>均线周期<input type="number" defaultValue="50" min="5" max="300" /></label>
-          <label>单笔风险（%）<input type="number" defaultValue="1" min="0.1" max="5" step="0.1" /></label>
-          <SelectField label="分批止盈" value={props.profitTarget} onValueChange={props.onProfitTargetChange} options={['1.5R', '2R', '3R'].map((value) => ({ value, label: value }))} />
+        <div className="parameter-grid lab-template-summary">
+          <div><span>当前模板</span><strong>{templateLabels[props.templateKey].label}</strong><small>{templateLabels[props.templateKey].detail}</small></div>
+          <div><span>执行范围</span><strong>美股 · 日线</strong><small>服务端执行器只接受 long / flat 研究模板。</small></div>
+          <div><span>费用与滑点</span><strong>由执行器固定</strong><small>页面不接收未接入执行器的费用或滑点输入。</small></div>
         </div>
-        <section className="lab-submit-gate" aria-labelledby="lab-submit-gate-title">
-          <LockKeyhole size={19} aria-hidden="true" />
+        <section className={`lab-submit-gate ${props.maxBacktestYears > 0 ? 'is-ready' : 'is-locked'}`} aria-labelledby="lab-submit-gate-title">
+          {props.maxBacktestYears > 0 ? <ShieldCheck size={19} aria-hidden="true" /> : <LockKeyhole size={19} aria-hidden="true" />}
           <span>
-            <strong id="lab-submit-gate-title">新任务等待服务端冻结数据入口</strong>
-            <small>系统尚未开放把所选股票数据冻结成可核验快照的准备步骤。本页不会伪造 SHA-256，也不会创建永远停在排队中的任务。</small>
+            <strong id="lab-submit-gate-title">{props.maxBacktestYears > 0 ? '准备真实回测任务' : '当前方案未开放回测'}</strong>
+            <small>{props.maxBacktestYears > 0 ? '服务端会先核对股票、会员样本上限并冻结 PIT 日线输入，再进入队列。' : '历史任务仍可只读；升级方案后才可请求新的服务端冻结任务。'}</small>
           </span>
-          <button className="button primary" type="button" disabled aria-describedby="lab-submit-gate-reason">
-            <BarChart3 size={15} /> 等待数据快照准备
+          <button className="button primary" type="button" onClick={() => void prepare()} disabled={!props.authenticated || props.maxBacktestYears === 0 || props.maxBacktestYears < props.sampleYears || prepareBusy || !/^\d{1,3}$/.test(props.lookback) || lookback < 2 || lookback > 250} aria-busy={prepareBusy}>
+            {prepareBusy ? <LoaderCircle className="is-spinning" size={15} /> : <Play size={15} />} {prepareBusy ? '准备中' : '准备并运行回测'}
           </button>
-          <p id="lab-submit-gate-reason">历史任务、真实状态、取消请求和已验证制品下载已连接服务端回测队列。</p>
+          <p>请求失败不会生成任务；相同参数会复用同一个幂等请求。</p>
         </section>
         <div className="lab-run-row">
           <button className="button secondary" type="button" onClick={() => void loadJobs()} disabled={!props.authenticated || phase === 'loading'}>
             <RefreshCw size={15} className={phase === 'loading' ? 'is-spinning' : ''} /> 重新读取任务
           </button>
-          <span>
-            {props.draftNotice || (props.maxBacktestYears && lookbackYears <= props.maxBacktestYears
-              ? `当前草稿：${props.symbol} · ${props.lookback} ${props.timeframe} · 手续费 ${props.commission}% · 滑点 ${props.slippage}%。`
-              : '当前方案未开放新的回测参数；历史任务仍可只读。')}
-          </span>
+          <span>当前草稿：{props.symbol || '未填写股票'} · {templateLabels[props.templateKey].label} · {props.sampleYears} 年 · 日线。</span>
         </div>
       </div>
 
-      <aside className="lab-result-zone" aria-label="真实回测任务与结果">
+      <aside className={`lab-result-zone ${stale ? 'is-stale' : ''}`} aria-label="真实回测任务与结果">
         <header className="lab-queue-heading">
           <span><strong>真实任务队列</strong><small>最多读取当前账户最近 50 项</small></span>
           <ShieldCheck size={18} aria-label="服务端所有者隔离" />
@@ -293,7 +327,7 @@ export function BacktestWorkspace(props: BacktestWorkspaceProps) {
             {jobs.map((job) => (
               <button className={selected?.id === job.id ? 'is-selected' : ''} type="button" role="listitem" key={job.id} onClick={() => void chooseJob(job)}>
                 <span className={`lab-job-status is-${job.status}`}><i />{statusCopy[job.status].label}</span>
-                <strong>{job.manifest.parameters?.symbol || job.jobType}</strong>
+                <strong>{job.manifest.parameters?.symbol || job.manifest.template_key || job.jobType}</strong>
                 <small>{displayTime(job.updatedAt, formatLocale)} · attempt {job.attemptCount}/{job.maxAttempts}</small>
               </button>
             ))}
@@ -319,7 +353,7 @@ export function BacktestWorkspace(props: BacktestWorkspaceProps) {
               <div><dt>任务 ID</dt><dd>{selected.id}</dd></div>
               <div><dt>公开阶段</dt><dd>{stageLabel[selected.progressStage]}</dd></div>
               <div><dt>数据截止</dt><dd>{selected.manifest.dataset_end}</dd></div>
-              <div><dt>代码版本</dt><dd>{selected.manifest.code_bundle_sha256}</dd></div>
+              <div><dt>研究模板</dt><dd>{selected.manifest.template_key || selected.jobType}</dd></div>
               <div><dt>更新时间</dt><dd>{displayTime(selected.updatedAt, formatLocale)}</dd></div>
               <div><dt>完成时间</dt><dd>{displayTime(selected.completedAt, formatLocale)}</dd></div>
             </dl>
@@ -341,6 +375,12 @@ export function BacktestWorkspace(props: BacktestWorkspaceProps) {
                 {selected.evidence.limitations.map((item) => <li key={item}><AlertTriangle size={14} />{localizeText(item)}</li>)}
               </ul>
             ) : null}
+            {selected.failure && (
+              <div className="lab-job-failure" role="alert">
+                <AlertTriangle size={16} />
+                <span><strong>{selected.failure.summary}</strong><small>{selected.failure.errorCode} · {selected.failure.retryable ? '可以重新准备任务' : '请调整参数后重新准备'}</small></span>
+              </div>
+            )}
             {selected.artifacts.length > 0 && (
               <section className="lab-artifacts" aria-labelledby="lab-artifacts-title">
                 <header><FileCheck2 size={16} /><strong id="lab-artifacts-title">已验证制品</strong></header>
