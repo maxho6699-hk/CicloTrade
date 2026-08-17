@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import math
 import secrets
 from datetime import datetime, timedelta
 from typing import Any, Mapping
@@ -14,6 +15,8 @@ from core.auto_live_control_common import (
     HEARTBEAT_FRESHNESS_SECONDS,
     MAX_CLOCK_SKEW_SECONDS,
     RUNTIME_FRESHNESS_SECONDS,
+    _HEX64_RE,
+    _ID_RE,
     _gate,
     _iso,
     _now,
@@ -559,6 +562,157 @@ class RuntimeIntegrityMixin:
                 "heartbeat_at": moment,
                 "lease_expires_at": expires_at,
             }
+
+    def append_shadow_intents(
+        self,
+        mandate_public_id: str,
+        intents: list[Mapping[str, Any]],
+        *,
+        worker_id: str,
+        lease_token: str,
+        expected_fencing_epoch: int,
+        now: datetime | None = None,
+    ) -> dict[str, int | str]:
+        public_id = _text(mandate_public_id, "runtime mandate public id")
+        worker = _text(worker_id, "runtime worker id", 128)
+        token = _text(lease_token, "runtime lease token", 256)
+        if not isinstance(intents, list) or not intents or len(intents) > 100:
+            raise AutoLiveControlError("shadow intents 必须包含 1 至 100 项。")
+        moment_dt, moment = _now(now), _iso(now)
+        allowed = {
+            "client_order_id", "action", "instrument_type", "symbol", "side", "quantity",
+            "limit_price", "currency", "quote_at", "quote_sha256", "evidence_sha256",
+        }
+        with self._tx() as conn:
+            mandate, runtime, _ = self._require_runtime_lease(
+                conn,
+                mandate_public_id=public_id,
+                worker_id=worker,
+                lease_token=token,
+                expected_fencing_epoch=expected_fencing_epoch,
+                now=moment_dt,
+            )
+            if str(mandate["state"]) != "active" or not runtime or str(runtime["state"]) != "running":
+                raise AutoLiveControlError("runtime 只有 active/running 可生成 shadow intent。", 409)
+            gates = self._gates(conn, mandate, moment_dt, runtime_mode="opening")
+            paused = conn.execute(
+                "SELECT opening_paused FROM user_controls WHERE user_id=?", (mandate["user_id"],)
+            ).fetchone()
+            if not gates["all_ok"] or int(paused[0] if paused else 1):
+                raise AutoLiveControlError("runtime opening gate 未通过。", 409)
+
+            normalized: list[tuple[dict[str, Any], str, Any | None]] = []
+            seen_client_ids: set[str] = set()
+            for raw in intents:
+                if not isinstance(raw, Mapping) or set(raw) != allowed:
+                    raise AutoLiveControlError("shadow intent 字段不完整或包含未知字段。")
+                client_order_id = _text(raw["client_order_id"], "client_order_id", 128)
+                if not _ID_RE.fullmatch(client_order_id) or client_order_id in seen_client_ids:
+                    raise AutoLiveControlError("client_order_id 无效或重复。")
+                seen_client_ids.add(client_order_id)
+                action = _text(raw["action"], "action", 32).casefold()
+                instrument_type = _text(raw["instrument_type"], "instrument_type", 16).casefold()
+                if action not in {"open", "reduce_exposure", "close_position"}:
+                    raise AutoLiveControlError("shadow intent action 无效。")
+                if instrument_type != "stock":
+                    raise AutoLiveControlError("shadow 第一阶段只允许正股 intent。")
+                symbol = _text(raw["symbol"], "symbol", 32).upper()
+                if not symbol.replace(".", "").replace("-", "").isalnum():
+                    raise AutoLiveControlError("shadow intent symbol 无效。")
+                side = _text(raw["side"], "side", 8).upper()
+                if side not in {"BUY", "SELL"}:
+                    raise AutoLiveControlError("shadow intent side 无效。")
+                quantity = raw["quantity"]
+                if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
+                    raise AutoLiveControlError("shadow intent quantity 无效。")
+                try:
+                    limit_price = float(raw["limit_price"])
+                except (TypeError, ValueError) as exc:
+                    raise AutoLiveControlError("shadow intent limit price 无效。") from exc
+                if not math.isfinite(limit_price) or limit_price <= 0:
+                    raise AutoLiveControlError("shadow intent limit price 无效。")
+                currency = _text(raw["currency"], "currency", 3).upper()
+                if len(currency) != 3 or not currency.isalpha():
+                    raise AutoLiveControlError("shadow intent currency 无效。")
+                try:
+                    quote_at = datetime.fromisoformat(_text(raw["quote_at"], "quote_at", 64).replace("Z", "+00:00"))
+                except ValueError as exc:
+                    raise AutoLiveControlError("shadow intent quote_at 无效。") from exc
+                age = (moment_dt - quote_at).total_seconds() if quote_at.tzinfo is not None else float("inf")
+                if not -MAX_CLOCK_SKEW_SECONDS <= age <= 60:
+                    raise AutoLiveControlError("shadow intent 行情陈旧或来自未来。")
+                quote_sha256 = _text(raw["quote_sha256"], "quote_sha256", 64)
+                evidence_sha256 = _text(raw["evidence_sha256"], "evidence_sha256", 64)
+                if not _HEX64_RE.fullmatch(quote_sha256) or not _HEX64_RE.fullmatch(evidence_sha256):
+                    raise AutoLiveControlError("shadow intent 证据哈希无效。")
+                payload = {
+                    "schema_version": 1,
+                    "mandate_public_id": public_id,
+                    "client_order_id": client_order_id,
+                    "execution_mode": "shadow",
+                    "fencing_epoch": expected_fencing_epoch,
+                    "strategy_version": str(mandate["strategy_version"]),
+                    "risk_version": str(mandate["risk_version"]),
+                    "action": action,
+                    "instrument_type": instrument_type,
+                    "symbol": symbol,
+                    "side": side,
+                    "quantity": quantity,
+                    "limit_price": limit_price,
+                    "currency": currency,
+                    "quote_at": quote_at.isoformat(),
+                    "quote_sha256": quote_sha256,
+                    "evidence_sha256": evidence_sha256,
+                }
+                digest = sha256_json(payload)
+                existing = conn.execute(
+                    "SELECT * FROM auto_live_order_intents WHERE client_order_id=?", (client_order_id,)
+                ).fetchone()
+                if existing and str(existing["intent_sha256"]) != digest:
+                    raise AutoLiveConflict("client_order_id 已绑定不同 intent。")
+                normalized.append((payload, digest, existing))
+
+            new_items = [(payload, digest) for payload, digest, existing in normalized if existing is None]
+            current_count = int(conn.execute(
+                "SELECT COUNT(*) FROM auto_live_order_intents WHERE mandate_public_id=? AND date(created_at)=date(?)",
+                (public_id, moment),
+            ).fetchone()[0])
+            if current_count + len(new_items) > int(mandate["frequency_limit"]):
+                raise AutoLiveControlError("shadow intent 超过 mandate 频率限制。", 409)
+            total_notional_minor = sum(round(item["quantity"] * item["limit_price"] * 100) for item, _ in new_items)
+            if total_notional_minor > int(mandate["capital_limit_minor"]):
+                raise AutoLiveControlError("shadow intent 超过 mandate 资本限制。", 409)
+
+            for payload, digest in new_items:
+                intent_id = _opaque("intent")
+                conn.execute(
+                    """INSERT INTO auto_live_order_intents
+                       (public_id,mandate_public_id,client_order_id,execution_mode,fencing_epoch,
+                        strategy_version,risk_version,action,instrument_type,symbol,side,quantity,
+                        limit_price,currency,quote_at,quote_sha256,evidence_sha256,intent_json,intent_sha256,created_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        intent_id, public_id, payload["client_order_id"], "shadow", expected_fencing_epoch,
+                        payload["strategy_version"], payload["risk_version"], payload["action"],
+                        payload["instrument_type"], payload["symbol"], payload["side"], payload["quantity"],
+                        payload["limit_price"], payload["currency"], payload["quote_at"],
+                        payload["quote_sha256"], payload["evidence_sha256"], canonical_json(payload), digest, moment,
+                    ),
+                )
+                event = {
+                    "intent_public_id": intent_id,
+                    "mandate_public_id": public_id,
+                    "event_type": "shadowed",
+                    "fencing_epoch": expected_fencing_epoch,
+                    "intent_sha256": digest,
+                }
+                conn.execute(
+                    """INSERT INTO auto_live_order_intent_events
+                       (event_id,intent_public_id,mandate_public_id,event_type,fencing_epoch,payload_json,payload_sha256,created_at)
+                       VALUES(?,?,?,?,?,?,?,?)""",
+                    (_opaque("intentevt"), intent_id, public_id, "shadowed", expected_fencing_epoch, canonical_json(event), sha256_json(event), moment),
+                )
+            return {"status": "shadowed", "intents": len(new_items), "reused": len(normalized) - len(new_items)}
 
     @classmethod
     def _runtime_safety_gates(
