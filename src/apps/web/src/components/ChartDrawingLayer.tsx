@@ -38,6 +38,7 @@ import {
   isValidChartDrawing,
   mergeDrawingTombstoneRevisions,
   readCachedDrawings,
+  translateDrawingScreenPoints,
   writeCachedDrawings,
   type ChartDrawing as Drawing,
   type ChartDrawingPoint as DrawingPoint,
@@ -48,6 +49,13 @@ import {
 
 type ToolFamily = 'line' | 'shape' | 'pattern' | 'fibonacci' | 'measure' | 'label'
 type ScreenPoint = { x: number; y: number }
+interface DrawingDragState {
+  drawingId: string
+  pointerId: number
+  start: ScreenPoint
+  originalScreenPoints: ScreenPoint[]
+  previewPoints: DrawingPoint[]
+}
 
 interface ToolDefinition {
   id: string
@@ -222,6 +230,34 @@ function DrawingShape({ drawing, width, height, coordinateApi, markerId }: {
   return <polyline {...common} points={rendered.map((point) => `${point.x},${point.y}`).join(' ')} markerEnd={tool.id.includes('arrow') || tool.id === 'arrow' ? `url(#${markerId})` : undefined} />
 }
 
+function DrawingHitTarget({ drawing, width, height, coordinateApi, onPointerDown }: {
+  drawing: Drawing
+  width: number
+  height: number
+  coordinateApi: ChartCoordinateApi
+  onPointerDown: (event: ReactPointerEvent<SVGElement>) => void
+}) {
+  const tool = TOOLS.find((item) => item.id === drawing.tool)
+  const points = drawing.points.map(coordinateApi.pointToCoordinate)
+  if (!tool || !points.length || points.some((point) => point === null)) return null
+  const visiblePoints = points as ScreenPoint[]
+  const [first, second = first] = visiblePoints
+  const lineProps = { className: 'drawing-hit-target', stroke: 'transparent', strokeWidth: 16, fill: 'none', vectorEffect: 'non-scaling-stroke' as const, onPointerDown }
+  if (tool.id === 'horizontal') return <line {...lineProps} x1={0} y1={first.y} x2={width} y2={first.y} />
+  if (tool.id === 'vertical') return <line {...lineProps} x1={first.x} y1={0} x2={first.x} y2={height} />
+  if (tool.id === 'cross') return <g><line {...lineProps} x1={0} y1={first.y} x2={width} y2={first.y} /><line {...lineProps} x1={first.x} y1={0} x2={first.x} y2={height} /></g>
+  if (tool.family === 'shape' || tool.family === 'fibonacci' || tool.family === 'measure') {
+    const x = Math.min(...visiblePoints.map((point) => point.x))
+    const y = Math.min(...visiblePoints.map((point) => point.y))
+    const targetWidth = Math.max(Math.max(...visiblePoints.map((point) => point.x)) - x, 18)
+    const targetHeight = Math.max(Math.max(...visiblePoints.map((point) => point.y)) - y, 18)
+    return <rect className="drawing-hit-target drawing-hit-area" x={x - 9} y={y - 9} width={targetWidth + 18} height={targetHeight + 18} fill="transparent" stroke="transparent" strokeWidth={1} onPointerDown={onPointerDown} />
+  }
+  if (visiblePoints.length === 1) return <circle className="drawing-hit-target drawing-hit-area" cx={first.x} cy={first.y} r={12} fill="transparent" onPointerDown={onPointerDown} />
+  const rendered = tool.id === 'horizontal-segment' ? [first, { x: second.x, y: first.y }] : visiblePoints
+  return <polyline {...lineProps} points={rendered.map((point) => `${point.x},${point.y}`).join(' ')} />
+}
+
 export function SharedDrawingToolbar({ state, history, onChange, onCommand }: {
   state: DrawingToolState
   history: DrawingHistoryStatus
@@ -343,6 +379,9 @@ export function ChartDrawingLayer({
   const [legacyDetected, setLegacyDetected] = useState(false)
   const [draft, setDraft] = useState<DrawingPoint[]>([])
   const [preview, setPreview] = useState<DrawingPoint | null>(null)
+  const [selectedDrawingId, setSelectedDrawingId] = useState<string | null>(null)
+  const [movingDrawing, setMovingDrawing] = useState(false)
+  const movingDrawingRef = useRef<DrawingDragState | null>(null)
   const handledCommand = useRef(0)
   const remoteDrawings = useRef<Drawing[]>([])
   const tombstones = useRef(new Map<string, DrawingTombstone>())
@@ -509,6 +548,9 @@ export function ChartDrawingLayer({
     setLegacyDetected(Boolean(scope && hasLegacyChartDrawings(localStorage, scope)))
     setDraft([])
     setPreview(null)
+    setSelectedDrawingId(null)
+    setMovingDrawing(false)
+    movingDrawingRef.current = null
     if (!scope) return
     const requested = scopeToken
     void getChartDrawings(scope.market, scope.symbol, scope.timeframe, scope.crossTimeframe).then(({ items, truncated, tombstones_truncated: tombstonesTruncated }) => {
@@ -568,19 +610,32 @@ export function ChartDrawingLayer({
       setDraft([])
       setPreview(null)
     }
+    if (!active || toolState.tool !== 'cursor') {
+      setSelectedDrawingId(null)
+      setMovingDrawing(false)
+      movingDrawingRef.current = null
+      setDrawings(latestDrawings.current)
+    }
   }, [active, toolState.tool])
 
   useEffect(() => {
     if (!active) return
     const cancel = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
+      if (movingDrawingRef.current || selectedDrawingId) {
+        movingDrawingRef.current = null
+        setMovingDrawing(false)
+        setSelectedDrawingId(null)
+        setDrawings(latestDrawings.current)
+        return
+      }
       setDraft([])
       setPreview(null)
       onToolComplete()
     }
     window.addEventListener('keydown', cancel)
     return () => window.removeEventListener('keydown', cancel)
-  }, [active, onToolComplete])
+  }, [active, onToolComplete, selectedDrawingId])
 
   const candleLevels = useMemo(() => (Array.isArray(candles) ? candles : [])
     .flatMap((item) => [item.open, item.high, item.low, item.close])
@@ -601,6 +656,73 @@ export function ChartDrawingLayer({
     const rect = event.currentTarget.getBoundingClientRect()
     const point = coordinateApi.coordinateToPoint(event.clientX - rect.left, event.clientY - rect.top)
     return point ? snap(point) : null
+  }
+
+  const beginMovingDrawing = (drawing: Drawing, event: ReactPointerEvent<SVGElement>) => {
+    const svg = event.currentTarget.ownerSVGElement
+    if (!active || toolState.tool !== 'cursor' || !coordinateApi || !svg) return
+    const originalScreenPoints = drawing.points.map(coordinateApi.pointToCoordinate)
+    if (originalScreenPoints.some((point) => point === null)) return
+    const rect = svg.getBoundingClientRect()
+    event.preventDefault()
+    event.stopPropagation()
+    svg.setPointerCapture(event.pointerId)
+    movingDrawingRef.current = {
+      drawingId: drawing.id,
+      pointerId: event.pointerId,
+      start: { x: event.clientX - rect.left, y: event.clientY - rect.top },
+      originalScreenPoints: originalScreenPoints as ScreenPoint[],
+      previewPoints: drawing.points,
+    }
+    setSelectedDrawingId(drawing.id)
+    setMovingDrawing(true)
+  }
+
+  const moveSelectedDrawing = (event: ReactPointerEvent<SVGSVGElement>) => {
+    const moving = movingDrawingRef.current
+    if (!moving || moving.pointerId !== event.pointerId || !coordinateApi) {
+      if (activeTool && draft.length) setPreview(pointFromEvent(event))
+      return
+    }
+    const rect = event.currentTarget.getBoundingClientRect()
+    const translated = translateDrawingScreenPoints(
+      moving.originalScreenPoints,
+      event.clientX - rect.left - moving.start.x,
+      event.clientY - rect.top - moving.start.y,
+      coordinateApi.coordinateToPoint,
+    )
+    if (!translated) return
+    event.preventDefault()
+    event.stopPropagation()
+    moving.previewPoints = translated
+    setDrawings((current) => current.map((drawing) => drawing.id === moving.drawingId ? { ...drawing, points: translated } : drawing))
+  }
+
+  const finishMovingDrawing = (event: ReactPointerEvent<SVGSVGElement>) => {
+    const moving = movingDrawingRef.current
+    if (!moving || moving.pointerId !== event.pointerId) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+    movingDrawingRef.current = null
+    setMovingDrawing(false)
+    const current = latestDrawings.current
+    const original = current.find((drawing) => drawing.id === moving.drawingId)
+    if (!original || JSON.stringify(original.points) === JSON.stringify(moving.previewPoints)) {
+      setDrawings(current)
+      return
+    }
+    setUndoStack((undo) => [...undo, current])
+    setRedoStack([])
+    persist(current.map((drawing) => drawing.id === moving.drawingId ? { ...drawing, points: moving.previewPoints } : drawing))
+  }
+
+  const cancelMovingDrawing = (event?: ReactPointerEvent<SVGSVGElement>) => {
+    const moving = movingDrawingRef.current
+    if (event && moving && event.currentTarget.hasPointerCapture(moving.pointerId)) event.currentTarget.releasePointerCapture(moving.pointerId)
+    movingDrawingRef.current = null
+    setMovingDrawing(false)
+    setDrawings(latestDrawings.current)
   }
 
   const placePoint = (event: ReactPointerEvent<SVGSVGElement>) => {
@@ -632,14 +754,16 @@ export function ChartDrawingLayer({
   return (
     <>
       <svg
-        className={`drawing-overlay ${active && activeTool ? 'active' : ''}`}
+        className={`drawing-overlay ${active && activeTool ? 'active' : ''} ${active && toolState.tool === 'cursor' && drawings.length ? 'cursor-mode' : ''} ${movingDrawing ? 'is-dragging' : ''}`}
         style={{ left: plotBounds.left, top: plotBounds.top, width: size.width, height: size.height }}
         viewBox={`0 0 ${size.width} ${size.height}`}
         preserveAspectRatio="none"
         aria-label={activeTool ? `正在使用${activeTool.label}，需要 ${activeTool.points} 个点` : 'K线画线图层'}
         onPointerDown={placePoint}
-        onPointerMove={(event) => { if (activeTool && draft.length) setPreview(pointFromEvent(event)) }}
-        onPointerLeave={() => setPreview(null)}
+        onPointerMove={moveSelectedDrawing}
+        onPointerUp={finishMovingDrawing}
+        onPointerCancel={cancelMovingDrawing}
+        onPointerLeave={() => { if (!movingDrawingRef.current) setPreview(null) }}
         onWheel={(event) => {
           if (!active || !activeTool) return
           event.preventDefault()
@@ -648,7 +772,10 @@ export function ChartDrawingLayer({
         }}
       >
         <defs><marker id={markerId} markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#20a67a" /></marker></defs>
-        {toolState.visible && coordinateApi && drawings.map((drawing) => <DrawingShape key={drawing.id} drawing={drawing} width={size.width} height={size.height} coordinateApi={coordinateApi} markerId={markerId} />)}
+        {toolState.visible && coordinateApi && drawings.map((drawing) => <g className={`drawing-shape-group ${selectedDrawingId === drawing.id ? 'is-selected' : ''}`} key={drawing.id}>
+          <DrawingShape drawing={drawing} width={size.width} height={size.height} coordinateApi={coordinateApi} markerId={markerId} />
+          {active && toolState.tool === 'cursor' && <DrawingHitTarget drawing={drawing} width={size.width} height={size.height} coordinateApi={coordinateApi} onPointerDown={(event) => beginMovingDrawing(drawing, event)} />}
+        </g>)}
         {previewDrawing && coordinateApi && <DrawingShape drawing={previewDrawing} width={size.width} height={size.height} coordinateApi={coordinateApi} markerId={markerId} />}
         {draftScreenPoints.map((point, index) => <circle key={`${point.x}-${point.y}-${index}`} cx={point.x} cy={point.y} r="4" fill="#20a67a" />)}
       </svg>

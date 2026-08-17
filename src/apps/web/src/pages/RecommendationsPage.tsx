@@ -83,7 +83,7 @@ function RecommendationCard({ item, onOpenDetail }: { item: RecommendationItem; 
   const optionPremium = premium(item)
   return <article className={`recommendation-preview-card ${complete ? 'is-complete' : 'is-incomplete'}`}>
     <header>
-      <div className="recommendation-preview-identity"><StockLogo symbol={item.symbol || ''} size="md" /><span><small>{normalizedMarket(item) === 'US' ? '美股' : 'A股'} · {item.instrument_type === 'stock' ? '正股' : item.option_right === 'CALL' ? 'CALL' : item.option_right === 'PUT' ? 'PUT' : '期权'}</small><strong>{item.symbol || '暂无数据'}</strong><em>{item.strategy_name || '暂无数据'}</em></span></div>
+      <div className="recommendation-preview-identity"><StockLogo symbol={item.symbol || ''} market={normalizedMarket(item)} size="md" /><span><small>{normalizedMarket(item) === 'US' ? '美股' : 'A股'} · {item.instrument_type === 'stock' ? '正股' : item.option_right === 'CALL' ? 'CALL' : item.option_right === 'PUT' ? 'PUT' : '期权'}</small><strong>{item.symbol || '暂无数据'}</strong><em>{item.strategy_name || '暂无数据'}</em></span></div>
       <div className="recommendation-preview-badges"><span className={`recommendation-action is-${(item.action || 'wait').toLowerCase()}`}>AI 研判方向 · {ACTION_LABELS[item.action || ''] || SIGNAL_LABELS[signalFor(item)]}</span><span className={`recommendation-risk is-${riskLevel(item).includes('高') ? 'high' : 'normal'}`}>{riskLevel(item)}</span></div>
     </header>
     <div className="recommendation-metric-rail">
@@ -95,6 +95,25 @@ function RecommendationCard({ item, onOpenDetail }: { item: RecommendationItem; 
     <p className="recommendation-preview-reason"><strong>数据支撑分析</strong>{item.rationale || '暂无数据'}</p>
     <button className="recommendation-expand" type="button" aria-haspopup="dialog" onClick={onOpenDetail}>查看完整研判<ChevronDown /></button>
   </article>
+}
+
+function RecommendationContextPanel({ item, peers }: { item: RecommendationItem; peers: RecommendationItem[] }) {
+  const missing = recommendationMissingLabels(item.missing_fields)
+  return <aside className="recommendation-context-panel" aria-label="同类研判对照">
+    <header><div><span>SAME FILTER COMPARISON</span><h2>同类研判对照</h2></div><strong>{peers.length + 1} 条真实记录</strong></header>
+    <section className="recommendation-context-current">
+      <div className="recommendation-preview-identity"><StockLogo symbol={item.symbol || ''} market={normalizedMarket(item)} size="md" /><span><small>当前查看</small><strong>{item.symbol || '暂无数据'}</strong><em>{item.strategy_name || '暂无数据'}</em></span></div>
+      <dl><div><dt>目标空间</dt><dd>{returnSpace(item)}</dd></div><div><dt>风险</dt><dd>{riskLevel(item)}</dd></div><div><dt>资料</dt><dd>{item.contract_status === 'complete' && !missing.length ? '字段完整' : missing.length ? `${missing.length} 项缺口` : '待核对'}</dd></div></dl>
+    </section>
+    <div className="recommendation-peer-list">
+      <h3>同市场 · 同产品 · 同方向</h3>
+      {peers.length ? peers.map((peer) => {
+        const peerMissing = recommendationMissingLabels(peer.missing_fields)
+        return <article key={`peer-${peer.event_id}-${peer.symbol}`}><StockLogo symbol={peer.symbol || ''} market={normalizedMarket(peer)} size="sm" /><span><strong>{peer.symbol || '暂无数据'}</strong><small>{peer.strategy_name || '暂无策略名'}</small></span><dl><div><dt>空间</dt><dd>{returnSpace(peer)}</dd></div><div><dt>风险</dt><dd>{riskLevel(peer)}</dd></div><div><dt>资料</dt><dd>{peer.contract_status === 'complete' && !peerMissing.length ? '完整' : `${peerMissing.length || '待核对'}${peerMissing.length ? ' 项' : ''}`}</dd></div></dl></article>
+      }) : <p>当前筛选下没有其他真实研判可供对照。</p>}
+    </div>
+    <footer>仅比较当前服务端记录，不生成胜率、评分或收益承诺。</footer>
+  </aside>
 }
 
 function RecommendationDetail({ item, source, onResearch, onPractice, onClose }: { item: RecommendationItem; source: string; onResearch: () => void; onPractice: () => void; onClose: () => void }) {
@@ -118,7 +137,7 @@ function RecommendationDetail({ item, source, onResearch, onPractice, onClose }:
   }
   return <aside ref={drawerRef} className="recommendation-detail-drawer" role="dialog" aria-modal="true" aria-labelledby="recommendation-detail-title" onKeyDown={trapFocus}>
     <header className="recommendation-detail-header">
-      <div className="recommendation-preview-identity"><StockLogo symbol={item.symbol || ''} size="md" /><span><small>{normalizedMarket(item) === 'US' ? '美股' : 'A股'} · {item.instrument_type === 'stock' ? '正股' : item.option_right === 'CALL' ? 'CALL' : item.option_right === 'PUT' ? 'PUT' : '期权'}</small><strong id="recommendation-detail-title">{item.symbol || '暂无数据'} 完整研判</strong><em>{item.strategy_name || '暂无数据'}</em></span></div>
+      <div className="recommendation-preview-identity"><StockLogo symbol={item.symbol || ''} market={normalizedMarket(item)} size="md" /><span><small>{normalizedMarket(item) === 'US' ? '美股' : 'A股'} · {item.instrument_type === 'stock' ? '正股' : item.option_right === 'CALL' ? 'CALL' : item.option_right === 'PUT' ? 'PUT' : '期权'}</small><strong id="recommendation-detail-title">{item.symbol || '暂无数据'} 完整研判</strong><em>{item.strategy_name || '暂无数据'}</em></span></div>
       <button type="button" aria-label="关闭研判详情" title="关闭" onClick={onClose}><X /></button>
     </header>
     <div className="recommendation-detail-body">
@@ -179,8 +198,8 @@ export function RecommendationsPage() {
       <div className="recommendation-tabs" role="tablist" aria-label="研判类型"><button className={view === 'stock' ? 'active' : ''} type="button" role="tab" aria-selected={view === 'stock'} onClick={() => setRecommendationView('stock')}>正股</button><button className={view === 'option' ? 'active' : ''} type="button" role="tab" aria-selected={view === 'option'} onClick={() => setRecommendationView('option')}>期权</button></div>
       <div className="recommendation-signal-tabs" role="tablist" aria-label="AI 研判方向">{availableSignals.map((item) => <button className={signal === item ? 'active' : ''} type="button" role="tab" aria-selected={signal === item} onClick={() => setSignal(item)} key={item}>{SIGNAL_LABELS[item]} <span>{allItems.filter((candidate) => normalizedMarket(candidate) === market && candidate.instrument_type === view && signalFor(candidate) === item).length}</span></button>)}</div>
     </div>
-    {items.length ? <section className="recommendation-preview-grid" aria-label={`${market === 'US' ? '美股' : 'A股'}${view === 'stock' ? '正股' : '期权'}研判列表`}>{items.map((item) => <RecommendationCard key={`${item.event_id}-${item.symbol}`} item={item} onOpenDetail={() => setSelectedDetail(item)} />)}</section> : <section className="recommendation-empty" role="status"><BookOpenCheck /><div><h2>当前分类暂无数据</h2><p>新的正式研究记录通过服务端发布后会显示在这里。可以切换市场、产品或方向查看其他记录。</p></div><button className="button secondary" type="button" onClick={() => navigate('/discover')}>前往发现股票</button></section>}
-    {selectedDetail && <><button className="recommendation-detail-backdrop" type="button" aria-label="关闭研判详情" onClick={() => setSelectedDetail(null)} /><RecommendationDetail item={selectedDetail} source={workspace.data?.recommendations.source || ''} onResearch={() => openResearch(selectedDetail)} onPractice={() => openPractice(selectedDetail)} onClose={() => setSelectedDetail(null)} /></>}
+    {items.length ? <section className="recommendation-preview-scroll" aria-label={`${market === 'US' ? '美股' : 'A股'}${view === 'stock' ? '正股' : '期权'}研判滚动列表`}><div className="recommendation-preview-grid">{items.map((item) => <RecommendationCard key={`${item.event_id}-${item.symbol}`} item={item} onOpenDetail={() => setSelectedDetail(item)} />)}</div></section> : <section className="recommendation-empty" role="status"><BookOpenCheck /><div><h2>当前分类暂无数据</h2><p>新的正式研究记录通过服务端发布后会显示在这里。可以切换市场、产品或方向查看其他记录。</p></div><button className="button secondary" type="button" onClick={() => navigate('/discover')}>前往发现股票</button></section>}
+    {selectedDetail && <><button className="recommendation-detail-backdrop" type="button" aria-label="关闭研判详情" onClick={() => setSelectedDetail(null)} /><RecommendationContextPanel item={selectedDetail} peers={items.filter((item) => item.event_id !== selectedDetail.event_id).slice(0, 4)} /><RecommendationDetail item={selectedDetail} source={workspace.data?.recommendations.source || ''} onResearch={() => openResearch(selectedDetail)} onPractice={() => openPractice(selectedDetail)} onClose={() => setSelectedDetail(null)} /></>}
   </div>
 }
 

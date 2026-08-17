@@ -1,19 +1,25 @@
-import { Apple, Boxes, Cpu, PackageOpen, PanelsTopLeft, Search, ShoppingBag, Zap, type LucideIcon } from 'lucide-react'
+import { CircleAlert } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { resolveStockLogo } from '../data/stockLogoRegistry'
 
-const STOCK_MARKS: Record<string, { label: string; tone: string; icon: LucideIcon }> = {
-  AAPL: { label: 'Apple', tone: 'apple', icon: Apple },
-  TSLA: { label: 'Tesla', tone: 'tesla', icon: Zap },
-  BABA: { label: 'Alibaba', tone: 'alibaba', icon: ShoppingBag },
-  MSFT: { label: 'Microsoft', tone: 'microsoft', icon: PanelsTopLeft },
-  GOOGL: { label: 'Google', tone: 'google', icon: Search },
-  GOOG: { label: 'Google', tone: 'google', icon: Search },
-  NVDA: { label: 'NVIDIA', tone: 'nvidia', icon: Cpu },
-  AMZN: { label: 'Amazon', tone: 'amazon', icon: PackageOpen },
+interface StockLogoProps {
+  symbol?: string
+  market?: string
+  size?: 'sm' | 'md' | 'lg'
+  className?: string
 }
 
-export function StockLogo({ symbol, size = 'md' }: { symbol?: string; size?: 'sm' | 'md' | 'lg' }) {
-  const normalized = symbol?.trim().toUpperCase() ?? ''
-  const mark = STOCK_MARKS[normalized]
-  const Icon = mark?.icon ?? Boxes
-  return <span className={`stock-company-logo is-${mark?.tone ?? 'generic'} is-${size}`} role="img" aria-label={mark ? `${mark.label} 公司标志` : `${normalized || '股票'} 标志`} title={mark?.label ?? (normalized || '股票')}><Icon aria-hidden="true" /><b aria-hidden="true">{normalized.slice(0, 2) || '—'}</b></span>
+export function StockLogo({ symbol, market, size = 'md', className = '' }: StockLogoProps) {
+  const normalized = symbol?.trim().toUpperCase().replace(/\.(SS|SZ)$/, '') ?? ''
+  const src = resolveStockLogo(market, normalized)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => setFailed(false), [src])
+
+  const classes = ['stock-company-logo', `is-${size}`, failed || !src ? 'is-missing' : 'is-ready', className].filter(Boolean).join(' ')
+  if (!src || failed) {
+    return <span className={classes} role="img" aria-label={`${normalized || '股票'} 公司 Logo 暂不可用`} title={`${normalized || '股票'} Logo 暂不可用`} data-logo-status="missing"><CircleAlert aria-hidden="true" /></span>
+  }
+
+  return <span className={classes} title={normalized} data-logo-status="ready"><img src={src} alt={`${normalized} 公司 Logo`} width={48} height={48} loading="lazy" decoding="async" onError={() => setFailed(true)} /></span>
 }

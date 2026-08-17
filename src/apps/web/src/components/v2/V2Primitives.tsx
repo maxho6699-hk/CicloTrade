@@ -150,8 +150,8 @@ export function EmptyInspector({ title, detail }: { title: string; detail: strin
   return <V2StatePanel state="empty" title={title} detail={detail} />
 }
 
-export function V2Logo({ symbol }: { symbol?: string }) {
-  return <StockLogo symbol={symbol} />
+export function V2Logo({ symbol, market }: { symbol?: string; market?: string }) {
+  return <StockLogo symbol={symbol} market={market} />
 }
 
 export function LoadingSkeleton() {
@@ -174,7 +174,7 @@ export function formatTime(value?: string | null, formatLocale = getFormatLocale
 }
 
 export function StockTaskBadge({ symbol, name, market }: { symbol?: string; name?: string; market?: string }) {
-  return <div className="v2-stock-identity"><V2Logo symbol={symbol} /><span><strong>{name || symbol || '股票名称未提供'}</strong><small>{symbol || '股票代码未提供'}{market ? ` · ${market}` : ''}</small></span></div>
+  return <div className="v2-stock-identity"><V2Logo symbol={symbol} market={market} /><span><strong>{name || symbol || '股票名称未提供'}</strong><small>{symbol || '股票代码未提供'}{market ? ` · ${market}` : ''}</small></span></div>
 }
 
 export function BotMark() {

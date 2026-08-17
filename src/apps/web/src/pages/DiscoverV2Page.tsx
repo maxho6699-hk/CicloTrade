@@ -33,6 +33,7 @@ import {
 } from '../data/discoverMiniK'
 import { createDiscoverSparklineCache } from '../data/discoverSparklineCache'
 import { WatchlistToggle } from '../components/WatchlistToggle'
+import { StockLogo } from '../components/StockLogo'
 import { CicloCore, type CicloCoreTier } from '../components/paper/CicloCore'
 import {
   formatMoney,
@@ -323,7 +324,7 @@ function BeginnerRecommendations({ items, authenticated, onResearch }: {
           : evidence.supplied > 0 ? `已有 ${evidence.supplied} 项可核对依据，同时保留 ${evidence.missing} 项资料缺口。` : '当前资料有限，适合学习如何识别未知项。'
         return <article key={item.event_id}>
           <header><span>研判卡 {index + 1}</span><V2StatusPill state={item.contract_status === 'complete' ? 'success' : 'warning'}>{item.contract_status === 'complete' ? '资料较完整' : '带缺口'}</V2StatusPill></header>
-          <div className="discover-beginner-symbol"><CandidateLogo item={item} /><span><strong>{item.symbol || '股票代码未提供'}</strong><small>{marketName(item.market)} · AI 研判方向：{item.action === 'BUY' ? '做多' : item.action === 'SHORT' ? '做空' : '观察'}</small></span></div>
+          <div className="discover-beginner-symbol"><StockLogo symbol={item.symbol} market={marketName(item.market)} size="sm" /><span><strong>{item.symbol || '股票代码未提供'}</strong><small>{marketName(item.market)} · AI 研判方向：{item.action === 'BUY' ? '做多' : item.action === 'SHORT' ? '做空' : '观察'}</small></span></div>
           <p><strong>数据支撑分析：</strong>{reason}</p>
           <div className="discover-beginner-meter"><span style={{ width: `${Math.min(100, Math.round(evidence.supplied / Math.max(evidence.supplied + evidence.missing, 1) * 100))}%` }} /></div>
           <button className="v2-button v2-button-secondary" type="button" onClick={() => onResearch(item)}>先看研究证据 <ArrowRight size={14} /></button>
@@ -332,34 +333,6 @@ function BeginnerRecommendations({ items, authenticated, onResearch }: {
       })}</div> : <V2StatePanel state={authenticated ? 'empty' : 'locked'} title="暂无可推荐的研究起点" detail="有真实候选资料后再显示，不使用虚构热门股票填充。" />}
     </V2Card>
   )
-}
-
-type CandidateLogoFields = RecommendationItem & {
-  logo?: unknown
-  logoUrl?: unknown
-  logo_url?: unknown
-}
-
-function candidateLogoUrl(item: RecommendationItem) {
-  const candidate = item as CandidateLogoFields
-  const value = [candidate.logo_url, candidate.logoUrl, candidate.logo]
-    .find((entry): entry is string => typeof entry === 'string' && /^(https?:\/\/|data:image\/)/i.test(entry.trim()))
-  return value?.trim() ?? ''
-}
-
-function CandidateLogo({ item }: { item: RecommendationItem }) {
-  const src = candidateLogoUrl(item)
-  const [imageFailed, setImageFailed] = useState(false)
-  const symbol = item.symbol?.trim().toUpperCase() || '股票'
-  const tone = [...symbol].reduce((total, character) => total + character.charCodeAt(0), 0) % 5
-
-  useEffect(() => setImageFailed(false), [src])
-
-  if (src && !imageFailed) {
-    return <span className="discover-company-logo"><img src={src} alt={`${symbol} 公司 Logo`} loading="lazy" referrerPolicy="no-referrer" onError={() => setImageFailed(true)} /></span>
-  }
-
-  return <span className={`discover-company-logo is-fallback is-tone-${tone}`} aria-hidden="true">{symbol.charAt(0)}</span>
 }
 
 function CandidateRow({
@@ -392,7 +365,6 @@ function CandidateRow({
       <td data-label="股票 / 策略">
         <button className="v2-symbol-button" type="button" onClick={onSelect}>
           <span className="discover-symbol-main">
-            <CandidateLogo item={item} />
             <StockTaskBadge symbol={item.symbol} name={item.symbol ? undefined : '股票名称未提供'} market={marketName(item.market)} />
           </span>
         </button>
@@ -905,7 +877,7 @@ export function DiscoverV2Page() {
         <nav className="v2-view-tabs discover-view-tabs" aria-label="发现页视图">
           {(['候选股票', '事件发现', '研究覆盖'] as DiscoverView[]).map((item) => <button key={item} className={view === item ? 'is-active' : ''} role="tab" aria-selected={view === item} type="button" onClick={() => updateParams({ view: item === '候选股票' ? null : item, page: '1', selected: null })}>{item}</button>)}
         </nav>
-        <InspectorToggle open={inspectorOpen} onClick={() => setInspectorOpen((value) => !value)} label="打开股票筛选、AI 入口与账户快照" />
+        <InspectorToggle open={inspectorOpen} onClick={() => setInspectorOpen((value) => !value)} label="打开股票筛选与 AI 研究入口" />
       </section>
       {watchMessage && <div className="discover-page-feedback" role="status">{watchMessage}</div>}
 
@@ -916,6 +888,7 @@ export function DiscoverV2Page() {
         <aside className="discover-left-rail discover-anchor-section" id="discover-watchlist" aria-label="自选与研究覆盖">
           <WatchlistPanel entries={watchlistEntries} selectedId={selectedId} busyKey={watchBusy} onSelect={(item) => void selectCandidate(item)} onToggle={toggleWatchlistEntry} />
           <CoveragePanel records={records} authenticated={isAuth} source={workspace.data?.recommendations.source} delivery={workspace.data?.recommendations.delivery.stock} />
+          <AccountSnapshotPanel data={workspace.data} authenticated={isAuth} />
         </aside>
 
         <section className="discover-center-column discover-anchor-section" id="discover-candidates" aria-label="候选股票与近期事件">
@@ -933,7 +906,7 @@ export function DiscoverV2Page() {
         </section>
 
         {inspectorOpen && <button className="discover-inspector-backdrop" type="button" aria-label="关闭股票筛选面板" onClick={() => setInspectorOpen(false)} />}
-        <aside className={`v2-inspector discover-right-rail ${inspectorOpen ? 'is-open' : ''}`} aria-label="股票筛选、AI 入口与账户快照">
+        <aside className={`v2-inspector discover-right-rail ${inspectorOpen ? 'is-open' : ''}`} aria-label="股票筛选与 AI 研究入口">
           <div className="discover-inspector-heading"><strong>筛选与研究面板</strong><button type="button" aria-label="关闭股票筛选面板" onClick={() => setInspectorOpen(false)}><X size={17} /></button></div>
           <V2Card className="discover-filter-card">
             <header className="discover-card-heading"><div><span className="v2-eyebrow">SMART FILTER</span><h2>智能条件筛选</h2></div><Filter size={16} /></header>
@@ -948,7 +921,6 @@ export function DiscoverV2Page() {
           </V2Card>
 
           <AIResearchPanel selected={selected} authenticated={isAuth} symbol={aiSymbol} message={aiMessage} onSymbolChange={setAiSymbol} onSubmit={openAIResearch} onResearch={() => research(selected)} onPaper={() => paper(selected)} onAlert={() => alertDraft(selected)} timeframe={miniTimeframe} />
-          <AccountSnapshotPanel data={workspace.data} authenticated={isAuth} />
         </aside>
       </div>
 

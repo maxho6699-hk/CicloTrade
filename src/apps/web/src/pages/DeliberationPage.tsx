@@ -480,7 +480,7 @@ export function DeliberationPage() {
           <div><span>DIRECTIONAL EVIDENCE</span><h2 id="directional-evidence-title">倾向性研判</h2></div>
           <div className="deliberation-evidence-tools" aria-label="证据视图工具">
             <span className="deliberation-evidence-mode">真实证据</span>
-            <button type="button" aria-label="刷新真实证据" title="刷新真实证据" onClick={() => setRefreshNonce((value) => value + 1)} disabled={state.kind === 'loading'}><RefreshCw /></button>
+            <button className="deliberation-evidence-refresh" type="button" aria-label="刷新真实证据" title="刷新真实证据" onClick={() => setRefreshNonce((value) => value + 1)} disabled={state.kind === 'loading'}><RefreshCw /><span>刷新</span></button>
           </div>
         </header>
 

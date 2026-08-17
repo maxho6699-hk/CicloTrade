@@ -197,6 +197,7 @@
   .overview-card-grid::-webkit-scrollbar { display: none; }
   .overview-quote-card { scroll-snap-align: start; }
   .overview-card-pagination { display: none; }
+  .market-overview .overview-mobile-card-status { display: flex; max-width: 1460px; align-items: center; justify-content: space-between; margin: 0 auto 8px; color: var(--muted); font-size: 12px; }
   .overview-quote-card { min-height: 172px; }
   .overview-card-actions { flex-wrap: nowrap; }
   .overview-list-row { grid-template-columns: minmax(0, 1fr) 40px; }

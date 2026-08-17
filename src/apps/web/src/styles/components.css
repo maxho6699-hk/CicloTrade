@@ -102,12 +102,11 @@
   box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 12%, transparent), 0 6px 16px color-mix(in srgb, currentColor 13%, transparent);
   color: var(--accent);
 }
-.stock-company-logo svg { width: 17px; height: 17px; }
-.stock-company-logo b { position: absolute; right: 2px; bottom: 1px; padding: 1px 2px; border-radius: 3px; background: color-mix(in srgb, var(--surface) 90%, transparent); color: currentColor; font: 700 11px/1 var(--mono); letter-spacing: -.04em; }
-.stock-company-logo.is-sm { width: 28px; height: 28px; border-radius: 9px; }.stock-company-logo.is-sm svg { width: 14px; height: 14px; }
-.stock-company-logo.is-lg { width: 44px; height: 44px; border-radius: 14px; }.stock-company-logo.is-lg svg { width: 21px; height: 21px; }
-.stock-company-logo.is-apple { color: #a8b0be; }.stock-company-logo.is-tesla { color: #f0555e; }.stock-company-logo.is-alibaba { color: #ff8b3d; }
-.stock-company-logo.is-microsoft { color: #54a9ff; }.stock-company-logo.is-google { color: #6ea8ff; }.stock-company-logo.is-nvidia { color: #77d14c; }.stock-company-logo.is-amazon { color: #f7aa38; }
+.stock-company-logo img { display: block; width: 82%; height: 82%; object-fit: contain; }
+.stock-company-logo.is-missing { color: var(--muted); }
+.stock-company-logo.is-missing svg { width: 17px; height: 17px; }
+.stock-company-logo.is-sm { width: 28px; height: 28px; border-radius: 9px; }.stock-company-logo.is-sm img { width: 84%; height: 84%; }.stock-company-logo.is-sm svg { width: 14px; height: 14px; }
+.stock-company-logo.is-lg { width: 44px; height: 44px; border-radius: 14px; }.stock-company-logo.is-lg img { width: 84%; height: 84%; }.stock-company-logo.is-lg svg { width: 21px; height: 21px; }
 
 @media (max-width: 760px) {
   .page-header { min-height: 148px; grid-template-columns: 1fr; gap: 16px; padding: 20px; }

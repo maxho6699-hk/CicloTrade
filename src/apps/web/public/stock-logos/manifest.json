@@ -1,0 +1,151 @@
+{
+  "US:AAPL": {
+    "file": "aapl.us.png",
+    "width": 100,
+    "height": 100,
+    "sha256": "41483c742e810831c12663ef2040d306f81440e15126f34b623dd08a09bbb63e",
+    "entity": "Apple"
+  },
+  "US:NVDA": {
+    "file": "nvda.us.png",
+    "width": 250,
+    "height": 250,
+    "sha256": "65adfc123c82dd816d8bebeaded5d0bdd72a4a799d1c0e23d310eaf6e2c457e6",
+    "entity": "NVIDIA"
+  },
+  "US:MSFT": {
+    "file": "msft.us.png",
+    "width": 250,
+    "height": 250,
+    "sha256": "5464732326598baca91f5aaa9b19ca9b8ced1655465a41a54f3424485be5e33a",
+    "entity": "Microsoft"
+  },
+  "US:AMZN": {
+    "file": "amzn.us.png",
+    "width": 250,
+    "height": 250,
+    "sha256": "4940123a81ddefbf5915f143f2ab7220e0a76e5c06e6b7a9eaad1b4acf42da51",
+    "entity": "Amazon"
+  },
+  "US:GOOGL": {
+    "file": "googl.us.png",
+    "width": 250,
+    "height": 250,
+    "sha256": "bd3b7de49841562702c9b4f18f221a2c318979e1380f1658064600081021e4fe",
+    "entity": "Alphabet"
+  },
+  "US:META": {
+    "file": "meta.us.png",
+    "width": 200,
+    "height": 200,
+    "sha256": "c48757bf1cc853fcf07dd247df5cc8edc2699853d09874e9cf6cfec6702c15c5",
+    "entity": "Meta Platforms"
+  },
+  "US:AVGO": {
+    "file": "avgo.us.png",
+    "width": 250,
+    "height": 250,
+    "sha256": "0afd68b45dbefb8ad9e75bc9cda3898a3d75ab026dde215cfe9def48d4fb4a41",
+    "entity": "Broadcom"
+  },
+  "US:JPM": {
+    "file": "jpm.us.png",
+    "width": 250,
+    "height": 250,
+    "sha256": "79b7f8e3a577e3abefac1c78c74aa8fc76c518549c2d39fbd1149e34f434f84c",
+    "entity": "JPMorgan Chase"
+  },
+  "US:TSLA": {
+    "file": "tsla.us.png",
+    "width": 250,
+    "height": 250,
+    "sha256": "4f1bd145f2ad8de3c83d973ab4c2a36e352fdd838bf3ba10e8b186f53509f8c0",
+    "entity": "Tesla"
+  },
+  "US:ADBE": {
+    "file": "adbe.us.png",
+    "width": 250,
+    "height": 250,
+    "sha256": "e48f89d4e1ebee9f4679a05dec4386adc62549f10bb89aa8886ff3a2629309a3",
+    "entity": "Adobe"
+  },
+  "US:NFLX": {
+    "file": "nflx.us.png",
+    "width": 250,
+    "height": 250,
+    "sha256": "351d461bc92473fd2b16ceb4032ba82e5b159c91404c48070d29aa4325898355",
+    "entity": "Netflix"
+  },
+  "US:COST": {
+    "file": "cost.us.png",
+    "width": 128,
+    "height": 128,
+    "sha256": "64f1f9025601494ea8848780219672c8b83d1aa8993a2dd285183c89caf516a1",
+    "entity": "Costco Wholesale"
+  },
+  "US:PLTR": {
+    "file": "pltr.us.png",
+    "width": 100,
+    "height": 100,
+    "sha256": "b33a15c8379a89328ea6a77282bbef4c65a3c419d69695278d82071fb398e236",
+    "entity": "Palantir Technologies"
+  },
+  "US:SPY": {
+    "file": "spy.us.png",
+    "width": 250,
+    "height": 250,
+    "sha256": "ed83f3c088d3df794c68fd4ed6fcc4d5daf240b906edd88251406479b1163ef4",
+    "entity": "SPDR S&P 500 ETF Trust"
+  },
+  "US:BABA": {
+    "file": "baba.us.png",
+    "width": 250,
+    "height": 250,
+    "sha256": "9fc084fb10f7462a34a2c627f76fcd3d5700ac9f64b53fe1865d89f4d4054d7f",
+    "entity": "Alibaba"
+  },
+  "CN:600519": {
+    "file": "600519.cn.png",
+    "width": 100,
+    "height": 100,
+    "sha256": "ffde3f615b4cd661c223276e93c19a9aafbfb732dc9e588647988a7dc6fd686b",
+    "entity": "Kweichow Moutai"
+  },
+  "CN:300750": {
+    "file": "300750.cn.png",
+    "width": 128,
+    "height": 128,
+    "sha256": "48363e856598c93d0d8f24f0a546090f3e792e4b867b204e1e992c4023a60ef1",
+    "entity": "CATL"
+  },
+  "CN:601318": {
+    "file": "601318.cn.png",
+    "width": 128,
+    "height": 128,
+    "sha256": "83580c15573563deb803089a36ee634e17f0c9ae6af5e97366eb00c61e22593c",
+    "entity": "Ping An Insurance",
+    "shared_brand_group": "PING_AN"
+  },
+  "CN:000001": {
+    "file": "000001.cn.png",
+    "width": 128,
+    "height": 128,
+    "sha256": "83580c15573563deb803089a36ee634e17f0c9ae6af5e97366eb00c61e22593c",
+    "entity": "Ping An Bank",
+    "shared_brand_group": "PING_AN"
+  },
+  "CN:600036": {
+    "file": "600036.cn.png",
+    "width": 71,
+    "height": 128,
+    "sha256": "147044ae43554724b5f74b2a66c7951ce3a212fc2920867772b850a9dfaac942",
+    "entity": "China Merchants Bank"
+  },
+  "CN:000858": {
+    "file": "000858.cn.png",
+    "width": 128,
+    "height": 128,
+    "sha256": "af72f65e6a02703c442103a7459bba314a8aa1c69f8dbf8081c72585d3abdd87",
+    "entity": "Wuliangye Yibin"
+  }
+}

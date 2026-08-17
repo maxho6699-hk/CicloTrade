@@ -196,3 +196,15 @@ export function updateChartSlot(
   })
   return { ...state, activeSlotId: slotId, slots }
 }
+
+export function shouldSyncChartViewport(
+  source: Pick<ChartSlotState, 'market' | 'symbol' | 'timeframe'>,
+  target: Pick<ChartSlotState, 'market' | 'symbol' | 'timeframe'>,
+  explicitDateRangeSync: boolean,
+) {
+  return explicitDateRangeSync || (
+    source.market === target.market
+    && source.symbol === target.symbol
+    && source.timeframe === target.timeframe
+  )
+}

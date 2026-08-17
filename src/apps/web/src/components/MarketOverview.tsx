@@ -21,6 +21,7 @@ import { SegmentedControl } from "./ui/SegmentedControl";
 import { displayDataSource, displayDeliveryDelay, displayFreshness } from "../domain/dataSourcePresentation";
 import { useCicloTier } from "../api/use-ciclo-tier";
 import { CicloCore } from "./paper/CicloCore";
+import { StockLogo } from "./StockLogo";
 
 interface OverviewQuote extends Instrument {
   candles: Candle[];
@@ -58,7 +59,6 @@ const TABS = [
 ] as const;
 
 const DESKTOP_CARD_PAGE_SIZE = 8;
-const MOBILE_CARD_LIMIT = 4;
 const marketQuoteCache = new Map<Market, MarketQuoteCacheEntry>();
 const POPULAR: Record<Market, Array<{ symbol: string; name: string }>> = {
   US: [
@@ -283,7 +283,7 @@ export function MarketOverview({
     setCardsPage(1);
   }, [market, tab, quotes, watchlist, narrowCards]);
   const visibleCards = narrowCards
-    ? shown.slice(0, MOBILE_CARD_LIMIT)
+    ? shown
     : shown.slice(
         (cardsPage - 1) * DESKTOP_CARD_PAGE_SIZE,
         cardsPage * DESKTOP_CARD_PAGE_SIZE,
@@ -426,6 +426,7 @@ export function MarketOverview({
         </section>
       ) : view === "cards" ? (
         <>
+        {narrowCards && <div className="overview-mobile-card-status" role="status">共 {visibleCards.length} 只股票 · 左右滑动查看全部</div>}
         <section className="overview-card-grid" aria-label={tab}>
           {visibleCards.map((item) => {
             const index = shown.findIndex((candidate) => candidate.symbol === item.symbol);
@@ -439,8 +440,8 @@ export function MarketOverview({
                     aria-label={`打开 ${item.symbol} K 线`}
                     onClick={() => onOpen(item)}
                   >
-                    <strong>{item.symbol}</strong>
-                    <small>{item.name}</small>
+                    <StockLogo symbol={item.symbol} market={market} size="sm" />
+                    <span><strong>{item.symbol}</strong><small>{item.name}</small></span>
                   </button>
                   <button
                     className={`overview-card-price ${item.changePct >= 0 ? "positive-text" : "negative-text"}`}

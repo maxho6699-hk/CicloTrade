@@ -54,7 +54,7 @@ function PositionRow({ position, onResearch }: { position: Position; onResearch:
   const [expanded, setExpanded] = useState(false)
   const unit = position.instrumentType === 'option' ? '张' : '股'
   return <article className={`account-position-row ${expanded ? 'is-expanded' : ''}`}>
-    <div className="account-symbol"><StockLogo symbol={position.symbol} /><button className="account-symbol-link" type="button" onClick={() => onResearch(position)}><strong>{position.symbol}</strong><small>{position.name} · {marketLabels[position.market]} · 打开股票研究</small></button></div>
+    <div className="account-symbol"><StockLogo symbol={position.symbol} market={position.market} /><button className="account-symbol-link" type="button" onClick={() => onResearch(position)}><strong>{position.symbol}</strong><small>{position.name} · {marketLabels[position.market]} · 打开股票研究</small></button></div>
     <div><span>数量</span><strong>{position.quantity} {unit}</strong></div>
     <div><span>成本 / 记录价</span><strong>{position.averagePrice.toFixed(2)} / {position.lastPrice.toFixed(2)}</strong></div>
     <div><span>未实现盈亏</span><strong className={position.unrealizedPnl >= 0 ? 'positive-text' : 'negative-text'}>{position.unrealizedPnl >= 0 ? <ArrowUpRight size={13} /> : <ArrowDownRight size={13} />}{position.unrealizedPnl.toFixed(2)} <small>{position.unrealizedPnlPct.toFixed(2)}%</small></strong></div>

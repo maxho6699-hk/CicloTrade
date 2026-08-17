@@ -3,6 +3,7 @@
 export type DrawingTime = string | number | { year: number; month: number; day: number }
 export interface ChartDrawingPoint { time: DrawingTime; price: number }
 export interface ChartDrawing { id: string; tool: string; points: ChartDrawingPoint[]; origin_timeframe?: string; cross_timeframe?: boolean; revision?: number }
+export interface DrawingScreenPoint { x: number; y: number }
 export type DrawingPersistence = 'syncing' | 'synced' | 'device-only' | 'conflict' | 'failed'
 export interface DrawingScope { userId: number; market: 'US' | 'CN'; symbol: string; timeframe: string; crossTimeframe: boolean }
 export interface CachedDrawings { drawings: ChartDrawing[]; savedAt: number }
@@ -60,6 +61,39 @@ export function drawingScopeToken(scope: Pick<DrawingScope, 'userId' | 'market' 
 
 export function isCurrentDrawingScope(token: string, scope: DrawingScope) {
   return token === drawingScopeToken(scope)
+}
+
+export function translateDrawingScreenPoints(
+  points: readonly DrawingScreenPoint[],
+  deltaX: number,
+  deltaY: number,
+  coordinateToPoint: (x: number, y: number) => ChartDrawingPoint | null,
+) {
+  const translated = points.map((point) => coordinateToPoint(point.x + deltaX, point.y + deltaY))
+  return translated.every((point): point is ChartDrawingPoint => point !== null) ? translated : null
+}
+
+export function resolveNearestDrawingPoint(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  coordinateToPoint: (x: number, y: number) => ChartDrawingPoint | null,
+) {
+  const clampX = (value: number) => Math.max(0, Math.min(Math.max(width - 1, 0), value))
+  const clampY = (value: number) => Math.max(0, Math.min(Math.max(height - 1, 0), value))
+  const baseX = clampX(x)
+  const baseY = clampY(y)
+  for (const inset of [0, 4, 8, 12, 16, 24, 32]) {
+    const candidates = inset === 0
+      ? [[baseX, baseY]]
+      : [[clampX(baseX - inset), baseY], [clampX(baseX + inset), baseY], [baseX, clampY(baseY - inset)], [baseX, clampY(baseY + inset)]]
+    for (const [candidateX, candidateY] of candidates) {
+      const point = coordinateToPoint(candidateX, candidateY)
+      if (point) return point
+    }
+  }
+  return null
 }
 
 export function isValidChartDrawing(value: unknown): value is ChartDrawing {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   fetchBootstrap,
   fetchMarketStatus,
@@ -13,14 +13,19 @@ import {
 import { WorkspaceContext, type WorkspaceContextValue, type WorkspaceMode } from './workspace-context'
 import type { Market } from '../types'
 import { createVisibilityPolling } from '../domain/dataSourcePresentation'
+import { createSerialMutationQueue, createStateRevisionGuard } from './watchlistMutationCoordinator'
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [mode, setMode] = useState<WorkspaceMode>('loading')
   const [data, setData] = useState<BootstrapPayload | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const watchlistMutationQueueRef = useRef(createSerialMutationQueue())
+  const watchlistStateRevisionRef = useRef(createStateRevisionGuard())
 
   const loadBootstrap = useCallback(async () => {
+    const revision = watchlistStateRevisionRef.current.snapshot()
     const bootstrap = await fetchBootstrap()
+    if (!watchlistStateRevisionRef.current.isCurrent(revision)) return
     setData(bootstrap)
     setMode('authenticated')
     setError(null)
@@ -40,6 +45,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const applyWatchlistPayload = useCallback((payload: WatchlistPayload) => {
+    watchlistStateRevisionRef.current.advance()
     setData((current) => current ? {
       ...current,
       settings: {
@@ -51,16 +57,30 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const changeWatchlist = useCallback(async (market: Market, symbol: string, remove: boolean) => {
-    const payload = await apiUpdateWatchlist(market, symbol, remove)
-    applyWatchlistPayload(payload)
-    return payload
-  }, [applyWatchlistPayload])
+    return watchlistMutationQueueRef.current(async () => {
+      try {
+        const payload = await apiUpdateWatchlist(market, symbol, remove)
+        applyWatchlistPayload(payload)
+        return payload
+      } catch (caught) {
+        await loadBootstrap().catch(() => undefined)
+        throw caught
+      }
+    })
+  }, [applyWatchlistPayload, loadBootstrap])
 
   const changeWatchlistPin = useCallback(async (market: Market, symbol: string, pinned: boolean) => {
-    const payload = await apiUpdateWatchlistPin(market, symbol, pinned)
-    applyWatchlistPayload(payload)
-    return payload
-  }, [applyWatchlistPayload])
+    return watchlistMutationQueueRef.current(async () => {
+      try {
+        const payload = await apiUpdateWatchlistPin(market, symbol, pinned)
+        applyWatchlistPayload(payload)
+        return payload
+      } catch (caught) {
+        await loadBootstrap().catch(() => undefined)
+        throw caught
+      }
+    })
+  }, [applyWatchlistPayload, loadBootstrap])
 
   useEffect(() => {
     let active = true

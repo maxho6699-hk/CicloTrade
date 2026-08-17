@@ -38,6 +38,7 @@ import {
   ensureLayoutSlots,
   layoutDefinition,
   normalizeWorkspace,
+  shouldSyncChartViewport,
   updateChartSlot,
   type ChartLayoutId,
   type ChartSlotState,
@@ -551,13 +552,24 @@ export function ChartWorkspace({
   }, [requestedSlotIds, workspace.sync.crosshair, workspace.sync.time])
 
   const syncVisibleTimeRange = useCallback((sourceSlotId: string, range: ChartTimeRange) => {
-    if (!workspace.sync.dateRange || timeRangeSyncLock.current) return
+    if (timeRangeSyncLock.current) return
+    const sourceSlot = workspace.slots.find((slot) => slot.id === sourceSlotId)
+    if (!sourceSlot) return
+    const sourceViewport = chartRefs.current[sourceSlotId]?.viewport()
     timeRangeSyncLock.current = true
     Object.entries(chartRefs.current).forEach(([slotId, chart]) => {
-      if (slotId !== sourceSlotId && requestedSlotIds.has(slotId)) chart?.setVisibleTimeRange(range)
+      const targetSlot = workspace.slots.find((slot) => slot.id === slotId)
+      if (slotId === sourceSlotId || !requestedSlotIds.has(slotId) || !targetSlot) return
+      const sameIdentity = shouldSyncChartViewport(sourceSlot, targetSlot, false)
+      if (sameIdentity && sourceViewport) {
+        chart?.setVisibleLogicalRange(sourceViewport)
+        saveViewport(slotId, { from: Number(sourceViewport.from), to: Number(sourceViewport.to) })
+        return
+      }
+      if (workspace.sync.dateRange) chart?.setVisibleTimeRange(range)
     })
     window.requestAnimationFrame(() => { timeRangeSyncLock.current = false })
-  }, [requestedSlotIds, workspace.sync.dateRange])
+  }, [requestedSlotIds, saveViewport, workspace.slots, workspace.sync.dateRange])
 
   const openSymbolEditor = (slot: ChartSlotState) => {
     activateSlot(slot.id)
@@ -685,9 +697,7 @@ export function ChartWorkspace({
                 onPointerDownCapture={() => activateSlot(slot.id)}
               >
                 <header className="chart-slot-toolbar">
-                  {definition.count > 1
-                    ? <button className="chart-symbol-trigger" type="button" aria-haspopup="dialog" aria-expanded={symbolEditorId === slot.id} aria-label={`更换 ${slot.symbol}`} title="从自选或热门股票更换" onClick={(event) => { event.stopPropagation(); openSymbolEditor(slot) }}><Search size={13} /><strong>{slot.symbol}</strong></button>
-                    : <span className="chart-symbol-label" aria-label={`当前股票 ${slot.symbol}`}><strong>{slot.symbol}</strong></span>}
+                  <button className="chart-symbol-trigger" type="button" aria-haspopup="dialog" aria-expanded={symbolEditorId === slot.id} aria-label={`更换 ${slot.symbol}`} title="从自选、当前布局或热门股票更换" onClick={(event) => { event.stopPropagation(); openSymbolEditor(slot) }}><Search size={13} /><strong>{slot.symbol}</strong></button>
                   <TimeframeDropdown value={slot.timeframe} options={TIMEFRAME_OPTIONS} ariaLabel={`${slot.symbol} 时间周期`} onChange={(timeframe) => updateSlot(slot.id, { timeframe, viewport: undefined })} />
                   {definition.count > 1 && <button className="chart-focus-control" type="button" title={slotIsFocused ? '恢复多图布局' : '最大化当前图'} aria-label={slotIsFocused ? '恢复多图布局' : '最大化当前图'} onClick={() => toggleFocus(slot.id)}>{slotIsFocused ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>}
                   <details className="chart-view-menu">

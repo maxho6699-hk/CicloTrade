@@ -18,7 +18,7 @@ import {
 import type { MarketQuotePayload, PortfolioActivity } from '../api/client'
 import { applyFormingBarOverlay, shouldShowRealtimeLabel, type FormingMarketBar, type MarketStreamConnectionState } from '../api/marketStream'
 import { buildChartTradeView, type ChartTradeInterval } from '../data/chartTrades'
-import type { ChartDrawingPoint } from '../data/chartDrawings'
+import { resolveNearestDrawingPoint, type ChartDrawingPoint } from '../data/chartDrawings'
 import type { Candle } from '../types'
 import { getFormatLocale, localizeText } from '../i18n/runtime'
 import {
@@ -46,6 +46,7 @@ export interface MarketChartHandle {
   setRange: (range: '1D' | '5D' | '1M' | '3M' | '6M' | 'YTD' | '1Y' | 'ALL') => void
   viewport: () => LogicalRange | null
   syncCrosshair: (payload: ChartCrosshairSync | null, syncPrice: boolean) => void
+  setVisibleLogicalRange: (range: { from: number; to: number }) => void
   setVisibleTimeRange: (range: ChartTimeRange) => void
   reflow: () => void
 }
@@ -385,6 +386,7 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
         const localPrice = candles.find((item) => String(item.time) === String(payload.time))?.close ?? candles.at(-1)?.close ?? payload.price
         chart.setCrosshairPosition(syncPrice ? payload.price : localPrice, payload.time, series)
       },
+      setVisibleLogicalRange: (range) => chartApi.current?.timeScale().setVisibleLogicalRange(range),
       setVisibleTimeRange: (range) => chartApi.current?.timeScale().setVisibleRange(range),
       reflow: () => resizeChartRef.current(),
     }
@@ -451,9 +453,11 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
     setCoordinateApi({
       coordinateToPoint: (x, y) => {
         const bounds = plotBoundsRef.current
-        const time = chart.timeScale().coordinateToTime(x + bounds.left)
-        const price = candleSeries.coordinateToPrice(y + bounds.top)
-        return time === null || price === null ? null : { time, price: Number(price) }
+        return resolveNearestDrawingPoint(x, y, bounds.width, bounds.height, (candidateX, candidateY) => {
+          const time = chart.timeScale().coordinateToTime(candidateX + bounds.left)
+          const price = candleSeries.coordinateToPrice(candidateY + bounds.top)
+          return time === null || price === null ? null : { time, price: Number(price) }
+        })
       },
       pointToCoordinate: (point) => {
         const bounds = plotBoundsRef.current
