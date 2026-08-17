@@ -20,7 +20,7 @@ import { WatchlistToggle } from '../components/WatchlistToggle'
 import { SegmentedControl } from '../components/ui/SegmentedControl'
 import { getFormatLocale } from '../i18n/runtime'
 import type { Market } from '../types'
-import { assessRecommendationContract } from '../domain/actionContract'
+import { assessRecommendationContract, recommendationMissingLabels } from '../domain/actionContract'
 
 type OpportunityKind = 'stock' | 'short' | 'option'
 type OpportunityFilter = 'all' | OpportunityKind
@@ -125,10 +125,10 @@ export function OpportunitiesPage() {
         action: incomplete ? '现在不买、不卖 · 数量 0' : isShort ? '卖出做空' : isCover ? '仅处理已有空头 · 买入平空' : item.action === 'BUY' ? '买入 / 增持' : item.action === 'REDUCE' ? '仅处理已有多头 · 减仓' : item.action === 'EXIT' ? '仅处理已有持仓 · 退出' : '现在不买、不卖 · 数量 0',
         actionTone: incomplete ? 'neutral' : item.action === 'BUY' || isCover ? 'positive' : item.action === 'REDUCE' || item.action === 'EXIT' || isShort ? 'negative' : 'neutral',
         contract,
-        priceRange: item.reference_price == null ? '事件参考价未记录' : `事件参考 ${currency} ${Number(item.reference_price).toFixed(2)}`,
+        priceRange: item.reference_price == null ? '事件参考价：暂无数据' : `事件参考 ${currency} ${Number(item.reference_price).toFixed(2)}`,
         quantityLine: contract === 'wait' ? `现在不买、不卖 · 数量 0 ${item.instrument_type === 'option' ? '张' : '股'}` : quantity > 0 ? `${Number.isInteger(quantity) ? quantity.toFixed(0) : quantity.toFixed(2)} ${item.instrument_type === 'option' ? '张' : '股'}` : contract === 'manage' ? '以现有持仓为上限' : '缺少数量 · 暂不可执行',
-        riskLine: item.stop_price == null ? `缺少 ${(item.missing_fields ?? []).slice(0, 3).join(' / ') || '风险字段'}` : `${currency} ${Number(item.stop_price).toFixed(2)}`,
-        targetLine: item.target_price == null ? '未记录 · 不可猜测' : `${currency} ${Number(item.target_price).toFixed(2)}`,
+        riskLine: item.stop_price == null ? `暂无数据${item.missing_fields?.length ? ` · 待补 ${recommendationMissingLabels(item.missing_fields).slice(0, 3).join(' / ')}` : ''}` : `${currency} ${Number(item.stop_price).toFixed(2)}`,
+        targetLine: item.target_price == null ? '暂无数据 · 不可猜测' : `${currency} ${Number(item.target_price).toFixed(2)}`,
         reason: item.rationale || '这条记录缺少白话理由，只能查看原始证据，不能作为行动建议。',
         verification: `策略 ${item.strategy_name} · 版本 ${item.strategy_version}。只有绑定真实回测运行 ID 后才显示历史成绩。`,
         hasEvidence: evidenceEventIds.has(item.event_id),

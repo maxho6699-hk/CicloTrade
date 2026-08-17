@@ -269,6 +269,21 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
     setActiveRange(null)
   }, [])
 
+  const clearTouchObservation = useCallback((clearCrosshair = false) => {
+    window.clearTimeout(touchLongPressTimer.current)
+    const session = touchSessionRef.current
+    const host = chartHost.current
+    if (session && host?.hasPointerCapture?.(session.pointerId)) {
+      try { host.releasePointerCapture(session.pointerId) } catch { /* capture may already be released by the browser */ }
+    }
+    touchSessionRef.current = null
+    if (clearCrosshair) {
+      chartApi.current?.clearCrosshairPosition()
+      setHoveredCandle(null)
+      crosshairCallback.current?.(null)
+    }
+  }, [])
+
   const showActiveRange = useCallback((intervalId: string) => {
     const chart = chartApi.current
     const trade = intervalById.current.get(intervalId)
@@ -580,7 +595,7 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
     }
   }, [hideActiveRange, showActiveRange])
 
-  useEffect(() => () => window.clearTimeout(touchLongPressTimer.current), [])
+  useEffect(() => () => clearTouchObservation(), [clearTouchObservation])
 
   useEffect(() => {
     const chart = chartApi.current
@@ -619,7 +634,7 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
     const previousRange = scale.getVisibleLogicalRange()
     const nextIdentity = candleDataIdentity ?? `${market}:${symbol}:${timeframe}`
     const identityChanged = dataIdentity.current !== nextIdentity
-    if (identityChanged) setHoveredCandle(null)
+    if (identityChanged) clearTouchObservation(true)
     dataIdentity.current = nextIdentity
     latestPriceRef.current = displayCandles.at(-1)?.close ?? 0
     candleSeries.setData(displayCandles.map(({ time, open, high, low, close }) => ({
@@ -656,7 +671,7 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
       }
       setCoordinateVersion((value) => value + 1)
     })
-  }, [candleDataIdentity, displayCandles, hideActiveRange, market, preferredDownColor, preferredUpColor, showVolume, symbol, timeframe])
+  }, [candleDataIdentity, clearTouchObservation, displayCandles, hideActiveRange, market, preferredDownColor, preferredUpColor, showVolume, symbol, timeframe])
 
   useEffect(() => {
     intervalById.current = new Map(chartView.intervals.map((item) => [item.interval.interval_id, item]))
@@ -709,11 +724,6 @@ export const MarketChart = forwardRef<MarketChartHandle, MarketChartProps>(funct
     chart.setCrosshairPosition(candle.close, time, series)
     setHoveredCandle(candle)
     crosshairCallback.current?.({ time, price: candle.close })
-  }
-
-  const clearTouchObservation = () => {
-    window.clearTimeout(touchLongPressTimer.current)
-    touchSessionRef.current = null
   }
 
   const onChartPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {

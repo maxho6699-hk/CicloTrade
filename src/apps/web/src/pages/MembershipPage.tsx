@@ -580,12 +580,10 @@ export function MembershipPage() {
           股不支持做空。任何实盘下单仍须经过适用的通用安全、授权及管理员门禁。
         </p>
         <div className="inline-warning membership-live-trade-note">
-          <ShieldCheck size={17} />
-          <span>
-            需要实盘连接？打开交易控制台查看券商资格、mandate 与独立门控状态。这里不会把实盘或做空伪装成会员自动权益，也不要求先购买套餐才能查看条件。
-          </span>
+          <span className="membership-live-trade-icon"><ShieldCheck size={17} /></span>
+          <span className="membership-live-trade-copy"><strong>券商连接独立于会员</strong><small>会员不自动连接券商；实盘需你主动授权并通过风险门控。</small></span>
           <button
-            className="button tertiary"
+            className="button secondary"
             type="button"
             onClick={() => navigate("/trade")}
           >

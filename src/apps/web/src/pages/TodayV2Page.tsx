@@ -7,6 +7,7 @@ import { fetchStrategyResearch97Aggregate, type StrategyResearch97AggregateLoad 
 import { BotMark, CicloStatusAvatar, DataSourceNote, formatMoney, formatTime, InspectorToggle, safeNumber, StockTaskBadge, V2Card, V2PageContext, V2PrimaryButton, V2StatePanel, V2StatusPill, V2SecondaryButton } from '../components/v2/V2Primitives'
 import { localizeText } from '../i18n/runtime'
 import { useLocale } from '../i18n/useLocale'
+import { recommendationMissingLabels } from '../domain/actionContract'
 import '../styles/today-discover-v2.css'
 import '../styles/today.css'
 
@@ -171,12 +172,6 @@ function priorityState(task: TodayPriority) {
   return { label: '待复核', state: 'info' as const }
 }
 
-const RECOMMENDATION_FIELD_LABELS: Record<string, string> = {
-  market: '市场', symbol: '股票代码', currency: '币种', reference_price: '参考价', current_price: '当前价',
-  quote_at: '报价时间', stop_price: '风险线', target_price: '目标价', max_loss: '最大风险', rationale: '推荐理由',
-  option_expiry: '到期日', option_right: 'Call / Put', option_strike: '行权价', implied_volatility: '隐含波动率',
-}
-
 function priorityLabel(task: TodayPriority) {
   if (task.kind === 'auto-live' || task.item?.action === 'EXIT') return 'P0 立即处理'
   if (task.item?.actionable || task.kind === 'risk' || task.item?.action === 'REDUCE') return 'P1 今日复核'
@@ -220,7 +215,7 @@ function TodayActionCard({ items, authenticated, source, onOpen }: { items: Toda
     const updatedAt = item?.occurred_at || item?.available_at
     const evidence = evidenceState(task)
     const completeness = evidenceCompleteness(task)
-    const missingCopy = evidence.missing.map((field) => RECOMMENDATION_FIELD_LABELS[field] ?? field).join('、')
+    const missingCopy = recommendationMissingLabels(evidence.missing).join('、')
     return <article className={`today-action-row ${evidence.complete === false ? 'has-evidence-gap' : ''}`} key={task.id}>
       <div className="today-action-info">
         <header className="today-action-card-head">
@@ -228,10 +223,10 @@ function TodayActionCard({ items, authenticated, source, onOpen }: { items: Toda
           <div className="today-action-badges"><span className={`today-priority-badge is-${priorityLabel(task).slice(0, 2).toLowerCase()}`}>{priorityLabel(task)}</span><V2StatusPill state={status.state}>{status.label}</V2StatusPill><span className={`today-evidence-badge is-${evidence.complete === true ? 'complete' : evidence.complete === false ? 'missing' : 'na'}`}>{evidence.label}</span></div>
         </header>
         <div className="today-action-facts">
-          <div><span>当前价</span><strong>{item ? (price == null ? '未提供' : itemMoney(price, item.currency)) : '不涉及行情'}</strong><small>{item?.quote_at ? formatTime(item.quote_at) : item ? '报价时间未提供' : '系统状态'}</small></div>
-          <div><span>失效条件</span><strong>{item ? item.state === 'locked' ? '权限 / 数据门受限' : item.stop_price == null ? '尚未量化' : itemMoney(item.stop_price, item.currency) : '按工作项复核'}</strong><small>{item ? '进入研究页核对完整条件' : '由账户状态决定'}</small></div>
-          <div className="is-risk"><span>最大风险</span><strong>{item?.max_loss == null ? item ? '未提供' : '不产生金额估算' : itemMoney(item.max_loss, item.currency)}</strong><small>{item ? '只显示服务端研究记录' : '不替用户估算'}</small></div>
-          <div className={evidence.complete === false ? 'is-gap' : ''}><span>资料缺口</span><strong>{item ? missingCopy || (evidence.complete ? '无已知缺口' : '字段未列明') : '不适用'}</strong><small>{item ? `${evidence.missing.length} 个缺失字段` : '系统状态工作项'}</small></div>
+          <div><span>当前价</span><strong>{item ? (price == null ? '暂无数据' : itemMoney(price, item.currency)) : '不涉及行情'}</strong><small>{item?.quote_at ? formatTime(item.quote_at) : item ? '报价时间：暂无数据' : '系统状态'}</small></div>
+          <div><span>失效条件</span><strong>{item ? item.state === 'locked' ? '权限 / 数据门受限' : item.stop_price == null ? '暂无数据' : itemMoney(item.stop_price, item.currency) : '按工作项复核'}</strong><small>{item ? '进入研究页核对完整条件' : '由账户状态决定'}</small></div>
+          <div className="is-risk"><span>最大风险</span><strong>{item?.max_loss == null ? item ? '暂无数据' : '不产生金额估算' : itemMoney(item.max_loss, item.currency)}</strong><small>{item ? '只显示服务端研究记录' : '不替用户估算'}</small></div>
+          <div className={evidence.complete === false ? 'is-gap' : ''}><span>资料缺口</span><strong>{item ? missingCopy || (evidence.complete ? '无已知缺口' : '暂无数据') : '不适用'}</strong><small>{item ? `${evidence.missing.length} 个缺失字段` : '系统状态工作项'}</small></div>
         </div>
       </div>
       <div className="today-action-operation">

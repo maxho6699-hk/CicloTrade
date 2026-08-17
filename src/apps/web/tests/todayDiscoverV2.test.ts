@@ -37,7 +37,7 @@ test('V2 routes are reachable while the real stock screener deep link remains in
 test('Discover keeps one primary research handoff and only safe paper seed', () => {
   assert.match(discover, /进入股票研究/)
   assert.match(discover, /source=screener/)
-  assert.match(discover, /服务端评分未提供/)
+  assert.match(discover, /最大风险：暂无数据/)
   assert.match(discover, /候选股票|事件发现|研究覆盖/)
   assert.doesNotMatch(discover, /<tr[^>]*tabIndex/)
   assert.doesNotMatch(discover, /<tr[^>]*onClick/)

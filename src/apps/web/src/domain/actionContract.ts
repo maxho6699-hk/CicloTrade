@@ -3,6 +3,36 @@ import type { Decision } from '../types'
 
 const MAX_ACTION_QUOTE_AGE_MS = 15 * 60 * 1000
 
+export const RECOMMENDATION_FIELD_LABELS: Record<string, string> = {
+  action: '建议方向',
+  current_price: '当前价',
+  reference_price: '参考价',
+  quote_at: '报价时间',
+  stop_price: '止损价',
+  target_price: '目标价',
+  max_loss: '最大风险',
+  quantity_hint: '建议数量',
+  quantity_delta: '调整数量',
+  target_quantity: '目标数量',
+  rationale: '推荐理由',
+  option_expiry: '到期日',
+  option_right: '期权方向',
+  option_strike: '行权价',
+  bid: '买价',
+  ask: '卖价',
+  implied_volatility: '隐含波动率',
+  volume: '成交量',
+  open_interest: '未平仓量',
+}
+
+export function recommendationFieldLabel(field: string) {
+  return RECOMMENDATION_FIELD_LABELS[field] ?? '必要资料'
+}
+
+export function recommendationMissingLabels(fields?: string[]) {
+  return (fields ?? []).map(recommendationFieldLabel)
+}
+
 export interface RecommendationQuoteOverride {
   price: number
   quoteAt?: string | number | null
@@ -34,7 +64,7 @@ export function assessRecommendationContract(
   const actionable = coreComplete && quoteFresh && quantity > 0
   const quoteFreshness: Decision['quoteFreshness'] = quoteFresh ? 'fresh' : quoteAt ? 'stale' : 'missing'
   const blockReason = !coreComplete
-    ? `行动合同不完整：${(item.missing_fields ?? ['止损、目标、数量或理由']).join('、')}`
+    ? `行动合同不完整：${recommendationMissingLabels(item.missing_fields).join('、') || '止损价、目标价、建议数量或推荐理由'}`
     : !quoteAt
       ? '没有可验证的当前报价时间'
       : !quoteFresh

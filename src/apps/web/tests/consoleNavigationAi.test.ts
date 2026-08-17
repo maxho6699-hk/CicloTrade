@@ -48,9 +48,10 @@ test('login safe return allowlist includes all canonical routes', () => {
   assert.match(login, /value\.startsWith\(`\$\{route\}\?`\)/)
 })
 
-test('AI page fails closed when no provider is available and exposes no order-submit tool', () => {
+test('AI page hides backend routing details, fails closed, and exposes no order-submit tool', () => {
   assert.match(ai, /AI 服务暂不可用/)
-  assert.match(ai, /provider/i)
+  assert.doesNotMatch(ai, /provider|model/i)
+  assert.doesNotMatch(ai, /供应商|模型|故障转移/)
   assert.match(ai, /不会生成占位回答|不会伪造回答/)
   assert.doesNotMatch(ai, /broker_submit/)
   assert.doesNotMatch(ai, /mock|假回答|示例回答/)
@@ -65,7 +66,8 @@ test('Workflow uses the owner-scoped registry for real index and detail projecti
     assert.match(workflowStatus, new RegExp(`${status}:`))
     assert.match(intelligencePrimitives, new RegExp(`'${status}'`))
   }
-  assert.match(workflow, /Workflow Registry 尚未返回当前账户可见的真实任务。不会展示演示记录。/)
+  assert.match(workflow, /暂无可见任务/)
+  assert.match(workflow, /真实任务会在这里出现；当前不会展示演示记录。/)
   assert.doesNotMatch(workflow, /伪造日志|demoLog|mockTask/)
 })
 

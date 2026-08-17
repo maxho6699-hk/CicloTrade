@@ -37,11 +37,11 @@ export function CicloCore({ label, size = 'hero', state = 'neutral', tier = 'fre
   const hasHalo = isAdvanced
   const hasEnergyLines = isPro
   const artwork = {
-    free: '/media/ciclo/ciclo-shell-f0-v1.svg',
-    standard: '/media/ciclo/ciclo-shell-s1-v1.svg',
-    advanced: '/media/ciclo/ciclo-shell-a2-v1.svg',
-    professional: '/media/ciclo/ciclo-shell-p3-v1.svg',
-    custom: '/media/ciclo/ciclo-shell-p3-v1.svg',
+    free: '/assets/robot/robot-lv1.png',
+    standard: '/assets/robot/robot-lv2.png',
+    advanced: '/assets/robot/robot-lv3.png',
+    professional: '/assets/robot/robot-lv4.png',
+    custom: '/assets/robot/robot-lv4.png',
   }[tier]
 
   return <figure className={`ciclo-core ciclo-core-${size} ciclo-core-${tier}`} data-state={state} data-tier={tier} role="img" aria-label={`${label}（${TIER_LABELS[tier]}）`}>
@@ -54,10 +54,10 @@ export function CicloCore({ label, size = 'hero', state = 'neutral', tier = 'fre
         src={artwork}
         alt=""
         width="320"
-        height="300"
+        height="320"
         loading={size === 'hero' ? 'eager' : 'lazy'}
         decoding="async"
-        style={{ display: 'block', width: '100%', height: '100%', objectFit: 'contain' }}
+        style={{ display: 'block', width: '100%', height: '100%', objectFit: 'contain', objectPosition: 'center' }}
       />
       <i className="ciclo-core-status-light" />
     </span>

@@ -98,6 +98,8 @@ export function AccountPage() {
   const reportCount = content.filter((item) => /report|research|研报|研究/i.test(item.content_key)).length
   const currentPlan = workspace.data?.membership.plans.find((plan) => plan.key === workspace.user?.plan)
   const growthBenefit = currentPlan?.features.find((feature) => /成长|加速/.test(feature)) ?? (tier === 'free' ? '标准成长速度' : '成长权益以套餐页为准')
+  const growthSpeedMatch = currentPlan?.features.map((feature) => feature.match(/(\d+(?:\.\d+)?)\s*(?:x|×|倍)/i)).find(Boolean)
+  const growthSpeed = tier === 'free' ? '1.0×' : growthSpeedMatch?.[1] ? `${growthSpeedMatch[1]}×` : '暂无数据'
   const weeklyActivity = useMemo(() => {
     const today = new Date()
     const events = [...content.map((item) => item.created_at), ...memories.map((item) => item.created_at)]
@@ -304,7 +306,7 @@ export function AccountPage() {
               <div><dt>成长积分</dt><dd>待同步</dd></div>
               <div><dt>距离下等级</dt><dd>{tierIndex === tierOrder.length - 1 ? '已到当前最高形态' : '等待成长积分'}</dd></div>
               <div><dt>预计升级</dt><dd>待同步</dd></div>
-              <div><dt>会员加速</dt><dd>{growthBenefit}</dd></div>
+              <div><dt>会员加速</dt><dd>{growthSpeed}</dd></div>
             </dl>
             <div className="profile-agent-actions"><Link className="button secondary" to="/membership">成长规则</Link><Link className="button primary" to="/membership">管理套餐</Link></div>
           </div>
@@ -330,7 +332,7 @@ export function AccountPage() {
           </section>
 
           <section className="profile-plan-card profile-card data-panel">
-            <span className="profile-plan-icon"><Crown size={20} /></span><div><small>当前套餐</small><strong>{planName}</strong><span>{expiresAt ? `有效期至 ${new Date(expiresAt).toLocaleDateString(formatLocale)}` : '长期有效或日期待同步'}</span></div><dl><div><dt>剩余</dt><dd>{remainingDays(expiresAt)}</dd></div><div><dt>成长速度</dt><dd>{growthBenefit}</dd></div></dl><Link className="button secondary" to="/membership">管理套餐</Link>
+            <span className="profile-plan-icon"><Crown size={20} /></span><div className="profile-plan-copy"><small>当前套餐</small><strong>{planName}</strong><span>{expiresAt ? `有效期至 ${new Date(expiresAt).toLocaleDateString(formatLocale)}` : '长期有效或日期待同步'}</span><em>{growthBenefit}</em></div><dl><div><dt>剩余</dt><dd>{remainingDays(expiresAt)}</dd></div><div><dt>成长速度</dt><dd>{growthSpeed}</dd></div></dl><Link className="button secondary" to="/membership">管理套餐</Link>
           </section>
 
           <section className="profile-paper-card profile-card data-panel">

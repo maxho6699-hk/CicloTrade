@@ -80,8 +80,8 @@ const mobileNavItems = [
 const feedbackItem = { to: '/feedback', label: '反馈建议', icon: MessageSquareText }
 const promotionItem = { to: '/promotion', label: '推广中心', icon: Target }
 const NAV_COPY = {
-  'zh-Hans': { today: '今日', discover: '发现', recommendations: '新手推荐', research: '行情与研究', market: '行情', paper: '模拟', portfolio: '组合与复盘', deliberation: '牛熊 PK', more: '更多功能', moreShort: '更多', pinned: '固定工具' },
-  'zh-Hant': { today: '今日', discover: '發現', recommendations: '新手推薦', research: '行情與研究', market: '行情', paper: '模擬', portfolio: '組合與複盤', deliberation: '牛熊 PK', more: '更多功能', moreShort: '更多', pinned: '固定工具' },
+  'zh-Hans': { today: '今日', discover: '发现', recommendations: '新手推荐', research: '行情与研究', market: '行情', paper: '模拟', portfolio: '组合与复盘', deliberation: '牛熊 PK', more: '综合功能中心', moreShort: '更多', pinned: '固定工具' },
+  'zh-Hant': { today: '今日', discover: '發現', recommendations: '新手推薦', research: '行情與研究', market: '行情', paper: '模擬', portfolio: '組合與複盤', deliberation: '牛熊 PK', more: '綜合功能中心', moreShort: '更多', pinned: '固定工具' },
 } as const
 const AI_COPY = {
   'zh-Hans': {

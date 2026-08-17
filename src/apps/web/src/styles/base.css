@@ -2,8 +2,8 @@
   --font-hant: 'Noto Sans TC Variable', 'Noto Sans TC', 'Noto Sans HK', 'Source Han Sans TC', 'PingFang TC', 'Microsoft JhengHei UI', 'Microsoft JhengHei', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-hans: 'Noto Sans SC Variable', 'Noto Sans SC', 'Source Han Sans SC', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-ui: var(--font-hant);
-  --font-label: 'Inter Variable', 'Inter', var(--font-hant);
-  --font-number: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
+  --font-label: var(--font-ui);
+  --font-number: var(--font-ui);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -100,8 +100,8 @@
   --motion-fast: 140ms;
   --motion-ui: 180ms;
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
-  --mono: var(--font-label);
-  --font-mono: var(--font-label);
+  --mono: var(--font-ui);
+  --font-mono: var(--font-ui);
   --font: var(--font-ui);
   --sidebar: var(--canvas);
   --sidebar-border: var(--divider);

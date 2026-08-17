@@ -92,11 +92,11 @@ function formatTime(value: string | null | undefined) {
 }
 
 function formatScore(value: number | null | undefined) {
-  return typeof value === 'number' && Number.isFinite(value) ? new Intl.NumberFormat('zh-HK', { maximumFractionDigits: 1 }).format(value) : '尚未计算'
+  return typeof value === 'number' && Number.isFinite(value) ? new Intl.NumberFormat('zh-HK', { maximumFractionDigits: 1 }).format(value) : '暂无数据'
 }
 
 function formatCoverage(value: number | null | undefined) {
-  return typeof value === 'number' && Number.isFinite(value) ? `${Math.round(value * 100)}%` : '覆盖率未提供'
+  return typeof value === 'number' && Number.isFinite(value) ? `${Math.round(value * 100)}%` : '暂无数据'
 }
 
 function materialText(value: unknown, missingCopy: string) {
@@ -264,7 +264,8 @@ export function DeliberationPage() {
 
   const canCancel = Boolean(result?.deliberation_public_id && (result.status === 'queued' || result.status === 'running'))
   const canRetry = Boolean(result?.deliberation_public_id && ['partial', 'succeeded', 'failed', 'cancelled', 'blocked', 'timed_out'].includes(result.status))
-  const researchLink = symbol ? `/research?market=${encodeURIComponent(market)}&symbol=${encodeURIComponent(symbol)}` : '/research'
+  const researchLink = symbol ? `/research?market=${encodeURIComponent(market)}&symbol=${encodeURIComponent(symbol)}` : '/discover?returnTo=deliberation'
+  const researchLinkLabel = symbol ? '返回股票研究' : '前往发现页选择股票'
   const paperLink = result ? `/paper?market=${encodeURIComponent(result.market)}&symbol=${encodeURIComponent(result.symbol)}&source=deliberation&deliberation_id=${encodeURIComponent(result.deliberation_public_id ?? '')}` : '/paper'
   const seatTimestamp = result?.calculated_at ?? result?.available_at ?? null
   const flowTones: Tone[] = data?.status === 'succeeded'
@@ -313,7 +314,7 @@ export function DeliberationPage() {
         role: key.toUpperCase(),
         type: '席位观点',
         summary: seatDetail(result, key),
-        score: seat.support_strength === null && seat.counter_evidence_strength === null ? '尚未计算' : `支持 ${formatScore(seat.support_strength)} / 反向 ${formatScore(seat.counter_evidence_strength)}`,
+        score: seat.support_strength === null && seat.counter_evidence_strength === null ? '暂无数据' : `支持 ${formatScore(seat.support_strength)} / 反向 ${formatScore(seat.counter_evidence_strength)}`,
         status: rawState === 'ready' ? '已就绪' : rawState === 'invalidated' ? '证据失效' : rawState === 'missing' ? '资料不足' : STATUS_LABEL[rawState] ?? rawState,
         tone: statusTone(rawState),
       }
@@ -448,7 +449,7 @@ export function DeliberationPage() {
             {readiness?.ready && <button className="deliberation-secondary-action" type="button" onClick={() => void createDeliberation()} disabled={busy !== ''}><RefreshCw />{busy === 'create' ? '正在发起审议' : '发起多智能体审议'}</button>}
             {canCancel && <button className="deliberation-secondary-action" type="button" onClick={() => void updateDeliberation('cancel')} disabled={busy !== ''}><Square />{busy === 'cancel' ? '正在取消' : '取消审议'}</button>}
             {canRetry && <button className="deliberation-secondary-action" type="button" onClick={() => void updateDeliberation('retry')} disabled={busy !== ''}><RotateCcw />{busy === 'retry' ? '正在重试' : '重新发起'}</button>}
-            <Link className="deliberation-text-link" to={researchLink}>返回股票研究 <ArrowRight /></Link>
+            <Link className="deliberation-text-link" to={researchLink}>{researchLinkLabel} <ArrowRight /></Link>
           </div>
           {actionError && <p className="deliberation-action-error" role="alert">{actionError}</p>}
         </section>
@@ -516,7 +517,7 @@ export function DeliberationPage() {
           {authoritativeEvidence ? <div className="deliberation-strengths">
             <EvidenceStrength label="支持证据强度" value={result?.support_strength ?? null} status={evidenceStatus} coverage={result?.coverage ?? null} methodVersion={result?.method_version ?? null} observedAt={result?.observed_at ?? null} availableAt={result?.available_at ?? null} asOf={result?.as_of ?? null} calculatedAt={result?.calculated_at ?? null} tone="support" />
             <EvidenceStrength label="反向证据强度" value={result?.counter_evidence_strength ?? null} status={evidenceStatus} coverage={result?.coverage ?? null} methodVersion={result?.method_version ?? null} observedAt={result?.observed_at ?? null} availableAt={result?.available_at ?? null} asOf={result?.as_of ?? null} calculatedAt={result?.calculated_at ?? null} tone="counter" />
-          </div> : <StateNotice kind={state.kind === 'loading' ? 'loading' : result ? 'missing' : state.kind === 'error' ? 'error' : 'empty'} title={state.kind === 'loading' ? '正在汇聚支持证据' : result ? '证据强度绑定尚不完整' : '暂无可核验的证据强度'} detail={result?.invalidated_reason || '只有强度、覆盖率、方法版本与四个时间字段全部有效时，页面才显示数值进度。'} />}
+          </div> : <StateNotice kind={state.kind === 'loading' ? 'loading' : result ? 'missing' : state.kind === 'error' ? 'error' : 'empty'} title={state.kind === 'loading' ? '正在汇聚支持证据' : '支持证据：暂无数据'} detail={result?.invalidated_reason || '当前缺少完整的强度、覆盖率、方法版本或时间字段；页面不会留下空白，也不会补写估算值。'} />}
 
           <div className="deliberation-counter-prompt">
             <AlertTriangle />
@@ -534,7 +535,7 @@ export function DeliberationPage() {
               <div><strong>{row.label}</strong><p>{row.summary}</p></div>
               <i data-tone={row.tone} aria-label={row.tone === 'danger' ? '风险' : row.tone === 'warning' ? '警告' : row.tone === 'success' ? '正常' : '处理中'} />
             </li>)}
-          </ol> : <StateNotice kind={state.kind === 'loading' ? 'loading' : state.kind === 'error' ? 'error' : 'empty'} title={state.kind === 'loading' ? '正在读取反向证据' : '反向证据列表为空'} detail={state.kind === 'error' ? state.detail : '服务端尚未返回可按日期、来源和状态展示的反向证据。'} />}
+          </ol> : <StateNotice kind={state.kind === 'loading' ? 'loading' : state.kind === 'error' ? 'error' : 'empty'} title={state.kind === 'loading' ? '正在读取反向证据' : '反向证据：暂无数据'} detail={state.kind === 'error' ? state.detail : '暂无数据：服务端尚未返回可按日期、来源和状态展示的反向证据。'} />}
         </section>
 
         <details className="deliberation-risk-review">

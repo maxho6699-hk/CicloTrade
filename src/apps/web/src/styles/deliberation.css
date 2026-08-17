@@ -504,7 +504,7 @@
 .app-shell .deliberation-evidence-beam::after { right: 3%; transform: scaleX(-1); }
 .app-shell .deliberation-evidence-beam svg { position: relative; z-index: 1; width: 25px; height: 25px; padding: 5px; border: 1px solid rgb(139 92 255 / .4); border-radius: 50%; background: var(--dl-panel-solid); box-shadow: 0 0 18px rgb(90 86 255 / .34); }
 .app-shell .deliberation-evidence-beam i { display: none; }
-.app-shell .deliberation-pk-arena { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) 50px minmax(0, 1fr); align-items: start; gap: 7px; margin: 0; }
+.app-shell .deliberation-pk-arena { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) 58px minmax(0, 1fr); align-items: center; gap: 8px; margin: 0; }
 .app-shell .deliberation-pk-card { --pk-tone: var(--dl-green); --pk-score-gradient: linear-gradient(135deg, #effff8 0%, #65ffc0 38%, #20bd78 72%, #55d9ff 100%); position: relative; display: grid; min-width: 0; min-height: 210px; grid-template-rows: auto auto 42px; align-content: start; gap: 9px; overflow: hidden; padding: 11px; border: 1px solid color-mix(in srgb, var(--pk-tone) 46%, rgb(113 133 255 / .32)); border-radius: 16px; background: radial-gradient(circle at 50% 18%, color-mix(in srgb, var(--pk-tone) 25%, transparent), transparent 40%), radial-gradient(circle at 92% 88%, rgb(91 75 255 / .18), transparent 42%), linear-gradient(155deg, rgb(16 27 49 / .82), rgb(5 12 28 / .9)); color: var(--pk-tone); box-shadow: inset 0 1px 0 rgb(255 255 255 / .08), inset 0 0 28px color-mix(in srgb, var(--pk-tone) 7%, transparent), 0 12px 28px rgb(1 5 18 / .36), 0 0 22px color-mix(in srgb, var(--pk-tone) 12%, transparent); backdrop-filter: blur(18px); isolation: isolate; }
 .app-shell .deliberation-pk-card::before { position: absolute; z-index: -1; inset: 0; background: linear-gradient(125deg, rgb(255 255 255 / .065), transparent 34%, rgb(112 91 255 / .06)); content: ''; }
 .app-shell .deliberation-pk-card::after { position: absolute; right: 10px; bottom: 0; left: 10px; height: 2px; border-radius: 999px; background: linear-gradient(90deg, transparent, var(--pk-tone), transparent); box-shadow: 0 0 12px var(--pk-tone); content: ''; opacity: .72; }
@@ -519,10 +519,11 @@
 .app-shell .deliberation-pk-score { display: grid; gap: 3px; text-align: center; }
 .app-shell .deliberation-pk-score span { color: var(--dl-muted); font: 11px var(--mono); }
 .app-shell .deliberation-pk-score strong { overflow: hidden; background: var(--pk-score-gradient); background-clip: text; color: transparent; font-size: clamp(23px, 2.4vw, 34px); line-height: 1; text-overflow: ellipsis; filter: drop-shadow(0 0 8px color-mix(in srgb, var(--pk-tone) 44%, transparent)); white-space: nowrap; font-variant-numeric: tabular-nums; -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-.app-shell .deliberation-pk-vs { position: relative; z-index: 2; display: grid; place-items: center; align-content: center; gap: 4px; }
-.app-shell .deliberation-pk-vs::before { position: absolute; z-index: -1; width: 48px; height: 48px; border: 1px solid rgb(167 121 255 / .58); border-radius: 16px; background: radial-gradient(circle at 35% 30%, rgb(255 255 255 / .24), transparent 26%), linear-gradient(145deg, rgb(255 79 163 / .76), rgb(139 92 255 / .92) 52%, rgb(59 99 255 / .82)); box-shadow: 0 0 28px rgb(139 92 255 / .52), inset 0 1px 0 rgb(255 255 255 / .34); content: ''; transform: rotate(45deg); }
+.app-shell .deliberation-pk-vs { position: relative; z-index: 2; display: grid; min-height: 210px; place-items: center; align-content: center; gap: 4px; isolation:isolate; }
+.app-shell .deliberation-pk-vs::before { position: absolute; z-index: -1; width: 50px; height: 50px; border: 1px solid rgb(196 164 255 / .72); border-radius: 14px; background: radial-gradient(circle at 34% 28%, rgb(255 255 255 / .34), transparent 25%), linear-gradient(135deg,rgb(45 212 191 / .9) 0 43%,rgb(139 92 255 / .96) 43% 57%,rgb(248 113 113 / .92) 57%); box-shadow:-12px 0 24px rgb(45 212 191 / .26),12px 0 24px rgb(248 113 113 / .28),0 0 32px rgb(139 92 255 / .58),inset 0 1px 0 rgb(255 255 255 / .4); content: ''; transform: rotate(45deg); }
+.app-shell .deliberation-pk-vs::after{position:absolute;z-index:-2;width:64px;height:64px;border:1px solid rgb(139 92 255 / .34);border-radius:18px;background:conic-gradient(from 45deg,rgb(45 212 191 / .22),transparent 22%,rgb(248 113 113 / .24) 48%,transparent 72%,rgb(139 92 255 / .24));box-shadow:0 0 38px rgb(139 92 255 / .34);content:'';transform:rotate(45deg);animation:deliberation-vs-energy 3.2s linear infinite}
 .app-shell .deliberation-pk-vs span { background: linear-gradient(135deg, #fff, #d8c8ff 45%, #8fd8ff); background-clip: text; color: transparent; font: 900 22px/1 var(--mono); font-style: italic; letter-spacing: -.08em; filter: drop-shadow(0 0 8px rgb(255 255 255 / .42)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-.app-shell .deliberation-pk-vs small { transform: translateY(30px); color: #b7c4ee; font: 600 11px var(--mono); letter-spacing: .1em; white-space: nowrap; }
+.app-shell .deliberation-pk-vs small { position:absolute;top:calc(50% + 38px);color: #b7c4ee; font: 600 9px var(--mono); letter-spacing: .1em; white-space: nowrap; }
 .app-shell .deliberation-pk-trend { height: 42px; color: var(--pk-tone); }
 .app-shell .deliberation-pk-trend svg { width: 100%; height: 100%; overflow: visible; }
 .app-shell .deliberation-pk-trend .trend-grid { fill: none; stroke: rgb(120 145 255 / .11); stroke-width: .6; }
@@ -732,6 +733,7 @@
 
 @keyframes deliberation-spin { to { transform: rotate(360deg); } }
 @keyframes deliberation-node-pulse { 50% { opacity: .48; transform: scale(.78); } }
+@keyframes deliberation-vs-energy { to { transform: rotate(405deg); } }
 
 @media (prefers-reduced-motion: reduce) {
   .app-shell .deliberation-page *,

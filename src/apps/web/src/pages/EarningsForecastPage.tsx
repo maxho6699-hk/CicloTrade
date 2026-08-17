@@ -105,7 +105,11 @@ function EarningsLoading() {
 }
 
 function EarningsError({ message, onRetry }: { message: string; onRetry: () => void }) {
-  return <div className="earnings-state is-error"><CircleAlert /><strong>业绩预测暂时不可用</strong><span>{message}</span><button className="button secondary" type="button" onClick={onRetry}><RefreshCw size={15} /> 重试</button></div>
+  return <section className="earnings-sync-state" aria-labelledby="earnings-sync-title">
+    <header><span><CircleAlert /></span><div><small>DATA SYNC / READ-ONLY</small><h2 id="earnings-sync-title">业绩研究数据正在同步</h2><p>{message} 页面不会用推测日期、虚构公司或伪造预测填充空白。</p></div><button className="button secondary" type="button" onClick={onRetry}><RefreshCw size={15} /> 重新读取</button></header>
+    <div className="earnings-sync-flow" aria-label="业绩研究流程"><article><span>01</span><div><strong>确认事件时间</strong><small>仅接收交易所时区与盘前 / 盘后状态明确的事件。</small></div></article><article><span>02</span><div><strong>封存研究快照</strong><small>D-7 至 D-1 的概率、区间、证据与模型版本永久绑定。</small></div></article><article><span>03</span><div><strong>等待结果复盘</strong><small>真实结果可验证后才计算方向、校准与区间覆盖。</small></div></article></div>
+    <footer><ShieldCheck size={16} />研究行动只读，不提交订单，也不冒充个人账户业绩。</footer>
+  </section>
 }
 
 function ForecastRange({ forecast }: { forecast: EarningsForecastSnapshot }) {

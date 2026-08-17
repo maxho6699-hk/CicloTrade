@@ -3,6 +3,22 @@ const http = require('http');
 
 const UPSTREAM = { host: 'localhost', port: 5175 };
 const PORT = 5180;
+const previewNow = new Date().toISOString();
+const stockIdea = (event_id, symbol, market, currency, action, current_price, target_price, stop_price, rationale) => ({
+  event_id, symbol, market, currency, instrument_type: 'stock', state: 'official', action,
+  current_price, reference_price: current_price, target_price, stop_price,
+  max_loss: Math.abs(current_price - stop_price) * 10, quantity_hint: 10,
+  rationale, strategy_name: '多因子研究筛选', strategy_version: 'research-v5', actionable: true,
+  contract_status: 'complete', missing_fields: [], available_at: previewNow, occurred_at: previewNow, quote_at: previewNow,
+});
+const optionIdea = (event_id, symbol, action, option_right, option_strike, option_expiry, bid, ask, target_price, rationale) => ({
+  event_id, symbol, market: 'US', currency: 'USD', instrument_type: 'option', state: 'official', action,
+  current_price: (bid + ask) / 2, reference_price: (bid + ask) / 2, target_price, stop_price: null,
+  max_loss: ask * 100, quantity_hint: 1, option_right, option_strike, option_expiry, multiplier: 100,
+  bid, ask, spread: ask - bid, implied_volatility: .34, volume: 1840, open_interest: 12600,
+  rationale, strategy_name: '定义风险期权研究', strategy_version: 'options-v5', actionable: true,
+  contract_status: 'complete', missing_fields: [], available_at: previewNow, occurred_at: previewNow, quote_at: previewNow,
+});
 
 const bootstrap = {
   me: { id: 1, email: 'qa@ciclotrade.test', display_name: 'QA 验收', admin_role: 'user', verified: true },
@@ -25,10 +41,28 @@ const bootstrap = {
   },
   recommendations: {
     items: [
-      { event_id: 1, symbol: 'AAPL', market: 'US', instrument_type: 'stock', current_price: 232.5, reference_price: 228.1, state: 'active', action: '研究', contract_status: 'complete', currency: 'USD', available_at: new Date().toISOString(), occurred_at: new Date().toISOString(), quote_at: new Date().toISOString() },
-      { event_id: 2, symbol: 'TSLA', market: 'US', instrument_type: 'stock', current_price: 285.3, reference_price: 290.0, state: 'active', action: '风险复核', contract_status: 'complete', currency: 'USD', available_at: new Date().toISOString(), occurred_at: new Date().toISOString(), quote_at: new Date().toISOString() },
+      stockIdea(1, 'AAPL', 'US', 'USD', 'BUY', 232.5, 252, 221, '服务收入与现金流保持韧性，等待价格与证据同时满足后再进入个人模拟。'),
+      stockIdea(2, 'NVDA', 'US', 'USD', 'BUY', 176.2, 194, 165, '数据中心需求仍强，但估值和波动较高，需要严格遵守止损与仓位边界。'),
+      stockIdea(3, 'MSFT', 'US', 'USD', 'BUY', 521.4, 558, 498, '云业务与企业软件现金流提供支撑，需继续核验资本开支和增长兑现。'),
+      stockIdea(4, 'AMZN', 'US', 'USD', 'BUY', 226.8, 246, 214, '零售利润率改善与云业务复苏构成支持，重点观察消费和费用变化。'),
+      stockIdea(5, 'GOOGL', 'US', 'USD', 'BUY', 203.4, 220, 192, '广告与云业务提供双重支撑，反向证据是搜索竞争与监管风险。'),
+      stockIdea(6, 'META', 'US', 'USD', 'BUY', 782.1, 842, 744, '广告效率与用户活跃度提供支持，仍需复核高资本开支带来的估值压力。'),
+      stockIdea(7, 'AVGO', 'US', 'USD', 'BUY', 342.7, 371, 326, '定制芯片与软件收入组合改善可见度，短期波动仍可能扩大。'),
+      stockIdea(8, 'JPM', 'US', 'USD', 'BUY', 301.6, 322, 287, '资产质量与资本回报稳定，需关注利率路径和信贷成本变化。'),
+      stockIdea(9, 'TSLA', 'US', 'USD', 'SHORT', 335.3, 296, 354, '交付与价格竞争构成压力；做空风险无限，必须先核验借券和跳空风险。'),
+      stockIdea(10, 'ADBE', 'US', 'USD', 'SHORT', 352.4, 318, 371, '增长预期与竞争压力需要复核，做空仅作为研究方向，不代表可执行订单。'),
+      stockIdea(11, 'NFLX', 'US', 'USD', 'REDUCE', 1260, 1260, 1195, '价格已接近研究目标，等待新证据与更清晰的风险回报再决定。'),
+      stockIdea(12, 'COST', 'US', 'USD', 'EXIT', 972.5, 972.5, 934, '估值与目标空间暂不匹配，当前归入等机会而非追价。'),
+      stockIdea(13, '600519', 'CN', 'CNY', 'BUY', 1488, 1580, 1425, '品牌与现金流稳定，但需求和渠道库存仍需持续核验。'),
+      stockIdea(14, '300750', 'CN', 'CNY', 'BUY', 298.6, 326, 282, '产业链地位提供支持，重点观察价格竞争与海外政策风险。'),
+      stockIdea(15, '601318', 'CN', 'CNY', 'REDUCE', 62.8, 62.8, 59.4, 'A股不支持做空；当前仅等待更多证据，不生成任何做空执行入口。'),
+      stockIdea(16, '000001', 'CN', 'CNY', 'REDUCE', 12.4, 12.4, 11.8, '息差与资产质量证据尚不充分，等待下一轮正式数据。'),
+      optionIdea(17, 'AAPL', 'BUY', 'CALL', 240, '2026-10-16', 8.4, 8.8, 12.6, '以有限权利金研究上行弹性，需同时承担时间衰减与波动率回落风险。'),
+      optionIdea(18, 'NVDA', 'BUY', 'CALL', 185, '2026-09-18', 9.1, 9.6, 14.2, 'Call 只用于定义风险研究，目标收益基于合约价格而非标的涨幅。'),
+      optionIdea(19, 'TSLA', 'SHORT', 'PUT', 320, '2026-10-16', 18.2, 18.9, 27.5, 'Put 用于研究下行风险，权利金可能全部损失且受隐含波动率影响。'),
+      optionIdea(20, 'META', 'REDUCE', 'CALL', 800, '2026-12-18', 32.1, 33.4, 33.4, '当前目标空间不足，保留完整合约字段并归入等机会。'),
     ],
-    source: 'mock', fresh_marks: false, delivery: { stock: 60, option: 0 },
+    source: '验收预览数据', fresh_marks: false, delivery: { stock: 16, option: 4 },
   },
   performance: { items: [], fresh_marks: false, mark_source: 'mock' },
   settings: {
@@ -46,7 +80,7 @@ function candlesFor(symbol) {
     const seed = symbol.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
     const base = 100 + ((seed * 7 + i * 13) % 200) + Math.sin(i / 6 + seed) * 12;
     return {
-      time: new Date(Date.now() - (79 - i) * 86400000).toISOString(),
+      time: new Date(Date.now() - (79 - i) * 86400000).toISOString().slice(0, 10),
       open: base, high: base + 5, low: base - 5, close: base + (i % 3 === 0 ? -2 : 2), volume: 500000 + ((seed * i) % 3000000),
     };
   });
@@ -70,7 +104,7 @@ function quoteFor(symbol) {
 const server = http.createServer((req, res) => {
   const url = req.url || '/';
   // mock API
-  if (url.includes('/api/')) {
+  if (url.includes('/api/') && !url.includes('/src/api/')) {
     let body;
     let status = 200;
     if (url.includes('/bootstrap')) {
