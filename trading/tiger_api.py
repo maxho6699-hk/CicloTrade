@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-from core.compat import UTC
+import hashlib
+import hmac
 import os
 import threading
 from typing import Any, Callable
+
+from core.compat import UTC
 
 
 class TigerAPIRejected(RuntimeError):
@@ -238,8 +241,13 @@ class TigerAPI:
         client = self._client or self.connect()
         return client.get_positions(account=self.account, sec_type=sec_type)
 
-    def orders(self):
+    def orders(self, *, expected_account_sha256: str | None = None):
         client = self._client or self.connect()
+        if expected_account_sha256 is not None:
+            expected = str(expected_account_sha256).strip().casefold()
+            actual = hashlib.sha256(str(self.account).encode("utf-8")).hexdigest()
+            if len(expected) != 64 or not hmac.compare_digest(actual, expected):
+                raise RuntimeError("Tiger reconciliation 账户指纹不匹配，未查询订单。")
         return client.get_orders(account=self.account, limit=100)
 
     def paper_snapshot(self) -> dict[str, Any]:

@@ -1,0 +1,35 @@
+[Unit]
+Description=CicloTrade read-only auto-live broker reconciliation
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/ciclotrade/enable-auto-live-reconciliation.after-integration
+
+[Service]
+Type=oneshot
+User=ciclotrade
+Group=ciclotrade
+WorkingDirectory=/opt/CicloTrade
+EnvironmentFile=/opt/CicloTrade/.env
+ExecStart=/opt/CicloTrade/.venv/bin/python -m src.apps.worker.auto_live_reconciliation_runtime --once
+TimeoutStartSec=120
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateNetwork=false
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/opt/CicloTrade/data /opt/CicloTrade/logs /var/lib/ciclotrade
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryHigh=192M
+MemoryMax=256M
+CPUQuota=35%
+TasksMax=24
+LimitNOFILE=1024

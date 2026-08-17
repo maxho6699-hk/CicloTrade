@@ -15,6 +15,7 @@ from core.auto_live_control_common import (
     HEARTBEAT_FRESHNESS_SECONDS,
     MAX_CLOCK_SKEW_SECONDS,
     RUNTIME_FRESHNESS_SECONDS,
+    SUPPORTED_BROKERS,
     _HEX64_RE,
     _ID_RE,
     _gate,
@@ -714,6 +715,311 @@ class RuntimeIntegrityMixin:
                 )
             return {"status": "shadowed", "intents": len(new_items), "reused": len(normalized) - len(new_items)}
 
+    @staticmethod
+    def _broker_receipt_public(row: Any, *, reconciled: bool) -> dict[str, Any]:
+        return {
+            "public_id": str(row["receipt_id"]),
+            "mandate_public_id": str(row["mandate_public_id"]),
+            "client_order_id": str(row["client_order_id"]),
+            "provider": str(row["provider"]),
+            "submission_state": str(row["submission_state"]),
+            "broker_status": str(row["broker_status"]),
+            "observed_at": str(row["observed_at"]),
+            "receipt_sha256": str(row["payload_sha256"]),
+            "reconciled": bool(reconciled),
+        }
+
+    def broker_binding_for_order_intent(self, mandate_public_id: str, client_order_id: str) -> dict[str, str]:
+        mandate_id = _text(mandate_public_id, "mandate public id")
+        client_id = _text(client_order_id, "client_order_id")
+        with self._tx() as conn:
+            row = conn.execute(
+                """SELECT b.provider,b.external_account_id
+                   FROM auto_live_order_intents i
+                   JOIN auto_live_mandates m ON m.public_id=i.mandate_public_id
+                   JOIN broker_accounts b ON b.id=m.broker_account_id
+                   WHERE i.mandate_public_id=? AND i.client_order_id=?""",
+                (mandate_id, client_id),
+            ).fetchone()
+            if row is None:
+                raise AutoLiveControlError("broker reconciliation intent 不存在。", 404)
+            provider = str(row["provider"]).strip().casefold()
+            if provider not in SUPPORTED_BROKERS:
+                raise AutoLiveControlError("broker reconciliation provider 不受支持。")
+            return {
+                "provider": provider,
+                "broker_account_sha256": sha256_text(str(row["external_account_id"])),
+            }
+
+    def pending_broker_reconciliations(
+        self, *, limit: int = 100, providers: tuple[str, ...] = ("tiger",)
+    ) -> list[dict[str, Any]]:
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 500:
+            raise AutoLiveControlError("broker reconciliation limit 必须为 1 至 500。")
+        if not isinstance(providers, tuple) or not providers:
+            raise AutoLiveControlError("broker reconciliation providers 无效。")
+        normalized_providers = tuple(sorted({_text(item, "broker reconciliation provider").casefold() for item in providers}))
+        if any(item not in SUPPORTED_BROKERS for item in normalized_providers):
+            raise AutoLiveControlError("broker reconciliation provider 不受支持。")
+        placeholders = ",".join("?" for _ in normalized_providers)
+        with self._tx() as conn:
+            rows = conn.execute(
+                f"""SELECT i.mandate_public_id,i.client_order_id,i.fencing_epoch,b.provider,b.external_account_id
+                   FROM auto_live_order_intents i
+                   JOIN auto_live_mandates m ON m.public_id=i.mandate_public_id
+                   JOIN broker_accounts b ON b.id=m.broker_account_id
+                   JOIN auto_live_order_receipt_projections current
+                     ON current.mandate_public_id=i.mandate_public_id
+                    AND current.client_order_id=i.client_order_id
+                   WHERE i.execution_mode IN ('paper','live')
+                     AND LOWER(b.provider) IN ({placeholders})
+                     AND current.submission_state='submission_unknown'
+                     AND current.rowid=(
+                       SELECT MAX(latest.rowid) FROM auto_live_order_receipt_projections latest
+                       WHERE latest.mandate_public_id=current.mandate_public_id
+                         AND latest.client_order_id=current.client_order_id
+                     )
+                     AND EXISTS(
+                       SELECT 1 FROM auto_live_order_intent_events event
+                       WHERE event.intent_public_id=i.public_id AND event.event_type='send_claimed'
+                     )
+                   ORDER BY current.observed_at,current.rowid
+                   LIMIT ?""",
+                (*normalized_providers, limit),
+            ).fetchall()
+            pending = []
+            for row in rows:
+                provider = str(row["provider"]).strip().casefold()
+                pending.append(
+                    {
+                        "mandate_public_id": str(row["mandate_public_id"]),
+                        "client_order_id": str(row["client_order_id"]),
+                        "provider": provider,
+                        "broker_account_sha256": sha256_text(str(row["external_account_id"])),
+                        "expected_fencing_epoch": int(row["fencing_epoch"]),
+                    }
+                )
+            return pending
+
+    def record_broker_order_receipt(
+        self,
+        mandate_public_id: str,
+        client_order_id: str,
+        observation: Mapping[str, Any],
+        *,
+        expected_fencing_epoch: int,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        mandate_id = _text(mandate_public_id, "mandate public id")
+        client_id = _text(client_order_id, "client_order_id")
+        required = {
+            "provider",
+            "submission_state",
+            "broker_order_id",
+            "broker_status",
+            "observed_at",
+            "evidence_sha256",
+            "broker_account_sha256",
+        }
+        if not isinstance(observation, Mapping) or set(observation) != required:
+            raise AutoLiveControlError("broker receipt 字段不完整或包含未知字段。")
+        if isinstance(expected_fencing_epoch, bool) or not isinstance(expected_fencing_epoch, int) or expected_fencing_epoch < 0:
+            raise AutoLiveControlError("broker receipt fencing epoch 无效。")
+        provider = _text(observation["provider"], "broker receipt provider").casefold()
+        if provider not in SUPPORTED_BROKERS:
+            raise AutoLiveControlError("broker receipt provider 不受支持。")
+        state = _text(observation["submission_state"], "broker receipt submission state").casefold()
+        if state not in {"accepted", "rejected", "submission_unknown", "cancelled"}:
+            raise AutoLiveControlError("broker receipt submission state 无效。")
+        broker_order_id = observation["broker_order_id"]
+        if broker_order_id is not None:
+            broker_order_id = _text(broker_order_id, "broker_order_id")
+        if state in {"accepted", "cancelled"} and broker_order_id is None:
+            raise AutoLiveControlError("已知 broker receipt 缺少 broker_order_id。")
+        broker_status = _text(observation["broker_status"], "broker_status")
+        evidence_sha256 = _text(observation["evidence_sha256"], "broker receipt 证据", 64).casefold()
+        if not _HEX64_RE.fullmatch(evidence_sha256):
+            raise AutoLiveControlError("broker receipt 证据哈希无效。")
+        broker_account_sha256 = _text(observation["broker_account_sha256"], "broker account 指纹", 64).casefold()
+        if not _HEX64_RE.fullmatch(broker_account_sha256):
+            raise AutoLiveControlError("broker account 指纹无效。")
+        expected_evidence = sha256_json(
+            {
+                "provider": provider,
+                "client_order_id": client_id,
+                "broker_order_id": broker_order_id,
+                "broker_status": broker_status,
+                "submission_state": state,
+                "broker_account_sha256": broker_account_sha256,
+            }
+        )
+        if not hmac.compare_digest(evidence_sha256, expected_evidence):
+            raise AutoLiveControlError("broker receipt 证据哈希与观察内容不匹配。")
+        try:
+            observed_dt = datetime.fromisoformat(str(observation["observed_at"]).strip().replace("Z", "+00:00"))
+        except (TypeError, ValueError) as exc:
+            raise AutoLiveControlError("broker receipt observed_at 无效。") from exc
+        if observed_dt.tzinfo is None or observed_dt.utcoffset() is None:
+            raise AutoLiveControlError("broker receipt observed_at 必须带时区。")
+        moment_dt = _now(now)
+        observed_at = _iso(observed_dt)
+        moment = _iso(moment_dt)
+        if (observed_dt - moment_dt).total_seconds() > MAX_CLOCK_SKEW_SECONDS:
+            raise AutoLiveControlError("broker receipt observed_at 来自未来。")
+
+        with self._tx() as conn:
+            intent = conn.execute(
+                """SELECT i.*,m.fencing_epoch mandate_fencing_epoch,m.state mandate_state,
+                          b.provider broker_provider,b.external_account_id broker_external_account_id
+                   FROM auto_live_order_intents i
+                   JOIN auto_live_mandates m ON m.public_id=i.mandate_public_id
+                   JOIN broker_accounts b ON b.id=m.broker_account_id
+                   WHERE i.mandate_public_id=? AND i.client_order_id=?""",
+                (mandate_id, client_id),
+            ).fetchone()
+            if intent is None:
+                raise AutoLiveControlError("broker receipt intent 不存在。", 404)
+            if str(intent["execution_mode"]) == "shadow":
+                raise AutoLiveControlError("shadow intent 不接受 broker receipt。")
+            mandate_epoch = int(intent["mandate_fencing_epoch"])
+            if int(intent["fencing_epoch"]) != expected_fencing_epoch or mandate_epoch < expected_fencing_epoch:
+                raise AutoLiveConflict("broker receipt fencing epoch 不匹配。")
+            if mandate_epoch != expected_fencing_epoch and str(intent["mandate_state"]) == "active":
+                raise AutoLiveConflict("active mandate 已进入新的 fencing epoch。")
+            bound_provider = str(intent["broker_provider"]).strip().casefold()
+            if provider != bound_provider:
+                raise AutoLiveControlError("broker receipt provider 与 mandate 券商不匹配。")
+            expected_account_sha256 = sha256_text(str(intent["broker_external_account_id"]))
+            if not hmac.compare_digest(broker_account_sha256, expected_account_sha256):
+                raise AutoLiveControlError("broker receipt 账户指纹与 mandate 不匹配。")
+            send_claim = conn.execute(
+                """SELECT * FROM auto_live_order_intent_events
+                   WHERE intent_public_id=? AND event_type='send_claimed' AND fencing_epoch=?
+                   ORDER BY rowid DESC LIMIT 1""",
+                (intent["public_id"], expected_fencing_epoch),
+            ).fetchone()
+            if send_claim is None:
+                raise AutoLiveControlError("broker receipt intent 缺少 send claim。", 409)
+            expected_claim = {
+                "intent_public_id": str(intent["public_id"]),
+                "mandate_public_id": mandate_id,
+                "event_type": "send_claimed",
+                "fencing_epoch": expected_fencing_epoch,
+                "intent_sha256": str(intent["intent_sha256"]),
+            }
+            try:
+                claim_payload = json.loads(str(send_claim["payload_json"]))
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise AutoLiveControlError("broker receipt send claim 无效。", 409) from exc
+            if (
+                not isinstance(claim_payload, Mapping)
+                or dict(claim_payload) != expected_claim
+                or str(send_claim["mandate_public_id"]) != mandate_id
+                or int(send_claim["fencing_epoch"]) != expected_fencing_epoch
+                or not hmac.compare_digest(str(send_claim["payload_sha256"]), sha256_json(expected_claim))
+            ):
+                raise AutoLiveControlError("broker receipt send claim 绑定无效。", 409)
+            try:
+                intent_created = datetime.fromisoformat(str(intent["created_at"]))
+            except ValueError as exc:
+                raise AutoLiveControlError("broker receipt intent 时间无效。") from exc
+            if intent_created.tzinfo is None or intent_created.utcoffset() is None:
+                raise AutoLiveControlError("broker receipt intent 时间必须带时区。")
+            if (intent_created - observed_dt).total_seconds() > MAX_CLOCK_SKEW_SECONDS:
+                raise AutoLiveControlError("broker receipt 早于 order intent。")
+
+            replay = conn.execute(
+                "SELECT * FROM auto_live_broker_reconciliation_receipts WHERE intent_public_id=? AND evidence_sha256=?",
+                (intent["public_id"], evidence_sha256),
+            ).fetchone()
+            if replay is not None:
+                previous_unknown = conn.execute(
+                    """SELECT 1 FROM auto_live_broker_reconciliation_receipts previous
+                       WHERE previous.intent_public_id=?
+                         AND previous.submission_state='submission_unknown'
+                         AND previous.rowid<(
+                           SELECT current.rowid FROM auto_live_broker_reconciliation_receipts current
+                           WHERE current.receipt_id=?
+                         )
+                       LIMIT 1""",
+                    (intent["public_id"], replay["receipt_id"]),
+                ).fetchone()
+                return self._broker_receipt_public(
+                    replay,
+                    reconciled=previous_unknown is not None and str(replay["submission_state"]) != "submission_unknown",
+                )
+
+            previous = conn.execute(
+                """SELECT * FROM auto_live_order_receipt_projections
+                   WHERE mandate_public_id=? AND client_order_id=? ORDER BY rowid DESC LIMIT 1""",
+                (mandate_id, client_id),
+            ).fetchone()
+            previous_state = str(previous["submission_state"]) if previous else None
+            if previous_state in {"accepted", "rejected", "cancelled"} and state == "submission_unknown":
+                raise AutoLiveConflict("broker receipt 状态不得回退到 submission_unknown。")
+            if previous_state in {"rejected", "cancelled"} and state != previous_state:
+                raise AutoLiveConflict("broker receipt 终态不得改变。")
+
+            reconciled = previous_state == "submission_unknown" and state != "submission_unknown"
+            receipt_id = _opaque("brokerreceipt")
+            payload = {
+                "schema_version": 1,
+                "receipt_id": receipt_id,
+                "intent_public_id": str(intent["public_id"]),
+                "mandate_public_id": mandate_id,
+                "client_order_id": client_id,
+                "provider": provider,
+                "broker_account_sha256": broker_account_sha256,
+                "submission_state": state,
+                "broker_order_id": broker_order_id,
+                "broker_status": broker_status,
+                "observed_at": observed_at,
+                "evidence_sha256": evidence_sha256,
+            }
+            digest = sha256_json(payload)
+            conn.execute(
+                """INSERT INTO auto_live_broker_reconciliation_receipts
+                   (receipt_id,intent_public_id,mandate_public_id,client_order_id,provider,broker_account_sha256,submission_state,
+                    broker_order_id,broker_status,observed_at,evidence_sha256,payload_json,payload_sha256,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    receipt_id, intent["public_id"], mandate_id, client_id, provider, broker_account_sha256, state,
+                    broker_order_id, broker_status, observed_at, evidence_sha256,
+                    canonical_json(payload), digest, moment,
+                ),
+            )
+            conn.execute(
+                """INSERT INTO auto_live_order_receipt_projections
+                   (public_id,mandate_public_id,client_order_id,submission_state,broker_order_id,observed_at,receipt_sha256)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (receipt_id, mandate_id, client_id, state, broker_order_id, observed_at, digest),
+            )
+            event_type = "reconciled" if reconciled else state
+            event = {
+                "intent_public_id": str(intent["public_id"]),
+                "mandate_public_id": mandate_id,
+                "event_type": event_type,
+                "fencing_epoch": expected_fencing_epoch,
+                "receipt_id": receipt_id,
+                "submission_state": state,
+                "broker_status": broker_status,
+                "evidence_sha256": evidence_sha256,
+                "receipt_sha256": digest,
+            }
+            conn.execute(
+                """INSERT INTO auto_live_order_intent_events
+                   (event_id,intent_public_id,mandate_public_id,event_type,fencing_epoch,payload_json,payload_sha256,created_at)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (
+                    _opaque("intentevt"), intent["public_id"], mandate_id, event_type, expected_fencing_epoch,
+                    canonical_json(event), sha256_json(event), moment,
+                ),
+            )
+            stored = conn.execute(
+                "SELECT * FROM auto_live_broker_reconciliation_receipts WHERE receipt_id=?", (receipt_id,)
+            ).fetchone()
+            return self._broker_receipt_public(stored, reconciled=reconciled)
+
     @classmethod
     def _runtime_safety_gates(
         cls, conn: Any, row: Any, now: datetime, *, mode: str = "confirm"
@@ -737,13 +1043,50 @@ class RuntimeIntegrityMixin:
         else:
             runtime_ok = True
             runtime_reason = "not_required_for_confirmation"
-        uncertain = conn.execute(
-            "SELECT 1 FROM auto_live_order_receipt_projections WHERE mandate_public_id=? AND submission_state='submission_unknown' LIMIT 1",
+        blocking_receipt = conn.execute(
+            """SELECT CASE
+                         WHEN current.submission_state='submission_unknown' THEN 'submission_unknown'
+                         ELSE 'missing_reconciliation_receipt'
+                       END blocking_reason
+               FROM auto_live_order_receipt_projections current
+               WHERE current.mandate_public_id=?
+                 AND current.rowid=(
+                   SELECT MAX(latest.rowid) FROM auto_live_order_receipt_projections latest
+                   WHERE latest.mandate_public_id=current.mandate_public_id
+                     AND latest.client_order_id=current.client_order_id
+                 )
+                 AND (
+                   current.submission_state='submission_unknown'
+                   OR (
+                     EXISTS(
+                       SELECT 1 FROM auto_live_order_receipt_projections previous
+                       WHERE previous.mandate_public_id=current.mandate_public_id
+                         AND previous.client_order_id=current.client_order_id
+                         AND previous.rowid<current.rowid
+                         AND previous.submission_state='submission_unknown'
+                     )
+                     AND NOT EXISTS(
+                       SELECT 1 FROM auto_live_broker_reconciliation_receipts receipt
+                       WHERE receipt.receipt_id=current.public_id
+                         AND receipt.mandate_public_id=current.mandate_public_id
+                         AND receipt.client_order_id=current.client_order_id
+                         AND receipt.submission_state=current.submission_state
+                         AND receipt.broker_order_id IS current.broker_order_id
+                         AND receipt.observed_at=current.observed_at
+                         AND receipt.payload_sha256=current.receipt_sha256
+                     )
+                   )
+                 )
+               LIMIT 1""",
             (row["public_id"],),
         ).fetchone()
         gates = [
             _gate("runtime_state", runtime_ok, runtime_reason),
-            _gate("order_submission", uncertain is None, "submission_unknown" if uncertain else "submission_known"),
+            _gate(
+                "order_submission",
+                blocking_receipt is None,
+                str(blocking_receipt["blocking_reason"]) if blocking_receipt else "submission_known",
+            ),
         ]
         if mode == "opening":
             running_ack_valid = runtime_ok and cls._running_ack_matches_projection(conn, runtime)

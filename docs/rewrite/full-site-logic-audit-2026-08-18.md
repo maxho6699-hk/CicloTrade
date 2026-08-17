@@ -10,7 +10,7 @@
 - 可渲染公共组件：`src/apps/web/src/components` 下 30 个 `.tsx` 文件；另有 3 个组件模型/辅助 `.ts` 文件。旧记录中的“52 个公共组件”不是当前仓库同口径数量，不能继续当作验收数字。
 - 页面源代码：约 8,876 行。
 - 前端合同测试：48 个测试文件，最新全量结果 261/261 通过。
-- 自动交易专项 Python/HTTP 测试：88/88 通过（33 个与筛选条件无关的服务测试 deselected；仅第三方 backtrader 产生 2 条弃用警告）。
+- 自动交易专项 Python/HTTP/Worker 测试：112/112 通过（33 个与筛选条件无关的服务测试 deselected；第三方 backtrader 的弃用警告不影响结果）。
 - 页面静态扫描：0 个 mock/fake/demoData 标记；0 个无处理器页面按钮（修复前发现页 Mini K 周期有 1 个伪按钮，已改为明确的状态标签）。
 - 视觉与运行时证据沿用已提交批次：桌面 25/25、权限负向 2/2、平板/手机 50/50、用户反馈交互几何 25/25。
 - 所有账户、行情、会员、推荐、券商、自动交易、AI 与任务数据均以 API/Workspace DTO 为边界；无真实数据时显示真实空态、锁定态或待接入，不用演示数填充。
@@ -86,14 +86,24 @@
 - Tiger 异常或本地状态无法确认时进入 `SUBMISSION_UNKNOWN`，写风险日志，禁止盲重试。
 - `TIGER_REAL_TRADING_ENABLED` 默认关闭；不改变该生产安全状态。
 
-### 真实缺口（需要实现）
+### 本批已补齐
 
-- 新 Auto-live worker 目前模块说明明确为 **shadow-only**，没有 broker sender capability。
-- `auto_live_order_intent_events` 虽预留 `send_claimed/accepted/rejected/submission_unknown/reconciled`，但仓库中只有 `shadowed` 写入路径。
-- 旧 Tiger `orders()` 可以读取券商订单，但没有 owner-scoped reconciliation 服务把 `SUBMISSION_UNKNOWN` 与券商查询结果结算为 `SUBMITTED/FILLED/REJECTED/CANCELLED` 并写不可变 reconciliation receipt。
-- 缺失自动对账时必须继续 fail-closed：未知状态不能重发，也不能开放新的风险增加动作。
+- 新增 append-only `auto_live_broker_reconciliation_receipts`，保存规范化券商观察、证据哈希和完整 payload hash。
+- 新增只读 `AutoLiveBrokerReconciler`；数据源只有 `lookup`，没有 send/cancel/replace/retry 权限。
+- Tiger 适配器只调用 `orders()`，按 `user_mark/client_order_id` 匹配，映射 accepted/rejected/cancelled/submission_unknown。
+- 券商查询绑定 mandate 外部账户的 SHA-256 指纹；Tiger 在调用 `get_orders` 前验证当前配置账户，避免跨账户同 client ID 串单。
+- `submission_unknown` 后只接受 receipt ID、mandate/client、state、broker order ID、observed_at 与 payload hash 全部匹配的不可变 broker receipt；直接伪造 accepted projection 不能解除阻断。
+- 安全门与 owner snapshot 改为每个 `client_order_id` 的最新 receipt；历史 unknown 保留在数据库但成功对账后不再永久阻断。
+- 批量 runtime 只扫描最新状态仍 unknown 且当前已配置 read source 的 intent（本批仅 Tiger），限制每轮 1–500 条；默认关闭且需环境变量与真实 marker 文件双重门控。
+- systemd service 为 oneshot，timer 非持久且没有 `[Install]`；本批不创建 marker、不建立 timer 链接、不改 `TIGER_REAL_TRADING_ENABLED`。
 
-因此，“broker receipt、SUBMISSION_UNKNOWN 恢复、reconciliation”待办仍成立；其余 Auto-live 控制面不是未完成，不应重复实现。
+### 保持关闭的部署边界
+
+- 新 Auto-live 订单生成 worker 仍是 **shadow-only**，没有 broker sender capability；这是刻意保留的安全边界，不在本批开启。
+- 对账恢复只解决“已存在且曾 send_claimed 的 live/paper intent”的未知提交，不会创建或重发订单。
+- 生产启用前仍需数据库备份、券商只读联调、真实 unknown fixture 验证和最终授权。
+
+因此，“broker receipt、SUBMISSION_UNKNOWN 恢复、reconciliation”代码缺口已补齐；真实券商发送继续默认关闭。
 
 ## 5. 已修复的审计发现
 
@@ -101,10 +111,10 @@
 - 修复为非交互状态标签：`1D` 当前，`1W · 待接入`、`1M · 待接入`；CSS 支持换行。
 - 新增回归合同，禁止该区域恢复为伪按钮。
 
-## 6. 下一阶段范围
+## 6. 自动交易本批验收
 
-1. 设计并实现 broker reconciliation 适配器与不可变 receipt（先测试、默认无发送能力）。
-2. 将 `SUBMISSION_UNKNOWN` 恢复绑定到 broker query，而不是重发。
-3. 只在 accepted/filled/rejected/cancelled 的完整证据到达后更新 projection；模糊状态保持 unknown。
-4. 运行自动交易专项 Python/HTTP 测试、全量前端测试和独立安全复审。
-5. 不启用真实券商发送；生产总开关保持关闭。
+1. Reconciliation 单元测试覆盖迁移、append-only、unknown→known、幂等、批量扫描、伪造 projection、provider/epoch/影子意图拒绝。
+2. Tiger 状态映射覆盖 NEW、PARTIALLY_FILLED、FILLED、REJECTED、EXPIRED、CANCELLED 与未知厂商状态。
+3. Runtime 合同验证默认 disabled、limit 有界、systemd 双重门控且不包含真实发送开关。
+4. 全部相关控制面、Worker、HTTP 与 Tiger 提交边界回归通过后方可提交。
+5. 生产只部署代码和迁移，不启用 reconciliation timer；真实券商发送总开关保持关闭。

@@ -166,7 +166,16 @@ class AutoLiveSnapshotMixin:
             order_receipts = [
                 dict(row)
                 for row in conn.execute(
-                    "SELECT o.public_id,o.mandate_public_id,o.client_order_id,o.submission_state,o.observed_at,o.receipt_sha256 FROM auto_live_order_receipt_projections o JOIN auto_live_mandates m ON m.public_id=o.mandate_public_id WHERE m.user_id=? ORDER BY o.observed_at,o.public_id",
+                    """SELECT o.public_id,o.mandate_public_id,o.client_order_id,o.submission_state,o.observed_at,o.receipt_sha256
+                       FROM auto_live_order_receipt_projections o
+                       JOIN auto_live_mandates m ON m.public_id=o.mandate_public_id
+                       WHERE m.user_id=?
+                         AND o.rowid=(
+                           SELECT MAX(latest.rowid) FROM auto_live_order_receipt_projections latest
+                           WHERE latest.mandate_public_id=o.mandate_public_id
+                             AND latest.client_order_id=o.client_order_id
+                         )
+                       ORDER BY o.observed_at,o.public_id""",
                     (user_id,),
                 ).fetchall()
             ]

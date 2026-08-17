@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically reconcile unresolved auto-live broker submissions
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1min
+RandomizedDelaySec=15s
+AccuracySec=10s
+Persistent=false
+Unit=ciclotrade-auto-live-reconciliation.service
