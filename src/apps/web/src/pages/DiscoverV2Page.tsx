@@ -914,7 +914,7 @@ export function DiscoverV2Page() {
             <header className="discover-card-heading discover-market-heading">
               <div><span className="v2-eyebrow">CANDIDATE MATRIX</span><h2>候选股票研究矩阵</h2></div>
               <div className="discover-market-controls">
-                <div className="discover-periods" aria-label="Mini K线周期"><button className="is-active" type="button" aria-pressed="true">1D</button><button type="button" disabled>1W</button><button type="button" disabled>1M</button></div>
+                <div className="discover-periods" aria-label="Mini K线周期"><span className="is-active" aria-current="true">1D</span><span className="is-pending">1W · 待接入</span><span className="is-pending">1M · 待接入</span></div>
               </div>
             </header>
             {tableContent}

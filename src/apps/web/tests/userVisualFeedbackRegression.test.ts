@@ -15,6 +15,7 @@ const chart = read('src/components/ChartWorkspace.tsx')
 const recommendations = read('src/pages/RecommendationsPage.tsx')
 const aiPage = read('src/pages/AIWorkspacePage.tsx')
 const deliberation = read('src/pages/DeliberationPage.tsx')
+const discover = read('src/pages/DiscoverV2Page.tsx')
 
 test('Discover keeps the candidate matrix dominant instead of giving the left rail twenty times its share', () => {
   assert.match(discoverStyles, /@media \(min-width:1481px\)\{[\s\S]*?\.discover-dashboard\{grid-template-columns:minmax\(220px,280px\) minmax\(0,1fr\) minmax\(292px,336px\)\}/)
@@ -73,4 +74,10 @@ test('Saved watchlist stars are yellow in dark theme and red in light theme, nev
   assert.match(componentStyles, /:root:not\(\[data-theme='light'\]\) \.watchlist-toggle\.is-saved \{[^}]*color: #facc15/i)
   assert.match(componentStyles, /:root\[data-theme='light'\] \.watchlist-toggle\.is-saved \{[^}]*color: #dc2626/i)
   assert.doesNotMatch(componentStyles, /\.watchlist-toggle\.is-saved \{[^}]*color: (?:#000|black)/i)
+})
+
+test('Discover mini K-line periods never render inert or unexplained disabled buttons', () => {
+  assert.doesNotMatch(discover, /className="discover-periods"[^\n]*<button/)
+  assert.match(discover, /1W · 待接入/)
+  assert.match(discover, /1M · 待接入/)
 })

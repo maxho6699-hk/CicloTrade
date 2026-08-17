@@ -213,9 +213,10 @@
 
 .discover-market-card{min-width:0}
 .discover-market-heading{padding-right:10px}
-.discover-periods{display:flex;gap:3px;padding:3px;border:1px solid var(--discover-border);border-radius:10px;background:var(--discover-surface-2)}
-.discover-periods button{min-width:34px;min-height:28px;border:0;border-radius:7px;background:transparent;color:var(--discover-subtle);font:600 12px var(--mono)}
-.discover-periods button.is-active{background:linear-gradient(90deg,#2878F5,#1d4ed8,#38bdf8);color:#fff;box-shadow:0 0 16px rgba(29, 78, 216,.36),0 5px 14px rgba(56, 189, 248,.18)}
+.discover-periods{display:flex;flex-wrap:wrap;gap:3px;padding:3px;border:1px solid var(--discover-border);border-radius:10px;background:var(--discover-surface-2)}
+.discover-periods>span{display:inline-flex;min-width:34px;min-height:28px;align-items:center;justify-content:center;border-radius:7px;padding:0 7px;background:transparent;color:var(--discover-subtle);font:600 11px var(--mono)}
+.discover-periods>span.is-active{background:linear-gradient(90deg,#2878F5,#1d4ed8,#38bdf8);color:#fff;box-shadow:0 5px 14px rgba(56, 189, 248,.18)}
+.discover-periods>span.is-pending{border:1px dashed color-mix(in srgb,var(--discover-border-strong) 70%,transparent)}
 .discover-market-card .v2-candidate-table{max-height:530px;overflow:auto}
 .discover-market-card .v2-candidate-table table{min-width:790px;table-layout:fixed}
 .discover-market-card .v2-candidate-table th{position:sticky;z-index:2;top:0;padding:9px 8px;background:color-mix(in srgb,var(--discover-surface) 96%,transparent);backdrop-filter:blur(12px)}
