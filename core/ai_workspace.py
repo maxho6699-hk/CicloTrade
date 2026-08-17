@@ -124,6 +124,194 @@ class HttpProvider:
         return parsed
 
 
+class OpenAIChatProvider:
+    """Small OpenAI-compatible adapter for the free provider endpoints."""
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        endpoint: str,
+        model: str,
+        api_key: str,
+        provider_version: str,
+        contract_version: str,
+        timeout: float = 12.0,
+        max_bytes: int = MAX_PROVIDER_BYTES,
+    ):
+        parsed = urlparse(endpoint)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise AIWorkspaceProviderError("AI provider endpoint 必须是无凭据的 HTTPS 地址。")
+        if not model.strip() or not api_key.strip():
+            raise AIWorkspaceProviderError("AI provider 缺少模型或 API key。")
+        self.name = name
+        self.endpoint = endpoint.rstrip("/")
+        if not self.endpoint.endswith("/chat/completions"):
+            self.endpoint += "/chat/completions"
+        self.model = model.strip()
+        self.api_key = api_key.strip()
+        self.provider_version = provider_version
+        self.contract_version = contract_version
+        self.timeout = timeout
+        self.max_bytes = max_bytes
+
+    @staticmethod
+    def _citation_allowlist(request: Mapping[str, Any]) -> set[str]:
+        context = request.get("context", {})
+        citations = context.get("citations", []) if isinstance(context, Mapping) else []
+        return {
+            item["citation_id"]
+            for item in citations
+            if isinstance(item, Mapping) and isinstance(item.get("citation_id"), str)
+        }
+
+    @staticmethod
+    def _message_content(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, Mapping) and set(value) == {"text"} and isinstance(value.get("text"), str):
+            return value["text"]
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+    def _messages(self, request: Mapping[str, Any], allowlisted_citations: set[str]) -> list[dict[str, str]]:
+        allowed_tools = request.get("allowed_tools", [])
+        if not isinstance(allowed_tools, list):
+            allowed_tools = []
+        allowed_tools = sorted({tool for tool in allowed_tools if tool in ALLOWED_TOOLS})
+        exact_keys = ["conclusion", "citations", "support", "counter", "risks", "next_steps", "tool_calls"]
+        system = {
+            "instruction": "只返回一个 JSON object，必须严格使用 required_output.exact_keys，不能增加、删除或改名。citations 必须是 required_output.citations 的非空子集。不要输出 Markdown、解释、思维链、下单指令或外部操作。",
+            "citation_allowlist": sorted(allowlisted_citations),
+            "allowed_tools": allowed_tools,
+            "provider_version": self.provider_version,
+            "contract_version": self.contract_version,
+            "required_output": {
+                "exact_keys": exact_keys,
+                "citations": sorted(allowlisted_citations),
+                "schema": {
+                    "conclusion": "string 或非空 string[]",
+                    "citations": "非空 citation_id[]",
+                    "support": "string[]",
+                    "counter": "string[]",
+                    "risks": "string[]",
+                    "next_steps": "string[]",
+                    "tool_calls": "[] 或 {name,arguments}[]；name 只能来自 allowed_tools",
+                },
+                "example": {
+                    "conclusion": "现有资料只支持形成待核验的研究结论。",
+                    "citations": sorted(allowlisted_citations)[:1],
+                    "support": [],
+                    "counter": [],
+                    "risks": ["数据可能延迟或不完整。"],
+                    "next_steps": ["核验资料时间与来源。"],
+                    "tool_calls": [],
+                },
+            },
+        }
+        context = request.get("context")
+        if isinstance(context, Mapping):
+            system["context"] = context
+        memory = request.get("memory")
+        if isinstance(memory, list):
+            system["memory"] = memory
+        messages = [{"role": "system", "content": json.dumps(system, ensure_ascii=False, separators=(",", ":"))}]
+        history = request.get("messages", [])
+        if isinstance(history, list):
+            for item in history:
+                if not isinstance(item, Mapping) or item.get("role") not in {"user", "assistant"}:
+                    continue
+                messages.append({"role": item["role"], "content": self._message_content(item.get("content", ""))})
+        if len(messages) == 1:
+            messages.append({"role": "user", "content": self._message_content(request.get("user_message", ""))})
+        return messages
+
+    def complete(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        allowlisted_citations = self._citation_allowlist(request)
+        body = json.dumps(
+            {
+                "model": self.model,
+                "messages": self._messages(request, allowlisted_citations),
+                "response_format": {"type": "json_object"},
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            self.endpoint,
+            data=body,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                if not 200 <= int(getattr(response, "status", 200)) < 300:
+                    raise AIWorkspaceProviderError("AI provider 当前不可用。")
+                raw = response.read(self.max_bytes + 1)
+        except AIWorkspaceProviderError:
+            raise
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise AIWorkspaceProviderError("AI provider 当前不可用。") from exc
+        if len(raw) > self.max_bytes:
+            raise AIWorkspaceProviderError("AI provider 响应超过安全上限。")
+        try:
+            response_json = json.loads(raw.decode("utf-8"))
+            content = response_json["choices"][0]["message"]["content"]
+            result = json.loads(content) if isinstance(content, str) else content
+        except (KeyError, IndexError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise AIWorkspaceProviderError("AI provider 响应格式无效。") from exc
+        if not isinstance(result, dict):
+            raise AIWorkspaceProviderError("AI provider 响应必须是 JSON 对象。")
+        citations = result.get("citations")
+        if not isinstance(citations, list) or not citations or not all(isinstance(item, str) for item in citations):
+            raise AIWorkspaceProviderError("AI provider 引用格式无效。")
+        if any(item not in allowlisted_citations for item in citations):
+            raise AIWorkspaceProviderError("AI provider 引用了未获服务端许可的来源。")
+        tools = result.get("tool_calls", [])
+        if not isinstance(tools, list):
+            raise AIWorkspaceProviderError("AI provider 工具调用格式无效。")
+        allowed_tools = request.get("allowed_tools", [])
+        allowed_tools = set(allowed_tools) if isinstance(allowed_tools, list) else set()
+        for call in tools:
+            if not isinstance(call, Mapping) or call.get("name") not in ALLOWED_TOOLS or call.get("name") not in allowed_tools:
+                raise AIWorkspaceProviderError("AI provider 请求了未允许的工具。")
+        result["provider_version"] = self.provider_version
+        result["contract_version"] = self.contract_version
+        return result
+
+
+class FailoverProvider:
+    """Fixed free-provider order: GLM, 混元, then Agnes."""
+
+    ORDER = ("GLM", "混元", "Agnes")
+
+    def __init__(self, providers, *, alert: Callable[[str], Any] | None = None):
+        available = {name: provider for name, provider in providers}
+        self.providers = [(name, available[name]) for name in self.ORDER if name in available]
+        self.provider_names = tuple(name for name, _ in self.providers)
+        self.alert = alert
+
+    def complete(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        for _, provider in self.providers:
+            try:
+                result = provider.complete(request)
+                if not isinstance(result, Mapping):
+                    raise AIWorkspaceProviderError("AI provider 响应必须是对象。")
+                return result
+            except (AIWorkspaceProviderError, TimeoutError, OSError):
+                continue
+        message = f"Ciclo AI 免费服务不可用：{' → '.join(self.ORDER)}"
+        if self.alert is not None:
+            try:
+                self.alert(message)
+            except Exception:
+                pass
+        raise AIWorkspaceProviderError("Ciclo AI 免费服务暂时不可用")
+
+
 class AIWorkspaceService:
     def __init__(
         self,
@@ -134,12 +322,50 @@ class AIWorkspaceService:
         now: Callable[[], str] = _iso,
     ):
         self.db = database or get_database()
-        self.provider = provider
+        self._managed_provider_chain = provider is None
+        self.provider = provider if provider is not None else self._build_default_provider()
         self.context_loader = context_loader
         self._now = now
 
     def _config(self) -> dict[str, str]:
         return {name: os.getenv(name, "").strip() for name in REQUIRED_CONFIG}
+
+    def _alert_provider_unavailable(self, message: str) -> None:
+        chat_id = os.getenv("CICLO_AI_ALERT_CHAT_ID", "").strip()
+        if not chat_id:
+            return
+        try:
+            from notification.telegram_bot import send_telegram
+
+            send_telegram(message, chat_id=chat_id)
+        except Exception:
+            pass
+
+    def _build_default_provider(self) -> FailoverProvider:
+        config = self._config()
+        candidates = (
+            ("GLM", "CICLO_AI"),
+            ("混元", "CICLO_AI_HUNYUAN"),
+            ("Agnes", "CICLO_AI_AGNES"),
+        )
+        providers = []
+        for name, prefix in candidates:
+            endpoint = os.getenv(f"{prefix}_ENDPOINT", "").strip()
+            model = os.getenv(f"{prefix}_MODEL", "").strip()
+            api_key = os.getenv(f"{prefix}_API_KEY", "").strip()
+            if endpoint and model and api_key:
+                try:
+                    providers.append((name, OpenAIChatProvider(
+                        name=name,
+                        endpoint=endpoint,
+                        model=model,
+                        api_key=api_key,
+                        provider_version=config["CICLO_AI_PROVIDER_VERSION"],
+                        contract_version=config["CICLO_AI_CONTRACT_VERSION"],
+                    )))
+                except AIWorkspaceProviderError:
+                    continue
+        return FailoverProvider(providers, alert=self._alert_provider_unavailable)
 
     def readiness(self) -> dict[str, Any]:
         config = self._config()
@@ -150,6 +376,11 @@ class AIWorkspaceService:
         endpoint = urlparse(config["CICLO_AI_ENDPOINT"]) if config["CICLO_AI_ENDPOINT"] else None
         if endpoint and (endpoint.scheme != "https" or not endpoint.hostname or endpoint.username or endpoint.password):
             missing.append("CICLO_AI_ENDPOINT")
+        if not missing and self._managed_provider_chain and isinstance(self.provider, FailoverProvider):
+            if self.provider.provider_names != FailoverProvider.ORDER:
+                missing.append("CICLO_AI_PROVIDER_CHAIN")
+            if not os.getenv("CICLO_AI_ALERT_CHAT_ID", "").strip():
+                missing.append("CICLO_AI_ALERTING")
         if missing:
             return {"ready": False, "status": "unavailable", "missing": sorted(set(missing))}
         return {
@@ -465,7 +696,7 @@ class AIWorkspaceService:
     def _call_provider(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         adapter = self.provider
         if adapter is None:
-            adapter = HttpProvider(self._config()["CICLO_AI_ENDPOINT"])
+            adapter = self._build_default_provider()
         try:
             result = adapter(request) if callable(adapter) else adapter.complete(request)
         except AIWorkspaceError:
@@ -613,5 +844,5 @@ class AIWorkspaceService:
 
 
 __all__ = [
-    "AIWorkspaceError", "AIWorkspaceIdempotencyConflict", "AIWorkspaceNotFound", "AIWorkspaceProviderError", "AIWorkspaceService", "AIWorkspaceValidationError", "ALLOWED_TOOLS", "HttpProvider"
+    "AIWorkspaceError", "AIWorkspaceIdempotencyConflict", "AIWorkspaceNotFound", "AIWorkspaceProviderError", "AIWorkspaceService", "AIWorkspaceValidationError", "ALLOWED_TOOLS", "FailoverProvider", "HttpProvider", "OpenAIChatProvider"
 ]

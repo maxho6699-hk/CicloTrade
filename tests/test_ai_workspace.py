@@ -6,9 +6,12 @@ import json
 import pytest
 
 from core.ai_workspace import (
+    AIWorkspaceProviderError,
     AIWorkspaceIdempotencyConflict,
     AIWorkspaceNotFound,
     AIWorkspaceService,
+    FailoverProvider,
+    OpenAIChatProvider,
 )
 from core.auth import AuthService
 from core.database import DatabaseManager
@@ -310,3 +313,141 @@ def test_cancel_task_is_idempotent_and_request_fingerprint_is_bound(tmp_path, mo
     assert service.cancel_task(owner, task_id, "cancel-task-1")["status"] == "timed_out"
     with pytest.raises(AIWorkspaceIdempotencyConflict):
         service.submit_message(owner, session["public_id"], "不同请求", "message-cancel-1")
+
+
+def test_free_provider_chain_stops_after_first_success_and_preserves_order():
+    calls = []
+
+    class StubProvider:
+        def __init__(self, name, *, result=None, error=None):
+            self.name, self.result, self.error = name, result, error
+
+        def complete(self, request):
+            calls.append(self.name)
+            if self.error:
+                raise self.error
+            return self.result
+
+    expected = {"conclusion": "ok", "citations": ["cit_1"]}
+    provider = FailoverProvider([
+        ("GLM", StubProvider("GLM", result=expected)),
+        ("混元", StubProvider("混元", result={"conclusion": "unused"})),
+        ("Agnes", StubProvider("Agnes", result={"conclusion": "unused"})),
+    ])
+
+    assert provider.complete({"context": {"citations": [{"citation_id": "cit_1"}]}}) == expected
+    assert calls == ["GLM"]
+
+
+def test_free_provider_chain_falls_back_and_alerts_once_when_all_fail():
+    calls, alerts = [], []
+
+    class FailingProvider:
+        def __init__(self, name):
+            self.name = name
+
+        def complete(self, request):
+            calls.append(self.name)
+            raise AIWorkspaceProviderError(f"secret-{self.name}")
+
+    provider = FailoverProvider(
+        [(name, FailingProvider(name)) for name in ("GLM", "混元", "Agnes")],
+        alert=alerts.append,
+    )
+
+    with pytest.raises(AIWorkspaceProviderError, match="Ciclo AI 免费服务暂时不可用"):
+        provider.complete({"user_message": "hello"})
+    assert calls == ["GLM", "混元", "Agnes"]
+    assert len(alerts) == 1
+    assert "GLM → 混元 → Agnes" in alerts[0]
+    assert "secret-" not in alerts[0]
+
+
+def test_openai_chat_provider_uses_bearer_key_and_returns_contract_json(monkeypatch):
+    captured = {}
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self, _limit):
+            content = {
+                "conclusion": "需要核验行情时间。",
+                "citations": ["cit_1"],
+                "support": ["报价有服务端引用。"],
+                "counter": [],
+                "risks": ["行情可能延迟。"],
+                "next_steps": ["打开研究页。"],
+                "tool_calls": [],
+            }
+            return json.dumps({"choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}]}).encode()
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["headers"] = dict(request.header_items())
+        captured["body"] = json.loads(request.data.decode())
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr("core.ai_workspace.urllib.request.urlopen", fake_urlopen)
+    provider = OpenAIChatProvider(
+        name="GLM",
+        endpoint="https://api.example.test/v1",
+        model="glm-free",
+        api_key="test-secret",
+        provider_version="provider-v1",
+        contract_version="contract-v1",
+    )
+    result = provider.complete({
+        "user_message": "分析 AAPL",
+        "messages": [{"role": "user", "content": {"text": "分析 AAPL"}}],
+        "context": {"citations": [{"citation_id": "cit_1", "title": "服务器行情"}]},
+        "allowed_tools": ["read_quote"],
+    })
+
+    assert captured["url"] == "https://api.example.test/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer test-secret"
+    assert captured["body"]["model"] == "glm-free"
+    assert captured["body"]["response_format"] == {"type": "json_object"}
+    assert captured["body"]["messages"][-1]["content"] == "分析 AAPL"
+    system_contract = json.loads(captured["body"]["messages"][0]["content"])
+    assert system_contract["required_output"]["exact_keys"] == [
+        "conclusion", "citations", "support", "counter", "risks", "next_steps", "tool_calls"
+    ]
+    assert system_contract["required_output"]["citations"] == ["cit_1"]
+    assert result["provider_version"] == "provider-v1"
+    assert result["contract_version"] == "contract-v1"
+    assert result["citations"] == ["cit_1"]
+
+
+def test_default_free_chain_readiness_fails_closed_without_all_routes_and_alerting(tmp_path, monkeypatch):
+    _config(monkeypatch)
+    monkeypatch.setenv("CICLO_AI_API_KEY", "glm-key")
+    monkeypatch.setenv("CICLO_AI_HUNYUAN_ENDPOINT", "https://openrouter.example.test/v1")
+    monkeypatch.setenv("CICLO_AI_HUNYUAN_MODEL", "hunyuan-free")
+    monkeypatch.setenv("CICLO_AI_HUNYUAN_API_KEY", "hunyuan-key")
+    monkeypatch.setenv("CICLO_AI_AGNES_ENDPOINT", "https://agnes.example.test/v1")
+    monkeypatch.setenv("CICLO_AI_AGNES_MODEL", "agnes-free")
+    monkeypatch.setenv("CICLO_AI_AGNES_API_KEY", "agnes-key")
+    monkeypatch.setenv("CICLO_AI_ALERT_CHAT_ID", "8702215033")
+
+    complete_service = AIWorkspaceService(_db(tmp_path))
+    assert complete_service.readiness()["ready"] is True
+    assert isinstance(complete_service.provider, FailoverProvider)
+    assert complete_service.provider.provider_names == ("GLM", "混元", "Agnes")
+
+    monkeypatch.delenv("CICLO_AI_AGNES_API_KEY")
+    missing_route = AIWorkspaceService(_db(tmp_path)).readiness()
+    assert missing_route["ready"] is False
+    assert missing_route["missing"] == ["CICLO_AI_PROVIDER_CHAIN"]
+
+    monkeypatch.setenv("CICLO_AI_AGNES_API_KEY", "agnes-key")
+    monkeypatch.delenv("CICLO_AI_ALERT_CHAT_ID")
+    missing_alert = AIWorkspaceService(_db(tmp_path)).readiness()
+    assert missing_alert["ready"] is False
+    assert missing_alert["missing"] == ["CICLO_AI_ALERTING"]
