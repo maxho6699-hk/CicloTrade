@@ -69,15 +69,15 @@ export function MiniCandles({ candles, label = 'Mini K线' }: { candles?: Candle
 
 type RemoteMiniState = { status: 'loading' | 'success' | 'empty' | 'error'; candles: Candle[] }
 const REMOTE_MINI_SUCCESS_TTL_MS = 5 * 60 * 1000
-const REMOTE_MINI_FAILURE_TTL_MS = 15 * 1000
-type RemoteMiniCacheEntry = { promise: Promise<Candle[]>; expiresAt: number }
-const remoteMiniRequests = new Map<string, RemoteMiniCacheEntry>()
+type RemoteMiniResolvedEntry = { candles: Candle[]; expiresAt: number }
+const remoteMiniResolved = new Map<string, RemoteMiniResolvedEntry>()
 
-function loadRemoteMiniCandles(symbol: string, timeframe: string) {
+function loadRemoteMiniCandles(symbol: string, timeframe: string, signal: AbortSignal) {
   const key = `${symbol.toUpperCase()}::${timeframe}`
-  const cached = remoteMiniRequests.get(key)
-  if (cached && cached.expiresAt > Date.now()) return cached.promise
-  const request = fetchMarketCandles(symbol.toUpperCase(), timeframe).then((payload) => payload.items.map((item) => ({
+  const cached = remoteMiniResolved.get(key)
+  if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.candles)
+  remoteMiniResolved.delete(key)
+  return fetchMarketCandles(symbol.toUpperCase(), timeframe, signal).then((payload) => payload.items.map((item) => ({
     time: item.time,
     open: item.open,
     high: item.high,
@@ -85,16 +85,12 @@ function loadRemoteMiniCandles(symbol: string, timeframe: string) {
     close: item.close,
     volume: item.volume,
   }))).then((candles) => {
-    remoteMiniRequests.set(key, { promise: Promise.resolve(candles), expiresAt: Date.now() + REMOTE_MINI_SUCCESS_TTL_MS })
+    remoteMiniResolved.set(key, { candles, expiresAt: Date.now() + REMOTE_MINI_SUCCESS_TTL_MS })
     return candles
   }, (error) => {
-    const failed = Promise.reject(error) as Promise<Candle[]>
-    failed.catch(() => undefined)
-    remoteMiniRequests.set(key, { promise: failed, expiresAt: Date.now() + REMOTE_MINI_FAILURE_TTL_MS })
+    remoteMiniResolved.delete(key)
     throw error
   })
-  remoteMiniRequests.set(key, { promise: request, expiresAt: Date.now() + REMOTE_MINI_FAILURE_TTL_MS })
-  return request
 }
 
 export function RemoteMiniCandles({ symbol, authenticated, timeframe = '日线', label = '真实 Mini K线' }: { symbol?: string; authenticated: boolean; timeframe?: string; label?: string }) {
@@ -106,14 +102,15 @@ export function RemoteMiniCandles({ symbol, authenticated, timeframe = '日线',
       return
     }
     let active = true
+    const controller = new AbortController()
     setState({ status: 'loading', candles: [] })
-    void loadRemoteMiniCandles(symbol, timeframe).then((candles) => {
+    void loadRemoteMiniCandles(symbol, timeframe, controller.signal).then((candles) => {
       if (!active) return
       setState({ status: candles.length ? 'success' : 'empty', candles })
     }).catch(() => {
       if (active) setState({ status: 'error', candles: [] })
     })
-    return () => { active = false }
+    return () => { active = false; controller.abort() }
   }, [authenticated, symbol, timeframe, retry])
   if (state.status === 'success') return <MiniCandles candles={state.candles} label={label} />
   const message = state.status === 'loading' ? '正在读取真实 K 线' : state.status === 'error' ? 'K 线读取失败' : authenticated ? '暂无真实 K 线' : '登录后读取真实 K 线'

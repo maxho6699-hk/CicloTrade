@@ -55,8 +55,10 @@ test('V2 theme tokens preserve borderless cards and blue-purple CTA', () => {
 })
 
 test('remote Mini K lines are authenticated, cached, and fail closed', () => {
-  assert.match(primitives, /fetchMarketCandles\(symbol\.toUpperCase\(\), timeframe\)/)
-  assert.match(primitives, /const remoteMiniRequests = new Map<string, RemoteMiniCacheEntry>\(\)/)
+  assert.match(primitives, /fetchMarketCandles\(symbol\.toUpperCase\(\), timeframe, signal\)/)
+  assert.match(primitives, /const remoteMiniResolved = new Map/)
+  assert.match(primitives, /const controller = new AbortController\(\)/)
+  assert.match(primitives, /controller\.abort\(\)/)
   assert.match(primitives, /if \(!authenticated \|\| !symbol\?\.trim\(\)\)/)
   assert.match(primitives, /K 线读取失败/)
 })
@@ -111,9 +113,9 @@ test('Discover URL state and pagination are controlled without first-row auto-se
 
 test('Remote Mini K lines expire and retry failed requests', () => {
   assert.match(primitives, /REMOTE_MINI_SUCCESS_TTL_MS/)
-  assert.match(primitives, /REMOTE_MINI_FAILURE_TTL_MS/)
   assert.match(primitives, /expiresAt/)
-  assert.match(primitives, /REMOTE_MINI_FAILURE_TTL_MS[\s\S]*error/)
+  assert.doesNotMatch(primitives, /REMOTE_MINI_FAILURE_TTL_MS/)
+  assert.match(primitives, /remoteMiniResolved\.delete\(key\)/)
 })
 
 test('Finish gate includes mobile drawer/sheet and touch-safe controls', () => {

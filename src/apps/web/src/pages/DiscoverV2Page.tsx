@@ -25,6 +25,13 @@ import type { BootstrapPayload, MarketCandlePayload, RecommendationItem } from '
 import { useWorkspace } from '../api/workspace-context'
 import { useCicloTier } from '../api/use-ciclo-tier'
 import { deliberationBindingFromRecommendation } from '../api/deliberation'
+import {
+  DISCOVER_MINI_PERIODS,
+  normalizeDiscoverMiniPeriod,
+  timeframeForDiscoverMiniPeriod,
+  type DiscoverMiniPeriod,
+} from '../data/discoverMiniK'
+import { createDiscoverSparklineCache } from '../data/discoverSparklineCache'
 import { WatchlistToggle } from '../components/WatchlistToggle'
 import { CicloCore, type CicloCoreTier } from '../components/paper/CicloCore'
 import {
@@ -64,17 +71,9 @@ const DISCOVER_ANCHORS = [
   { id: 'discover-timeline', label: '时间线' },
 ] as const
 
-const discoverSparklineRequests = new Map<string, Promise<MarketCandlePayload['items']>>()
-
-function loadDiscoverSparkline(symbol: string) {
-  const key = symbol.trim().toUpperCase()
-  const cached = discoverSparklineRequests.get(key)
-  if (cached) return cached
-  const request = fetchMarketCandles(key, '日线').then((payload) => payload.items.slice(-30))
-  discoverSparklineRequests.set(key, request)
-  void request.catch(() => discoverSparklineRequests.delete(key))
-  return request
-}
+const discoverSparklineCache = createDiscoverSparklineCache(
+  (symbol, timeframe, signal) => fetchMarketCandles(symbol, timeframe, signal).then((payload) => payload.items.slice(-30)),
+)
 
 function sparklinePoints(values: number[], width: number, height: number, padding: number) {
   const min = Math.min(...values)
@@ -143,7 +142,7 @@ function evidenceCounts(item: RecommendationItem) {
   return { supplied, missing: item.missing_fields?.length ?? 0 }
 }
 
-function DiscoverSparkline({ symbol, authenticated }: { symbol?: string; authenticated: boolean }) {
+function DiscoverSparkline({ symbol, authenticated, period }: { symbol?: string; authenticated: boolean; period: DiscoverMiniPeriod }) {
   const gradientId = `discover-spark-${useId().replace(/:/g, '')}`
   const [state, setState] = useState<SparklineState>({ status: 'empty', candles: [] })
 
@@ -154,13 +153,14 @@ function DiscoverSparkline({ symbol, authenticated }: { symbol?: string; authent
     }
     let active = true
     setState({ status: 'loading', candles: [] })
-    void loadDiscoverSparkline(symbol).then((candles) => {
+    const subscription = discoverSparklineCache.subscribe(symbol, period)
+    void subscription.promise.then((candles) => {
       if (active) setState({ status: candles.length ? 'success' : 'empty', candles })
     }).catch(() => {
       if (active) setState({ status: 'error', candles: [] })
     })
-    return () => { active = false }
-  }, [authenticated, symbol])
+    return () => { active = false; subscription.release() }
+  }, [authenticated, period, symbol])
 
   if (state.status !== 'success') {
     const label = state.status === 'loading' ? '读取 K 线' : state.status === 'error' ? 'K 线读取失败' : '暂无 K 线'
@@ -172,11 +172,12 @@ function DiscoverSparkline({ symbol, authenticated }: { symbol?: string; authent
   const last = closes[closes.length - 1]
   const change = first === 0 ? null : ((last - first) / first) * 100
   const rising = change == null || change >= 0
+  const timeframe = timeframeForDiscoverMiniPeriod(period)
   const points = sparklinePoints(closes, 126, 42, 3)
   const TrendIcon = rising ? TrendingUp : TrendingDown
 
   return (
-    <div className={`discover-sparkline ${rising ? 'is-up' : 'is-down'}`} role="img" aria-label={`${symbol || '股票'} ${closes.length} 个真实收盘价点，变动 ${formatSignedPercent(change)}`}>
+    <div className={`discover-sparkline ${rising ? 'is-up' : 'is-down'}`} role="img" aria-label={`${symbol || '股票'} ${timeframe} ${closes.length} 个真实收盘价点，变动 ${formatSignedPercent(change)}`}>
       <svg viewBox="0 0 126 42" preserveAspectRatio="none" aria-hidden="true">
         <defs>
           <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
@@ -265,11 +266,12 @@ function priorityLabel(item: RecommendationItem, index: number) {
   return index === 0 ? { label: 'P1 · 先研究', tone: 'is-high' } : { label: 'P2 · 跟进', tone: 'is-normal' }
 }
 
-function TodayActionMatrix({ items, authenticated, onSelect, onResearch }: {
+function TodayActionMatrix({ items, authenticated, onSelect, onResearch, miniPeriod }: {
   items: RecommendationItem[]
   authenticated: boolean
   onSelect: (item: RecommendationItem) => void
   onResearch: (item: RecommendationItem) => void
+  miniPeriod: DiscoverMiniPeriod
 }) {
   const actions = items.slice(0, 4)
   return (
@@ -286,7 +288,7 @@ function TodayActionMatrix({ items, authenticated, onSelect, onResearch }: {
             <header><StockTaskBadge symbol={item.symbol} market={marketName(item.market)} /><span className={`discover-priority ${priority.tone}`}>{priority.label}</span></header>
             <button className="discover-action-main" type="button" onClick={() => onSelect(item)}>
               <span><small>当前记录价</small><strong>{quoteLabel(item)}</strong></span>
-              <DiscoverSparkline symbol={item.symbol} authenticated={authenticated} />
+              <DiscoverSparkline symbol={item.symbol} authenticated={authenticated} period={miniPeriod} />
             </button>
             <div className="discover-action-aux">
               <span><small>研究状态</small><strong>{actionLabel(item)}</strong></span>
@@ -370,6 +372,7 @@ function CandidateRow({
   onResearch,
   onWatchlist,
   onAlert,
+  miniPeriod,
 }: {
   item: RecommendationItem
   authenticated: boolean
@@ -380,6 +383,7 @@ function CandidateRow({
   onResearch: () => void
   onWatchlist: (remove: boolean) => void | Promise<void>
   onAlert: () => void
+  miniPeriod: DiscoverMiniPeriod
 }) {
   const evidence = evidenceCounts(item)
   const supportedMarket = watchlistMarket(item.market) != null
@@ -401,7 +405,7 @@ function CandidateRow({
             <small>{item.quote_at ? formatTime(item.quote_at) : '报价时间：暂无数据'}</small>
           </div>
           {item.symbol && item.market
-            ? <DiscoverSparkline symbol={item.symbol} authenticated={authenticated} />
+            ? <DiscoverSparkline symbol={item.symbol} authenticated={authenticated} period={miniPeriod} />
             : <V2StatePanel state="empty" title="趋势不可绘制" detail="记录缺少股票或市场字段。" />}
         </div>
       </td>
@@ -572,6 +576,7 @@ function AIResearchPanel({
   onResearch,
   onPaper,
   onAlert,
+  timeframe,
 }: {
   selected: RecommendationItem | null
   authenticated: boolean
@@ -582,6 +587,7 @@ function AIResearchPanel({
   onResearch: () => void
   onPaper: () => void
   onAlert: () => void
+  timeframe: string
 }) {
   const evidence = selected ? evidenceCounts(selected) : null
   return (
@@ -598,7 +604,7 @@ function AIResearchPanel({
       {selected ? (
         <div className="discover-ai-selection">
           <div className="discover-ai-selection-head"><StockTaskBadge symbol={selected.symbol} market={marketName(selected.market)} /><span><strong>{quoteLabel(selected)}</strong><small>{actionLabel(selected)}</small></span></div>
-          <RemoteMiniCandles symbol={selected.symbol} authenticated={authenticated} label={`${selected.symbol || '股票'} AI 研究入口 Mini K线`} />
+          <RemoteMiniCandles symbol={selected.symbol} authenticated={authenticated} timeframe={timeframe} label={`${selected.symbol || '股票'} AI 研究入口 ${timeframe} Mini K线`} />
           <div className="discover-ai-evidence"><span>依据 <strong>{evidence?.supplied}</strong></span><span>缺口 <strong>{evidence?.missing}</strong></span><span>事件 <strong>#{selected.event_id}</strong></span></div>
         </div>
       ) : <V2StatePanel state="empty" title="请选择股票开始研究" detail="可输入股票代码，或从候选矩阵与近期事件中选择一只股票。" />}
@@ -700,6 +706,8 @@ export function DiscoverV2Page() {
   const coverageFilter: CoverageFilter = coverageParam === '资料完整' || coverageParam === '资料缺口' ? coverageParam : '全部'
   const viewParam = searchParams.get('view')
   const view: DiscoverView = viewParam === '事件发现' || viewParam === '研究覆盖' ? viewParam : '候选股票'
+  const miniPeriod = normalizeDiscoverMiniPeriod(searchParams.get('mini'))
+  const miniTimeframe = timeframeForDiscoverMiniPeriod(miniPeriod)
   const selectedParam = Number(searchParams.get('selected'))
   const selectedId = Number.isSafeInteger(selectedParam) && selectedParam > 0 ? selectedParam : null
   const pageParam = Number(searchParams.get('page'))
@@ -874,6 +882,7 @@ export function DiscoverV2Page() {
                     onResearch={() => research(item)}
                     onWatchlist={(remove) => toggleWatchlist(item, remove)}
                     onAlert={() => alertDraft(item)}
+                    miniPeriod={miniPeriod}
                   />
                 ))}</tbody>
               </table>
@@ -900,7 +909,7 @@ export function DiscoverV2Page() {
       </section>
       {watchMessage && <div className="discover-page-feedback" role="status">{watchMessage}</div>}
 
-      <section className="discover-anchor-section" id="discover-action"><TodayActionMatrix items={view === '候选股票' ? visibleRecords : []} authenticated={isAuth} onSelect={(item) => void selectCandidate(item)} onResearch={research} /></section>
+      <section className="discover-anchor-section" id="discover-action"><TodayActionMatrix items={view === '候选股票' ? visibleRecords : []} authenticated={isAuth} onSelect={(item) => void selectCandidate(item)} onResearch={research} miniPeriod={miniPeriod} /></section>
       <section className="discover-anchor-section" id="discover-beginner"><BeginnerRecommendations items={view === '候选股票' ? filtered : []} authenticated={isAuth} onResearch={research} /></section>
 
       <div className={`discover-dashboard ${inspectorOpen ? 'has-open-inspector' : ''}`}>
@@ -914,7 +923,7 @@ export function DiscoverV2Page() {
             <header className="discover-card-heading discover-market-heading">
               <div><span className="v2-eyebrow">CANDIDATE MATRIX</span><h2>候选股票研究矩阵</h2></div>
               <div className="discover-market-controls">
-                <div className="discover-periods" aria-label="Mini K线周期"><span className="is-active" aria-current="true">1D</span><span className="is-pending">1W · 待接入</span><span className="is-pending">1M · 待接入</span></div>
+                <div className="discover-periods" role="tablist" aria-label="Mini K线周期">{DISCOVER_MINI_PERIODS.map((period) => <button key={period.key} type="button" role="tab" aria-selected={miniPeriod === period.key} className={miniPeriod === period.key ? 'is-active' : ''} onClick={() => updateParams({ mini: period.key === '1D' ? null : period.key })}>{period.key}</button>)}</div>
               </div>
             </header>
             {tableContent}
@@ -938,7 +947,7 @@ export function DiscoverV2Page() {
             <FilterResultChart items={filtered} />
           </V2Card>
 
-          <AIResearchPanel selected={selected} authenticated={isAuth} symbol={aiSymbol} message={aiMessage} onSymbolChange={setAiSymbol} onSubmit={openAIResearch} onResearch={() => research(selected)} onPaper={() => paper(selected)} onAlert={() => alertDraft(selected)} />
+          <AIResearchPanel selected={selected} authenticated={isAuth} symbol={aiSymbol} message={aiMessage} onSymbolChange={setAiSymbol} onSubmit={openAIResearch} onResearch={() => research(selected)} onPaper={() => paper(selected)} onAlert={() => alertDraft(selected)} timeframe={miniTimeframe} />
           <AccountSnapshotPanel data={workspace.data} authenticated={isAuth} />
         </aside>
       </div>

@@ -2114,8 +2114,8 @@ export async function fetchMarketStatus() {
   return payload
 }
 
-export async function fetchMarketCandles(symbol: string, timeframe: string) {
-  const payload = await request<MarketCandlePayload>(`/api/rewrite/v1/market/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`)
+export async function fetchMarketCandles(symbol: string, timeframe: string, signal?: AbortSignal) {
+  const payload = await request<MarketCandlePayload>(`/api/rewrite/v1/market/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`, { signal })
   const valid = Array.isArray(payload.items) && payload.items.every((item) => (
     (typeof item.time === 'string' || typeof item.time === 'number')
     && [item.open, item.high, item.low, item.close, item.volume].every(Number.isFinite)

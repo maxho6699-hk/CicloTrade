@@ -414,6 +414,14 @@ textarea:focus-visible {
 .auth-loading svg { color: var(--accent); animation: command-spin .9s linear infinite; }
 .auth-loading strong { color: var(--text); font-size: 16px; }
 .auth-loading span { font: 11px var(--mono); }
+.route-loading{display:grid;min-height:42vh;place-content:center;justify-items:center;gap:10px;padding:32px;color:var(--muted);text-align:center}
+.route-loading svg{color:var(--accent);animation:command-spin .9s linear infinite}
+.route-loading strong{color:var(--text);font-size:16px}
+.route-loading span{font:13px var(--mono)}
+.route-failure{display:grid;min-height:42vh;place-content:center;justify-items:center;gap:10px;padding:32px;color:var(--muted);text-align:center}
+.route-failure strong{color:var(--text);font-size:18px}
+.route-failure span{max-width:520px;font-size:13px;line-height:1.6}
+.route-failure button{min-height:44px;padding:0 18px;border:1px solid color-mix(in srgb,var(--accent) 48%,var(--border));border-radius:10px;background:linear-gradient(90deg,#1d4ed8,#2563eb,#38bdf8);color:#fff;font-size:13px;font-weight:800;cursor:pointer}
 
 .brand {
   display: flex;
@@ -975,5 +983,6 @@ kbd {
   html { scroll-behavior: auto; }
   select { transition-duration: 0.01ms; }
   .auth-loading svg,
+  .route-loading svg,
   .command-status svg { animation: none; }
 }

@@ -76,8 +76,10 @@ test('Saved watchlist stars are yellow in dark theme and red in light theme, nev
   assert.doesNotMatch(componentStyles, /\.watchlist-toggle\.is-saved \{[^}]*color: (?:#000|black)/i)
 })
 
-test('Discover mini K-line periods never render inert or unexplained disabled buttons', () => {
-  assert.doesNotMatch(discover, /className="discover-periods"[^\n]*<button/)
-  assert.match(discover, /1W · 待接入/)
-  assert.match(discover, /1M · 待接入/)
+test('Discover mini K-line periods are real tabs backed by timeframe state', () => {
+  assert.match(discover, /DISCOVER_MINI_PERIODS\.map/)
+  assert.match(discover, /role="tab"/)
+  assert.match(discover, /aria-selected=\{miniPeriod === period\.key\}/)
+  assert.match(discover, /onClick=\{\(\) => updateParams\(\{ mini: period\.key === '1D' \? null : period\.key \}\)\}/)
+  assert.doesNotMatch(discover, /1W · 待接入|1M · 待接入/)
 })

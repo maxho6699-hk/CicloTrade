@@ -1,37 +1,39 @@
-import { useEffect, type ReactNode } from 'react'
+import { Suspense, useEffect, type ReactNode } from 'react'
 import { Navigate, Route, Routes, useLocation, useSearchParams } from 'react-router-dom'
 import { LoaderCircle } from 'lucide-react'
 import { useWorkspace } from './api/workspace-context'
 import { AppShell } from './components/AppShell'
-import { MarketsPage } from './pages'
-import { AccountPage } from './pages/AccountPage'
-import { MembershipPage } from './pages/MembershipPage'
-import { PromotionCenterPage } from './pages/PromotionCenterPage'
-import { MysticPage } from './pages/MysticPage'
-import { NotificationsPage } from './pages/NotificationsPage'
-import { PortfolioPage } from './pages/PortfolioPage'
-import { ReportsPage } from './pages/ReportsPage'
-import { TradePage } from './pages/TradePage'
+import { RouteLoadingState, lazyRoute } from './components/RouteLoadStates'
 import { LoginPage } from './pages/LoginPage'
-import { HelpPage } from './pages/HelpPage'
-import { ProfessionalLabPage } from './pages/ProfessionalLabPage'
 import { WelcomePage } from './pages/WelcomePage'
-import { StockScreenerRoute } from './pages/StockScreenerRoute'
-import { EarningsForecastPage } from './pages/EarningsForecastPage'
-import { FeedbackPage } from './pages/FeedbackPage'
-import { AdminPage } from './pages/AdminPage'
-import { MoreRoute } from './pages/MoreRoute'
-import { PersonalPaperPage } from './pages/PersonalPaperPage'
-import { TodayV2Page } from './pages/TodayV2Page'
-import { DiscoverV2Page } from './pages/DiscoverV2Page'
-import { AIWorkspacePage } from './pages/AIWorkspacePage'
-import { WorkflowTaskPage } from './pages/WorkflowTaskPage'
-import { DeliberationPage } from './pages/DeliberationPage'
-import { RecommendationsPage } from './pages/RecommendationsPage'
-import { LegalPage } from './pages/LegalPage'
 import { useLocale } from './i18n/useLocale'
 import { applyTheme, readStoredTheme } from './theme'
 import './styles/visual-waves.css'
+
+const MarketsPage = lazyRoute(() => import('./pages.tsx').then((module) => ({ default: module.MarketsPage })))
+const AccountPage = lazyRoute(() => import('./pages/AccountPage').then((module) => ({ default: module.AccountPage })))
+const MembershipPage = lazyRoute(() => import('./pages/MembershipPage').then((module) => ({ default: module.MembershipPage })))
+const PromotionCenterPage = lazyRoute(() => import('./pages/PromotionCenterPage').then((module) => ({ default: module.PromotionCenterPage })))
+const MysticPage = lazyRoute(() => import('./pages/MysticPage').then((module) => ({ default: module.MysticPage })))
+const NotificationsPage = lazyRoute(() => import('./pages/NotificationsPage').then((module) => ({ default: module.NotificationsPage })))
+const PortfolioPage = lazyRoute(() => import('./pages/PortfolioPage').then((module) => ({ default: module.PortfolioPage })))
+const ReportsPage = lazyRoute(() => import('./pages/ReportsPage').then((module) => ({ default: module.ReportsPage })))
+const TradePage = lazyRoute(() => import('./pages/TradePage').then((module) => ({ default: module.TradePage })))
+const HelpPage = lazyRoute(() => import('./pages/HelpPage').then((module) => ({ default: module.HelpPage })))
+const ProfessionalLabPage = lazyRoute(() => import('./pages/ProfessionalLabPage').then((module) => ({ default: module.ProfessionalLabPage })))
+const StockScreenerRoute = lazyRoute(() => import('./pages/StockScreenerRoute').then((module) => ({ default: module.StockScreenerRoute })))
+const EarningsForecastPage = lazyRoute(() => import('./pages/EarningsForecastPage').then((module) => ({ default: module.EarningsForecastPage })))
+const FeedbackPage = lazyRoute(() => import('./pages/FeedbackPage').then((module) => ({ default: module.FeedbackPage })))
+const AdminPage = lazyRoute(() => import('./pages/AdminPage').then((module) => ({ default: module.AdminPage })))
+const MoreRoute = lazyRoute(() => import('./pages/MoreRoute').then((module) => ({ default: module.MoreRoute })))
+const PersonalPaperPage = lazyRoute(() => import('./pages/PersonalPaperPage').then((module) => ({ default: module.PersonalPaperPage })))
+const TodayV2Page = lazyRoute(() => import('./pages/TodayV2Page').then((module) => ({ default: module.TodayV2Page })))
+const DiscoverV2Page = lazyRoute(() => import('./pages/DiscoverV2Page').then((module) => ({ default: module.DiscoverV2Page })))
+const AIWorkspacePage = lazyRoute(() => import('./pages/AIWorkspacePage').then((module) => ({ default: module.AIWorkspacePage })))
+const WorkflowTaskPage = lazyRoute(() => import('./pages/WorkflowTaskPage').then((module) => ({ default: module.WorkflowTaskPage })))
+const DeliberationPage = lazyRoute(() => import('./pages/DeliberationPage').then((module) => ({ default: module.DeliberationPage })))
+const RecommendationsPage = lazyRoute(() => import('./pages/RecommendationsPage').then((module) => ({ default: module.RecommendationsPage })))
+const LegalPage = lazyRoute(() => import('./pages/LegalPage').then((module) => ({ default: module.LegalPage })))
 
 function ProtectedConsole({ children }: { children: ReactNode }) {
   const workspace = useWorkspace()
@@ -72,14 +74,14 @@ export default function App() {
   const isPublic = location.pathname === '/' || location.pathname === '/login' || location.pathname === '/legal'
   if (isPublic) {
     return (
-      <Routes>
+      <Suspense fallback={<RouteLoadingState />}><Routes>
         <Route path="/" element={<WelcomePage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/legal" element={<LegalPage />} />
-      </Routes>
+      </Routes></Suspense>
     )
   }
-  return <ProtectedConsole><AppShell><Routes>
+  return <ProtectedConsole><AppShell><Suspense fallback={<RouteLoadingState />}><Routes>
     <Route path="/today" element={<TodayV2Page />} />
     <Route path="/discover" element={<DiscoverRoute />} />
     <Route path="/recommendations" element={<RecommendationsPage />} />
@@ -108,5 +110,5 @@ export default function App() {
     <Route path="/opportunities/*" element={<LegacyRedirect to="/discover" />} />
     <Route path="/markets/*" element={<LegacyRedirect to="/research" />} />
     <Route path="*" element={<Navigate to="/today" replace />} />
-  </Routes></AppShell></ProtectedConsole>
+  </Routes></Suspense></AppShell></ProtectedConsole>
 }
