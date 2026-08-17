@@ -1,4 +1,4 @@
-import { BarChart3, BellRing, CheckCircle2, CircleAlert, Copy, Crown, FileText, HelpCircle, KeyRound, Languages, Laptop, Link2, LockKeyhole, LogOut, PauseCircle, PlayCircle, Settings, ShieldCheck, SlidersHorizontal, Smartphone, Sparkles, TrendingUp, UserRound } from 'lucide-react'
+import { BarChart3, BellRing, CheckCircle2, ChevronRight, CircleAlert, Copy, Crown, FileText, HelpCircle, KeyRound, Languages, Laptop, Link2, LockKeyhole, LogOut, PauseCircle, PlayCircle, Settings, ShieldCheck, SlidersHorizontal, Smartphone, Sparkles, TrendingUp, UserRound } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { PageHeader } from '../components/PageHeader'
@@ -276,6 +276,9 @@ export function AccountPage() {
     <div className="page operations-page">
       <PageHeader kicker="PROFILE / PERSONAL CENTER" title="个人中心" description="集中查看会员、智能体成长、个人模拟账户、投资偏好与授权设置。AI 只辅助研究，不会替你下单。" />
       <WorkspaceState />
+      <Link className="mobile-account-more data-panel" to="/more">
+        <Sparkles size={19} /><span><strong>更多功能</strong><small>Workflow、券商、通知、帮助与反馈</small></span><ChevronRight size={18} />
+      </Link>
 
       <section className="profile-identity-bar data-panel">
         <span className="profile-identity-avatar"><UserRound size={34} /></span>

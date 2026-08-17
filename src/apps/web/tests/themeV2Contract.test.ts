@@ -37,10 +37,15 @@ test('V2 component contract keeps cards borderless and CTA blue-to-violet', () =
   assert.match(components, /\.ai-pill \{[\s\S]*?height: 36px;[\s\S]*?border-radius: 8px;/)
 })
 
-test('V2 navigation active state is pure paired color without a rail', () => {
+test('V2 navigation emphasizes four gradient groups while keeping children collapsed and quiet', () => {
   assert.match(navigation, /\.app-shell \.nav-item\.active::before \{ display: none; \}/)
-  assert.match(navigation, /\.app-shell \.nav-item\.active,[\s\S]*?background: var\(--nav-active-bg\); color: var\(--nav-active-fg\)/)
-  assert.doesNotMatch(navigation, /linear-gradient/)
+  assert.match(navigation, /\.app-shell \.nav-group\.is-active \.nav-group-header \{[^}]*border-color: transparent;[^}]*background: transparent;[^}]*box-shadow: none/)
+  assert.match(navigation, /\.app-shell \.nav-group-children \{ display: none;/)
+  assert.match(navigation, /\.app-shell \.nav-group\.is-expanded \.nav-group-children \{ display: grid; \}/)
+  assert.match(navigation, /\.app-shell \.nav-item\.nav-child \{[^}]*font-size: 14px;[^}]*font-weight: 600/)
+  assert.match(navigation, /\.app-shell \.nav-item\.nav-child\.active \{[^}]*background: color-mix[^}]*box-shadow: inset 3px/)
+  assert.match(navigation, /\.app-shell \.nav-group-toggle svg \{[^}]*width: 18px;[^}]*height: 18px/)
+  assert.match(navigation, /@media \(min-width: 701px\) and \(max-width: 1180px\)[\s\S]*?\.nav-group-link \{[^}]*width: 48px;[^}]*height: 48px/)
 })
 
 test('Ciclo AI launcher uses the shared theme primitive and opens the bounded-context page', () => {

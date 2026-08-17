@@ -58,7 +58,9 @@
 .app-shell .deliberation-view-status,
 .app-shell .deliberation-top-actions,
 .app-shell .deliberation-top-actions > :is(a, button) { display: flex; align-items: center; }
-.app-shell .deliberation-view-status { gap: 9px; color: var(--dl-copy); font-size: 12px; }
+.app-shell .deliberation-view-status { gap: 10px; color: var(--dl-copy); font-size: 12px; }
+.app-shell .deliberation-view-status > div { display: grid; gap: 1px; }
+.app-shell .deliberation-view-status h1 { color: var(--dl-text); font-size: 20px; line-height: 1.15; }
 .app-shell .deliberation-view-status > i,
 .app-shell .deliberation-status-pill > i,
 .app-shell .deliberation-seat-status > i { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--tone, var(--dl-muted)); box-shadow: 0 0 12px color-mix(in srgb, var(--tone, var(--dl-muted)) 72%, transparent); }
@@ -81,6 +83,27 @@
 .app-shell .deliberation-export-button { padding: 0 14px; font-size: 12px; font-weight: 650; }
 .app-shell .deliberation-top-actions svg { width: 16px; height: 16px; }
 .app-shell .deliberation-top-actions :disabled { cursor: not-allowed; opacity: .44; }
+
+.app-shell .deliberation-compliance-banner {
+  display: grid;
+  min-height: 44px;
+  grid-template-columns: 18px auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 9px 12px;
+  border: 1px solid rgb(255 200 87 / .26);
+  border-radius: 12px;
+  background: rgb(255 200 87 / .065);
+  color: #d5dceb;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.app-shell .deliberation-compliance-banner svg { width: 17px; height: 17px; color: var(--dl-yellow); }
+.app-shell .deliberation-compliance-banner strong { color: var(--dl-yellow); font-size: 13px; white-space: nowrap; }
+.app-shell .deliberation-legal-link { display: inline-flex; min-height: 44px; align-items: center; padding: 0 10px; border: 1px solid rgb(255 200 87 / .28); border-radius: 8px; background: rgb(255 200 87 / .08); color: color-mix(in srgb, var(--dl-yellow) 82%, #fff); font-size: 14px; font-weight: 750; text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; }
+.app-shell .deliberation-legal-link:hover,
+.app-shell .deliberation-legal-link:focus-visible { color: #fff2b7; }
 
 .app-shell .deliberation-grid {
   display: grid;
@@ -382,12 +405,12 @@
 .app-shell .deliberation-flow-arrow { display: grid; width: 34px; flex: none; place-items: center; color: var(--dl-blue); }
 .app-shell .deliberation-flow-arrow svg { position: relative; z-index: 1; width: 14px; height: 14px; padding: 2px; border-radius: 50%; background: var(--dl-panel-solid); }
 .app-shell .deliberation-flow-arrow span { position: absolute; width: 34px; height: 1px; background: linear-gradient(90deg, transparent, var(--dl-blue), transparent); box-shadow: 0 0 8px var(--dl-blue); }
-.app-shell .deliberation-flow-result { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 9px; margin-top: 10px; padding: 9px 10px; border: 1px solid rgb(255 200 87 / .24); border-radius: 10px; background: rgb(255 200 87 / .07); color: var(--dl-yellow); }
-.app-shell .deliberation-flow-result > svg { width: 15px; height: 15px; }
-.app-shell .deliberation-flow-result > span { display: grid; gap: 2px; }
-.app-shell .deliberation-flow-result strong { font-size: 11px; }
-.app-shell .deliberation-flow-result small { color: var(--dl-copy); font-size: 12px; }
-.app-shell .deliberation-flow-result em { padding: 4px 7px; border-radius: 999px; background: rgb(255 200 87 / .12); color: var(--dl-yellow); font: normal 650 11px var(--mono); }
+.app-shell .deliberation-flow-result { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 11px; margin-top: 12px; padding: 13px 14px; border: 1px solid rgb(139 92 255 / .36); border-radius: 12px; background: linear-gradient(100deg, rgb(59 99 255 / .11), rgb(139 92 255 / .12), rgb(255 79 163 / .07)); color: #bca9ff; box-shadow: inset 0 1px 0 rgb(255 255 255 / .05); }
+.app-shell .deliberation-flow-result > svg { width: 18px; height: 18px; }
+.app-shell .deliberation-flow-result > span { display: grid; gap: 4px; }
+.app-shell .deliberation-flow-result strong { color: var(--dl-text); font-size: 15px; }
+.app-shell .deliberation-flow-result small { color: var(--dl-copy); font-size: 13px; line-height: 1.4; }
+.app-shell .deliberation-flow-result em { padding: 5px 9px; border: 1px solid rgb(139 92 255 / .26); border-radius: 999px; background: rgb(139 92 255 / .1); color: #c9bcff; font: normal 650 11px var(--mono); white-space: nowrap; }
 
 .app-shell .deliberation-boundary { display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; color: var(--dl-muted); font-size: 11px; line-height: 1.5; }
 .app-shell .deliberation-boundary svg { width: 15px; height: 15px; flex: none; color: var(--dl-yellow); }
@@ -491,7 +514,7 @@
 .app-shell .deliberation-evidence-tools button:disabled { cursor: wait; opacity: .5; }
 .app-shell .deliberation-evidence-tools svg { width: 13px; height: 13px; }
 .app-shell .deliberation-evidence-card { padding: 12px; }
-.app-shell .deliberation-evidence-map { display: grid; min-height: 0; grid-template-columns: 1fr; align-items: start; gap: 7px; padding: 9px; border: 1px solid rgb(120 145 255 / .18); border-radius: 13px; background: radial-gradient(circle at 50% 68%, rgb(85 79 255 / .16), transparent 48%), linear-gradient(160deg, rgb(8 15 32 / .9), rgb(5 11 25 / .94)); box-shadow: inset 0 1px 0 rgb(255 255 255 / .035), inset 0 0 30px rgb(72 82 255 / .045); }
+.app-shell .deliberation-evidence-map { display: grid; min-height: 0; grid-template-columns: 1fr; align-items: start; gap: 7px; padding: 9px; border: 1px solid rgb(120 145 255 / .18); border-radius: 13px; background: linear-gradient(160deg, rgb(8 15 32 / .92), rgb(5 11 25 / .96)); box-shadow: inset 0 1px 0 rgb(255 255 255 / .035); }
 .app-shell .deliberation-source-stack { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
 .app-shell .deliberation-source-stack > span { display: grid; min-height: 30px; grid-template-columns: 18px minmax(0, 1fr) 6px; align-items: center; gap: 5px; padding: 0 7px; border: 1px solid color-mix(in srgb, var(--tone, var(--dl-muted)) 24%, rgb(120 145 255 / .16)); border-radius: 8px; background: rgb(10 17 35 / .9); color: var(--tone, var(--dl-muted)); }
 .app-shell .deliberation-source-stack svg { width: 13px; height: 13px; }
@@ -505,25 +528,25 @@
 .app-shell .deliberation-evidence-beam svg { position: relative; z-index: 1; width: 25px; height: 25px; padding: 5px; border: 1px solid rgb(139 92 255 / .4); border-radius: 50%; background: var(--dl-panel-solid); box-shadow: 0 0 18px rgb(90 86 255 / .34); }
 .app-shell .deliberation-evidence-beam i { display: none; }
 .app-shell .deliberation-pk-arena { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) 58px minmax(0, 1fr); align-items: center; gap: 8px; margin: 0; }
-.app-shell .deliberation-pk-card { --pk-tone: var(--dl-green); --pk-score-gradient: linear-gradient(135deg, #effff8 0%, #65ffc0 38%, #20bd78 72%, #55d9ff 100%); position: relative; display: grid; min-width: 0; min-height: 210px; grid-template-rows: auto auto 42px; align-content: start; gap: 9px; overflow: hidden; padding: 11px; border: 1px solid color-mix(in srgb, var(--pk-tone) 46%, rgb(113 133 255 / .32)); border-radius: 16px; background: radial-gradient(circle at 50% 18%, color-mix(in srgb, var(--pk-tone) 25%, transparent), transparent 40%), radial-gradient(circle at 92% 88%, rgb(91 75 255 / .18), transparent 42%), linear-gradient(155deg, rgb(16 27 49 / .82), rgb(5 12 28 / .9)); color: var(--pk-tone); box-shadow: inset 0 1px 0 rgb(255 255 255 / .08), inset 0 0 28px color-mix(in srgb, var(--pk-tone) 7%, transparent), 0 12px 28px rgb(1 5 18 / .36), 0 0 22px color-mix(in srgb, var(--pk-tone) 12%, transparent); backdrop-filter: blur(18px); isolation: isolate; }
-.app-shell .deliberation-pk-card::before { position: absolute; z-index: -1; inset: 0; background: linear-gradient(125deg, rgb(255 255 255 / .065), transparent 34%, rgb(112 91 255 / .06)); content: ''; }
-.app-shell .deliberation-pk-card::after { position: absolute; right: 10px; bottom: 0; left: 10px; height: 2px; border-radius: 999px; background: linear-gradient(90deg, transparent, var(--pk-tone), transparent); box-shadow: 0 0 12px var(--pk-tone); content: ''; opacity: .72; }
+.app-shell .deliberation-pk-card { --pk-tone: var(--dl-green); --pk-score-gradient: linear-gradient(135deg, #effff8 0%, #65ffc0 38%, #20bd78 72%, #55d9ff 100%); position: relative; display: grid; min-width: 0; min-height: 188px; grid-template-rows: auto auto 42px; align-content: start; gap: 8px; overflow: hidden; padding: 11px; border: 1px solid color-mix(in srgb, var(--pk-tone) 34%, rgb(113 133 255 / .26)); border-radius: 14px; background: linear-gradient(155deg, rgb(16 27 49 / .76), rgb(5 12 28 / .9)); color: var(--pk-tone); box-shadow: inset 0 1px 0 rgb(255 255 255 / .06), 0 10px 24px rgb(1 5 18 / .24); backdrop-filter: blur(14px); }
+.app-shell .deliberation-pk-card::before,
+.app-shell .deliberation-pk-card::after { display: none; }
 .app-shell .deliberation-pk-card.is-bear { --pk-tone: var(--dl-red); --pk-score-gradient: linear-gradient(135deg, #fff2f6 0%, #ff7896 38%, #f05b78 68%, #c36bff 100%); }
 .app-shell .deliberation-pk-card header { display: flex; min-width: 0; align-items: center; justify-content: flex-start; flex-direction: column; gap: 5px; text-align: center; }
 .app-shell .deliberation-pk-card.is-bear header { justify-content: flex-start; }
 .app-shell .deliberation-pk-card header > div { display: grid; min-width: 0; gap: 2px; }
 .app-shell .deliberation-pk-card header small { color: color-mix(in srgb, var(--pk-tone) 76%, #fff); font: 650 11px var(--mono); letter-spacing: .12em; }
-.app-shell .deliberation-pk-card header strong { overflow: hidden; color: var(--dl-text); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.app-shell .deliberation-animal-frame { display: grid; width: 72px; height: 66px; place-items: center; overflow: hidden; border: 1px solid color-mix(in srgb, var(--pk-tone) 58%, rgb(116 139 255 / .4)); border-radius: 18px; background: radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--pk-tone) 18%, transparent), rgb(3 9 21 / .96) 74%); box-shadow: inset 0 0 18px color-mix(in srgb, var(--pk-tone) 10%, transparent), 0 8px 20px rgb(0 0 0 / .32), 0 0 16px color-mix(in srgb, var(--pk-tone) 18%, transparent); }
+.app-shell .deliberation-pk-card header strong { overflow: hidden; color: var(--dl-text); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.app-shell .deliberation-animal-frame { display: grid; width: 62px; height: 56px; place-items: center; overflow: hidden; border: 1px solid color-mix(in srgb, var(--pk-tone) 46%, rgb(116 139 255 / .32)); border-radius: 14px; background: rgb(3 9 21 / .92); box-shadow: inset 0 0 14px color-mix(in srgb, var(--pk-tone) 8%, transparent); }
 .app-shell .deliberation-animal-mark { display: block; width: 100%; height: 100%; border-radius: 17px; object-fit: cover; mix-blend-mode: screen; filter: saturate(1.12) contrast(1.06) drop-shadow(0 0 9px color-mix(in srgb, var(--pk-tone) 72%, transparent)); }
 .app-shell .deliberation-pk-score { display: grid; gap: 3px; text-align: center; }
-.app-shell .deliberation-pk-score span { color: var(--dl-muted); font: 11px var(--mono); }
-.app-shell .deliberation-pk-score strong { overflow: hidden; background: var(--pk-score-gradient); background-clip: text; color: transparent; font-size: clamp(23px, 2.4vw, 34px); line-height: 1; text-overflow: ellipsis; filter: drop-shadow(0 0 8px color-mix(in srgb, var(--pk-tone) 44%, transparent)); white-space: nowrap; font-variant-numeric: tabular-nums; -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-.app-shell .deliberation-pk-vs { position: relative; z-index: 2; display: grid; min-height: 210px; place-items: center; align-content: center; gap: 4px; isolation:isolate; }
-.app-shell .deliberation-pk-vs::before { position: absolute; z-index: -1; width: 50px; height: 50px; border: 1px solid rgb(196 164 255 / .72); border-radius: 14px; background: radial-gradient(circle at 34% 28%, rgb(255 255 255 / .34), transparent 25%), linear-gradient(135deg,rgb(45 212 191 / .9) 0 43%,rgb(139 92 255 / .96) 43% 57%,rgb(248 113 113 / .92) 57%); box-shadow:-12px 0 24px rgb(45 212 191 / .26),12px 0 24px rgb(248 113 113 / .28),0 0 32px rgb(139 92 255 / .58),inset 0 1px 0 rgb(255 255 255 / .4); content: ''; transform: rotate(45deg); }
-.app-shell .deliberation-pk-vs::after{position:absolute;z-index:-2;width:64px;height:64px;border:1px solid rgb(139 92 255 / .34);border-radius:18px;background:conic-gradient(from 45deg,rgb(45 212 191 / .22),transparent 22%,rgb(248 113 113 / .24) 48%,transparent 72%,rgb(139 92 255 / .24));box-shadow:0 0 38px rgb(139 92 255 / .34);content:'';transform:rotate(45deg);animation:deliberation-vs-energy 3.2s linear infinite}
-.app-shell .deliberation-pk-vs span { background: linear-gradient(135deg, #fff, #d8c8ff 45%, #8fd8ff); background-clip: text; color: transparent; font: 900 22px/1 var(--mono); font-style: italic; letter-spacing: -.08em; filter: drop-shadow(0 0 8px rgb(255 255 255 / .42)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-.app-shell .deliberation-pk-vs small { position:absolute;top:calc(50% + 38px);color: #b7c4ee; font: 600 9px var(--mono); letter-spacing: .1em; white-space: nowrap; }
+.app-shell .deliberation-pk-score span { color: var(--dl-muted); font: 12px var(--mono); }
+.app-shell .deliberation-pk-score strong { overflow: hidden; background: var(--pk-score-gradient); background-clip: text; color: transparent; font-size: clamp(23px, 2.4vw, 32px); line-height: 1; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.app-shell .deliberation-pk-vs { position: relative; z-index: 2; display: grid; min-height: 188px; place-items: center; align-content: center; gap: 8px; }
+.app-shell .deliberation-pk-vs::before { position: absolute; z-index: -1; width: 1px; height: 82px; background: linear-gradient(transparent, rgb(139 92 255 / .62), transparent); content: ''; }
+.app-shell .deliberation-pk-vs::after { display: none; }
+.app-shell .deliberation-pk-vs span { padding: 6px 7px; border: 1px solid rgb(139 92 255 / .3); border-radius: 8px; background: var(--dl-panel-solid); color: #c9bcff; font: 700 11px/1 var(--mono); letter-spacing: .04em; }
+.app-shell .deliberation-pk-vs small { position: static; color: var(--dl-muted); font: 600 9px var(--mono); letter-spacing: .08em; text-align: center; white-space: nowrap; }
 .app-shell .deliberation-pk-trend { height: 42px; color: var(--pk-tone); }
 .app-shell .deliberation-pk-trend svg { width: 100%; height: 100%; overflow: visible; }
 .app-shell .deliberation-pk-trend .trend-grid { fill: none; stroke: rgb(120 145 255 / .11); stroke-width: .6; }
@@ -641,7 +664,8 @@
 :root[data-theme='light'] .app-shell .deliberation-source-stack > span,
 :root[data-theme='light'] .app-shell .deliberation-side-operation,
 :root[data-theme='light'] .app-shell .deliberation-analysis-table { background: rgb(247 249 255 / .94); }
-:root[data-theme='light'] .app-shell .deliberation-pk-card { background: radial-gradient(circle at 50% 18%, color-mix(in srgb, var(--pk-tone) 13%, transparent), transparent 44%), linear-gradient(160deg, rgb(255 255 255 / .98), rgb(239 243 252 / .96)); }
+:root[data-theme='light'] .app-shell .deliberation-compliance-banner { background: rgb(255 248 226 / .9); }
+:root[data-theme='light'] .app-shell .deliberation-pk-card { background: linear-gradient(160deg, rgb(255 255 255 / .98), rgb(239 243 252 / .96)); }
 :root[data-theme='light'] .app-shell .deliberation-animal-frame,
 :root[data-theme='light'] .app-shell .deliberation-robot-stage .ciclo-core-image-frame { background: radial-gradient(circle at 50% 42%, rgb(75 82 255 / .24), #06101f 72%); }
 :root[data-theme='light'] .app-shell .deliberation-animal-mark,
@@ -694,7 +718,7 @@
   .app-shell .deliberation-evidence { grid-column: auto; grid-row: 3; grid-template-columns: 1fr; }
   .app-shell .deliberation-evidence > .deliberation-section-title,
   .app-shell .deliberation-risk-review { grid-column: auto; }
-  .app-shell .deliberation-seat-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .app-shell .deliberation-seat-list { grid-template-columns: 1fr; }
   .app-shell .deliberation-researchers,
   .app-shell .deliberation-evidence { min-height: auto; }
 }
@@ -702,6 +726,12 @@
 @media (max-width: 620px) {
   .app-shell .deliberation-local-topbar { min-height: 48px; }
   .app-shell .deliberation-view-status strong { display: none; }
+  .app-shell .deliberation-compliance-banner { grid-template-columns: 18px minmax(0, 1fr); }
+  .app-shell .deliberation-compliance-banner strong { grid-column: 2; }
+  .app-shell .deliberation-compliance-banner span { grid-column: 2; }
+  .app-shell .deliberation-legal-link { grid-column: 2; justify-self: start; }
+  .app-shell .deliberation-flow-result { grid-template-columns: 30px minmax(0, 1fr); }
+  .app-shell .deliberation-flow-result em { grid-column: 2; justify-self: start; }
   .app-shell .deliberation-seat-list { grid-template-columns: 1fr; }
   .app-shell .deliberation-robot-stage { min-height: 280px; }
   .app-shell .deliberation-robot-stage .ciclo-core { width: 64%; height: 250px; }
@@ -733,8 +763,6 @@
 
 @keyframes deliberation-spin { to { transform: rotate(360deg); } }
 @keyframes deliberation-node-pulse { 50% { opacity: .48; transform: scale(.78); } }
-@keyframes deliberation-vs-energy { to { transform: rotate(405deg); } }
-
 @media (prefers-reduced-motion: reduce) {
   .app-shell .deliberation-page *,
   .app-shell .deliberation-page *::before,

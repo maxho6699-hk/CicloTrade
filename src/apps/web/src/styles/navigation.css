@@ -1,13 +1,73 @@
-.app-shell .secondary-tools { display: grid; gap: 3px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--sidebar-border); }
-.app-shell .secondary-tools h2 { margin: 0 10px 4px; color: var(--sidebar-text); font: 11px var(--mono); letter-spacing: .08em; }
-.app-shell .nav-item.secondary { min-height: 36px; font-size: 12px; }
 .app-shell .nav-item { font-family: 'Noto Sans TC', 'Noto Sans SC', var(--font-ui); letter-spacing: .01em; }
 .app-shell .nav-item span { line-height: 1.2; }
+.app-shell .nav-group { display: grid; gap: 4px; }
+.app-shell .nav-group + .nav-group { margin-top: 10px; }
+.app-shell .nav-group-header { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 36px; align-items: center; gap: 4px; border: 1px solid transparent; border-radius: 14px; transition: border-color 160ms ease-out, background 160ms ease-out, box-shadow 160ms ease-out; }
+.app-shell .nav-group-link { min-height: 54px; border-radius: 13px; font-size: 15px; font-weight: 700; }
+.app-shell .nav-group-toggle { display: grid; width: 36px; height: 36px; place-items: center; padding: 0; border: 1px solid transparent; border-radius: 10px; background: transparent; color: var(--sidebar-text); cursor: pointer; transition: color 140ms ease-out, background 140ms ease-out, transform 160ms ease-out; }
+.app-shell .nav-group-toggle:hover,
+.app-shell .nav-group-toggle:focus-visible { border-color: color-mix(in srgb, var(--accent) 30%, var(--sidebar-border)); background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--sidebar-text-strong); outline: none; }
+.app-shell .nav-group-toggle svg { width: 18px; height: 18px; transition: transform 160ms ease-out; }
+.app-shell .nav-group.is-expanded .nav-group-toggle svg { transform: rotate(180deg); }
+.app-shell .nav-group.is-expanded .nav-group-header { border-color: color-mix(in srgb, var(--brand-violet) 28%, var(--sidebar-border)); background: color-mix(in srgb, var(--brand-violet) 8%, transparent); }
+.app-shell .nav-group.is-active .nav-group-header { border-color: transparent; background: transparent; box-shadow: none; }
+.app-shell .nav-group.is-active .nav-group-link { border-color: transparent; background: transparent; box-shadow: none; color: var(--nav-active-fg); }
+.app-shell .nav-group.is-active .nav-group-link svg,
+.app-shell .nav-group.is-active .nav-group-toggle { color: var(--nav-active-fg); }
+.app-shell .nav-group-children { display: none; position: relative; gap: 4px; margin-left: 19px; padding: 5px 0 3px 18px; border-left: 1px solid color-mix(in srgb, var(--accent) 42%, var(--sidebar-border)); }
+.app-shell .nav-group.is-expanded .nav-group-children { display: grid; }
+.app-shell .nav-item.nav-child { min-height: 40px; gap: 8px; padding: 0 11px; border: 1px solid transparent; border-radius: 9px; color: color-mix(in srgb, var(--sidebar-text) 94%, transparent); font-size: 14px; font-weight: 600; }
+.app-shell .nav-item.nav-child::after { position: absolute; top: 50%; left: -19px; width: 11px; height: 1px; background: color-mix(in srgb, var(--accent) 42%, var(--sidebar-border)); content: ''; }
+.app-shell .nav-item.nav-child.featured { border-color: color-mix(in srgb, var(--accent) 24%, transparent); color: var(--sidebar-text-strong); }
+.app-shell .nav-item.nav-child.featured svg { color: var(--accent); }
+.mobile-account-more { display: none; }
+.global-auto-live-mobile-inline { display: none; }
 .app-shell .topbar :is(button, a, strong, span) { font-family: 'Noto Sans TC', 'Noto Sans SC', var(--font-ui); }
 .app-shell .page-route-chip { border: 1px solid color-mix(in srgb, var(--brand-violet) 20%, var(--border)); background: color-mix(in srgb, var(--surface) 74%, transparent); box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent), 0 10px 28px color-mix(in srgb, var(--brand-violet) 10%, transparent); backdrop-filter: blur(14px); }
 .app-shell .nav-item.active::before { display: none; }
-.app-shell .nav-item.active,
-.app-shell .nav-item.secondary.active { background: var(--nav-active-bg); color: var(--nav-active-fg); }
-.app-shell .nav-item.active svg,
-.app-shell .nav-item.secondary.active svg { color: var(--nav-active-fg); }
-@media (max-width: 1024px) { .app-shell .secondary-tools { display: none; } }
+.app-shell .nav-item.nav-child.active { border-color: color-mix(in srgb, var(--accent) 36%, transparent); background: color-mix(in srgb, var(--accent) 18%, var(--sidebar)); box-shadow: inset 3px 0 color-mix(in srgb, var(--accent) 88%, transparent), 0 6px 16px color-mix(in srgb, var(--accent) 10%, transparent); color: var(--sidebar-text-strong); font-weight: 700; }
+.app-shell .nav-item.nav-child.active svg { color: var(--accent); }
+.app-shell .app-disclaimer { display: flex; min-height: 38px; align-items: center; justify-content: center; padding: 8px 16px; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 82%, transparent); color: var(--muted); font-size: 11px; text-align: center; }
+
+@media (min-width: 701px) and (max-width: 1180px) {
+  .app-shell .nav-group { position: relative; }
+  .app-shell .nav-group-header { display: block; min-height: 48px; }
+  .app-shell .nav-group-toggle { display: none; }
+  .app-shell .nav-group-link { width: 48px; height: 48px; min-width: 48px; min-height: 48px; margin: 0 auto; }
+  .app-shell .nav-group.is-active .nav-group-header::before { position: absolute; z-index: 1; top: 10px; bottom: 10px; left: 0; width: 3px; border-radius: 0 999px 999px 0; background: var(--accent); box-shadow: none; content: ''; }
+  .app-shell .nav-group.is-expanded .nav-group-children { display: none; }
+  .app-shell .nav-group-children {
+    position: absolute;
+    z-index: 60;
+    top: 0;
+    left: calc(100% + 8px);
+    display: none;
+    width: 190px;
+    gap: 3px;
+    margin-left: 0;
+    padding: 8px;
+    border: 1px solid var(--sidebar-border);
+    border-radius: 10px;
+    background: var(--sidebar);
+    box-shadow: var(--shadow-float);
+  }
+  .app-shell .nav-group-children .nav-child { min-height: 44px; }
+  .app-shell .nav-group-children .nav-child::after { display: none; }
+  .app-shell .nav-group:hover .nav-group-children,
+  .app-shell .nav-group:focus-within .nav-group-children { display: grid; }
+}
+
+@media (max-width: 700px) {
+  .mobile-account-more {
+    display: grid;
+    min-height: 64px;
+    grid-template-columns: 22px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 14px;
+    color: var(--text);
+  }
+  .mobile-account-more > span { display: grid; gap: 3px; }
+  .mobile-account-more small { color: var(--muted); font-size: 12px; }
+  .mobile-account-more > svg:first-child { color: var(--accent); }
+}

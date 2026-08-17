@@ -94,7 +94,7 @@
 }
 
 @media (max-width: 760px) {
-  :root { --topbar-height: 50px; --status-height: 31px; }
+  :root { --topbar-height: 50px; --status-height: 44px; }
   .sidebar { display: none; }
   .shell-content { margin-left: 0; padding-bottom: calc(62px + env(safe-area-inset-bottom)); }
   .topbar { gap: 8px; padding: 0 10px; }
@@ -110,16 +110,20 @@
   .global-status > span,
   .global-status > a { display: none; }
   .global-status { gap: 0; }
-  .status-strip { gap: 12px; padding: 0 11px; overflow: hidden; }
+  .app-shell .status-strip { min-height: 44px; gap: 10px; padding: 0 8px 0 11px; overflow: hidden; }
+  .status-strip > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .status-strip span:nth-child(2),
   .status-strip span:nth-child(3) { display: none; }
   .status-strip strong { display: none; }
+  .global-auto-live-mobile-inline { display: flex; min-width: 0; flex: 0 0 auto; margin-left: auto; }
+  .global-auto-live-mobile-inline .global-auto-live-kill-switch { min-width: 44px; min-height: 44px; height: 44px; justify-content: center; padding: 0 8px; font-size: 11px; }
   .mobile-nav {
     position: fixed;
     z-index: 40;
     inset: auto 0 0;
     display: grid;
     height: calc(58px + env(safe-area-inset-bottom));
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     padding-bottom: env(safe-area-inset-bottom);
     border-top: 1px solid var(--border);
     background: var(--topbar);
@@ -138,11 +142,14 @@
     background: transparent;
     color: var(--muted);
     font-size: 12px;
+    font-weight: 680;
   }
   .mobile-nav a.active,
-  .mobile-nav button.active { color: var(--accent); }
+  .mobile-nav button.active { background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 24%, var(--topbar)), color-mix(in srgb, var(--accent) 7%, var(--topbar))); color: var(--text); font-weight: 760; }
+  .mobile-nav a.active svg,
+  .mobile-nav button.active svg { color: var(--accent); filter: drop-shadow(0 0 7px color-mix(in srgb, var(--accent) 48%, transparent)); }
   .mobile-nav a.active::before,
-  .mobile-nav button.active::before { position: absolute; top: 0; width: 22px; height: 2px; background: var(--accent); content: ''; }
+  .mobile-nav button.active::before { position: absolute; top: 0; width: 30px; height: 3px; border-radius: 0 0 999px 999px; background: linear-gradient(90deg, var(--brand-blue), var(--brand-violet), #ff4fa3); box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 42%, transparent); content: ''; }
   .sheet-backdrop { position: fixed; z-index: 100; inset: 0; display: flex; align-items: flex-end; background: var(--backdrop); }
   .mobile-sheet { width: 100%; max-height: 86vh; padding: 12px 12px calc(18px + env(safe-area-inset-bottom)); overflow-y: auto; overscroll-behavior: contain; border-top: 1px solid var(--border-strong); background: var(--surface); }
   .mobile-sheet header { display: grid; min-height: 45px; grid-template-columns: 34px 1fr auto; align-items: center; gap: 9px; }
@@ -154,6 +161,8 @@
   .page-header { margin-bottom: 17px; }
   .page-header h1 { font-size: 24px; }
   .page-header p { font-size: 14px; line-height: 1.6; }
+  .app-shell main { font-size: 14px; }
+  .app-shell main :where(p, li, dd, td, label, input, select, textarea, button) { font-size: max(14px, 1em); }
   .feedback-kind-grid { grid-template-columns: 1fr; }
   .feedback-choice { margin-right: 0; }
   .decision-card-header { display: grid; gap: 13px; padding: 14px; }
@@ -502,7 +511,7 @@
     inset: auto 0 0;
     display: grid;
     height: calc(58px + env(safe-area-inset-bottom));
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     padding-bottom: env(safe-area-inset-bottom);
     border-top: 1px solid var(--border);
     background: var(--topbar);
@@ -611,10 +620,8 @@
   .auto-live-order-receipts > header { align-items: flex-start; flex-direction: column; }
   .auto-live-order-receipts > div { grid-template-columns: 1fr auto; }
   .auto-live-order-receipts > div small { grid-column: 1 / -1; }
-  .global-auto-live-kill-switch { min-height: 44px; justify-content: center; }
+  .global-auto-live-kill-switch { justify-content: center; }
   .topbar > .global-status .global-auto-live-kill-switch { display: none; }
-  .global-auto-live-mobile-bar { position: fixed; z-index: 39; right: 0; bottom: calc(58px + env(safe-area-inset-bottom)); left: 0; display: flex; justify-content: center; padding: 7px 10px; pointer-events: none; }
-  .global-auto-live-mobile-bar .global-auto-live-kill-switch { width: 100%; pointer-events: auto; }
 }
 
 @media (max-width: 420px) {
@@ -707,4 +714,29 @@
   .market-workspace.research-market-workspace .research-instrument-header { display: grid; }
   .market-workspace.research-market-workspace .research-evidence-panel { display: block; }
   .market-workspace.research-market-workspace .chart-frame { height: 520px; min-height: 520px; max-height: none; }
+}
+
+@media (min-width: 701px) and (max-width: 1180px) {
+  :root { --sidebar-width: 64px; }
+  .sidebar { display: flex; }
+  .shell-content { margin-left: var(--sidebar-width); padding-bottom: 0; }
+  .brand { justify-content: center; padding: 0; }
+  .brand > span,
+  .nav-group-link span,
+  .sidebar-bottom > p { display: none; }
+  .sidebar nav { padding: 12px 8px; overflow: visible; }
+  .nav-group-link { justify-content: center; padding: 0; }
+  .nav-group-children .nav-item { justify-content: flex-start; padding: 0 10px; }
+  .nav-group-children .nav-item span { display: inline; }
+  .sidebar-bottom { display: grid; padding: 8px; }
+  .mobile-nav { display: none; }
+  .topbar > .global-status .global-auto-live-kill-switch { display: inline-flex; }
+}
+
+@media (max-width: 700px) {
+  .app-shell .status-strip > span,
+  .app-shell .status-strip > strong { display: none; }
+  .app-shell .status-strip:not(:has(.global-auto-live-kill-switch)) { display: none; }
+  .app-shell .status-strip:has(.global-auto-live-kill-switch) { justify-content: flex-end; padding-inline: 8px; }
+  .mobile-nav { grid-template-columns: repeat(4, 1fr); padding-bottom: env(safe-area-inset-bottom); }
 }

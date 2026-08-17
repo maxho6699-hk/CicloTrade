@@ -24,7 +24,7 @@ test('844px landscape shell keeps every topbar interaction at least 44px', () =>
   assert.match(landscapeRules, /\.locale-button,[\s\S]*?\.theme-button,[\s\S]*?\.user-menu,[\s\S]*?\.mobile-menu-button \{[^}]*min-width: 44px;[^}]*min-height: 44px;[^}]*height: 44px/)
   assert.match(landscapeRules, /\.account-popover a,[\s\S]*?\.account-popover button \{[^}]*min-height: 44px/)
   assert.match(landscapeRules, /\.shell-content \{[^}]*padding-bottom: calc\(58px \+ env\(safe-area-inset-bottom\)\)/)
-  assert.match(landscapeRules, /\.mobile-nav \{[^}]*display: grid;[^}]*grid-template-columns: repeat\(5, 1fr\)/)
+  assert.match(landscapeRules, /\.mobile-nav \{[^}]*display: grid;[^}]*grid-template-columns: repeat\(4, 1fr\)/)
   assert.match(landscapeRules, /\.mobile-nav a,[\s\S]*?\.mobile-nav button \{[^}]*min-height: 44px/)
   assert.match(landscapeRules, /\.app-shell:has\(\.chart-workspace-shell\.is-workbench-open\) \.mobile-nav \{ display: none; \}/)
   assert.match(landscapeRules, /\.market-workspace \.chart-frame \{[^}]*58px[^}]*safe-area-inset-bottom/)

@@ -8,6 +8,46 @@ export type FeatureHealth = 'healthy' | 'degraded' | 'unavailable' | 'not_applic
 export type FeaturePlacement = 'more' | 'secondary_nav' | 'dashboard_card' | 'inspector' | 'drawer' | 'dialog' | 'overlay'
 export type FeatureCatalogView = 'list' | 'icon'
 export const FEATURE_CATALOG_VIEW_STORAGE_KEY = 'ciclotrade.feature-catalog.view.v1'
+export type PrimaryNavGroupKey = 'opportunity' | 'judgment' | 'simulation' | 'mine'
+export type PrimaryNavItemKey = 'today' | 'discover' | 'recommendations' | 'research' | 'deliberation' | 'paper' | 'portfolio' | 'account' | 'membership'
+export type PrimaryNavIconName = 'Radar' | 'House' | 'Sparkles' | 'CandlestickChart' | 'Swords' | 'WalletCards' | 'ClipboardCheck' | 'UserRound' | 'ShieldCheck'
+export interface PrimaryNavItem { key: PrimaryNavItemKey; route: string; icon: PrimaryNavIconName; featured?: boolean }
+export interface PrimaryNavGroup { key: PrimaryNavGroupKey; route: string; icon: PrimaryNavIconName; items: ReadonlyArray<PrimaryNavItem> }
+
+export const PRIMARY_NAV_GROUPS: ReadonlyArray<PrimaryNavGroup> = [
+  {
+    key: 'opportunity', route: '/today', icon: 'Radar',
+    items: [
+      { key: 'today', route: '/today', icon: 'House' },
+      { key: 'discover', route: '/discover', icon: 'Radar' },
+      { key: 'recommendations', route: '/recommendations', icon: 'Sparkles' },
+    ],
+  },
+  {
+    key: 'judgment', route: '/research', icon: 'CandlestickChart',
+    items: [
+      { key: 'research', route: '/research', icon: 'CandlestickChart' },
+      { key: 'deliberation', route: '/deliberation', icon: 'Swords', featured: true },
+    ],
+  },
+  {
+    key: 'simulation', route: '/paper', icon: 'WalletCards',
+    items: [
+      { key: 'paper', route: '/paper', icon: 'WalletCards' },
+      { key: 'portfolio', route: '/portfolio', icon: 'ClipboardCheck' },
+    ],
+  },
+  {
+    key: 'mine', route: '/account', icon: 'UserRound',
+    items: [
+      { key: 'account', route: '/account', icon: 'UserRound' },
+      { key: 'membership', route: '/membership', icon: 'ShieldCheck' },
+    ],
+  },
+]
+
+export const MORE_NAV_ROUTES = ['/more', '/workflow', '/trade', '/notifications', '/promotion', '/legal', '/help', '/feedback'] as const
+export const HIDDEN_NAV_ROUTES = ['/entertainment', '/mystic', '/lab'] as const
 export interface FeatureActions {
   researchUrl?: string
   alertPrefill?: Record<string, string | number>
@@ -118,7 +158,7 @@ export const MORE_PAGE_COPY: Record<UiLocale, MorePageCopy> = {
   'zh-Hans': {
     kicker: 'FEATURE DIRECTORY',
     title: '更多功能',
-    description: '按任务找到全部工具。固定 3–5 个常用入口后，它们只会出现在桌面次级导航区。',
+    description: '按任务找到全部工具，并收藏 3–5 个常用入口。',
     hubEyebrow: '综合功能中心',
     hubTitle: '研究、提醒与账户服务',
     hubDescription: '主导航已有页面不重复，只保留独立工具与综合服务。',
@@ -136,15 +176,15 @@ export const MORE_PAGE_COPY: Record<UiLocale, MorePageCopy> = {
     retry: '重新加载',
     disconnectedTitle: '功能目录暂不可用',
     disconnectedDescription: '暂时无法取得功能与权限状态，请稍后重新加载。',
-    pinnedSection: '已固定（仅桌面次级导航显示）',
+    pinnedSection: '已收藏',
     recentSection: '最近使用',
     recommendedSection: '为你推荐',
     noResultsTitle: '没有找到相关工具',
     noResultsDescription: '试试“筛选器”“期权”“风险”或“复盘”。',
     pin: '固定工具',
     unpin: '取消固定',
-    pinManagerTitle: '桌面次级导航',
-    pinManagerDescription: '先在本页选择，再一次保存 3–5 个工具；也可以清空全部固定项。',
+    pinManagerTitle: '收藏功能',
+    pinManagerDescription: '先在本页选择，再一次保存 3–5 个工具；也可以清空全部收藏。',
     pinCount: '已选择 {count} / 5',
     pinInvalid: '请选择 3–5 个工具，或清空全部固定项。',
     pinLimit: '最多只能固定 5 个工具。',
@@ -178,7 +218,7 @@ export const MORE_PAGE_COPY: Record<UiLocale, MorePageCopy> = {
   'zh-Hant': {
     kicker: 'FEATURE DIRECTORY',
     title: '更多功能',
-    description: '按任務找到全部工具。固定 3–5 個常用入口後，它們只會出現在桌面次級導覽區。',
+    description: '按任務找到全部工具，並收藏 3–5 個常用入口。',
     hubEyebrow: '綜合功能中心',
     hubTitle: '研究、提醒與帳戶服務',
     hubDescription: '主導覽已有頁面不重複，只保留獨立工具與綜合服務。',
@@ -196,15 +236,15 @@ export const MORE_PAGE_COPY: Record<UiLocale, MorePageCopy> = {
     retry: '重新載入',
     disconnectedTitle: '功能目錄暫不可用',
     disconnectedDescription: '暫時無法取得功能與權限狀態，請稍後重新載入。',
-    pinnedSection: '已固定（僅桌面次級導覽顯示）',
+    pinnedSection: '已收藏',
     recentSection: '最近使用',
     recommendedSection: '為你推薦',
     noResultsTitle: '沒有找到相關工具',
     noResultsDescription: '試試「篩選器」「期權」「風險」或「複盤」。',
     pin: '固定工具',
     unpin: '取消固定',
-    pinManagerTitle: '桌面次級導覽',
-    pinManagerDescription: '先在本頁選擇，再一次儲存 3–5 個工具；也可以清空全部固定項。',
+    pinManagerTitle: '收藏功能',
+    pinManagerDescription: '先在本頁選擇，再一次儲存 3–5 個工具；也可以清空全部收藏。',
     pinCount: '已選擇 {count} / 5',
     pinInvalid: '請選擇 3–5 個工具，或清空全部固定項。',
     pinLimit: '最多只能固定 5 個工具。',
@@ -274,7 +314,9 @@ const ACCESS = new Set<FeatureAccess>(['open', 'upgrade', 'wait', 'retry'])
 const DATA_STATES = new Set<FeatureDataState>(['ready', 'delayed', 'stale', 'missing', 'not_applicable'])
 const HEALTH_STATES = new Set<FeatureHealth>(['healthy', 'degraded', 'unavailable', 'not_applicable'])
 const PLACEMENTS = new Set<FeaturePlacement>(['more', 'secondary_nav', 'dashboard_card', 'inspector', 'drawer', 'dialog', 'overlay'])
-const PRIMARY_NAV_ROUTES = new Set(['/today', '/discover', '/research', '/paper', '/portfolio', '/more'])
+const PRIMARY_NAV_ROUTES: ReadonlySet<string> = new Set(['/today', '/discover', '/research', '/paper', '/portfolio', '/more'])
+const MORE_ONLY_ROUTES = new Set<string>(MORE_NAV_ROUTES.filter((route) => route !== '/more'))
+const HIDDEN_CATALOG_ROUTES = new Set<string>(HIDDEN_NAV_ROUTES.filter((route) => route !== '/entertainment' && route !== '/mystic'))
 const DRAFT_ACTION_FIELDS = new Set(['market', 'symbol', 'price', 'side', 'reference_id'])
 
 const COPY: Record<string, { hans: string; hant: string }> = {
@@ -427,6 +469,10 @@ export function decodeFeatureCatalog(value: unknown): FeatureCatalogPayload {
     if (item.recommendation_rank !== null && !Number.isSafeInteger(item.recommendation_rank)) throw new Error('invalid recommendation rank')
     const key = stringValue(item.key, 'key')
     if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(key)) throw new Error('invalid feature key')
+    const routePath = route.split(/[?#]/, 1)[0]
+    const placements = [...new Set(item.placements as FeaturePlacement[])]
+    if (HIDDEN_CATALOG_ROUTES.has(routePath) && placements.some((placement) => placement === 'more' || placement === 'secondary_nav')) throw new Error('hidden feature cannot be navigable')
+    if (MORE_ONLY_ROUTES.has(routePath) && (!placements.includes('more') || placements.includes('secondary_nav'))) throw new Error('more feature placement mismatch')
     return {
       key,
       route,
@@ -441,7 +487,7 @@ export function decodeFeatureCatalog(value: unknown): FeatureCatalogPayload {
       reason: nullableString(item.reason, 'reason'),
       dataState,
       health,
-      placements: [...new Set(item.placements as FeaturePlacement[])],
+      placements,
       actions: decodeActions(item.actions),
       pinAllowed: item.pin_allowed,
       primaryNav: item.primary_nav,
@@ -452,7 +498,7 @@ export function decodeFeatureCatalog(value: unknown): FeatureCatalogPayload {
   const known = new Set(items.map((item) => item.key))
   if (known.size !== items.length) throw new Error('duplicate feature key')
   const primaryRoutes = items.filter((item) => item.primaryNav).map((item) => item.route)
-  if (primaryRoutes.length !== 6 || primaryRoutes.some((route) => !PRIMARY_NAV_ROUTES.has(route)) || new Set(primaryRoutes).size !== 6) throw new Error('invalid primary navigation')
+  if (primaryRoutes.length !== PRIMARY_NAV_ROUTES.size || primaryRoutes.some((route) => !PRIMARY_NAV_ROUTES.has(route)) || new Set(primaryRoutes).size !== PRIMARY_NAV_ROUTES.size) throw new Error('invalid primary navigation')
   if (items.some((item) => item.primaryNav && item.pinAllowed)) throw new Error('primary navigation cannot be pinned')
   const preferences = record(payload.preferences, 'invalid feature preferences')
   if (!Array.isArray(preferences.pinned) || !Array.isArray(preferences.recent) || !Number.isSafeInteger(preferences.version) || Number(preferences.version) < 0) {

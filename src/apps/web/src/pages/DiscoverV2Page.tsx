@@ -320,12 +320,12 @@ function BeginnerRecommendations({ items, authenticated, onResearch }: {
           ? '资料字段较完整，适合先学习如何阅读研究证据。'
           : evidence.supplied > 0 ? `已有 ${evidence.supplied} 项可核对依据，同时保留 ${evidence.missing} 项资料缺口。` : '当前资料有限，适合学习如何识别未知项。'
         return <article key={item.event_id}>
-          <header><span>新手推荐 {index + 1}</span><V2StatusPill state={item.contract_status === 'complete' ? 'success' : 'warning'}>{item.contract_status === 'complete' ? '资料较完整' : '带缺口'}</V2StatusPill></header>
-          <div className="discover-beginner-symbol"><CandidateLogo item={item} /><span><strong>{item.symbol || '股票代码未提供'}</strong><small>{marketName(item.market)} · {actionLabel(item)}</small></span></div>
-          <p>{reason}</p>
+          <header><span>研判卡 {index + 1}</span><V2StatusPill state={item.contract_status === 'complete' ? 'success' : 'warning'}>{item.contract_status === 'complete' ? '资料较完整' : '带缺口'}</V2StatusPill></header>
+          <div className="discover-beginner-symbol"><CandidateLogo item={item} /><span><strong>{item.symbol || '股票代码未提供'}</strong><small>{marketName(item.market)} · AI 研判方向：{item.action === 'BUY' ? '做多' : item.action === 'SHORT' ? '做空' : '观察'}</small></span></div>
+          <p><strong>数据支撑分析：</strong>{reason}</p>
           <div className="discover-beginner-meter"><span style={{ width: `${Math.min(100, Math.round(evidence.supplied / Math.max(evidence.supplied + evidence.missing, 1) * 100))}%` }} /></div>
           <button className="v2-button v2-button-secondary" type="button" onClick={() => onResearch(item)}>先看研究证据 <ArrowRight size={14} /></button>
-          <footer><i className={evidence.missing ? 'is-waiting' : 'is-online'} />研究入口，不构成买入建议</footer>
+          <footer><i className={evidence.missing ? 'is-waiting' : 'is-online'} />仅供研究参考，不构成投资建议</footer>
         </article>
       })}</div> : <V2StatePanel state={authenticated ? 'empty' : 'locked'} title="暂无可推荐的研究起点" detail="有真实候选资料后再显示，不使用虚构热门股票填充。" />}
     </V2Card>
@@ -806,7 +806,7 @@ export function DiscoverV2Page() {
       updateParams({ selected: String(item.event_id) })
       return
     }
-    setWatchMessage('正在将股票带回牛熊 PK…')
+    setWatchMessage('正在将股票带入多空观点对照…')
     try {
       const binding = await deliberationBindingFromRecommendation(item)
       const params = new URLSearchParams({
@@ -820,7 +820,7 @@ export function DiscoverV2Page() {
       })
       navigate(`/deliberation?${params}`)
     } catch (caught) {
-      setWatchMessage(caught instanceof Error ? caught.message : '当前股票暂时无法带回牛熊 PK，请选择其他候选。')
+      setWatchMessage(caught instanceof Error ? caught.message : '当前股票暂时无法进入多空观点对照，请选择其他候选。')
     }
   }
   const scrollToAnchor = (id: (typeof DISCOVER_ANCHORS)[number]['id']) => {

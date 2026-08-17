@@ -8,6 +8,7 @@ import {
   validPersonalPaperRiskProof,
   validPersonalPaperRiskProofRequest,
 } from '../src/api/client.ts'
+import { PRIMARY_NAV_GROUPS } from '../src/domain/featureCatalog.ts'
 
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
 const shell = readFileSync(new URL('../src/components/AppShell.tsx', import.meta.url), 'utf8')
@@ -102,15 +103,18 @@ test('personal paper risk proof freezes the request matrix and seven-check decis
   assert.equal(validPersonalPaperRiskProof({ ...riskProof, decision: 'reject', risk_level: 'blocked' }), false)
 })
 
-test('desktop navigation adds recommendations and deliberation while mobile keeps five fixed modules', () => {
-  const desktopBlock = shell.match(/const navItems = \[([\s\S]*?)\] as const/)?.[1] ?? ''
-  const mobileBlock = shell.match(/const mobileNavItems = \[([\s\S]*?)\] as const/)?.[1] ?? ''
-  for (const route of ['/today', '/discover', '/recommendations', '/research', '/paper', '/portfolio', '/deliberation', '/more']) assert.match(desktopBlock, new RegExp(`to: '${route}'`))
-  assert.equal((desktopBlock.match(/to: '/g) ?? []).length, 8)
-  for (const route of ['/today', '/discover', '/research', '/paper', '/more']) assert.match(mobileBlock, new RegExp(`to: '${route}'`))
-  assert.equal((mobileBlock.match(/to: '/g) ?? []).length, 5)
-  assert.doesNotMatch(mobileBlock, /pinned|secondaryTools/)
-  assert.match(navigationStyles, /@media \(max-width: 1024px\) \{ \.app-shell \.secondary-tools \{ display: none;/)
+test('desktop and mobile navigation use the four finalized groups with More kept separate', () => {
+  assert.deepEqual(PRIMARY_NAV_GROUPS.map(({ key, route }) => [key, route]), [
+    ['opportunity', '/today'], ['judgment', '/research'], ['simulation', '/paper'], ['mine', '/account'],
+  ])
+  assert.deepEqual(PRIMARY_NAV_GROUPS.flatMap((group) => group.items.map((item) => item.route)), [
+    '/today', '/discover', '/recommendations', '/research', '/deliberation', '/paper', '/portfolio', '/account', '/membership',
+  ])
+  assert.match(shell, /const mobileNavItems = navItems\.map/)
+  assert.match(shell, /to="\/more"/)
+  assert.doesNotMatch(shell, /secondaryTools/)
+  assert.match(navigationStyles, /@media \(min-width: 701px\) and \(max-width: 1180px\)/)
+  assert.match(navigationStyles, /@media \(max-width: 700px\)/)
 })
 
 test('paper and more routes are local authenticated pages while legacy URLs retain query and hash', () => {

@@ -8,6 +8,7 @@ const page = fs.readFileSync(path.join(root, 'src/pages/PromotionCenterPage.tsx'
 const styles = fs.readFileSync(path.join(root, 'src/styles/promotion.css'), 'utf8')
 const app = fs.readFileSync(path.join(root, 'src/App.tsx'), 'utf8')
 const shell = fs.readFileSync(path.join(root, 'src/components/AppShell.tsx'), 'utf8')
+const catalog = fs.readFileSync(path.join(root, 'src/domain/featureCatalog.ts'), 'utf8')
 
 test('promotion dashboard exposes every authoritative balance and complete histories', () => {
   for (const field of ['earned_total_minor', 'withdrawable_minor', 'pending_minor', 'reserved_minor', 'paid_minor', 'debt_minor']) assert.match(page, new RegExp(field))
@@ -32,7 +33,8 @@ test('promotion states, copy feedback, and audit tones remain truthful', () => {
 
 test('promotion UI is routed, responsive, touch safe, and avoids desktop-table overflow', () => {
   assert.match(app, /path="\/promotion"/)
-  assert.match(shell, /to: '\/promotion'/)
+  assert.match(catalog, /MORE_NAV_ROUTES = \[[^\]]*'\/promotion'/)
+  assert.match(shell, /to="\/more"/)
   assert.match(styles, /\.promotion-balance-grid \{[\s\S]*?repeat\(6/)
   assert.match(styles, /\.promotion-id-copy \{[\s\S]*?min-height: 44px/)
   assert.match(styles, /@media \(max-width: 600px\)[\s\S]*?\.promotion-record \{ grid-template-columns: 1fr/)

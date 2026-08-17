@@ -1,33 +1,23 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
-  BellRing,
-  BookOpenCheck,
   Bot,
   CandlestickChart,
-  CalendarClock,
-  ChartCandlestick,
+  ChevronDown,
   ChevronRight,
   ClipboardCheck,
   Swords,
-  MessageSquareText,
   FlaskConical,
-  Gauge,
   Grid2X2,
   House,
   Languages,
-  HelpCircle,
-  LifeBuoy,
-  ListFilter,
   LogOut,
   LoaderCircle,
   Moon,
   Radar,
-  RadioTower,
   Search,
   ShieldCheck,
   Sparkles,
   Sun,
-  Target,
   Trash2,
   UserRound,
   WalletCards,
@@ -37,8 +27,6 @@ import {
 import { autoLiveApi, type AutoLivePauseResult, type AutoLiveSnapshot } from '../api/autoLive'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
-  FEATURE_CATALOG_UPDATED_EVENT,
-  fetchFeatureCatalog,
   searchMarket,
   type MarketSearchItem,
 } from '../api/client'
@@ -49,7 +37,7 @@ import { WatchlistToggle } from './WatchlistToggle'
 import type { Market } from '../types'
 import { applyTheme, readStoredTheme, type Theme } from '../theme'
 import { displayDeliveryDelay, displayFreshness } from '../domain/dataSourcePresentation'
-import { localizeFeature, type FeatureCatalogPayload } from '../domain/featureCatalog'
+import { MORE_NAV_ROUTES, PRIMARY_NAV_GROUPS, type PrimaryNavGroupKey, type PrimaryNavIconName } from '../domain/featureCatalog'
 import { deriveAutoLiveKillSwitchView, type AutoLiveSnapshotState } from '../domain/autoLiveSafety'
 import { createSessionIdempotencyRegistry } from '../domain/sessionIdempotency'
 import { useCicloTier } from '../api/use-ciclo-tier'
@@ -59,29 +47,20 @@ interface AppShellProps {
   children: ReactNode
 }
 
-const navItems = [
-  { to: '/today', key: 'today', icon: House },
-  { to: '/discover', key: 'discover', icon: Radar },
-  { to: '/recommendations', key: 'recommendations', icon: Sparkles },
-  { to: '/research', key: 'research', icon: CandlestickChart },
-  { to: '/paper', key: 'paper', icon: WalletCards },
-  { to: '/portfolio', key: 'portfolio', icon: ClipboardCheck },
-  { to: '/deliberation', key: 'deliberation', icon: Swords },
-  { to: '/more', key: 'more', icon: Grid2X2 },
-] as const
-
-const mobileNavItems = [
-  { to: '/today', key: 'today', icon: House },
-  { to: '/discover', key: 'discover', icon: Radar },
-  { to: '/research', key: 'market', icon: CandlestickChart },
-  { to: '/paper', key: 'paper', icon: WalletCards },
-  { to: '/more', key: 'moreShort', icon: Grid2X2 },
-] as const
-const feedbackItem = { to: '/feedback', label: '反馈建议', icon: MessageSquareText }
-const promotionItem = { to: '/promotion', label: '推广中心', icon: Target }
+const NAV_ICONS: Record<PrimaryNavIconName, LucideIcon> = {
+  Radar, House, Sparkles, CandlestickChart, Swords, WalletCards, ClipboardCheck, UserRound, ShieldCheck,
+}
+const navItems = PRIMARY_NAV_GROUPS.map((group) => ({
+  ...group,
+  to: group.route,
+  icon: NAV_ICONS[group.icon],
+  routes: group.items.map((item) => item.route),
+  items: group.items.map((item) => ({ ...item, to: item.route, icon: NAV_ICONS[item.icon] })),
+}))
+const mobileNavItems = navItems.map(({ to, key, icon, routes }) => ({ to, key, icon, routes }))
 const NAV_COPY = {
-  'zh-Hans': { today: '今日', discover: '发现', recommendations: '新手推荐', research: '行情与研究', market: '行情', paper: '模拟', portfolio: '组合与复盘', deliberation: '牛熊 PK', more: '综合功能中心', moreShort: '更多', pinned: '固定工具' },
-  'zh-Hant': { today: '今日', discover: '發現', recommendations: '新手推薦', research: '行情與研究', market: '行情', paper: '模擬', portfolio: '組合與複盤', deliberation: '牛熊 PK', more: '綜合功能中心', moreShort: '更多', pinned: '固定工具' },
+  'zh-Hans': { opportunity: '机会', opportunityMobile: '机会', judgment: '研判', simulation: '模拟战绩', simulationShort: '模拟', mine: '我的', today: '今日', discover: '发现', recommendations: '推荐', research: '行情研究', paper: '个人模拟', portfolio: '组合复盘', deliberation: '多空观点对照', account: '账户', membership: '会员', more: '更多功能' },
+  'zh-Hant': { opportunity: '機會', opportunityMobile: '機會', judgment: '研判', simulation: '模擬戰績', simulationShort: '模擬', mine: '我的', today: '今日', discover: '發現', recommendations: '推薦', research: '行情研究', paper: '個人模擬', portfolio: '組合複盤', deliberation: '多空觀點對照', account: '帳戶', membership: '會員', more: '更多功能' },
 } as const
 const AI_COPY = {
   'zh-Hans': {
@@ -91,13 +70,12 @@ const AI_COPY = {
     label: 'Ciclo AI',
   },
 } as const
-const FEATURE_ICONS: Record<string, LucideIcon> = {
-  BellRing, BookOpenCheck, CalendarClock, ChartCandlestick, ClipboardCheck, Gauge, Grid2X2,
-  LifeBuoy, ListFilter, RadioTower, ShieldCheck, Sparkles, Target, WalletCards,
-}
-
 const SEARCH_HISTORY_STORAGE_KEY = 'ciclotrade.searchHistory'
 const MAX_RECENT_SEARCHES = 6
+
+function pathMatchesRoute(pathname: string, route: string) {
+  return pathname === route || pathname.startsWith(`${route}/`)
+}
 
 function visualFamilyForPath(pathname: string, locale: 'zh-Hans' | 'zh-Hant') {
   const traditional = locale === 'zh-Hant'
@@ -172,8 +150,8 @@ export function AppShell({ children }: AppShellProps) {
   const [commandWatchBusy, setCommandWatchBusy] = useState('')
   const [theme, setTheme] = useState<Theme>(readStoredTheme)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
+  const [expandedNavGroup, setExpandedNavGroup] = useState<PrimaryNavGroupKey | null>(null)
   const [recentSearches, setRecentSearches] = useState<CommandHistoryItem[]>(storedSearchHistory)
-  const [featureCatalog, setFeatureCatalog] = useState<FeatureCatalogPayload | null>(null)
   const [autoLiveSnapshot, setAutoLiveSnapshot] = useState<AutoLiveSnapshot | null>(null)
   const [autoLiveSnapshotState, setAutoLiveSnapshotState] = useState<AutoLiveSnapshotState>('idle')
   const commandInput = useRef<HTMLInputElement>(null)
@@ -197,23 +175,18 @@ export function AppShell({ children }: AppShellProps) {
   const isSuperAdmin = workspace.user?.admin_role === 'super_admin'
   const aiAvailable = workspace.mode === 'authenticated'
   const navCopy = NAV_COPY[locale]
-  const activePrimaryNav = navItems.find((item) => pathname === item.to || pathname.startsWith(`${item.to}/`))
+  const activePrimaryNav = navItems.find((item) => item.routes.some((route) => pathMatchesRoute(pathname, route)))
+  const moreNavActive = MORE_NAV_ROUTES.some((route) => pathMatchesRoute(pathname, route))
   const ActiveRouteIcon = activePrimaryNav?.icon ?? Grid2X2
-  const activeRouteLabel = activePrimaryNav ? navCopy[activePrimaryNav.key] : visualFamily.label
+  const activeRouteLabel = activePrimaryNav ? navCopy[activePrimaryNav.key] : moreNavActive ? navCopy.more : visualFamily.label
   const aiCopy = AI_COPY[locale]
-  const secondaryTools = useMemo(() => {
-    if (!featureCatalog) return []
-    const byKey = new Map(featureCatalog.items.map((item) => [item.key, item]))
-    return featureCatalog.preferences.pinned.flatMap((key) => {
-      const item = byKey.get(key)
-      if (!item || item.primaryNav || !item.pinAllowed || item.availability !== 'available' || !item.placements.includes('secondary_nav')) return []
-      const copy = localizeFeature(item, locale)
-      return [{ to: item.route, label: copy.title, icon: FEATURE_ICONS[item.icon] }]
-    })
-  }, [featureCatalog, locale])
   const marketStatusLabel = !realData
     ? workspace.mode === 'offline' ? '离线演示' : '界面演示'
     : marketDisconnected ? '未连接' : marketDelay || (marketFreshness === '状态未记录' && marketStatus?.is_realtime ? '实时权限已验证' : marketFreshness)
+
+  useEffect(() => {
+    setExpandedNavGroup(navItems.find((item) => item.routes.some((route) => pathMatchesRoute(pathname, route)))?.key ?? null)
+  }, [pathname])
 
   useEffect(() => {
     let active = true
@@ -236,21 +209,6 @@ export function AppShell({ children }: AppShellProps) {
   useEffect(() => {
     applyTheme(theme, true)
   }, [theme])
-
-  useEffect(() => {
-    let active = true
-    const refresh = () => {
-      void fetchFeatureCatalog().then((payload) => { if (active) setFeatureCatalog(payload) }).catch(() => { if (active) setFeatureCatalog(null) })
-    }
-    const receive = (event: Event) => {
-      const detail = (event as CustomEvent<FeatureCatalogPayload>).detail
-      if (active && detail) setFeatureCatalog(detail)
-      else refresh()
-    }
-    refresh()
-    window.addEventListener(FEATURE_CATALOG_UPDATED_EVENT, receive)
-    return () => { active = false; window.removeEventListener(FEATURE_CATALOG_UPDATED_EVENT, receive) }
-  }, [])
 
   useEffect(() => {
     const openCommand = (event: KeyboardEvent) => {
@@ -408,23 +366,30 @@ export function AppShell({ children }: AppShellProps) {
           <span><strong>CicloTrade</strong><small>DECISION TERMINAL</small></span>
         </NavLink>
         <nav>
-          {navItems.map(({ to, key, icon: Icon }) => (
-            <NavLink key={to} className={({ isActive }) => isActive ? 'nav-item active' : 'nav-item'} to={to}>
-              <Icon size={18} /> <span>{navCopy[key]}</span>
-            </NavLink>
-          ))}
-          {secondaryTools.length > 0 && <section className="secondary-tools" aria-label={navCopy.pinned}>
-            <h2>{navCopy.pinned}</h2>
-            {secondaryTools.map(({ to, label, icon: Icon }) => <NavLink key={to} className={({ isActive }) => isActive ? 'nav-item secondary active' : 'nav-item secondary'} to={to}><Icon size={17} /><span>{label}</span></NavLink>)}
-          </section>}
+          {navItems.map(({ to, key, icon: Icon, routes, items }) => {
+            const active = routes.some((route) => pathMatchesRoute(pathname, route))
+            const expanded = expandedNavGroup === key
+            const childrenId = `nav-group-${key}`
+            return <section className={`nav-group ${active ? 'is-active' : ''} ${expanded ? 'is-expanded' : ''}`} key={to}>
+              <div className="nav-group-header">
+                <NavLink className={`nav-item nav-group-link ${active ? 'active' : ''}`} to={to} aria-label={navCopy[key]} title={navCopy[key]} onClick={() => setExpandedNavGroup(key)}>
+                  <Icon size={20} aria-hidden="true" /><span>{navCopy[key]}</span>
+                </NavLink>
+                <button className="nav-group-toggle" type="button" aria-label={`${expanded ? '收起' : '展开'}${navCopy[key]}子菜单`} title={`${expanded ? '收起' : '展开'}${navCopy[key]}子菜单`} aria-controls={childrenId} aria-expanded={expanded} onClick={() => setExpandedNavGroup(expanded ? null : key)}>
+                  <ChevronDown size={16} aria-hidden="true" />
+                </button>
+              </div>
+              <div id={childrenId} className="nav-group-children" aria-label={`${navCopy[key]} 二级导航`}>
+                {items.map(({ to: childTo, key: childKey, icon: ChildIcon, ...item }) => (
+                  <NavLink key={childTo} className={({ isActive }) => `nav-item nav-child ${item.featured ? 'featured' : ''} ${isActive ? 'active' : ''}`.trim()} to={childTo} aria-label={navCopy[childKey]} title={navCopy[childKey]} onClick={() => setExpandedNavGroup(key)}>
+                    <ChildIcon size={16} aria-hidden="true" /><span>{navCopy[childKey]}</span>
+                  </NavLink>
+                ))}
+              </div>
+            </section>
+          })}
         </nav>
         <div className="sidebar-bottom">
-          <NavLink className="sidebar-feedback" to={feedbackItem.to} state={{ sourcePage: pathname }}><MessageSquareText size={16} /><span>{feedbackItem.label}</span><ChevronRight size={15} /></NavLink>
-          <NavLink className="membership-mini" to="/membership">
-            <span className="membership-mark"><ShieldCheck size={16} /></span>
-            <span><small>当前方案</small><strong>{workspace.user?.plan_display_name ?? '演示模式'}</strong></span>
-            <ChevronRight size={16} />
-          </NavLink>
           <p>专业决策终端 · 受控演示</p>
         </div>
       </aside>
@@ -463,12 +428,9 @@ export function AppShell({ children }: AppShellProps) {
             {userMenuOpen && <div ref={accountPopover} id="account-menu" className="account-popover" role="menu" aria-label="账户菜单">
               <header role="presentation"><strong>{workspace.user?.display_name ?? 'CicloTrade 用户'}</strong><small>{workspace.user?.plan_display_name ?? '账户'}</small></header>
               <a role="menuitem" href="/" onClick={() => setUserMenuOpen(false)}><House size={16} /> 返回欢迎页</a>
-              <NavLink role="menuitem" to="/notifications" onClick={() => setUserMenuOpen(false)}><BellRing size={16} /> 消息通知</NavLink>
               <NavLink role="menuitem" to="/account" onClick={() => setUserMenuOpen(false)}><UserRound size={16} /> 个人中心</NavLink>
               <NavLink role="menuitem" to="/membership" onClick={() => setUserMenuOpen(false)}><ShieldCheck size={16} /> 订阅会员</NavLink>
-              <NavLink role="menuitem" to={promotionItem.to} onClick={() => setUserMenuOpen(false)}><Target size={16} /> {promotionItem.label}</NavLink>
-              <NavLink role="menuitem" to="/help" onClick={() => setUserMenuOpen(false)}><HelpCircle size={16} /> 帮助与支持</NavLink>
-              <NavLink role="menuitem" to="/feedback" onClick={() => setUserMenuOpen(false)}><MessageSquareText size={16} /> 反馈建议</NavLink>
+              <NavLink role="menuitem" to="/more" onClick={() => setUserMenuOpen(false)}><Grid2X2 size={16} /> {navCopy.more}</NavLink>
               {isSuperAdmin && <NavLink role="menuitem" to="/admin" onClick={() => setUserMenuOpen(false)}><ShieldCheck size={16} /> 超级管理</NavLink>}
               <button role="menuitem" type="button" onClick={() => { setUserMenuOpen(false); void workspace.logout().then(() => navigate('/')) }}><LogOut size={16} /> 登出账户</button>
             </div>}
@@ -480,19 +442,21 @@ export function AppShell({ children }: AppShellProps) {
           <span><ShieldCheck size={14} /> {realData ? '风控设置已载入' : '风险状态为演示'}</span>
           <span><FlaskConical size={14} /> {hasModelSnapshots ? '模型快照已载入' : '模型运行状态未提供'}</span>
           <strong>{realData ? 'MARKET DATA · VERIFIED STATUS' : 'DEMO DATA'} · 不构成投资建议</strong>
+          <div className="global-auto-live-mobile-inline"><GlobalAutoLiveKillSwitch snapshot={autoLiveSnapshot} snapshotState={realData && autoLiveSnapshotState === 'idle' ? 'loading' : autoLiveSnapshotState} /></div>
         </div>
 
         <main id="main-content">{children}</main>
+        <footer className="app-disclaimer">本平台提供的数据与分析仅供参考，不构成投资建议</footer>
       </div>
 
-      <div className="global-auto-live-mobile-bar"><GlobalAutoLiveKillSwitch snapshot={autoLiveSnapshot} snapshotState={realData && autoLiveSnapshotState === 'idle' ? 'loading' : autoLiveSnapshotState} /></div>
-
       <nav className="mobile-nav" aria-label="移动端主要导航">
-        {mobileNavItems.map(({ to, key, icon: Icon }) => (
-          <NavLink key={to} className={({ isActive }) => isActive ? 'active' : ''} to={to}>
-            <Icon size={20} /><span>{navCopy[key]}</span>
+        {mobileNavItems.map(({ to, key, icon: Icon, routes }) => {
+          const active = routes.some((route) => pathMatchesRoute(pathname, route))
+          const label = key === 'opportunity' ? navCopy.opportunityMobile : key === 'simulation' ? navCopy.simulationShort : navCopy[key]
+          return <NavLink key={to} className={active ? 'active' : ''} to={to} aria-label={label} title={label} aria-current={active ? 'page' : undefined}>
+            <Icon size={21} aria-hidden="true" /><span>{label}</span>
           </NavLink>
-        ))}
+        })}
       </nav>
 
       {commandOpen && (

@@ -142,13 +142,13 @@ function DirectionalAnimal({ side }: { side: 'bull' | 'bear' }) {
 }
 
 function DirectionalTrend({ values, side }: { values: number[]; side: 'bull' | 'bear' }) {
-  if (values.length < 2) return <div className="deliberation-pk-trend-empty" role="img" aria-label={`${side === 'bull' ? '多头' : '空头'}趋势数据不足`}><Activity aria-hidden="true" /><span>趋势数据不足</span></div>
+  if (values.length < 2) return <div className="deliberation-pk-trend-empty" role="img" aria-label={`${side === 'bull' ? '多方观点' : '空方观点'}趋势数据不足`}><Activity aria-hidden="true" /><span>趋势数据不足</span></div>
   const min = Math.min(...values)
   const max = Math.max(...values)
   const range = Math.max(max - min, 0.0001)
   const points = values.map((value, index) => `${4 + (index / Math.max(values.length - 1, 1)) * 92},${32 - ((value - min) / range) * 25}`).join(' ')
   const gradientId = `deliberation-${side}-trend-fill`
-  return <div className="deliberation-pk-trend" role="img" aria-label={`${side === 'bull' ? '多头' : '空头'}四席位真实强度趋势`}>
+  return <div className="deliberation-pk-trend" role="img" aria-label={`${side === 'bull' ? '多方观点' : '空方观点'}四席位真实强度趋势`}>
     <svg viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1"><stop offset="0" stopColor="currentColor" stopOpacity=".34" /><stop offset="1" stopColor="currentColor" stopOpacity="0" /></linearGradient></defs><path className="trend-grid" d="M4 10H96M4 22H96M4 34H96" /><polygon points={`4,34 ${points} 96,34`} fill={`url(#${gradientId})`} /><polyline points={points} /></svg>
   </div>
 }
@@ -339,7 +339,7 @@ export function DeliberationPage() {
     <header className="deliberation-local-topbar">
       <div className="deliberation-view-status" data-tone={currentTone}>
         <i aria-hidden="true" />
-        <span>观点管理</span>
+        <div><span>观点管理</span><h1>多空观点对照</h1></div>
         <strong>{currentStatus}</strong>
       </div>
       <div className="deliberation-top-actions">
@@ -347,6 +347,8 @@ export function DeliberationPage() {
         <button className="deliberation-export-button" type="button" onClick={exportDeliberationRecord} disabled={!data}><Download />导出</button>
       </div>
     </header>
+
+    <p className="deliberation-compliance-banner" role="note"><FileQuestion aria-hidden="true" /><strong>研究免责声明</strong><span>仅供研究/教育参考，不构成投资建议、交易邀约或收益承诺；市场可能损失部分或全部本金；数据/模型/AI可能延迟、遗漏、错误或偏差。</span><Link className="deliberation-legal-link" to="/legal">完整免责声明与法律条款</Link></p>
 
     {state.kind === 'error' && <StateNotice kind="error" title="审议页面读取失败" detail={state.detail} />}
     {state.kind === 'missing' && <StateNotice kind="missing" title="审议资料未绑定" detail={state.detail} />}
@@ -402,7 +404,7 @@ export function DeliberationPage() {
       <section className="deliberation-center" aria-labelledby="deliberation-core-title">
         <section className="deliberation-core">
           <header className="deliberation-center-heading">
-            <div><span>CICLO DELIBERATION CORE</span><h1 id="deliberation-core-title">审议中枢</h1></div>
+            <div><span>DIRECTIONAL RESEARCH CORE</span><h2 id="deliberation-core-title">观点证据中枢</h2></div>
             <span className="deliberation-status-pill" data-tone={currentTone}><i />{currentStatus}</span>
           </header>
 
@@ -435,15 +437,15 @@ export function DeliberationPage() {
             </div>
             <div className="deliberation-flow-result">
               <ArrowDown aria-hidden="true" />
-              <span><strong>分歧 风险与未知项</strong><small>{result ? result.invalidated_reason ? '证据失效，结论不可升级' : result.missing.length ? `${result.missing.length} 个席位资料不完整` : '当前服务端未返回席位缺项' : '等待真实审议结果'}</small></span>
-              <em>{result ? `${result.missing.length} 项` : '未形成'}</em>
+              <span><strong>倾向性研判</strong><small>{result ? result.invalidated_reason ? '证据失效，暂不形成研判' : result.missing.length ? `${result.missing.length} 个席位资料不完整` : '多空证据已汇总，等待人工复核' : '等待真实审议结果'}</small></span>
+              <em>{result ? result.invalidated_reason ? '已失效' : result.missing.length ? `${result.missing.length} 项缺口` : '待复核' : '未形成'}</em>
             </div>
           </div>
 
           {state.kind === 'loading' && <StateNotice kind="loading" title="正在读取真实 readiness" detail="审议中枢保持锁定，直到服务端返回账户可见的任务状态。" />}
           {readiness && !readiness.ready && <StateNotice kind="missing" title="当前 readiness 未通过" detail={readiness.reason || '服务端尚未提供创建审议所需的完整证据快照。'} />}
           {result?.invalidated_reason && <StateNotice kind="error" title="证据快照已失效" detail={`${result.invalidated_reason}；失效证据不会升级为综合结论。`} />}
-          {data && !result?.invalidated_reason && <p className="deliberation-boundary"><FileQuestion />观点—证据审议链只整理服务端绑定事实，不补写胜率、买卖结论或订单指令。</p>}
+          {data && !result?.invalidated_reason && <p className="deliberation-boundary"><FileQuestion />观点—证据审议链仅展示服务端绑定事实与数据分析，不补写胜率、买卖结论或订单指令。</p>}
 
           <div className="deliberation-runtime-actions">
             {readiness?.ready && <button className="deliberation-secondary-action" type="button" onClick={() => void createDeliberation()} disabled={busy !== ''}><RefreshCw />{busy === 'create' ? '正在发起审议' : '发起多智能体审议'}</button>}
@@ -477,7 +479,7 @@ export function DeliberationPage() {
 
       <aside className="deliberation-evidence" aria-labelledby="directional-evidence-title">
         <header className="deliberation-section-title">
-          <div><span>DIRECTIONAL EVIDENCE</span><h2 id="directional-evidence-title">支持证据</h2></div>
+          <div><span>DIRECTIONAL EVIDENCE</span><h2 id="directional-evidence-title">倾向性研判</h2></div>
           <div className="deliberation-evidence-tools" aria-label="证据视图工具">
             <span title="筛选视图"><Filter /></span><span title="网格布局"><LayoutGrid /></span>
             <button type="button" aria-label="刷新真实证据" title="刷新真实证据" onClick={() => setRefreshNonce((value) => value + 1)} disabled={state.kind === 'loading'}><RefreshCw /></button>
@@ -495,14 +497,14 @@ export function DeliberationPage() {
             <div className="deliberation-evidence-beam" aria-hidden="true"><i /><Network /><i /></div>
             <div className="deliberation-pk-arena">
               <article className="deliberation-pk-card is-bull">
-                <header><DirectionalAnimal side="bull" /><div><small>BULL CAMP</small><strong>多头阵营</strong></div></header>
-                <div className="deliberation-pk-score"><span>支持强度</span><strong>{formatScore(result?.support_strength)}</strong></div>
+                <header><DirectionalAnimal side="bull" /><div><strong>多方观点</strong></div></header>
+                <div className="deliberation-pk-score"><span>多方证据强度</span><strong>{formatScore(result?.support_strength)}</strong></div>
                 <DirectionalTrend values={bullTrend} side="bull" />
               </article>
-              <div className="deliberation-pk-vs" aria-label="多空对决"><span>VS</span><small>{authoritativeEvidence ? 'REAL SCORE' : 'WAITING'}</small></div>
+              <div className="deliberation-pk-vs" aria-label="多空观点对照"><span>对照</span><small>{authoritativeEvidence ? '真实证据' : '等待数据'}</small></div>
               <article className="deliberation-pk-card is-bear">
-                <header><div><small>BEAR CAMP</small><strong>空头阵营</strong></div><DirectionalAnimal side="bear" /></header>
-                <div className="deliberation-pk-score"><span>反向强度</span><strong>{formatScore(result?.counter_evidence_strength)}</strong></div>
+                <header><div><strong>空方观点</strong></div><DirectionalAnimal side="bear" /></header>
+                <div className="deliberation-pk-score"><span>空方证据强度</span><strong>{formatScore(result?.counter_evidence_strength)}</strong></div>
                 <DirectionalTrend values={bearTrend} side="bear" />
               </article>
             </div>
@@ -517,7 +519,7 @@ export function DeliberationPage() {
           {authoritativeEvidence ? <div className="deliberation-strengths">
             <EvidenceStrength label="支持证据强度" value={result?.support_strength ?? null} status={evidenceStatus} coverage={result?.coverage ?? null} methodVersion={result?.method_version ?? null} observedAt={result?.observed_at ?? null} availableAt={result?.available_at ?? null} asOf={result?.as_of ?? null} calculatedAt={result?.calculated_at ?? null} tone="support" />
             <EvidenceStrength label="反向证据强度" value={result?.counter_evidence_strength ?? null} status={evidenceStatus} coverage={result?.coverage ?? null} methodVersion={result?.method_version ?? null} observedAt={result?.observed_at ?? null} availableAt={result?.available_at ?? null} asOf={result?.as_of ?? null} calculatedAt={result?.calculated_at ?? null} tone="counter" />
-          </div> : <StateNotice kind={state.kind === 'loading' ? 'loading' : result ? 'missing' : state.kind === 'error' ? 'error' : 'empty'} title={state.kind === 'loading' ? '正在汇聚支持证据' : '支持证据：暂无数据'} detail={result?.invalidated_reason || '当前缺少完整的强度、覆盖率、方法版本或时间字段；页面不会留下空白，也不会补写估算值。'} />}
+          </div> : <StateNotice kind={state.kind === 'loading' ? 'loading' : result ? 'missing' : state.kind === 'error' ? 'error' : 'empty'} title={state.kind === 'loading' ? '正在汇聚多空证据' : '倾向性研判：暂无数据'} detail={result?.invalidated_reason || '当前缺少完整的强度、覆盖率、方法版本或时间字段；页面不会留下空白，也不会补写估算值。'} />}
 
           <div className="deliberation-counter-prompt">
             <AlertTriangle />

@@ -87,7 +87,7 @@ function RecommendationCard({ item, source, onResearch, onPractice }: { item: Re
   return <article className={`recommendation-preview-card ${complete ? 'is-complete' : 'is-incomplete'} ${expanded ? 'is-expanded' : ''}`}>
     <header>
       <div className="recommendation-preview-identity"><StockLogo symbol={item.symbol || ''} size="md" /><span><small>{normalizedMarket(item) === 'US' ? '美股' : 'A股'} · {item.instrument_type === 'stock' ? '正股' : item.option_right === 'CALL' ? 'CALL' : item.option_right === 'PUT' ? 'PUT' : '期权'}</small><strong>{item.symbol || '暂无数据'}</strong><em>{item.strategy_name || '暂无数据'}</em></span></div>
-      <div className="recommendation-preview-badges"><span className={`recommendation-action is-${(item.action || 'wait').toLowerCase()}`}>{ACTION_LABELS[item.action || ''] || SIGNAL_LABELS[signalFor(item)]}</span><span className={`recommendation-risk is-${riskLevel(item).includes('高') ? 'high' : 'normal'}`}>{riskLevel(item)}</span></div>
+      <div className="recommendation-preview-badges"><span className={`recommendation-action is-${(item.action || 'wait').toLowerCase()}`}>AI 研判方向 · {ACTION_LABELS[item.action || ''] || SIGNAL_LABELS[signalFor(item)]}</span><span className={`recommendation-risk is-${riskLevel(item).includes('高') ? 'high' : 'normal'}`}>{riskLevel(item)}</span></div>
     </header>
     <div className="recommendation-metric-rail">
       <div><span>{item.instrument_type === 'option' ? '权利金' : '现价'}</span><strong>{money(item.instrument_type === 'option' ? optionPremium : item.current_price, item.currency)}</strong></div>
@@ -95,14 +95,14 @@ function RecommendationCard({ item, source, onResearch, onPractice }: { item: Re
       <div><span>{item.instrument_type === 'option' ? '最大风险' : '止损'}</span><strong>{money(item.instrument_type === 'option' ? item.max_loss : item.stop_price, item.currency)}</strong></div>
     </div>
     <section className="recommendation-preview-return"><Target /><span>目标空间</span><strong>{returnSpace(item)}</strong></section>
-    <p className="recommendation-preview-reason">{item.rationale || '暂无数据'}</p>
+    <p className="recommendation-preview-reason"><strong>数据支撑分析</strong>{item.rationale || '暂无数据'}</p>
     <button className="recommendation-expand" type="button" aria-expanded={expanded} aria-controls={cardId} onClick={() => setExpanded((current) => !current)}>{expanded ? '收起详细资料' : '展开详细资料'}<ChevronDown /></button>
     <div className="recommendation-detail" id={cardId} hidden={!expanded}>
       <section className="beginner-explanation"><BookOpenCheck /><div><span>新手说明</span><p>{instrumentExplanation(item)}</p></div></section>
       <div className="recommendation-detail-grid">
         <div><span>参考价</span><strong>{money(item.reference_price, item.currency)}</strong></div>
         <div><span>当前价</span><strong>{money(item.current_price, item.currency)}</strong></div>
-        <div><span>建议数量</span><strong>{number(item.quantity_hint ?? item.quantity_delta)}</strong></div>
+        <div><span>数量参考</span><strong>{number(item.quantity_hint ?? item.quantity_delta)}</strong></div>
         {item.instrument_type === 'option' && <><div><span>标的</span><strong>{item.symbol || '暂无数据'}</strong></div><div><span>方向</span><strong>{item.option_right === 'CALL' ? 'Call 看涨' : item.option_right === 'PUT' ? 'Put 看跌' : '暂无数据'}</strong></div><div><span>行权价</span><strong>{money(item.option_strike, item.currency)}</strong></div><div><span>到期日</span><strong>{item.option_expiry || '暂无数据'}</strong></div><div><span>买价 / 卖价</span><strong>{money(item.bid, item.currency)} / {money(item.ask, item.currency)}</strong></div><div><span>隐含波动率</span><strong>{percent(item.implied_volatility)}</strong></div><div><span>成交量</span><strong>{number(item.volume)}</strong></div><div><span>未平仓量</span><strong>{number(item.open_interest)}</strong></div></>}
         <div><span>资料来源</span><strong>{source || '暂无数据'}</strong></div>
         <div><span>记录时间</span><strong>{observedAt ? formatTime(observedAt) : '暂无数据'}</strong></div>
@@ -135,14 +135,14 @@ export function RecommendationsPage() {
     : navigate(`/research?market=${encodeURIComponent(item.market || 'US')}&symbol=${encodeURIComponent(item.symbol || '')}&tab=期权证据`)
 
   return <div className="page recommendations-page">
-    <PageHeader kicker="BEGINNER RECOMMENDATIONS" title="正股与期权推荐" description="先用预览卡快速比较方向、目标空间与风险，再按需展开完整字段。推荐只用于研究与个人模拟，不会自动下单。" />
-    <section className="recommendation-guide"><Sparkles /><div><strong>推荐不是订单</strong><p>所有卡片来自服务端正式记录；缺失字段统一标为“暂无数据”，不会用估算或虚构内容补齐。</p></div><span><Gauge />{items.length} 条结果</span></section>
-    <nav className="recommendation-market-tabs" aria-label="推荐市场"><button className={market === 'US' ? 'active' : ''} type="button" onClick={() => setMarket('US')}>美股 <span>{allItems.filter((item) => normalizedMarket(item) === 'US').length}</span></button><button className={market === 'CN' ? 'active' : ''} type="button" onClick={() => setMarket('CN')}>A股 <span>{allItems.filter((item) => normalizedMarket(item) === 'CN').length}</span></button></nav>
+    <PageHeader kicker="AI RESEARCH DIRECTIONS" title="正股与期权研判" description="先用预览卡比较 AI 研判方向、目标空间与风险，再按需展开完整字段。内容仅用于研究与个人模拟，不会自动下单。" />
+    <section className="recommendation-guide"><Sparkles /><div><strong>AI 研判仅供研究</strong><p>所有卡片来自服务端正式记录；缺失字段统一标为“暂无数据”，不会用估算或虚构内容补齐。</p></div><span><Gauge />{items.length} 条结果</span></section>
+    <nav className="recommendation-market-tabs" aria-label="研判市场"><button className={market === 'US' ? 'active' : ''} type="button" onClick={() => setMarket('US')}>美股 <span>{allItems.filter((item) => normalizedMarket(item) === 'US').length}</span></button><button className={market === 'CN' ? 'active' : ''} type="button" onClick={() => setMarket('CN')}>A股 <span>{allItems.filter((item) => normalizedMarket(item) === 'CN').length}</span></button></nav>
     <div className="recommendation-filter-deck">
-      <div className="recommendation-tabs" role="tablist" aria-label="推荐类型"><button className={view === 'stock' ? 'active' : ''} type="button" role="tab" aria-selected={view === 'stock'} onClick={() => setRecommendationView('stock')}>正股</button><button className={view === 'option' ? 'active' : ''} type="button" role="tab" aria-selected={view === 'option'} onClick={() => setRecommendationView('option')}>期权</button></div>
-      <div className="recommendation-signal-tabs" role="tablist" aria-label="推荐方向">{availableSignals.map((item) => <button className={signal === item ? 'active' : ''} type="button" role="tab" aria-selected={signal === item} onClick={() => setSignal(item)} key={item}>{SIGNAL_LABELS[item]} <span>{allItems.filter((candidate) => normalizedMarket(candidate) === market && candidate.instrument_type === view && signalFor(candidate) === item).length}</span></button>)}</div>
+      <div className="recommendation-tabs" role="tablist" aria-label="研判类型"><button className={view === 'stock' ? 'active' : ''} type="button" role="tab" aria-selected={view === 'stock'} onClick={() => setRecommendationView('stock')}>正股</button><button className={view === 'option' ? 'active' : ''} type="button" role="tab" aria-selected={view === 'option'} onClick={() => setRecommendationView('option')}>期权</button></div>
+      <div className="recommendation-signal-tabs" role="tablist" aria-label="AI 研判方向">{availableSignals.map((item) => <button className={signal === item ? 'active' : ''} type="button" role="tab" aria-selected={signal === item} onClick={() => setSignal(item)} key={item}>{SIGNAL_LABELS[item]} <span>{allItems.filter((candidate) => normalizedMarket(candidate) === market && candidate.instrument_type === view && signalFor(candidate) === item).length}</span></button>)}</div>
     </div>
-    {items.length ? <section className="recommendation-preview-grid" aria-label={`${market === 'US' ? '美股' : 'A股'}${view === 'stock' ? '正股' : '期权'}推荐列表`}>{items.map((item) => <RecommendationCard key={`${item.event_id}-${item.symbol}`} item={item} source={workspace.data?.recommendations.source || ''} onResearch={() => openResearch(item)} onPractice={() => openPractice(item)} />)}</section> : <section className="recommendation-empty" role="status"><BookOpenCheck /><div><h2>当前分类暂无数据</h2><p>新的正式研究记录通过服务端发布后会显示在这里。可以切换市场、产品或方向查看其他记录。</p></div><button className="button secondary" type="button" onClick={() => navigate('/discover')}>前往发现股票</button></section>}
+    {items.length ? <section className="recommendation-preview-grid" aria-label={`${market === 'US' ? '美股' : 'A股'}${view === 'stock' ? '正股' : '期权'}研判列表`}>{items.map((item) => <RecommendationCard key={`${item.event_id}-${item.symbol}`} item={item} source={workspace.data?.recommendations.source || ''} onResearch={() => openResearch(item)} onPractice={() => openPractice(item)} />)}</section> : <section className="recommendation-empty" role="status"><BookOpenCheck /><div><h2>当前分类暂无数据</h2><p>新的正式研究记录通过服务端发布后会显示在这里。可以切换市场、产品或方向查看其他记录。</p></div><button className="button secondary" type="button" onClick={() => navigate('/discover')}>前往发现股票</button></section>}
   </div>
 }
 

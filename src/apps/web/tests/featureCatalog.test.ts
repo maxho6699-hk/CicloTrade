@@ -139,7 +139,7 @@ test('legacy locked entries wait without a membership CTA', () => {
   const decoded = decodeFeatureCatalog({
     ...payload,
     items: [...payload.items, {
-      key: 'legacy-option', route: '/lab', routes: ['/lab'], category: 'research',
+      key: 'legacy-option', route: '/research?tab=options', routes: ['/research?tab=options'], category: 'research',
       title_key: 'feature.option_lab.title', description_key: 'feature.option_lab.description',
       icon: 'Gauge', capability: 'option_strategy', availability: 'locked', access: 'wait',
       reason: 'sales_unavailable: 该能力仅保留历史有效权益，当前不公开新购或升级。',
@@ -199,25 +199,35 @@ test('account center keeps the historical data-status key without duplicating th
 })
 
 test('new bounded contexts have safe routes and complete Simplified and Traditional copy', () => {
+  const boundedContexts = [
+    ['ai-workspace', '/ai', 'feature.ai_workspace.title', 'feature.ai_workspace.description', 'Sparkles'],
+    ['multi-agent-deliberation', '/deliberation', 'feature.multi_agent_deliberation.title', 'feature.multi_agent_deliberation.description', 'ShieldCheck'],
+  ]
   const decoded = decodeFeatureCatalog({
     ...payload,
-    items: [...payload.items, ...[
-      ['ai-workspace', '/ai', 'feature.ai_workspace.title', 'feature.ai_workspace.description', 'Sparkles'],
-      ['multi-agent-deliberation', '/deliberation', 'feature.multi_agent_deliberation.title', 'feature.multi_agent_deliberation.description', 'ShieldCheck'],
-      ['csv-signal-import', '/lab?tab=csv-import', 'feature.csv_signal_import.title', 'feature.csv_signal_import.description', 'ClipboardCheck'],
-    ].map(([key, route, title_key, description_key, icon], index) => ({
+    items: [...payload.items, ...boundedContexts.map(([key, route, title_key, description_key, icon], index) => ({
       key, route, routes: [route], category: 'research', title_key, description_key, icon,
       capability: key, availability: 'available', access: 'open', reason: null,
       data_state: 'ready', health: 'healthy', placements: ['more', 'secondary_nav'], actions: {},
       pin_allowed: true, primary_nav: false, sort_order: 250 + index * 10, recommendation_rank: index + 1,
     }))],
   })
-  for (const key of ['ai-workspace', 'multi-agent-deliberation', 'csv-signal-import']) {
+  for (const key of ['ai-workspace', 'multi-agent-deliberation']) {
     const item = decoded.items.find((entry) => entry.key === key)!
     assert.notEqual(localizeFeature(item, 'zh-Hans').title, item.titleKey)
     assert.notEqual(localizeFeature(item, 'zh-Hant').description, item.descriptionKey)
     assert.equal(featureOpenRoute(item), item.route)
   }
+  assert.throws(() => decodeFeatureCatalog({
+    ...payload,
+    items: [...payload.items, {
+      key: 'csv-signal-import', route: '/lab?tab=csv-import', routes: ['/lab?tab=csv-import'], category: 'research',
+      title_key: 'feature.csv_signal_import.title', description_key: 'feature.csv_signal_import.description', icon: 'ClipboardCheck',
+      capability: 'csv-signal-import', availability: 'available', access: 'open', reason: null,
+      data_state: 'ready', health: 'healthy', placements: ['more', 'secondary_nav'], actions: {},
+      pin_allowed: true, primary_nav: false, sort_order: 270, recommendation_rank: 3,
+    }],
+  }), /hidden feature cannot be navigable/)
 })
 
 test('status-bearing research entries remain readable while degraded but never pinnable', () => {

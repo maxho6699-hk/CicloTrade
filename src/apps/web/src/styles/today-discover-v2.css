@@ -778,10 +778,10 @@ button.discover-watchlist-main{cursor:pointer}
   .discover-market-card .v2-candidate-table tr{display:grid;grid-template-columns:1fr;padding:10px}
   .discover-market-card .v2-candidate-table td{display:block;grid-column:1!important;grid-row:auto!important;padding:0;border:0}
   .discover-price-chart-cell{grid-template-columns:minmax(82px,.7fr) minmax(112px,1.3fr)}
-  .discover-timeline{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .discover-status-bar{right:10px;bottom:calc(66px + env(safe-area-inset-bottom));left:10px;display:grid;max-height:118px;grid-template-columns:repeat(2,minmax(0,1fr));overflow-y:auto}
+  .discover-timeline{grid-template-columns:1fr}
+  .discover-status-bar{position:static;right:auto;bottom:auto;left:auto;display:grid;max-height:none;grid-template-columns:1fr;margin-top:10px;overflow:visible}
   .discover-status-bar>span{border-right:0;border-bottom:1px solid color-mix(in srgb,var(--discover-border) 62%,transparent)}
-  .discover-status-bar>span:last-child{grid-column:1/-1;border-bottom:0}
+  .discover-status-bar>span:last-child{grid-column:1;border-bottom:0}
 }
 @media (max-width:480px){
   .discover-filter-search{align-items:stretch;flex-wrap:wrap}
@@ -889,7 +889,7 @@ button.discover-watchlist-main{cursor:pointer}
   .today-queue-list{max-height:300px}
   .discover-dashboard{grid-template-columns:1fr;overflow:visible}
   .discover-center-column{grid-column:1}
-  .discover-timeline{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .discover-timeline{grid-template-columns:1fr}
 }
 
 @media (prefers-reduced-motion:reduce){
@@ -932,9 +932,16 @@ button.discover-watchlist-main{cursor:pointer}
 :root[data-theme='light'] .discover-action-card,:root[data-theme='light'] .discover-beginner-grid>article{background:linear-gradient(145deg,rgba(255,79,163,.035),rgba(139,92,255,.04) 45%,rgba(59,99,255,.025)),rgba(255,255,255,.86);box-shadow:0 12px 36px rgba(52,72,118,.12),inset 0 1px rgba(255,255,255,.9)}
 :root[data-theme='light'] .discover-action-main,:root[data-theme='light'] .discover-action-aux>span{background:rgba(247,249,252,.9)}
 @media (max-width:980px){.discover-beginner-grid{grid-template-columns:1fr}.discover-action-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:760px){.discover-action-grid{grid-template-columns:1fr}.discover-action-grid,.discover-beginner-grid{gap:10px;padding:8px}.discover-action-card,.discover-beginner-grid>article{padding:11px}}
 @media (max-width:620px){.discover-action-grid{grid-template-columns:1fr}.discover-action-main{grid-template-columns:1fr}.discover-beginner-grid{padding:8px}.discover-ai-quick-actions{grid-template-columns:1fr}.discover-filter-actions{grid-template-columns:1fr}}
 
 /* H23: mobile section rail appears only after the first viewport and tracks the active section. */
 .discover-anchor-section{scroll-margin-top:82px}.discover-mobile-anchors{display:none}
 @media(max-width:760px){.discover-mobile-anchors{position:fixed;z-index:62;top:50%;left:3px;display:grid;gap:8px;padding:10px 0;opacity:0;pointer-events:none;transform:translate(-12px,-50%);transition:opacity .18s ease,transform .18s ease}.discover-mobile-anchors.is-visible{opacity:1;pointer-events:auto;transform:translate(0,-50%)}.discover-mobile-anchors::before{position:absolute;z-index:-1;top:14px;bottom:14px;left:7px;width:1px;background:linear-gradient(transparent,color-mix(in srgb,var(--accent) 58%,var(--border)),transparent);box-shadow:0 0 8px color-mix(in srgb,var(--accent) 24%,transparent);content:''}.discover-mobile-anchors button{display:flex;width:max-content;min-width:15px;min-height:18px;align-items:center;gap:5px;padding:0;border:0;background:transparent;color:var(--muted-2);cursor:pointer}.discover-mobile-anchors button i{width:9px;height:9px;border:2px solid color-mix(in srgb,var(--accent) 42%,var(--surface));border-radius:50%;background:var(--canvas);box-shadow:0 0 0 2px color-mix(in srgb,var(--canvas) 82%,transparent);transition:background .16s ease,box-shadow .16s ease,transform .16s ease}.discover-mobile-anchors button span{max-width:0;overflow:hidden;border:1px solid transparent;border-radius:999px;background:color-mix(in srgb,var(--surface-raised) 88%,transparent);font-size:9px;font-weight:700;white-space:nowrap;opacity:0;backdrop-filter:blur(10px);transition:max-width .18s ease,padding .18s ease,opacity .18s ease}.discover-mobile-anchors button:is(:hover,:focus-visible,.is-active) i{background:var(--accent);box-shadow:0 0 10px var(--accent);transform:scale(1.18)}.discover-mobile-anchors button:is(:hover,:focus-visible,.is-active) span{max-width:70px;padding:3px 6px;border-color:color-mix(in srgb,var(--accent) 32%,var(--border));color:var(--text);opacity:1}}
 @media(prefers-reduced-motion:reduce){.discover-mobile-anchors,.discover-mobile-anchors button i,.discover-mobile-anchors button span{transition:none}}
+
+/* Mobile body copy stays readable even when compact desktop card rules are more specific. */
+@media (max-width:700px){
+  #main-content .today-v2-page p,
+  #main-content .discover-v2-page p{font-size:13px}
+}
