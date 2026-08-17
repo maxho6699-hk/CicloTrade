@@ -84,7 +84,7 @@
 .page-header-boundary > span svg { width: 22px; height: 22px; }
 .page-header-boundary > span i { position: absolute; right: 5px; bottom: 5px; width: 7px; height: 7px; border: 2px solid var(--surface-raised); border-radius: 50%; background: var(--positive); box-shadow: 0 0 10px color-mix(in srgb, var(--positive) 70%, transparent); }
 .page-header-boundary > div { display: grid; min-width: 0; gap: 3px; }
-.page-header-boundary small { color: var(--muted-2); font: 600 10px var(--mono); letter-spacing: .1em; }
+.page-header-boundary small { color: var(--muted-2); font: 600 11px var(--mono); letter-spacing: .1em; }
 .page-header-boundary strong { font-size: 14px; }
 .page-header-boundary p { overflow: hidden; color: var(--muted); font-size: 11px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -103,7 +103,7 @@
   color: var(--accent);
 }
 .stock-company-logo svg { width: 17px; height: 17px; }
-.stock-company-logo b { position: absolute; right: 2px; bottom: 1px; padding: 1px 2px; border-radius: 3px; background: color-mix(in srgb, var(--surface) 90%, transparent); color: currentColor; font: 700 7px/1 var(--mono); letter-spacing: -.04em; }
+.stock-company-logo b { position: absolute; right: 2px; bottom: 1px; padding: 1px 2px; border-radius: 3px; background: color-mix(in srgb, var(--surface) 90%, transparent); color: currentColor; font: 700 11px/1 var(--mono); letter-spacing: -.04em; }
 .stock-company-logo.is-sm { width: 28px; height: 28px; border-radius: 9px; }.stock-company-logo.is-sm svg { width: 14px; height: 14px; }
 .stock-company-logo.is-lg { width: 44px; height: 44px; border-radius: 14px; }.stock-company-logo.is-lg svg { width: 21px; height: 21px; }
 .stock-company-logo.is-apple { color: #a8b0be; }.stock-company-logo.is-tesla { color: #f0555e; }.stock-company-logo.is-alibaba { color: #ff8b3d; }
@@ -144,7 +144,7 @@
 
 .app-shell .button.primary {
   border-color: transparent;
-  background: linear-gradient(90deg, var(--brand-blue) 0%, var(--brand-violet) 100%);
+  background: linear-gradient(90deg, var(--brand-blue) 0%, var(--brand-violet) 58%, var(--brand-sky) 100%);
   box-shadow: var(--shadow-cta);
 }
 
@@ -273,10 +273,12 @@
 }
 
 .watchlist-toggle.is-saved {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent);
+  border-color: currentColor;
+  background: color-mix(in srgb, currentColor 12%, var(--surface));
 }
+
+:root:not([data-theme='light']) .watchlist-toggle.is-saved { color: #facc15; }
+:root[data-theme='light'] .watchlist-toggle.is-saved { color: #dc2626; }
 
 .watchlist-toggle:active:not(:disabled) { transform: translateY(1px); }
 .watchlist-toggle:disabled { cursor: not-allowed; filter: saturate(.62); opacity: .58; transform: none; }
@@ -398,9 +400,8 @@
   }
 
   .watchlist-toggle:hover:not(:disabled) {
-    border-color: var(--accent);
-    background: var(--accent-soft);
-    color: var(--accent);
+    border-color: currentColor;
+    background: color-mix(in srgb, currentColor 12%, var(--surface));
   }
 
   .ui-segmented button:hover:not(:disabled) { color: var(--text); }
@@ -979,7 +980,7 @@ code {
   align-items: start;
   gap: 10px;
   padding: 14px;
-  border: 1px solid rgba(120, 145, 255, .16);
+  border: 1px solid rgba(96, 165, 250, .16);
   border-radius: 12px;
   background: rgba(12, 18, 34, .68);
   box-shadow: 0 12px 40px rgba(0, 0, 0, .28), inset 0 1px rgba(255, 255, 255, .06);
@@ -1000,8 +1001,8 @@ code {
 
 .plan-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .plan-card { position: relative; padding: 18px; border: 0; border-radius: var(--radius); background: var(--workspace); box-shadow: var(--shadow-panel); }
-.plan-card.recommended { box-shadow: var(--shadow-panel), inset 0 3px 0 var(--brand-violet); }
-.recommended-label { position: absolute; top: -10px; right: 12px; padding: 3px 7px; border: 1px solid var(--accent); background: var(--canvas); }
+.plan-card.recommended { box-shadow: var(--shadow-panel), inset 0 3px 0 var(--premium); }
+.recommended-label { position: absolute; top: -10px; right: 12px; padding: 3px 7px; border: 1px solid var(--premium); background: var(--canvas); color: var(--premium); }
 .plan-card header { display: grid; gap: 8px; }
 .plan-card header > span { font-size: 12px; font-weight: 600; }
 .plan-card header strong { font: 600 23px var(--mono); }

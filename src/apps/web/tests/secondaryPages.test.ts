@@ -16,6 +16,7 @@ test('Account reads the server account limit and routes brokerage actions to Tra
 test('Account fails closed when an authorization policy or complete risk DTO is absent', () => {
   const source = read('AccountPage.tsx')
   assert.match(source, /disabled=\{!configured \|\| authorizationBusy !== null\}/)
+  assert.match(source, /aria-label=\{`\$\{label\}：\$\{configured \? item\?\.authorized \? '已授权，点击关闭' : '未授权，点击开启' : '政策未配置'\}`\}/)
   assert.match(source, /ai_memory: \['account', 'research', 'ai'\]/)
   assert.doesNotMatch(source, /resumeOpeningPause|验证并恢复/)
   assert.match(source, /to="\/trade">前往交易控制台核验/)
@@ -55,6 +56,9 @@ test('Feedback defaults to research and localizes only known statuses', () => {
 test('Mystic is truthful locked or empty and has no local social records', () => {
   const source = read('MysticPage.tsx')
   assert.match(source, /locked|锁定|尚未接入|没有真实/)
+  assert.match(source, /mystic-boundary-grid/)
+  assert.match(source, /不虚构贴文、互动数字、发布日期或命中率/)
+  assert.match(source, /股票判断、风险证据和模拟交易继续在研究区处理/)
   assert.doesNotMatch(source, /initialPosts|likedBy|calendarDays|m-0811|人点赞|2026-08-/)
 })
 

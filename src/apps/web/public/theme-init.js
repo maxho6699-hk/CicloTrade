@@ -6,5 +6,5 @@
   var root = document.documentElement
   root.dataset.theme = theme
   var themeColor = document.querySelector('meta[name="theme-color"]')
-  if (themeColor) themeColor.setAttribute('content', theme === 'light' ? 'hsl(220 38% 98%)' : 'hsl(220 38% 4%)')
+  if (themeColor) themeColor.setAttribute('content', theme === 'light' ? '#F8FAFC' : '#040711')
 })()

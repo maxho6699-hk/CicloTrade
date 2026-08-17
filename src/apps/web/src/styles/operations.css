@@ -660,7 +660,7 @@ td.positive-text, td.negative-text { align-items: center; gap: 4px; }
 .delivery-health > strong { display: block; margin: 18px 15px 2px; color: var(--positive); font: 600 32px var(--mono); }
 .delivery-health > p { margin: 0 15px 10px; color: var(--muted); font-size: 12px; }
 .inline-warning { display: flex; gap: 8px; margin: 10px 15px 0; padding: 10px; background: rgba(227, 170, 72, 0.09); color: var(--warning); font-size: 12px; line-height: 1.5; }
-.membership-live-trade-note{display:grid;grid-template-columns:34px minmax(0,1fr) auto;align-items:center;gap:10px;margin:10px 15px 0;padding:9px 10px;border:1px solid color-mix(in srgb,var(--warning) 25%,var(--border));border-radius:10px;background:color-mix(in srgb,var(--warning) 6%,var(--surface))}.membership-live-trade-icon{display:grid;width:32px;height:32px;place-items:center;border-radius:9px;background:color-mix(in srgb,var(--warning) 11%,transparent);color:var(--warning)}.membership-live-trade-copy{display:grid;min-width:0;gap:2px}.membership-live-trade-copy strong{color:var(--text);font-size:11px}.membership-live-trade-copy small{color:var(--muted);font-size:10px;line-height:1.45}.membership-live-trade-note .button{min-height:34px;justify-content:center;white-space:nowrap}@media(max-width:620px){.membership-live-trade-note{grid-template-columns:34px minmax(0,1fr)}.membership-live-trade-note .button{grid-column:1/-1;width:100%}}
+.membership-live-trade-note{display:grid;grid-template-columns:34px minmax(0,1fr) auto;align-items:center;gap:10px;margin:10px 15px 0;padding:9px 10px;border:1px solid color-mix(in srgb,var(--warning) 25%,var(--border));border-radius:10px;background:color-mix(in srgb,var(--warning) 6%,var(--surface))}.membership-live-trade-icon{display:grid;width:32px;height:32px;place-items:center;border-radius:9px;background:color-mix(in srgb,var(--warning) 11%,transparent);color:var(--warning)}.membership-live-trade-copy{display:grid;min-width:0;gap:2px}.membership-live-trade-copy strong{color:var(--text);font-size:11px}.membership-live-trade-copy small{color:var(--muted);font-size:13px;line-height:1.45}.membership-live-trade-note .button{min-height:34px;justify-content:center;white-space:nowrap}@media(max-width:620px){.membership-live-trade-note{grid-template-columns:34px minmax(0,1fr)}.membership-live-trade-note .button{grid-column:1/-1;width:100%}}
 .checkout-login-gate { align-items: center; margin: 0; }
 .checkout-login-gate > span { display: grid; flex: 1; gap: 3px; color: var(--muted); }
 .checkout-login-gate > span strong { color: var(--text); font-size: 13px; }
@@ -1563,7 +1563,7 @@ button:disabled,
 .admin-page .button{min-height:42px;white-space:nowrap}
 .admin-page .button.primary{
   border-color:color-mix(in srgb,var(--accent) 56%,var(--border));
-  background:linear-gradient(135deg,#4b6df4,#6655d5)!important;
+  background:linear-gradient(135deg,#4b6df4,#2563eb)!important;
   box-shadow:0 7px 18px rgba(75,109,244,.18)!important;
   color:#fff;
 }

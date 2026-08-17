@@ -231,13 +231,13 @@ function DiscoverAIBanner({
         <svg className="discover-banner-links" viewBox="0 0 620 250" preserveAspectRatio="none" aria-hidden="true">
           <defs>
             <filter id="discover-banner-glow" x="-50%" y="-50%" width="200%" height="200%">
-              <feGaussianBlur stdDeviation="4" result="blur" />
+              <feGaussianBlur stdDeviation="2.2" result="blur" />
               <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
             </filter>
             <linearGradient id="discover-banner-line" x1="0" x2="1">
-              <stop offset="0" stopColor="#3B63FF" stopOpacity=".32" />
-              <stop offset=".52" stopColor="#8B5CFF" />
-              <stop offset="1" stopColor="#FF4FA3" stopOpacity=".68" />
+              <stop offset="0" stopColor="#1D4ED8" stopOpacity=".36" />
+              <stop offset=".52" stopColor="#2563EB" />
+              <stop offset="1" stopColor="#38BDF8" stopOpacity=".68" />
             </linearGradient>
           </defs>
           <path d="M300 119 C225 70 153 56 78 54" />

@@ -185,7 +185,7 @@ export function AIWorkspacePage() {
   const workspaceVisible = pageState === 'ready' || pageState === 'empty' || pageState === 'error'
 
   return <div className="intelligence-page ai-workspace-page">
-    <header className="intelligence-page-header ai-workspace-header"><div><span>GLOBAL AI / BOUNDED CONTEXT</span><h1>Ciclo AI 工作台</h1><p>AI 负责解释、比较与生成安全草稿；你负责审阅股票证据并作出最终决定。</p></div><span className={`intelligence-status ${readiness?.ready ? 'is-success' : 'is-warning'}`}><i />{readiness?.ready ? 'ready' : 'unavailable'}</span></header>
+    <header className="intelligence-page-header ai-workspace-header"><div><span>GLOBAL AI / BOUNDED CONTEXT</span><h1>Ciclo AI 工作台</h1><p>AI 负责解释、比较与生成安全草稿；你负责审阅股票证据并作出最终决定。</p></div><span className={`intelligence-status ${readiness?.ready ? 'is-success' : 'is-warning'}`}><i />{readiness?.ready ? 'AI 服务可用' : 'AI 服务暂不可用'}</span></header>
     {pageState === 'loading' && <section className="intelligence-panel ai-page-state" role="status"><LoaderCircle /><strong>正在读取 AI 工作台</strong><span>会话、服务状态与公开任务会一起核验。</span></section>}
     {pageState === 'forbidden' && <section className="intelligence-panel ai-page-state"><ShieldX /><strong>没有 AI 工作台访问权限</strong><span>当前账户不能读取会话、任务或来源内容。</span></section>}
     {pageState === 'error' && <section className="intelligence-panel ai-connection-note" role="status"><XCircle /><div><strong>研究服务连接中断，工作台已切换为只读引导</strong><span>{error || '服务暂时不可用。'} 会话与回答不会被伪造，连接恢复后可重新读取。</span></div><button className="ai-button" type="button" onClick={() => void loadWorkspace()}><RotateCcw />重新连接</button></section>}

@@ -13,9 +13,7 @@ import {
   FileOutput,
   FileQuestion,
   FileText,
-  Filter,
   Home,
-  LayoutGrid,
   LoaderCircle,
   Network,
   RefreshCw,
@@ -397,7 +395,7 @@ export function DeliberationPage() {
         <article className="deliberation-side-operation is-draft">
           <span><FileOutput /></span>
           <div><strong>生成模拟研究草稿</strong><p>把真实审议结果带入个人模拟研究；不会提交订单。</p></div>
-          {result ? <Link className="deliberation-secondary-action" to={paperLink}><FileText />生成模拟研究草稿</Link> : <button className="deliberation-secondary-action" type="button" disabled><FileText />等待审议结果</button>}
+          {result ? <Link className="deliberation-secondary-action" to={paperLink}><FileText />生成模拟研究草稿</Link> : <span className="deliberation-secondary-action is-disabled" role="status"><FileText />等待审议结果</span>}
         </article>
       </aside>
 
@@ -481,7 +479,7 @@ export function DeliberationPage() {
         <header className="deliberation-section-title">
           <div><span>DIRECTIONAL EVIDENCE</span><h2 id="directional-evidence-title">倾向性研判</h2></div>
           <div className="deliberation-evidence-tools" aria-label="证据视图工具">
-            <span title="筛选视图"><Filter /></span><span title="网格布局"><LayoutGrid /></span>
+            <span className="deliberation-evidence-mode">真实证据</span>
             <button type="button" aria-label="刷新真实证据" title="刷新真实证据" onClick={() => setRefreshNonce((value) => value + 1)} disabled={state.kind === 'loading'}><RefreshCw /></button>
           </div>
         </header>

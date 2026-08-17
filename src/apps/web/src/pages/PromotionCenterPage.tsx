@@ -42,7 +42,14 @@ function StatePanel({ state, retry }: { state: Exclude<ViewState, 'ready'>; retr
           ? [CircleAlert, '请求被服务端拒绝', '这是确定的 4xx 业务结果；请按页面提示修正条件后再试。'] as const
         : [CircleAlert, '推广资料暂时无法读取', '保留空白，不以旧资料、日期或金额推算替代。'] as const
   const Icon = content[0]
-  return <section className={`promotion-state ${state}`} role={state === 'error' || state === 'forbidden' ? 'alert' : 'status'}><Icon /><strong>{localizeText(content[1])}</strong><span>{localizeText(content[2])}</span>{state === 'error' && <button className="button secondary" type="button" onClick={retry}><RefreshCw size={16} />{localizeText('重新读取')}</button>}</section>
+  return <section className={`promotion-state ${state}`} role={state === 'error' || state === 'forbidden' ? 'alert' : 'status'}>
+    <div className="promotion-state-summary"><Icon /><span><strong>{localizeText(content[1])}</strong><small>{localizeText(content[2])}</small></span>{state === 'error' && <button className="button secondary" type="button" onClick={retry}><RefreshCw size={16} />{localizeText('重新读取')}</button>}</div>
+    <div className="promotion-state-guide" aria-label={localizeText('推广功能边界')}>
+      <article><ShieldCheck /><span><strong>{localizeText('邀请归因')}</strong><small>{localizeText('只展示服务端确认的访问、注册和首单结算。')}</small></span></article>
+      <article><FileClock /><span><strong>{localizeText('佣金冻结')}</strong><small>{localizeText('冻结期、退款追回与可提现金额均由资金账本返回。')}</small></span></article>
+      <article><Landmark /><span><strong>{localizeText('提现审核')}</strong><small>{localizeText('申请保持幂等，付款状态必须由管理员回执确认。')}</small></span></article>
+    </div>
+  </section>
 }
 export function PromotionCenterPage() {
   const { formatLocale } = useLocale()

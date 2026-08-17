@@ -6,6 +6,8 @@
   box-shadow: var(--shadow-panel);
 }
 
+.mystic-page { align-content: start; }
+
 .mystic-locked-panel {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -27,6 +29,10 @@
 .mystic-locked-panel h2 { margin: 12px 0 7px; font-size: 20px; }
 .mystic-locked-panel p { max-width: 680px; margin: 0 0 16px; color: var(--muted); font-size: 13px; line-height: 1.7; }
 .mystic-locked-panel .button { min-height: 44px; }
+.mystic-boundary-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; margin: 0 0 16px; }
+.mystic-boundary-grid article { display: grid; gap: 4px; min-width: 0; padding: 12px; border: 1px solid var(--border-subtle); border-radius: 9px; background: var(--surface-inset); }
+.mystic-boundary-grid strong { font-size: 13px; }
+.mystic-boundary-grid span { color: var(--muted); font-size: 12px; line-height: 1.5; }
 
 .legal-boundary {
   display: flex;
@@ -66,6 +72,7 @@
 @media (max-width: 700px) {
   .mystic-locked-panel { grid-template-columns: 1fr; padding: 18px; }
   .mystic-locked-panel .button { width: 100%; }
+  .mystic-boundary-grid { grid-template-columns: 1fr; }
   .legal-entry-grid { grid-template-columns: 1fr; }
   .legal-receipt dl { grid-template-columns: 1fr; }
   .legal-footer{align-items:flex-start;flex-direction:column}.legal-footer p{text-align:left}

@@ -559,7 +559,7 @@
   border-color:rgba(67,92,153,.34);
   background:var(--theme-v2-nav-active-bg);
   color:var(--theme-v2-nav-active-fg);
-  box-shadow:0 8px 22px rgba(67,92,153,.14),inset -2px 0 rgba(112,69,209,.42);
+  box-shadow:0 8px 22px rgba(67,92,153,.14),inset -2px 0 rgba(37, 99, 235,.42);
 }
 
 :root[data-theme='light'] .app-shell:has(.today-v2-page) .nav-item.active svg{
@@ -601,8 +601,8 @@
 }
 
 .today-v2-page .v2-button-primary{
-  background:linear-gradient(135deg,#4f6fff,#7158df)!important;
-  box-shadow:0 8px 18px rgba(79,111,255,.2)!important;
+  background:linear-gradient(135deg,#60a5fa,#2563eb)!important;
+  box-shadow:0 8px 18px rgba(96, 165, 250,.2)!important;
 }
 
 .today-heading-copy p,

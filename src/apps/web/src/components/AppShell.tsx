@@ -362,7 +362,7 @@ export function AppShell({ children }: AppShellProps) {
       <a className="skip-link" href="#main-content">跳到主要内容</a>
       <aside className="sidebar" aria-label="主要导航">
         <NavLink className="brand" to="/today" aria-label="CicloTrade 今日工作台">
-          <img src="/brand/ciclotrade-logo.jpg" alt="" width="32" height="32" />
+          <img src="/brand/ciclotrade-icon.png" alt="" width="32" height="32" />
           <span><strong>CicloTrade</strong><small>DECISION TERMINAL</small></span>
         </NavLink>
         <nav>

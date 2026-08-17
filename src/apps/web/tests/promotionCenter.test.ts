@@ -29,6 +29,10 @@ test('promotion states, copy feedback, and audit tones remain truthful', () => {
   assert.match(page, /sessionStorage\.setItem\(WITHDRAWAL_IDEMPOTENCY_STORAGE_KEY/)
   assert.match(page, /刷新后再次提交相同金额仍会安全复用/)
   assert.doesNotMatch(page, /changeAmount[\s\S]{0,400}sessionStorage\.removeItem/)
+  assert.match(page, /promotion-state-guide/)
+  assert.match(page, /邀请归因/)
+  assert.match(page, /佣金冻结/)
+  assert.match(page, /提现审核/)
 })
 
 test('promotion UI is routed, responsive, touch safe, and avoids desktop-table overflow', () => {
@@ -38,5 +42,7 @@ test('promotion UI is routed, responsive, touch safe, and avoids desktop-table o
   assert.match(styles, /\.promotion-balance-grid \{[\s\S]*?repeat\(6/)
   assert.match(styles, /\.promotion-id-copy \{[\s\S]*?min-height: 44px/)
   assert.match(styles, /@media \(max-width: 600px\)[\s\S]*?\.promotion-record \{ grid-template-columns: 1fr/)
+  assert.match(styles, /\.promotion-state-guide \{ display: grid; grid-template-columns: repeat\(3,minmax\(0,1fr\)\)/)
+  assert.match(styles, /@media \(max-width: 820px\)[\s\S]*?\.promotion-state-guide \{ grid-template-columns: 1fr; \}/)
   assert.doesNotMatch(styles, /min-width:\s*640px/)
 })

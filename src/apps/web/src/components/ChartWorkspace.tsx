@@ -214,6 +214,7 @@ export function ChartWorkspace({
   const [drawingHistory, setDrawingHistory] = useState<DrawingHistoryStatus>({ drawingCount: 0, undoCount: 0, redoCount: 0, persistence: 'syncing' })
   const [drawingCommand, setDrawingCommand] = useState<DrawingCommand>({ id: 0, type: 'undo' })
   const chartRefs = useRef<Record<string, MarketChartHandle | null>>({})
+  const shellRef = useRef<HTMLElement>(null)
   const slotCandlesRef = useRef(slotCandles)
   const slotQuotesRef = useRef(slotQuotes)
   const slotQuoteIdentityRef = useRef(slotQuoteIdentity)
@@ -431,6 +432,22 @@ export function ChartWorkspace({
     }
   }, [workbenchOpen])
 
+  useEffect(() => {
+    const syncFullscreenState = () => {
+      if (document.fullscreenElement === shellRef.current) {
+        setWorkbenchOpen(true)
+        return
+      }
+      if (!document.fullscreenElement) {
+        focusOpenedWorkbench.current = false
+        setFocusedSlotId(null)
+        setWorkbenchOpen(false)
+      }
+    }
+    document.addEventListener('fullscreenchange', syncFullscreenState)
+    return () => document.removeEventListener('fullscreenchange', syncFullscreenState)
+  }, [])
+
   useLayoutEffect(() => {
     const frame = window.requestAnimationFrame(() => {
       const slotsToReflow = focusedSlotId
@@ -579,12 +596,14 @@ export function ChartWorkspace({
     focusOpenedWorkbench.current = false
     setFocusedSlotId(null)
     setWorkbenchOpen(false)
+    if (document.fullscreenElement === shellRef.current) void document.exitFullscreen().catch(() => undefined)
   }
 
   const enterWorkbench = () => {
     setInspectorVisible(false)
     setLayoutPickerOpen(false)
     setMobileDrawingToolsOpen(false)
+    if (!document.fullscreenElement && shellRef.current?.requestFullscreen) void shellRef.current.requestFullscreen().catch(() => undefined)
     setWorkbenchOpen(true)
   }
 
@@ -608,13 +627,12 @@ export function ChartWorkspace({
   const latest = slotLatest(activeCandles)
 
   return (
-    <section className={`chart-workspace-shell ${workbenchOpen ? 'is-workbench-open' : ''} ${focusedSlotId ? 'is-pane-focused' : ''} ${inspectorVisible ? 'has-workbench-inspector' : ''} ${toolPanel ? 'has-tool-panel' : ''} ${toolPanelOpen ? 'is-tool-panel-open' : 'is-tool-panel-collapsed'} ${mobileDrawingToolsOpen ? 'mobile-drawing-tools-open' : ''}`} aria-label="多图 K线工作图">
+    <section ref={shellRef} className={`chart-workspace-shell ${workbenchOpen ? 'is-workbench-open' : ''} ${focusedSlotId ? 'is-pane-focused' : ''} ${inspectorVisible ? 'has-workbench-inspector' : ''} ${toolPanel ? 'has-tool-panel' : ''} ${toolPanelOpen ? 'is-tool-panel-open' : 'is-tool-panel-collapsed'} ${mobileDrawingToolsOpen ? 'mobile-drawing-tools-open' : ''}`} aria-label="多图 K线工作图">
       <header className="multi-chart-toolbar">
-        <div className="workbench-title"><span className="workbench-title-label"><LayoutGrid size={16} /><strong>K线工作图</strong></span>{onWatchlistToggle && <WatchlistToggle symbol={activeSlot.symbol} saved={isWatchlisted?.(activeSlot.market, activeSlot.symbol) ?? false} busy={watchBusy === activeSlot.symbol} variant="label" className="workbench-watchlist-toggle" onToggle={(remove) => onWatchlistToggle(activeSlot.market, activeSlot.symbol, remove)} />}</div>
-        <div className="multi-chart-layout-picker" ref={layoutPickerRef}>
+        <div className="workbench-title"><span className="workbench-title-label"><LayoutGrid size={16} /><strong>K线工作图</strong></span>{onWatchlistToggle && <WatchlistToggle symbol={activeSlot.symbol} saved={isWatchlisted?.(activeSlot.market, activeSlot.symbol) ?? false} busy={watchBusy === activeSlot.symbol} variant="label" className="workbench-watchlist-toggle" onToggle={(remove) => onWatchlistToggle(activeSlot.market, activeSlot.symbol, remove)} />}<div className="multi-chart-layout-picker" ref={layoutPickerRef}>
           <button className="layout-picker-trigger" type="button" aria-haspopup="dialog" aria-expanded={layoutPickerOpen} aria-label="选择 K 线多图布局" title="选择多图布局" onClick={() => setLayoutPickerOpen((current) => !current)}><LayoutGrid size={15} /><span>{definition.label}</span></button>
           {layoutPickerOpen && <div className="layout-picker-popover" role="dialog" aria-label="K 线多图布局选择"><header><strong>分割视图</strong><small>{isNarrowViewport ? '手机版使用图表标签切换；四图以上请使用桌面版' : '选择后保持每张图的股票和周期'}</small></header><div className="layout-picker-grid">{CHART_LAYOUTS.map((layout) => { const unavailable = isNarrowViewport && layout.desktopOnly; return <button type="button" disabled={unavailable} className={workspace.layout === layout.id ? 'active' : ''} title={unavailable ? `${layout.label} · 仅桌面版` : layout.label} aria-label={`${layout.label}${unavailable ? '，仅桌面版' : ''}`} onClick={() => setLayout(layout.id)} key={layout.id}><span className={`layout-preview layout-preview-${layout.id}`}>{Array.from({ length: layout.count }, (_, index) => <i key={index} />)}</span><b>{layout.label}</b></button> })}</div></div>}
-        </div>
+        </div></div>
         <div className="multi-chart-actions">
           {toolbarActions && <span className="multi-chart-utility-actions">{toolbarActions}</span>}
           {toolPanel && <button className="chart-tool-panel-toggle-top" type="button" aria-label={toolPanelOpen ? `收起${toolPanelLabel}` : `展开${toolPanelLabel}`} aria-expanded={toolPanelOpen} title={toolPanelOpen ? `收起${toolPanelLabel}` : `展开${toolPanelLabel}`} onClick={toggleToolPanel}>{toolPanelOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}</button>}
@@ -624,14 +642,14 @@ export function ChartWorkspace({
       </header>
 
       <div className="chart-workbench-body">
+        {toolPanel && toolPanelOpen && <aside className="chart-tool-panel" aria-label={toolPanelLabel}><div className="chart-tool-panel-content">{toolPanel}</div></aside>}
+
         <SharedDrawingToolbar
           state={drawingToolState}
           history={drawingHistory}
           onChange={(patch) => setDrawingToolState((current) => ({ ...current, ...patch }))}
           onCommand={sendDrawingCommand}
         />
-
-        {toolPanel && toolPanelOpen && <aside className="chart-tool-panel" aria-label={toolPanelLabel}><div className="chart-tool-panel-content">{toolPanel}</div></aside>}
 
         <div className={`multi-chart-grid layout-${workspace.layout}`}>
           {definition.count > 1 && <nav className="mobile-chart-tabs" aria-label="切换图表">

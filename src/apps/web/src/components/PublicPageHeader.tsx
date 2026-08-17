@@ -19,7 +19,7 @@ export function PublicPageHeader({ variant, locale, theme, onLocaleToggle, onThe
     <header className={`public-nav-shell ${isWelcome ? 'public-header' : 'login-public-header'}`}>
       <div className="public-nav-inner">
         <Link className={isWelcome ? 'public-brand' : 'login-header-brand'} to="/" aria-label={isWelcome ? 'CicloTrade 首页' : '返回 CicloTrade 欢迎页'}>
-          <img className={isWelcome ? 'public-brand-logo' : undefined} src="/brand/ciclotrade-logo.webp" width="512" height="512" alt="CicloTrade" fetchPriority="high" />
+          <img className={isWelcome ? 'public-brand-logo' : undefined} src="/brand/ciclotrade-icon.png" width="128" height="128" alt="CicloTrade" fetchPriority="high" />
           <span><strong translate="no">CicloTrade</strong><small translate="no">{isWelcome ? 'DECISION INTELLIGENCE' : 'SECURE ACCOUNT ACCESS'}</small></span>
         </Link>
 

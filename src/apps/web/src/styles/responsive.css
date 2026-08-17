@@ -149,7 +149,7 @@
   .mobile-nav a.active svg,
   .mobile-nav button.active svg { color: var(--accent); filter: drop-shadow(0 0 7px color-mix(in srgb, var(--accent) 48%, transparent)); }
   .mobile-nav a.active::before,
-  .mobile-nav button.active::before { position: absolute; top: 0; width: 30px; height: 3px; border-radius: 0 0 999px 999px; background: linear-gradient(90deg, var(--brand-blue), var(--brand-violet), #ff4fa3); box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 42%, transparent); content: ''; }
+  .mobile-nav button.active::before { position: absolute; top: 0; width: 30px; height: 3px; border-radius: 0 0 999px 999px; background: linear-gradient(90deg, var(--brand-blue), var(--brand-violet), #1d4ed8); box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 42%, transparent); content: ''; }
   .sheet-backdrop { position: fixed; z-index: 100; inset: 0; display: flex; align-items: flex-end; background: var(--backdrop); }
   .mobile-sheet { width: 100%; max-height: 86vh; padding: 12px 12px calc(18px + env(safe-area-inset-bottom)); overflow-y: auto; overscroll-behavior: contain; border-top: 1px solid var(--border-strong); background: var(--surface); }
   .mobile-sheet header { display: grid; min-height: 45px; grid-template-columns: 34px 1fr auto; align-items: center; gap: 9px; }
@@ -643,7 +643,7 @@
 }
 
 @media (max-width: 1180px) {
-  .research-workbench-grid { grid-template-columns: 190px minmax(0, 1fr); }
+  .research-workbench-grid { grid-template-columns: minmax(0, 1fr); }
   .research-bottom-deck { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .research-handoff-card { grid-column: 1 / -1; }
 }
@@ -704,7 +704,7 @@
   .research-panel-header > div:last-child { padding-bottom: 2px; }
   .research-status-pill { flex: 0 0 auto; }
   .ai-answer-grid { grid-template-columns: 1fr; }
-  .ai-answer-grid > div { border-right: 0; border-bottom: 1px solid rgba(120, 145, 255, .1); }
+  .ai-answer-grid > div { border-right: 0; border-bottom: 1px solid rgba(96, 165, 250, .1); }
   .ai-answer-grid > div:last-child { border-bottom: 0; }
   .research-compare-slots { grid-template-columns: 1fr; }
   .research-compare-slots > span { justify-self: center; }
