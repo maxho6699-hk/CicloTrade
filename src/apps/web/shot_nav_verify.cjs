@@ -65,7 +65,11 @@ const path = require('path');
         const required = ['P', 'BUTTON', 'INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName) ? 13 : 11;
         return Number.isFinite(size) && size + 0.01 < required;
       }).length;
-      const brokenImages = [...document.images].filter((image) => visible(image) && (!image.complete || image.naturalWidth === 0)).length;
+      const imageInViewport = (image) => {
+        const rect = image.getBoundingClientRect();
+        return rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth;
+      };
+      const brokenImages = [...document.images].filter((image) => visible(image) && imageInViewport(image) && (!image.complete || image.naturalWidth === 0)).length;
       const unnamedInteractives = elements.filter((element) => {
         if (!element.matches('button,a,input,select,textarea')) return false;
         const labelledBy = element.getAttribute('aria-labelledby');
