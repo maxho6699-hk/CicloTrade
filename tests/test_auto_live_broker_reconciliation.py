@@ -13,7 +13,7 @@ from core.auto_live_control_common import sha256_text
 from tests.test_auto_live_control import NOW
 from tests.test_auto_live_runtime_worker import _started
 from trading.tiger_api import TigerAPI
-from trading.tiger_reconciliation import TigerOrderObservationSource
+from trading.tiger_reconciliation import TigerOrderObservationSource, TigerOrdersReader
 
 
 def _running_live_intent(tmp_path, *, send_claim_epoch: int | None = None, send_claim_payload_sha256: str | None = None):
@@ -120,6 +120,12 @@ def _observation(
         "evidence_sha256": evidence or sha256_json(facts),
         "broker_account_sha256": broker_account_sha256,
     }
+
+
+def _reader_for_test(api):
+    reader = TigerOrdersReader()
+    reader._TigerOrdersReader__api = api
+    return reader
 
 
 def test_migration_adds_append_only_broker_reconciliation_receipts(tmp_path):
@@ -330,12 +336,16 @@ def test_tiger_observation_source_is_read_only_and_maps_safe_states(broker_statu
             raise AssertionError("read-only reconciliation must never send an order")
 
     source = TigerOrderObservationSource(
-        api_factory=ReadOnlyTiger,
+        reader=_reader_for_test(ReadOnlyTiger()),
         clock=lambda: datetime.fromisoformat(NOW) + timedelta(seconds=5),
     )
     result = source.lookup("tiger", sha256_text("TGR-1"), "live-client-order-001")
     for mutating_name in ("send", "cancel", "replace", "retry", "place_stock_limit", "place_order"):
         assert not hasattr(source, mutating_name)
+    assert not hasattr(source, "api_factory")
+    assert not hasattr(source, "reader")
+    public_surface = {name: getattr(source, name) for name in dir(source) if not name.startswith("_")}
+    assert set(public_surface) == {"lookup", "supported_providers"}
     assert calls == ["orders"]
     assert result["provider"] == "tiger"
     assert result["broker_account_sha256"] == sha256_text("TGR-1")
@@ -356,7 +366,7 @@ def test_tiger_observation_source_fails_closed_on_duplicate_match_and_missing_br
                 SimpleNamespace(user_mark="live-client-order-001", id=2, status="FILLED"),
             ]
 
-    source = TigerOrderObservationSource(api_factory=DuplicateTiger, clock=lambda: datetime.fromisoformat(NOW))
+    source = TigerOrderObservationSource(reader=_reader_for_test(DuplicateTiger()), clock=lambda: datetime.fromisoformat(NOW))
     with pytest.raises(AutoLiveControlError, match="重复|多个"):
         source.lookup("tiger", sha256_text("TGR-1"), "live-client-order-001")
 
@@ -364,11 +374,37 @@ def test_tiger_observation_source_fails_closed_on_duplicate_match_and_missing_br
         def orders(self, *, expected_account_sha256=None):
             return [SimpleNamespace(user_mark="live-client-order-001", status="FILLED")]
 
-    missing = TigerOrderObservationSource(api_factory=MissingIdTiger, clock=lambda: datetime.fromisoformat(NOW)).lookup(
+    missing = TigerOrderObservationSource(reader=_reader_for_test(MissingIdTiger()), clock=lambda: datetime.fromisoformat(NOW)).lookup(
         "tiger", sha256_text("TGR-1"), "live-client-order-001"
     )
     assert missing["submission_state"] == "submission_unknown"
     assert missing["broker_order_id"] is None
+
+    reader = TigerOrdersReader()
+    assert callable(reader.orders)
+    for mutating_name in ("send", "cancel", "replace", "retry", "place_stock_limit", "place_order"):
+        assert not hasattr(reader, mutating_name)
+    assert not hasattr(reader, "api_factory")
+    assert not hasattr(reader, "api")
+
+    class MutatingDuckReader:
+        def orders(self, **_kwargs): return []
+        def place_order(self): raise AssertionError
+
+    class FalseyMutatingDuckReader(MutatingDuckReader):
+        def __bool__(self): return False
+
+    class ReaderSubclass(TigerOrdersReader):
+        pass
+
+    with pytest.raises(AutoLiveControlError, match="reader|只读"):
+        TigerOrderObservationSource(reader=MutatingDuckReader(), clock=lambda: datetime.fromisoformat(NOW))
+    with pytest.raises(AutoLiveControlError, match="reader|只读"):
+        TigerOrderObservationSource(reader=FalseyMutatingDuckReader(), clock=lambda: datetime.fromisoformat(NOW))
+    with pytest.raises(AutoLiveControlError, match="reader|只读"):
+        TigerOrderObservationSource(reader=TigerAPI(), clock=lambda: datetime.fromisoformat(NOW))
+    with pytest.raises(AutoLiveControlError, match="reader|只读"):
+        TigerOrderObservationSource(reader=ReaderSubclass(), clock=lambda: datetime.fromisoformat(NOW))
 
 
 def test_tiger_api_orders_verifies_account_fingerprint_before_querying():

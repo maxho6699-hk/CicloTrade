@@ -7,7 +7,7 @@ AutoLiveBrokerReconciler.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Protocol
 
 from core.auto_live_control_common import AutoLiveControlError, _iso, _now, sha256_json
 from trading.tiger_api import TigerAPI
@@ -48,17 +48,37 @@ def _submission_state(status: str, broker_order_id: str | None) -> str:
     return "submission_unknown"
 
 
+class TigerOrdersLookup(Protocol):
+    def orders(self, *, expected_account_sha256: str | None = None) -> list[Any]: ...
+
+
+class TigerOrdersReader:
+    """Minimal read capability; the wrapped Tiger API is private and not exposed."""
+
+    __slots__ = ("__api",)
+
+    def __init__(self) -> None:
+        self.__api = TigerAPI()
+
+    def orders(self, *, expected_account_sha256: str | None = None) -> list[Any]:
+        return self.__api.orders(expected_account_sha256=expected_account_sha256)
+
+
 class TigerOrderObservationSource:
     supported_providers = frozenset({"tiger"})
+    __slots__ = ("__reader", "__clock")
 
     def __init__(
         self,
         *,
-        api_factory: Callable[[], TigerAPI] = TigerAPI,
+        reader: TigerOrdersLookup | None = None,
         clock: Callable[[], datetime],
     ) -> None:
-        self.api_factory = api_factory
-        self.clock = clock
+        selected_reader = TigerOrdersReader() if reader is None else reader
+        if type(selected_reader) is not TigerOrdersReader:
+            raise AutoLiveControlError("Tiger reconciliation reader 必须是专用只读 reader。")
+        self.__reader = selected_reader
+        self.__clock = clock
 
     def lookup(self, provider: str, broker_account_sha256: str, client_order_id: str) -> dict[str, Any] | None:
         if str(provider).strip().casefold() != "tiger":
@@ -66,9 +86,9 @@ class TigerOrderObservationSource:
         client_id = str(client_order_id).strip()
         if not client_id:
             raise AutoLiveControlError("Tiger reconciliation client_order_id 无效。")
-        moment = self.clock()
+        moment = self.__clock()
         observed_at = _iso(_now(moment))
-        orders = self.api_factory().orders(expected_account_sha256=broker_account_sha256) or []
+        orders = self.__reader.orders(expected_account_sha256=broker_account_sha256) or []
         matches = []
         for order in orders:
             user_mark = _field(order, "user_mark", "client_order_id", "remark")
@@ -104,4 +124,4 @@ class TigerOrderObservationSource:
         }
 
 
-__all__ = ["TigerOrderObservationSource"]
+__all__ = ["TigerOrderObservationSource", "TigerOrdersReader"]
