@@ -2,19 +2,26 @@
 
 from __future__ import annotations
 
+import hmac
 import json
-from datetime import datetime
+import secrets
+from datetime import datetime, timedelta
 from typing import Any, Mapping
 
 from core.auto_live_control_common import (
     AutoLiveConflict,
+    AutoLiveControlError,
     HEARTBEAT_FRESHNESS_SECONDS,
     MAX_CLOCK_SKEW_SECONDS,
     RUNTIME_FRESHNESS_SECONDS,
     _gate,
+    _iso,
+    _now,
     _opaque,
+    _text,
     canonical_json,
     sha256_json,
+    sha256_text,
 )
 
 
@@ -225,6 +232,333 @@ class RuntimeIntegrityMixin:
             observed_at=observed_at,
             detail=last_error_code,
         )
+
+    @staticmethod
+    def _lease_body(row: Any) -> dict[str, Any]:
+        return {
+            "mandate_public_id": str(row["mandate_public_id"]),
+            "worker_id": str(row["worker_id"]),
+            "lease_token_sha256": str(row["lease_token_sha256"]),
+            "fencing_epoch": int(row["fencing_epoch"]),
+            "lease_expires_at": str(row["lease_expires_at"]),
+            "heartbeat_at": row["heartbeat_at"],
+            "observed_at": str(row["observed_at"]),
+        }
+
+    @classmethod
+    def _valid_lease(
+        cls,
+        lease: Any,
+        *,
+        mandate_public_id: str,
+        worker_id: str,
+        lease_token: str,
+        fencing_epoch: int,
+        now: datetime,
+    ) -> bool:
+        try:
+            expires_at = datetime.fromisoformat(str(lease["lease_expires_at"]))
+            return bool(
+                str(lease["mandate_public_id"]) == mandate_public_id
+                and str(lease["worker_id"]) == worker_id
+                and hmac.compare_digest(str(lease["lease_token_sha256"]), sha256_text(lease_token))
+                and int(lease["fencing_epoch"]) == fencing_epoch
+                and expires_at.tzinfo is not None
+                and now < expires_at
+                and sha256_json(cls._lease_body(lease)) == str(lease["projection_sha256"])
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _runtime_worker_row(conn: Any, mandate_public_id: str) -> Any:
+        row = conn.execute(
+            "SELECT * FROM auto_live_mandates WHERE public_id=?", (mandate_public_id,)
+        ).fetchone()
+        if not row:
+            raise AutoLiveControlError("runtime mandate 不存在。", 404)
+        return row
+
+    @staticmethod
+    def _lease_seconds(value: Any) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or not 5 <= value <= 120:
+            raise AutoLiveControlError("runtime 租约秒数必须介于 5 与 120。")
+        return value
+
+    @classmethod
+    def _record_lease_event(cls, conn: Any, lease: Any, event_type: str, observed_at: str) -> None:
+        payload = {**cls._lease_body(lease), "event_type": event_type}
+        conn.execute(
+            """INSERT INTO auto_live_runtime_lease_events
+               (event_id,mandate_public_id,worker_id,event_type,fencing_epoch,lease_token_sha256,
+                lease_expires_at,payload_json,payload_sha256,created_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (
+                _opaque("leaseevt"),
+                lease["mandate_public_id"],
+                lease["worker_id"],
+                event_type,
+                lease["fencing_epoch"],
+                lease["lease_token_sha256"],
+                lease["lease_expires_at"],
+                canonical_json(payload),
+                sha256_json(payload),
+                observed_at,
+            ),
+        )
+
+    @staticmethod
+    def _write_heartbeat_projection(
+        conn: Any,
+        *,
+        mandate_public_id: str,
+        fencing_epoch: int,
+        observed_at: str,
+    ) -> None:
+        body = {
+            "mandate_public_id": mandate_public_id,
+            "heartbeat_state": "fresh",
+            "heartbeat_at": observed_at,
+            "fencing_epoch": fencing_epoch,
+            "observed_at": observed_at,
+        }
+        conn.execute(
+            """INSERT INTO auto_live_heartbeat_projections
+               (mandate_public_id,heartbeat_state,heartbeat_at,fencing_epoch,observed_at,projection_sha256)
+               VALUES(?,?,?,?,?,?)
+               ON CONFLICT(mandate_public_id) DO UPDATE SET
+                 heartbeat_state=excluded.heartbeat_state,
+                 heartbeat_at=excluded.heartbeat_at,
+                 fencing_epoch=excluded.fencing_epoch,
+                 observed_at=excluded.observed_at,
+                 projection_sha256=excluded.projection_sha256""",
+            (mandate_public_id, "fresh", observed_at, fencing_epoch, observed_at, sha256_json(body)),
+        )
+
+    def claim_runtime_lease(
+        self,
+        mandate_public_id: str,
+        *,
+        worker_id: str,
+        expected_fencing_epoch: int,
+        lease_seconds: int = 30,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        public_id = _text(mandate_public_id, "runtime mandate public id")
+        worker = _text(worker_id, "runtime worker id", 128)
+        seconds = self._lease_seconds(lease_seconds)
+        if isinstance(expected_fencing_epoch, bool) or not isinstance(expected_fencing_epoch, int) or expected_fencing_epoch < 0:
+            raise AutoLiveControlError("runtime fencing epoch 无效。")
+        moment_dt, moment = _now(now), _iso(now)
+        expires_at = _iso(moment_dt + timedelta(seconds=seconds))
+        with self._tx() as conn:
+            mandate = self._runtime_worker_row(conn, public_id)
+            runtime = conn.execute(
+                "SELECT * FROM auto_live_runtime_projections WHERE mandate_public_id=?", (public_id,)
+            ).fetchone()
+            if str(mandate["state"]) != "active" or not runtime or str(runtime["state"]) != "starting":
+                raise AutoLiveControlError("runtime 只有 active/starting mandate 可领取。", 409)
+            if int(mandate["fencing_epoch"]) != expected_fencing_epoch or int(runtime["fencing_epoch"]) != expected_fencing_epoch:
+                raise AutoLiveConflict("runtime fencing epoch 已过期。")
+            existing = conn.execute(
+                "SELECT * FROM auto_live_runtime_leases WHERE mandate_public_id=?", (public_id,)
+            ).fetchone()
+            event_type = "claimed"
+            if existing:
+                try:
+                    existing_expiry = datetime.fromisoformat(str(existing["lease_expires_at"]))
+                    existing_valid = sha256_json(self._lease_body(existing)) == str(existing["projection_sha256"])
+                except (TypeError, ValueError):
+                    existing_valid, existing_expiry = False, moment_dt
+                if not existing_valid:
+                    raise AutoLiveControlError("runtime 租约投影无效。", 409)
+                if moment_dt < existing_expiry:
+                    raise AutoLiveConflict("runtime 租约当前由其他 Worker 持有。")
+                event_type = "reclaimed"
+            token = secrets.token_urlsafe(32)
+            token_sha256 = sha256_text(token)
+            body = {
+                "mandate_public_id": public_id,
+                "worker_id": worker,
+                "lease_token_sha256": token_sha256,
+                "fencing_epoch": expected_fencing_epoch,
+                "lease_expires_at": expires_at,
+                "heartbeat_at": None,
+                "observed_at": moment,
+            }
+            conn.execute(
+                """INSERT INTO auto_live_runtime_leases
+                   (mandate_public_id,worker_id,lease_token_sha256,fencing_epoch,lease_expires_at,
+                    heartbeat_at,observed_at,projection_sha256)
+                   VALUES(?,?,?,?,?,?,?,?)
+                   ON CONFLICT(mandate_public_id) DO UPDATE SET
+                     worker_id=excluded.worker_id,
+                     lease_token_sha256=excluded.lease_token_sha256,
+                     fencing_epoch=excluded.fencing_epoch,
+                     lease_expires_at=excluded.lease_expires_at,
+                     heartbeat_at=NULL,
+                     observed_at=excluded.observed_at,
+                     projection_sha256=excluded.projection_sha256""",
+                (public_id, worker, token_sha256, expected_fencing_epoch, expires_at, None, moment, sha256_json(body)),
+            )
+            lease = conn.execute(
+                "SELECT * FROM auto_live_runtime_leases WHERE mandate_public_id=?", (public_id,)
+            ).fetchone()
+            self._record_lease_event(conn, lease, event_type, moment)
+            return {
+                "mandate_public_id": public_id,
+                "worker_id": worker,
+                "lease_token": token,
+                "fencing_epoch": expected_fencing_epoch,
+                "lease_expires_at": expires_at,
+            }
+
+    def _require_runtime_lease(
+        self,
+        conn: Any,
+        *,
+        mandate_public_id: str,
+        worker_id: str,
+        lease_token: str,
+        expected_fencing_epoch: int,
+        now: datetime,
+    ) -> tuple[Any, Any, Any]:
+        mandate = self._runtime_worker_row(conn, mandate_public_id)
+        runtime = conn.execute(
+            "SELECT * FROM auto_live_runtime_projections WHERE mandate_public_id=?", (mandate_public_id,)
+        ).fetchone()
+        lease = conn.execute(
+            "SELECT * FROM auto_live_runtime_leases WHERE mandate_public_id=?", (mandate_public_id,)
+        ).fetchone()
+        if int(mandate["fencing_epoch"]) != expected_fencing_epoch:
+            raise AutoLiveConflict("runtime fencing epoch 已过期。")
+        if not self._valid_lease(
+            lease,
+            mandate_public_id=mandate_public_id,
+            worker_id=worker_id,
+            lease_token=lease_token,
+            fencing_epoch=expected_fencing_epoch,
+            now=now,
+        ):
+            raise AutoLiveControlError("runtime 租约 token 无效或已过期。", 409)
+        return mandate, runtime, lease
+
+    def ack_runtime_running(
+        self,
+        mandate_public_id: str,
+        *,
+        worker_id: str,
+        lease_token: str,
+        expected_fencing_epoch: int,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        public_id = _text(mandate_public_id, "runtime mandate public id")
+        worker = _text(worker_id, "runtime worker id", 128)
+        token = _text(lease_token, "runtime lease token", 256)
+        moment_dt, moment = _now(now), _iso(now)
+        with self._tx() as conn:
+            mandate, runtime, lease = self._require_runtime_lease(
+                conn,
+                mandate_public_id=public_id,
+                worker_id=worker,
+                lease_token=token,
+                expected_fencing_epoch=expected_fencing_epoch,
+                now=moment_dt,
+            )
+            if str(mandate["state"]) != "active" or not runtime or str(runtime["state"]) != "starting":
+                raise AutoLiveControlError("runtime 当前不可确认 running。", 409)
+            self._write_runtime_projection(
+                conn,
+                mandate_public_id=public_id,
+                state="running",
+                fencing_epoch=expected_fencing_epoch,
+                observed_at=moment,
+                event_type="running_ack",
+                expected_fencing_epoch=expected_fencing_epoch,
+            )
+            self._write_heartbeat_projection(
+                conn,
+                mandate_public_id=public_id,
+                fencing_epoch=expected_fencing_epoch,
+                observed_at=moment,
+            )
+            conn.execute(
+                "UPDATE auto_live_runtime_leases SET heartbeat_at=?,observed_at=?,projection_sha256=? WHERE mandate_public_id=?",
+                (
+                    moment,
+                    moment,
+                    sha256_json({**self._lease_body(lease), "heartbeat_at": moment, "observed_at": moment}),
+                    public_id,
+                ),
+            )
+            updated = conn.execute(
+                "SELECT * FROM auto_live_runtime_leases WHERE mandate_public_id=?", (public_id,)
+            ).fetchone()
+            self._record_lease_event(conn, updated, "running_ack", moment)
+            return {
+                "mandate_public_id": public_id,
+                "runtime_state": "running",
+                "heartbeat_state": "fresh",
+                "fencing_epoch": expected_fencing_epoch,
+                "observed_at": moment,
+            }
+
+    def renew_runtime_heartbeat(
+        self,
+        mandate_public_id: str,
+        *,
+        worker_id: str,
+        lease_token: str,
+        expected_fencing_epoch: int,
+        lease_seconds: int = 30,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        public_id = _text(mandate_public_id, "runtime mandate public id")
+        worker = _text(worker_id, "runtime worker id", 128)
+        token = _text(lease_token, "runtime lease token", 256)
+        seconds = self._lease_seconds(lease_seconds)
+        moment_dt, moment = _now(now), _iso(now)
+        expires_at = _iso(moment_dt + timedelta(seconds=seconds))
+        with self._tx() as conn:
+            mandate, runtime, lease = self._require_runtime_lease(
+                conn,
+                mandate_public_id=public_id,
+                worker_id=worker,
+                lease_token=token,
+                expected_fencing_epoch=expected_fencing_epoch,
+                now=moment_dt,
+            )
+            if str(mandate["state"]) != "active" or not runtime or str(runtime["state"]) != "running":
+                raise AutoLiveControlError("runtime 当前不可续约 heartbeat。", 409)
+            body = {
+                **self._lease_body(lease),
+                "lease_expires_at": expires_at,
+                "heartbeat_at": moment,
+                "observed_at": moment,
+            }
+            conn.execute(
+                """UPDATE auto_live_runtime_leases SET lease_expires_at=?,heartbeat_at=?,observed_at=?,projection_sha256=?
+                   WHERE mandate_public_id=? AND fencing_epoch=? AND lease_token_sha256=?""",
+                (expires_at, moment, moment, sha256_json(body), public_id, expected_fencing_epoch, sha256_text(token)),
+            )
+            self._write_heartbeat_projection(
+                conn,
+                mandate_public_id=public_id,
+                fencing_epoch=expected_fencing_epoch,
+                observed_at=moment,
+            )
+            updated = conn.execute(
+                "SELECT * FROM auto_live_runtime_leases WHERE mandate_public_id=?", (public_id,)
+            ).fetchone()
+            self._record_lease_event(conn, updated, "heartbeat", moment)
+            return {
+                "mandate_public_id": public_id,
+                "worker_id": worker,
+                "heartbeat_state": "fresh",
+                "fencing_epoch": expected_fencing_epoch,
+                "heartbeat_at": moment,
+                "lease_expires_at": expires_at,
+            }
 
     @classmethod
     def _runtime_safety_gates(
