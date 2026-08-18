@@ -7,6 +7,7 @@ const root = path.resolve(import.meta.dirname, '..')
 const allPages = fs.readFileSync(path.join(root, 'shot_all_verify.cjs'), 'utf8')
 const responsive = fs.readFileSync(path.join(root, 'shot_nav_verify.cjs'), 'utf8')
 const userFeedback = fs.readFileSync(path.join(root, 'verify_user_feedback.cjs'), 'utf8')
+const futureFeatures = fs.readFileSync(path.join(root, 'verify_future_features.cjs'), 'utf8')
 
 test('full-page visual acceptance uses explicit guest, user and admin contracts', () => {
   assert.match(allPages, /CICLO_PREVIEW_URL[^\n]*localhost:5175/)
@@ -62,4 +63,16 @@ test('user feedback geometry covers exact breakpoints and interaction states', (
   assert.match(userFeedback, /assertVisibleTypography/)
   assert.match(userFeedback, /PASS=\$\{checks\}\/25 USER_FEEDBACK_GEOMETRY/)
   assert.doesNotMatch(userFeedback, /C:\/Users\/maxho/)
+})
+
+test('future feature QA waits for the latest monthly sparkline instead of sleeping', () => {
+  assert.match(futureFeatures, /const monthlySparklines = race\.page\.locator\('\.discover-sparkline\.is-down\[aria-label\*="月线"\]\[aria-label\*="2 个真实收盘价点"\]\[aria-label\*="-50\.00%"\]'\)/)
+  assert.match(futureFeatures, /monthlySparklines\.first\(\)\.waitFor\(\{ state: 'visible', timeout: 5000 \}\)/)
+  assert.match(futureFeatures, /aiMonthly\.waitFor\(\{ state: 'visible', timeout: 5000 \}\)/)
+  assert.match(futureFeatures, /const selectedWeeklyRequest = await selectedWeeklyRequestPromise/)
+  assert.match(futureFeatures, /predicate: \(request\) => request === selectedWeeklyRequest/)
+  assert.match(futureFeatures, /await weeklyAbort/)
+  assert.match(futureFeatures, /weeklyAbort\.failure\(\)\?\.errorText/)
+  assert.doesNotMatch(futureFeatures, /\[DEBUG-mini-k\]/)
+  assert.doesNotMatch(futureFeatures, /waitForTimeout\(500\)/)
 })

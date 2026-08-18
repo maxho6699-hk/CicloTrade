@@ -56,14 +56,11 @@ function assert(condition, message) {
     await mobile.context.close()
 
     const race = await openPage(browser, 1440, 900)
-    const selectedId = race.bootstrap.recommendations.items.find((item) => item.instrument_type === 'stock')?.event_id
-    assert(Number.isSafeInteger(selectedId), 'missing selected recommendation fixture')
+    const selectedRecommendation = race.bootstrap.recommendations.items.find((item) => item.instrument_type === 'stock')
+    const selectedId = selectedRecommendation?.event_id
+    const selectedSymbol = selectedRecommendation?.symbol
+    assert(Number.isSafeInteger(selectedId) && typeof selectedSymbol === 'string', 'missing selected recommendation fixture')
     const requestedTimeframes = []
-    let abortedWeekly = 0
-    race.page.on('requestfailed', (request) => {
-      const requestUrl = new URL(request.url())
-      if (requestUrl.pathname.includes('/market/candles') && requestUrl.searchParams.get('timeframe') === '周线') abortedWeekly += 1
-    })
     await race.page.route('**/api/rewrite/v1/market/candles**', async (route) => {
       const requestUrl = new URL(route.request().url())
       const timeframe = requestUrl.searchParams.get('timeframe')
@@ -82,14 +79,29 @@ function assert(condition, message) {
     })
     await race.page.goto(`${MOCK}/discover?selected=${selectedId}`, { waitUntil: 'domcontentloaded' })
     await race.page.getByRole('tab', { name: '1D', exact: true }).waitFor()
+    const selectedWeeklyRequestPromise = race.page.waitForRequest((request) => {
+      const requestUrl = new URL(request.url())
+      return requestUrl.pathname.includes('/market/candles')
+        && requestUrl.searchParams.get('timeframe') === '周线'
+        && requestUrl.searchParams.get('symbol') === selectedSymbol
+    })
     await race.page.getByRole('tab', { name: '1W', exact: true }).click()
+    const selectedWeeklyRequest = await selectedWeeklyRequestPromise
+    const weeklyAbortPromise = race.page.waitForEvent('requestfailed', {
+      predicate: (request) => request === selectedWeeklyRequest,
+      timeout: 5000,
+    })
     await race.page.getByRole('tab', { name: '1M', exact: true }).click()
-    await race.page.waitForTimeout(500)
+    const monthlySparklines = race.page.locator('.discover-sparkline.is-down[aria-label*="月线"][aria-label*="2 个真实收盘价点"][aria-label*="-50.00%"]')
+    await monthlySparklines.first().waitFor({ state: 'visible', timeout: 5000 })
+    const aiMonthly = race.page.locator('.discover-ai-selection .v2-mini-chart[aria-label*="月线"]')
+    await aiMonthly.waitFor({ state: 'visible', timeout: 5000 })
     assert(requestedTimeframes.includes('周线') && requestedTimeframes.includes('月线'), 'rapid timeframe requests missing')
-    assert(await race.page.locator('.discover-sparkline[aria-label*="月线"]').count() > 0, 'visible sparklines did not retain monthly timeframe')
+    assert(await monthlySparklines.count() > 0, 'visible sparklines did not retain monthly timeframe')
     assert(await race.page.locator('.discover-sparkline.is-up[aria-label*="月线"]').count() === 0, 'stale weekly response overwrote monthly sparklines')
     assert(await race.page.locator('.discover-ai-selection .v2-mini-chart[aria-label*="月线"]').count() === 1, 'AI Mini K did not follow monthly timeframe')
-    assert(abortedWeekly > 0, 'superseded weekly candle requests were not aborted')
+    const weeklyAbort = await weeklyAbortPromise
+    assert(/abort|cancel/i.test(weeklyAbort.failure()?.errorText || ''), 'weekly request failed for a non-abort reason')
     passed += 6
     await race.context.close()
 
