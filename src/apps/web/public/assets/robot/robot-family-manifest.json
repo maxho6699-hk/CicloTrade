@@ -1,0 +1,64 @@
+{
+  "family": "Ciclo Institutional Core v3",
+  "verdict": "PASS",
+  "hard_violations": [],
+  "scores": {
+    "same_character": 10,
+    "body_progression": 9,
+    "mature": 10,
+    "non_mecha": 10,
+    "non_childish": 10,
+    "institutional_fit": 9,
+    "compact_48px": 9,
+    "alpha_edge_quality": 9,
+    "scale_and_width_progression": 10,
+    "c_inlay_family": 10,
+    "gold_restrained": 10
+  },
+  "levels": [
+    {
+      "level": 1,
+      "file": "robot-lv1.png",
+      "sha256": "fd34035b24f965b99ad3d0d803351dfd21fe3729da674d0d8de4c04b2a114b94",
+      "content_bbox": [
+        342,
+        254,
+        682,
+        954
+      ]
+    },
+    {
+      "level": 2,
+      "file": "robot-lv2.png",
+      "sha256": "c135211311b66f9cb52a24e48e231750ac79adf353bea07ec22092aa86065739",
+      "content_bbox": [
+        312,
+        184,
+        712,
+        954
+      ]
+    },
+    {
+      "level": 3,
+      "file": "robot-lv3.png",
+      "sha256": "8d83b5839e9716aee32cb611600db9f7cb02a7fe1543c03c87f55228dab304a7",
+      "content_bbox": [
+        277,
+        114,
+        747,
+        954
+      ]
+    },
+    {
+      "level": 4,
+      "file": "robot-lv4.png",
+      "sha256": "2f04831bbdc7217a141aa6cfb4fa883c8a810eb87b8f652d52cf2ffac39c9603",
+      "content_bbox": [
+        252,
+        44,
+        772,
+        954
+      ]
+    }
+  ]
+}

@@ -330,6 +330,9 @@
 .app-shell .deliberation-robot-stage .ciclo-core-advanced .ciclo-core-hero-image { filter: saturate(1.02) contrast(1.03) drop-shadow(0 17px 28px rgb(13 38 89 / .66)) drop-shadow(0 0 14px rgb(96 165 250 / .26)); }
 .app-shell .deliberation-robot-stage .ciclo-core-professional .ciclo-core-hero-image,
 .app-shell .deliberation-robot-stage .ciclo-core-custom .ciclo-core-hero-image { filter: saturate(1.16) contrast(1.08) drop-shadow(0 20px 32px rgb(17 49 111 / .74)) drop-shadow(0 0 24px rgb(37 99 235 / .46)); }
+.app-shell .deliberation-robot-stage .ciclo-core-image-orbits { z-index: 2; opacity: .42; }
+.app-shell .deliberation-robot-stage .ciclo-core-image-particles { z-index: 2; opacity: .46; }
+.app-shell .deliberation-robot-stage .ciclo-core-energy-field { display: none; }
 .app-shell .deliberation-robot-halo { position: absolute; z-index: 1; width: 340px; height: 220px; border: 1px solid rgb(96 165 250 / .22); border-radius: 50%; transform: rotate(-7deg); }
 
 /* 机器人等级 → 舞台特效降级（免费/标准版朴素，高级/专业版炫） */

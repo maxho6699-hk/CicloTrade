@@ -1,25 +1,8 @@
+import { CICLO_TIER_ASSETS, TIER_LABELS, type CicloCoreTier } from './cicloCoreModel'
+
+export { CICLO_TIER_ASSETS, TIER_LABELS, tierFromPlan, type CicloCoreTier } from './cicloCoreModel'
+
 export type CicloCoreState = 'neutral' | 'processing' | 'locked' | 'offline'
-
-/** 会员等级 → 机器人形态（产品负责人 2026-08-16 明确） */
-export type CicloCoreTier = 'free' | 'standard' | 'advanced' | 'professional' | 'custom'
-
-export const TIER_LABELS: Record<CicloCoreTier, string> = {
-  free: '基础机器人',
-  standard: '进阶机器人',
-  advanced: '高级机器人',
-  professional: '专业机器人',
-  custom: '定制机器人',
-}
-
-/** 从会员 plan 字符串映射到等级 */
-export function tierFromPlan(plan: string | null | undefined): CicloCoreTier {
-  if (!plan) return 'free'
-  if (plan.includes('专业')) return 'professional'
-  if (plan.includes('定制')) return 'custom'
-  if (plan.includes('高级')) return 'advanced'
-  if (plan.includes('标准')) return 'standard'
-  return 'free'
-}
 
 interface CicloCoreProps {
   label: string
@@ -36,13 +19,7 @@ export function CicloCore({ label, size = 'hero', state = 'neutral', tier = 'fre
   const hasOrbits = tier !== 'free'
   const hasHalo = isAdvanced
   const hasEnergyLines = isPro
-  const artwork = {
-    free: '/assets/robot/robot-lv1.png',
-    standard: '/assets/robot/robot-lv2.png',
-    advanced: '/assets/robot/robot-lv3.png',
-    professional: '/assets/robot/robot-lv4.png',
-    custom: '/assets/robot/robot-lv4.png',
-  }[tier]
+  const artwork = CICLO_TIER_ASSETS[tier]
 
   return <figure className={`ciclo-core ciclo-core-${size} ciclo-core-${tier}`} data-state={state} data-tier={tier} role="img" aria-label={`${label}（${TIER_LABELS[tier]}）`}>
     {hasEnergyLines && <span className="ciclo-core-energy-field" aria-hidden="true"><i /><i /><i /><i /></span>}
