@@ -8,12 +8,14 @@ export const TIER_LABELS: Record<CicloCoreTier, string> = {
   custom: '定制机器人',
 }
 
+export const CICLO_ROBOT_ASSET_VERSION = 'institutional-v3'
+
 export const CICLO_TIER_ASSETS = {
-  free: '/assets/robot/robot-lv1.png',
-  standard: '/assets/robot/robot-lv2.png',
-  advanced: '/assets/robot/robot-lv3.png',
-  professional: '/assets/robot/robot-lv4.png',
-  custom: '/assets/robot/robot-lv4.png',
+  free: `/assets/robot/robot-lv1.png?v=${CICLO_ROBOT_ASSET_VERSION}`,
+  standard: `/assets/robot/robot-lv2.png?v=${CICLO_ROBOT_ASSET_VERSION}`,
+  advanced: `/assets/robot/robot-lv3.png?v=${CICLO_ROBOT_ASSET_VERSION}`,
+  professional: `/assets/robot/robot-lv4.png?v=${CICLO_ROBOT_ASSET_VERSION}`,
+  custom: `/assets/robot/robot-lv4.png?v=${CICLO_ROBOT_ASSET_VERSION}`,
 } as const satisfies Record<CicloCoreTier, string>
 
 export function tierFromPlan(plan: string | null | undefined): CicloCoreTier {

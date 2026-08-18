@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import test from 'node:test'
 import { inflateSync } from 'node:zlib'
-import { CICLO_TIER_ASSETS, tierFromPlan } from '../src/components/paper/cicloCoreModel.ts'
+import { CICLO_ROBOT_ASSET_VERSION, CICLO_TIER_ASSETS, tierFromPlan } from '../src/components/paper/cicloCoreModel.ts'
 
 const root = new URL('../public/assets/robot/', import.meta.url)
 const manifestUrl = new URL('robot-family-manifest.json', root)
@@ -199,12 +199,13 @@ test('robot PNG validation rejects corrupted, incomplete, and trailing streams',
 })
 
 test('membership plans map to one authoritative robot asset per tier', () => {
+  assert.equal(CICLO_ROBOT_ASSET_VERSION, 'institutional-v3')
   assert.deepEqual(CICLO_TIER_ASSETS, {
-    free: '/assets/robot/robot-lv1.png',
-    standard: '/assets/robot/robot-lv2.png',
-    advanced: '/assets/robot/robot-lv3.png',
-    professional: '/assets/robot/robot-lv4.png',
-    custom: '/assets/robot/robot-lv4.png',
+    free: '/assets/robot/robot-lv1.png?v=institutional-v3',
+    standard: '/assets/robot/robot-lv2.png?v=institutional-v3',
+    advanced: '/assets/robot/robot-lv3.png?v=institutional-v3',
+    professional: '/assets/robot/robot-lv4.png?v=institutional-v3',
+    custom: '/assets/robot/robot-lv4.png?v=institutional-v3',
   })
   assert.equal(tierFromPlan('免费版'), 'free')
   assert.equal(tierFromPlan('标准版'), 'standard')
